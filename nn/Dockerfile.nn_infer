@@ -1,5 +1,12 @@
 FROM bentoml/model-server:latest-slim-py38
-COPY requirements.txt .
+
+# Копируем исходники Bento-сервиса (текущий контекст — папка nn)
+COPY . /src/nn
 WORKDIR /src/nn
-EXPOSE 3000
-CMD ["python", "infer_service.py"]
+
+# ⬇️ если зависимости не нужны, эти строки можно убрать
+# COPY requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt
+
+# Запуск сервиса
+CMD ["bentoml", "serve", "service:svc", "--port", "3000"]
