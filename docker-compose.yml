@@ -1,47 +1,61 @@
-version: '3.8'
+# =====  docker-compose.yml  =====
+#  (без поля version — Compose v2+ его не требует)
 
 networks:
   bot_net:
     driver: bridge
 
 services:
-  freqtrade: 
-    image: freqtradeorg/freqtrade:stable
+  # --- FREQTRADE (core bot) ------------------------------------
+  freqtrade:
+    image: ghcr.io/tyrannya/bot:latest     # CI выкладывает сюда свежий образ
     container_name: freqtrade
-    env_file: .env
+    env_file:
+      - .env                               # ключи биржи / Telegram и т. д.
     networks:
       - bot_net
     volumes:
-      - ./conf:/freqtrade/user_data/config
-      - ./strategies:/freqtrade/user_data/strategies
-      - ./tools:/freqtrade/user_data/tools
+      # конфиги и стратегии монтируем «только чтение»
+      - ./conf:/freqtrade/conf:ro
+      - ./strategies:/freqtrade/user_data/strategies:ro
+      - ./tools:/freqtrade/user_data/tools:ro
+    # команду запускаём через обёртку start.sh
+    command: sleep infinity
 
+  # --- NN INFER (BentoML-сервис с нейросетью) -------------------
   nn_infer:
-    build:
-      context: .
-      dockerfile: Dockerfile.nn_infer
+    # ⚠️ если образ ещё не публикуется CI, оставьте build: 
+    # build:
+    #   context: nn
+    #   dockerfile: nn/Dockerfile.nn_infer
+    image: ghcr.io/tyrannya/nn_infer:latest
     container_name: nn_infer
     networks:
       - bot_net
     ports:
       - "3000:3000"
-    volumes:
-      - ./nn:/src/nn
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/livez"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
+  # --- PROMETHEUS ----------------------------------------------
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
     networks:
       - bot_net
-    volumes:
-      - ./conf/prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
+    volumes:
+      - ./conf/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
+  # --- GRAFANA --------------------------------------------------
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
     networks:
       - bot_net
     ports:
-      - "3000:3000"
+      - "3001:3000"            # наружу публикуем 3001 → внутри 3000
