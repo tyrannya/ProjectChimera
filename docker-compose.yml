@@ -1,5 +1,5 @@
 # =====  docker-compose.yml  =====
-#  (без поля version — Compose v2+ его не требует)
+# Для Docker Desktop на Windows/Mac, только архитектура linux/amd64
 
 networks:
   bot_net:
@@ -8,27 +8,23 @@ networks:
 services:
   # --- FREQTRADE (core bot) ------------------------------------
   freqtrade:
-    image: ghcr.io/tyrannya/bot:latest     # CI выкладывает сюда свежий образ
+    image: ghcr.io/tyrannya/bot:latest
+    platform: linux/amd64
     container_name: freqtrade
     env_file:
-      - .env                               # ключи биржи / Telegram и т. д.
+      - .env
     networks:
       - bot_net
     volumes:
-      # конфиги и стратегии монтируем «только чтение»
       - ./conf:/freqtrade/conf:ro
       - ./strategies:/freqtrade/user_data/strategies:ro
       - ./tools:/freqtrade/user_data/tools:ro
-    # команду запускаём через обёртку start.sh
     command: sleep infinity
 
   # --- NN INFER (BentoML-сервис с нейросетью) -------------------
   nn_infer:
-    # ⚠️ если образ ещё не публикуется CI, оставьте build: 
-    # build:
-    #   context: nn
-    #   dockerfile: nn/Dockerfile.nn_infer
     image: ghcr.io/tyrannya/nn_infer:latest
+    platform: linux/amd64
     container_name: nn_infer
     networks:
       - bot_net
@@ -43,6 +39,7 @@ services:
   # --- PROMETHEUS ----------------------------------------------
   prometheus:
     image: prom/prometheus:latest
+    platform: linux/amd64
     container_name: prometheus
     networks:
       - bot_net
@@ -54,8 +51,9 @@ services:
   # --- GRAFANA --------------------------------------------------
   grafana:
     image: grafana/grafana:latest
+    platform: linux/amd64
     container_name: grafana
     networks:
       - bot_net
     ports:
-      - "3001:3000"            # наружу публикуем 3001 → внутри 3000
+      - "3001:3000"

@@ -1,9 +1,12 @@
-FROM bentoml/bento-server:latest
+FROM python:3.10-slim
 
-COPY . /src/nn
 WORKDIR /src/nn
 
-# COPY requirements.txt .
-# RUN pip install --no-cache-dir -r requirements.txt
+# Копируем только requirements.txt и ставим зависимости
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Теперь копируем остальной код сервиса
+COPY . /src/nn
 
 CMD ["bentoml", "serve", "service:svc", "--port", "3000"]
