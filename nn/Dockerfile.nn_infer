@@ -1,4 +1,4 @@
-FROM bentoml/model-server:python3.11-torch2.3
+FROM bentoml/model-server:latest-slim-py38
 COPY nn /src/nn
 WORKDIR /src/nn
 EXPOSE 3000
