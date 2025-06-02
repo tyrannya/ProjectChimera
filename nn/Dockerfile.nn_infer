@@ -1,12 +1,9 @@
-FROM bentoml/model-server:latest-slim-py38
+FROM bentoml/bento-server:latest
 
-# Копируем исходники Bento-сервиса (текущий контекст — папка nn)
 COPY . /src/nn
 WORKDIR /src/nn
 
-# ⬇️ если зависимости не нужны, эти строки можно убрать
 # COPY requirements.txt .
 # RUN pip install --no-cache-dir -r requirements.txt
 
-# Запуск сервиса
 CMD ["bentoml", "serve", "service:svc", "--port", "3000"]
