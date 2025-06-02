@@ -1,0 +1,35 @@
+{
+  "id": null,
+  "uid": "nn-health",
+  "title": "NN-Health",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Inference Latency (ms)",
+      "targets": [{ "expr": "infer_latency_ms", "interval": "" }],
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Drift Score",
+      "targets": [{ "expr": "drift_score", "interval": "" }],
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 }
+    },
+    {
+      "type": "stat",
+      "title": "NN Online",
+      "targets": [{ "expr": "nn_online", "interval": "" }],
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 }
+    }
+  ]
+}

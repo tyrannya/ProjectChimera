@@ -1,0 +1,11 @@
+{
+  "exchange": {
+    "name": "binance",
+    "type": "futures",
+    "api_url": "https://testnet.binancefuture.com",
+    "key": "${BINANCE_TEST_KEY}",
+    "secret": "${BINANCE_TEST_SECRET}"
+  },
+  "dry_run": true,
+  "symbols": ["BTC/USDT"]
+}

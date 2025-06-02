@@ -1,0 +1,11 @@
+{
+  "exchange": {
+    "name": "binance",
+    "type": "futures",
+    "api_url": "https://fapi.binance.com",
+    "key": "${BINANCE_KEY}",
+    "secret": "${BINANCE_SECRET}"
+  },
+  "dry_run": false,
+  "symbols": ["BTC/USDT"]
+}

@@ -1,0 +1,47 @@
+version: '3.8'
+
+networks:
+  bot_net:
+    driver: bridge
+
+services:
+  freqtrade: 
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade
+    env_file: .env
+    networks:
+      - bot_net
+    volumes:
+      - ./conf:/freqtrade/user_data/config
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./tools:/freqtrade/user_data/tools
+
+  nn_infer:
+    build:
+      context: .
+      dockerfile: Dockerfile.nn_infer
+    container_name: nn_infer
+    networks:
+      - bot_net
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./nn:/src/nn
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    networks:
+      - bot_net
+    volumes:
+      - ./conf/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    networks:
+      - bot_net
+    ports:
+      - "3000:3000"

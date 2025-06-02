@@ -1,0 +1,11 @@
+{
+  "exchange": {
+    "name": "bybit",
+    "type": "v5",
+    "api_url": "https://api-testnet.bybit.com",
+    "key": "${BYBIT_TEST_KEY}",
+    "secret": "${BYBIT_TEST_SECRET}"
+  },
+  "dry_run": true,
+  "symbols": ["BTC/USDT"]
+}

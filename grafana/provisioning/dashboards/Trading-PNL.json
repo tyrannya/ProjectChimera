@@ -1,0 +1,35 @@
+{
+  "id": null,
+  "uid": "trading-pnl",
+  "title": "Trading-PNL",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Equity Curve",
+      "targets": [{ "expr": "equity", "interval": "" }],
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "currency" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Drawdown (%)",
+      "targets": [{ "expr": "drawdown", "interval": "" }],
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "percent" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "type": "stat",
+      "title": "Trades per Day",
+      "targets": [{ "expr": "trades_per_day", "interval": "" }],
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    }
+  ]
+}

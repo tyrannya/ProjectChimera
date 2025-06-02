@@ -1,0 +1,27 @@
+route:
+  receiver: telegram_receiver
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 1h
+
+receivers:
+  - name: telegram_receiver
+    webhook_configs:
+      - url: "https://example.com/test-telegram-webhook"   # TEST WEBHOOK PLACEHOLDER
+
+# Alert rules: (обычно их кладут в отдельный файл, но правило здесь для справки)
+# - alert: KillSwitchFired
+#   expr: kill_switch_fired == 1
+#   for: 0m
+#   labels:
+#     severity: critical
+#   annotations:
+#     description: "Kill switch activated!"
+
+# - alert: InferLatencyHigh
+#   expr: avg_over_time(infer_latency_ms[5m]) > 20
+#   for: 5m
+#   labels:
+#     severity: warning
+#   annotations:
+#     description: "NN inference latency > 20ms for 5m"

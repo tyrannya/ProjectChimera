@@ -1,0 +1,13 @@
+{
+  "risk": {
+    "max_drawdown": 0.08
+  },
+  "initial_state": "paused",
+  "timeframes": ["1m", "4h"],
+  "protections": [
+    {
+      "method": "CooldownPeriod",
+      "cooldown_time": 60
+    }
+  ]
+}
