@@ -1,5 +1,5 @@
 FROM bentoml/model-server:latest-slim-py38
-COPY nn /src/nn
+COPY requirements.txt .
 WORKDIR /src/nn
 EXPOSE 3000
 CMD ["python", "infer_service.py"]
