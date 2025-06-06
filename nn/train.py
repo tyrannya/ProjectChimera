@@ -7,7 +7,10 @@ USAGE:
 • Mixed precision: включено через torch.cuda.amp.autocast.
 • Ray Tune: 100 trials по lr∈[1e-5,1e-3].
 • Loss: Huber(pred-truth) + 0.2 * policy_gradient_reward.
-• Финал: torch.jit.trace → nn/model_ts.pt, torch.onnx.export → nn/model_ts.onnx, mlflow.register_model(..., name="nn_predictor", alias="prod").
+• Финал: torch.jit.trace → nn/model_ts.pt, torch.onnx.export → nn/model_ts.onnx,
+  mlflow.register_model(..., name="nn_predictor");
+  MlflowClient().set_registered_model_alias(..., alias="prod").
+• Лучший конфиг выбирается через analysis.get_best_config(metric="loss", mode="min").
 """
 
 import os
@@ -18,6 +21,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import mlflow
+from mlflow.tracking import MlflowClient
 from torch.cuda.amp import autocast, GradScaler
 from model_def import MinimalTST
 import argparse
@@ -83,8 +87,10 @@ def save_and_register(model, example_input, output_dir="nn"):
     with mlflow.start_run():
         mlflow.pytorch.log_model(model, "nn_predictor")
         model_uri = f"runs:/{mlflow.active_run().info.run_id}/nn_predictor"
-        mlflow.register_model(model_uri, name="nn_predictor")
-        mlflow.create_registered_model_version(name="nn_predictor", source=model_uri, aliases=["prod"])
+        model_version = mlflow.register_model(model_uri, name="nn_predictor")
+        MlflowClient().set_registered_model_alias(
+            name="nn_predictor", alias="prod", version=model_version.version
+        )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -105,7 +111,7 @@ if __name__ == "__main__":
         metric="loss",
         mode="min"
     )
-    best_config = analysis.get_best_config(metric="loss")
+    best_config = analysis.get_best_config(metric="loss", mode="min")
     model = train_tst(best_config, args.features, device, args.epochs)
     os.makedirs("nn", exist_ok=True)
     # Use an example input for tracing and export
