@@ -8,3 +8,23 @@
 - `strategies/` — rule-based стратегии.
 - `nn/` — модули нейросети.
 - `tools/` — вспомогательные скрипты.
+
+## Настройка окружения
+
+В корне проекта находится файл `.env.example` с перечнем переменных окружения.
+Скопируйте его в `.env` и заполните требуемые значения:
+
+```bash
+cp .env.example .env
+```
+
+### Переменные
+
+- `BINANCE_KEY` и `BINANCE_SECRET` — ключи API для работы с Binance в реальном режиме.
+- `BINANCE_TEST_KEY` и `BINANCE_TEST_SECRET` — ключи API Binance для тестовой сети.
+- `BYBIT_KEY` и `BYBIT_SECRET` — ключи API Bybit для реальной торговли.
+- `BYBIT_TEST_KEY` и `BYBIT_TEST_SECRET` — ключи API Bybit для тестового режима.
+- `OKX_KEY` и `OKX_SECRET` — ключи API OKX для реальной торговли.
+- `OKX_TEST_KEY` и `OKX_TEST_SECRET` — ключи API OKX для тестовой среды.
+
+Указывайте только те ключи, которые соответствуют используемым биржам и режимам работы.
