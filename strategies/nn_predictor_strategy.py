@@ -1,4 +1,5 @@
-from freqtrade.strategy import IStrategy
+# from freqtrade.strategy import IStrategy # Replaced by NotifyingStrategy
+from strategies.common.notifying_strategy import NotifyingStrategy # Added
 from freqtrade.exchange.exchange_utils import run_async_function  # Added import
 import pandas as pd
 import asyncio
@@ -9,7 +10,7 @@ import talib.abstract as ta
 # logger = logging.getLogger(__name__) # Optional: for logging exceptions
 
 
-class NNPredictorStrategy(IStrategy):
+class NNPredictorStrategy(NotifyingStrategy): # Changed from IStrategy
     timeframe = "4h"
     minimal_roi = {"0": 0.03}
     stoploss = -0.05

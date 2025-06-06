@@ -23,11 +23,13 @@ import torch.nn.functional as F
 import mlflow
 from mlflow.tracking import MlflowClient
 from torch.cuda.amp import autocast, GradScaler
-import mlflow
+# import mlflow # Duplicate import removed
 import ray
 from ray import tune
 import argparse
 from model_def import MTST
+import traceback # Added
+from tools.telegram_notifier import TelegramNotifier # Added
 
 
 def load_data(path: str):
@@ -157,7 +159,34 @@ if __name__ == "__main__":
 
     logger.info("Starting NN training script.")
 
-    parser = argparse.ArgumentParser()
+    notifier = None
+    try:
+        # Attempt to load .env file if python-dotenv is available
+        # This is primarily for local development convenience.
+        # In production, environment variables should be set directly.
+        from dotenv import load_dotenv
+        # Assuming .env is in project root, and nn is a subdirectory
+        dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+        if os.path.exists(dotenv_path):
+            load_dotenv(dotenv_path)
+            logger.info(f"Loaded .env file from {dotenv_path}")
+        else:
+            logger.info(f".env file not found at {dotenv_path}, relying on environment variables being set manually.")
+
+        notifier = TelegramNotifier()
+        logger.info("TelegramNotifier initialized successfully.")
+    except ImportError:
+        logger.warning("python-dotenv library not found. Cannot load .env file. Relying on environment variables for TelegramNotifier.")
+    except ValueError as e:
+        logger.warning(f"Failed to initialize TelegramNotifier: {e}. Training will continue without Telegram notifications.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during TelegramNotifier initialization: {e}. Training will continue without Telegram notifications.")
+
+    try:
+        if notifier:
+            notifier.send("⚙️ Началось обучение модели (Hyperparameter Tuning)...")
+
+        parser = argparse.ArgumentParser()
     parser.add_argument("--features", required=True)
     parser.add_argument("--epochs", type=int, default=20)
     args = parser.parse_args()
@@ -201,4 +230,21 @@ if __name__ == "__main__":
     logger.info("Saving and registering model with MLflow...")
     save_and_register(model, example_input)
     logger.info("Model saved and registered successfully.")
+
+    if notifier:
+        notifier.send("✅ Модель успешно обучена и сохранена (включая MLflow регистрацию).")
+
     logger.info("NN training script finished.")
+
+    except Exception as e:
+        logger.error(f"An error occurred during the training process: {e}")
+        detailed_error = traceback.format_exc()
+        logger.error(detailed_error)
+        if notifier:
+            notifier.send_error(f"Ошибка в процессе обучения модели nn/train.py:\n{detailed_error}")
+        # Consider re-raising the exception if the script should fail explicitly
+        # raise e
+    finally:
+        if ray.is_initialized():
+            ray.shutdown()
+            logger.info("Ray successfully shut down.")

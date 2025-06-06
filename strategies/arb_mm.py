@@ -1,9 +1,10 @@
-from freqtrade.strategy import IStrategy
+# from freqtrade.strategy import IStrategy # Replaced by NotifyingStrategy
+from strategies.common.notifying_strategy import NotifyingStrategy # Added
 import pandas as pd
 import numpy as np
 
 
-class ArbMM(IStrategy):
+class ArbMM(NotifyingStrategy): # Changed from IStrategy
     timeframe = "1m"
     minimal_roi = {"0": 0.003}
     stoploss = -0.01
