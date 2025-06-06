@@ -2,7 +2,7 @@
 #
 # ▸ Job **build**     — собирает образ Freqtrade-бота  ➜ ghcr.io/<owner>/bot:latest
 # ▸ Job **build-nn**  — собирает BentoML-сервис NN     ➜ ghcr.io/<owner>/nn_infer:latest
-# Оба запускаются при push-ah в ветку main и вручную через “Run workflow”.
+# Оба запускаются при push-ах в ветку main и вручную через “Run workflow”.
 
 name: Build & Push Docker
 
