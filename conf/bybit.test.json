@@ -3,8 +3,10 @@
     "name": "bybit",
     "type": "v5",
     "api_url": "https://api-testnet.bybit.com",
+    "url": "https://api-testnet.bybit.com",
     "key": "${BYBIT_TEST_KEY}",
-    "secret": "${BYBIT_TEST_SECRET}"
+    "secret": "${BYBIT_TEST_SECRET}",
+    "sandbox": true
   },
   "dry_run": true,
   "symbols": ["BTC/USDT"]

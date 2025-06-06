@@ -1,0 +1,29 @@
+{
+  "id": null,
+  "uid": "trading-pnl",
+  "title": "Trading P&L",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Equity Curve",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "trading_equity"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Strategy P&L",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "strategy_pnl"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Total P&L",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "total_pnl"}]
+    }
+  ]
+}
