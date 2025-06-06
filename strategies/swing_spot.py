@@ -1,9 +1,11 @@
-from freqtrade.strategy import IStrategy, merge_informative_pair
+# from freqtrade.strategy import IStrategy, merge_informative_pair # Replaced by NotifyingStrategy
+from strategies.common.notifying_strategy import NotifyingStrategy # Added
+from freqtrade.strategy import merge_informative_pair # Keep for merge_informative_pair if used directly
 import pandas as pd
 import talib.abstract as ta
 
 
-class SwingSpot(IStrategy):
+class SwingSpot(NotifyingStrategy): # Changed from IStrategy
     timeframe = "4h"
     minimal_roi = {"0": 0.03}
     stoploss = -0.05

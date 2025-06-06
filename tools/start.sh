@@ -33,6 +33,9 @@ fi
 echo "Merged config: $MERGED_CONFIG"
 echo "Extra args: $EXTRA_ARGS"
 
+echo "Sending startup notification to Telegram..."
+python "$(dirname "$(realpath "$0")")/send_telegram_notification.py" "🟢 Бот запускается (конфигурация: ${EXCHANGE} ${MODE})..."
+
 # Пример запуска freqtrade, адаптируйте под свой docker/cli запуск
 docker run --rm \
   --env-file "$(dirname "$CONFIG_DIR")/.env" \
@@ -40,3 +43,6 @@ docker run --rm \
   -v "$MERGED_CONFIG:/freqtrade/user_data/config/config.json" \
   freqtradeorg/freqtrade:stable trade $EXTRA_ARGS --config /freqtrade/user_data/config/config.json
 
+EXIT_CODE=$?
+echo "Sending shutdown notification to Telegram..."
+python "$(dirname "$(realpath "$0")")/send_telegram_notification.py" "🛑 Бот остановлен (конфигурация: ${EXCHANGE} ${MODE}). Выход Freqtrade: $EXIT_CODE"

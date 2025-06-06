@@ -1,8 +1,10 @@
-from freqtrade.strategy import IStrategy, merge_informative_pair
+# from freqtrade.strategy import IStrategy, merge_informative_pair # Replaced by NotifyingStrategy
+from strategies.common.notifying_strategy import NotifyingStrategy # Added
+from freqtrade.strategy import merge_informative_pair # Keep for merge_informative_pair if used directly
 import pandas as pd
 
 
-class ScalpFutures(IStrategy):
+class ScalpFutures(NotifyingStrategy): # Changed from IStrategy
     timeframe = "1m"
     minimal_roi = {"0": 0.01}
     stoploss = -0.01

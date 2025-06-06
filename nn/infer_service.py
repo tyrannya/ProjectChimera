@@ -1,15 +1,62 @@
 import time
+import traceback # Added
+import os # Added
+import sys # Added
 import bentoml
 from bentoml.io import NumpyNdarray, Text
 from bentoml.exceptions import InternalServerError, ServiceUnavailable # Added ServiceUnavailable
 import torch
 import numpy as np
 
+# Add project root to sys.path to allow importing tools.telegram_notifier
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+try:
+    from tools.telegram_notifier import TelegramNotifier
+except ImportError as e:
+    print(f"CRITICAL: Failed to import TelegramNotifier in nn/infer_service.py: {e}. Notifications will be disabled.")
+    TelegramNotifier = None
+
 # model is loaded by BentoML, its type is typically Union[torch.ScriptModule, torch.nn.Module]
 # For simplicity, we can use a general type like 'Any' or a more specific one if known.
 # Let's assume model is a torch.ScriptModule as per bentoml.torchscript.load_model
 model: torch.ScriptModule = bentoml.torchscript.load_model("nn_predictor:prod")
 svc: bentoml.Service = bentoml.Service("nn_predictor_svc")
+
+notifier = None
+if TelegramNotifier:
+    try:
+        # Attempt to load .env file if python-dotenv is available for local dev
+        from dotenv import load_dotenv
+        dotenv_path = os.path.join(project_root, '.env') # .env in project root
+        if os.path.exists(dotenv_path):
+            load_dotenv(dotenv_path)
+            # svc.ctx.logger.info(f"InferService: Loaded .env from {dotenv_path}") # Requires svc to be fully init
+        # else:
+            # svc.ctx.logger.info(f"InferService: .env not found at {dotenv_path}")
+
+        notifier = TelegramNotifier()
+        # svc.ctx.logger.info("InferService: TelegramNotifier initialized successfully.") # svc.ctx.logger may not be ready here
+        print("InferService: TelegramNotifier initialized successfully.")
+    except ImportError:
+        # svc.ctx.logger.warning("InferService: python-dotenv not found. Cannot load .env. Relying on env vars for TelegramNotifier.")
+        print("InferService: python-dotenv not found. Cannot load .env. Relying on env vars for TelegramNotifier.")
+        try:
+            notifier = TelegramNotifier() # Try again, relying purely on env vars
+            print("InferService: TelegramNotifier initialized successfully (no dotenv).")
+        except ValueError as ve_no_dotenv:
+            print(f"InferService: Failed to initialize TelegramNotifier (dotenv not found, env vars likely missing): {ve_no_dotenv}")
+
+    except ValueError as e:
+        # svc.ctx.logger.warning(f"InferService: Failed to initialize TelegramNotifier: {e}. Service will run without Telegram notifications.")
+        print(f"InferService: Failed to initialize TelegramNotifier: {e}. Service will run without Telegram notifications.")
+    except Exception as e:
+        # svc.ctx.logger.error(f"InferService: Unexpected error during TelegramNotifier initialization: {e}")
+        print(f"InferService: Unexpected error during TelegramNotifier initialization: {e}")
+else:
+    print("InferService: TelegramNotifier class not available. Notifications disabled.")
 
 
 @svc.api(input=NumpyNdarray(), output=NumpyNdarray()) # Input is np.ndarray, output is np.ndarray
@@ -38,6 +85,9 @@ async def predict(input_array: np.ndarray) -> np.ndarray:
         svc.ctx.logger.info(
             f"Prediction failed. Latency until error: {latency_ms_error:.2f}ms"
         )
+        if notifier:
+            detailed_error = traceback.format_exc()
+            notifier.send_error(f"Критический сбой в nn/infer_service.py (predict endpoint):\n{detailed_error}")
         raise InternalServerError(f"Prediction failed: {str(e)}")
 
 
@@ -53,12 +103,18 @@ async def readyz() -> str:
     # So, if the service is running, the model object should exist.
     # We can add an explicit check for None, though it's unlikely to be None if service started.
     if model is None:
-        svc.ctx.logger.error("Readiness check failed: Model is not loaded (global model object is None).")
+        error_msg = "Readiness check failed: Model is not loaded (global model object is None)."
+        svc.ctx.logger.error(error_msg)
+        if notifier:
+            notifier.send_error(f"Критический сбой в nn/infer_service.py (readyz - model not loaded):\n{error_msg}")
         raise ServiceUnavailable("Model not loaded")
 
     # Check if the model is a torch.ScriptModule as expected (optional, but good for sanity)
     if not isinstance(model, torch.jit.ScriptModule):
-        svc.ctx.logger.error(f"Readiness check failed: Model is not a torch.jit.ScriptModule, type is {type(model)}.")
+        error_msg = f"Readiness check failed: Model is not a torch.jit.ScriptModule, type is {type(model)}."
+        svc.ctx.logger.error(error_msg)
+        if notifier:
+            notifier.send_error(f"Критический сбой в nn/infer_service.py (readyz - model type mismatch):\n{error_msg}")
         raise ServiceUnavailable("Model is of unexpected type")
 
     # 2. Model Inference Sanity Check
@@ -95,6 +151,9 @@ async def readyz() -> str:
 
     except Exception as e:
         svc.ctx.logger.error(f"Readiness check failed: Model inference sanity check error: {e}", exc_info=True)
+        if notifier:
+            detailed_error = traceback.format_exc()
+            notifier.send_error(f"Критический сбой в nn/infer_service.py (readyz - inference check):\n{detailed_error}")
         raise ServiceUnavailable(f"Model inference check failed: {str(e)}")
 
     return "ok"
