@@ -3,8 +3,10 @@
     "name": "binance",
     "type": "futures",
     "api_url": "https://testnet.binancefuture.com",
+    "url": "https://testnet.binancefuture.com",
     "key": "${BINANCE_TEST_KEY}",
-    "secret": "${BINANCE_TEST_SECRET}"
+    "secret": "${BINANCE_TEST_SECRET}",
+    "sandbox": true
   },
   "dry_run": true,
   "symbols": ["BTC/USDT"]

@@ -4,3 +4,8 @@ mlflow
 pandas
 numpy
 bentoml==1.1.9
+ccxt
+requests
+ta
+deltalake
+pyarrow
