@@ -6,3 +6,4 @@ flowchart LR
     B --> C[MLflow]
     C --> D[BentoML]
     D --> E[Freqtrade]
+```
