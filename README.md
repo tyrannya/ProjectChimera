@@ -37,3 +37,12 @@ python nn/train.py --features path/to/features.parquet --epochs 20
 ```bash
 docker compose up -d nn_infer
 ```
+=======
+## Running tests
+
+Install development dependencies and execute pytest:
+
+```bash
+pytest
+```
+ main
