@@ -1,0 +1,7 @@
+black
+flake8
+mypy
+pre-commit
+radon # Adding radon here as it's used in the flake8 command later
+types-requests # Adding for mypy additional_dependencies
+types-PyYAML # Adding for mypy additional_dependencies
