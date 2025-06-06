@@ -1,29 +1,43 @@
-name: Nightly Train & Deploy
+name: Train
 
 on:
+  push:
+    paths:
+      - 'nn/**'
   schedule:
-    - cron: '30 1 * * *'
-  workflow_dispatch:
+    - cron: '0 2 * * *'
 
 jobs:
   train:
-    runs-on: self-hosted-gpu
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: 3.11
-      - name: Install dependencies
+          python-version: 3.10
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('nn/requirements.txt') }}
+      - name: Install deps
         run: pip install -r nn/requirements.txt
-      - name: Train model
-        run: python nn/train.py --features data/features/binance_BTC_USDT_1h_2020-01-01_features.parquet --epochs 20
-      - name: Check model version & deploy
+      - name: Train
+        run: python nn/train.py
+      - name: Update MLflow alias
         run: |
+          python - <<'PY'
+import mlflow
+client = mlflow.tracking.MlflowClient()
+model = client.get_latest_versions("nn_predictor", stages=[])[-1]
+client.set_registered_model_alias("nn_predictor", "prod", model.version)
+PY
+
           if mlflow models list | grep -q 'nn_predictor'; then
             docker buildx build --push \
               --file nn/Dockerfile.nn_infer \
               --tag ghcr.io/<org>/nn_infer:latest \
               --cache-from=type=gha --cache-to=type=gha,mode=max .
           fi
+ main
