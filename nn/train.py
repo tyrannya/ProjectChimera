@@ -83,8 +83,9 @@ def save_and_register(model, example_input, output_dir="nn"):
     with mlflow.start_run():
         mlflow.pytorch.log_model(model, "nn_predictor")
         model_uri = f"runs:/{mlflow.active_run().info.run_id}/nn_predictor"
-        mlflow.register_model(model_uri, name="nn_predictor")
-        mlflow.create_registered_model_version(name="nn_predictor", source=model_uri, aliases=["prod"])
+        reg_model = mlflow.register_model(model_uri, name="nn_predictor")
+        client = mlflow.tracking.MlflowClient()
+        client.set_registered_model_alias("nn_predictor", reg_model.version, "prod")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
