@@ -3,6 +3,7 @@
     "name": "okx",
     "type": "v5",
     "api_url": "https://www.okx.com",
+    "url": "https://www.okx.com",
     "key": "${OKX_KEY}",
     "secret": "${OKX_SECRET}"
   },
