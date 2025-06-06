@@ -8,7 +8,7 @@ networks:
 services:
   # --- FREQTRADE (core bot) ------------------------------------
   freqtrade:
-    image: ghcr.io/tyrannya/bot:latest
+    image: ghcr.io/tyrannya/ProjectChimera:latest
     platform: linux/amd64
     container_name: freqtrade
     env_file:
