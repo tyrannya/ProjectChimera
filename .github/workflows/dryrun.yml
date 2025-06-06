@@ -1,21 +1,22 @@
-name: Dryrun Integration
+name: Dryrun
 
 on:
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 jobs:
   dryrun:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Docker Compose
-        uses: KengoTODA/actions-setup-docker-compose@v1
-      - name: Build nn_infer
+      - uses: actions/checkout@v4
+      - uses: KengoTODA/actions-setup-docker-compose@v1
+      - name: Start nn_infer
         run: docker compose up -d nn_infer
-      - name: Run Freqtrade Dryrun
+      - name: Check nn_infer
+        run: curl -f http://localhost:3000/livez
+      - name: Start bot dryrun
         run: |
           timeout 1800 ./tools/start.sh binance test
       - name: Teardown

@@ -1,0 +1,34 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment directories
+venv/
+env/
+ENV/
+.venv/
+
+# Environment files
+.env
+
+# MLflow output
+mlruns/
+
+# Packaging
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Bytecode cache
+*.pyc
+*.pyo
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite
+*.db
+.pytest_cache/
+ main
