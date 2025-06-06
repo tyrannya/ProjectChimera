@@ -8,3 +8,12 @@
 - `strategies/` — rule-based стратегии.
 - `nn/` — модули нейросети.
 - `tools/` — вспомогательные скрипты.
+
+## Running tests
+
+Install development dependencies and execute pytest:
+
+```bash
+pytest
+```
+
