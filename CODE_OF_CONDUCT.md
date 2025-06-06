@@ -1,19 +1,23 @@
-# Code of Conduct
+# Contributor Covenant Code of Conduct
 
 ## Our Pledge
-
-In the interest of fostering an open and welcoming environment, we pledge to make participation in our project a harassment-free experience for everyone.
+We as members, contributors, and leaders pledge to make participation in our
+community a harassment-free experience for everyone.
 
 ## Our Standards
-
-- Be respectful and considerate.
-- No harassment, discrimination, or personal attacks.
-- Accept constructive criticism gracefully.
+- Use welcoming and inclusive language
+- Respect differing viewpoints and experiences
+- Gracefully accept constructive criticism
+- Focus on what is best for the community
+- Show empathy toward other community members
 
 ## Enforcement
+Instances of abusive behavior may be reported to the maintainers who are
+responsible for enforcement. All complaints will be reviewed and
+investigated promptly and fairly.
 
-Instances of abusive or unacceptable behavior may be reported to the project maintainers for review and action.
+## Attribution
+This Code of Conduct is adapted from the [Contributor Covenant][homepage],
+version 2.1.
 
----
-
-Contact: project maintainer via GitHub Issues or email.
+[homepage]: https://www.contributor-covenant.org
