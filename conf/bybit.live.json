@@ -3,6 +3,7 @@
     "name": "bybit",
     "type": "v5",
     "api_url": "https://api.bybit.com",
+    "url": "https://api.bybit.com",
     "key": "${BYBIT_KEY}",
     "secret": "${BYBIT_SECRET}"
   },

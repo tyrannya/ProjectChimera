@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'freqtrade_exporter'
+    static_configs:
+      - targets: ['freqtrade_exporter:9090']
+  - job_name: 'nn_infer'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['nn_infer:3000']
+  - job_name: 'drift_watcher'
+    static_configs:
+      - targets: ['drift_watcher:9200']
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']

@@ -2,6 +2,7 @@ from freqtrade.strategy import IStrategy
 import pandas as pd
 import asyncio
 import aiohttp
+import talib.abstract as ta
 
 class NNPredictorStrategy(IStrategy):
     timeframe = "4h"
@@ -29,7 +30,7 @@ class NNPredictorStrategy(IStrategy):
             # fallback к swing_spot: ema21, ema55, rsi
             dataframe['ema21'] = dataframe['close'].ewm(span=21, adjust=False).mean()
             dataframe['ema55'] = dataframe['close'].ewm(span=55, adjust=False).mean()
-            dataframe['rsi'] = dataframe['close'].rolling(window=14).apply(lambda x: ((x - x.mean()) / x.std()).mean(), raw=False)
+            dataframe['rsi'] = ta.RSI(dataframe, timeperiod=14)
             dataframe['nn_score'] = 0
         return dataframe
 

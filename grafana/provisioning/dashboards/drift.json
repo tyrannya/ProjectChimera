@@ -1,0 +1,29 @@
+{
+  "id": null,
+  "uid": "drift-detector",
+  "title": "Drift-детектор",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Live Sharpe",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "sharpe_live"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Drift Score",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "drift_score"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retrain Trigger",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "retrain_trigger"}]
+    }
+  ]
+}

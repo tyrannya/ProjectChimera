@@ -1,6 +1,7 @@
 import os
 import sys
 import pandas as pd
+import ccxt
 from nn import data_pipeline
 
 def main():
@@ -9,30 +10,20 @@ def main():
         sys.exit(1)
     exchange, symbol, start, tf = sys.argv[1:]
     safe_symbol = symbol.replace("/", "_")
-    raw_dir = f"data/raw/{exchange}"
+    raw_dir = f"data/raw/{exchange}/{safe_symbol}_{tf}"
     os.makedirs(raw_dir, exist_ok=True)
-    raw_path = f"{raw_dir}/{safe_symbol}_{tf}_{start}.parquet"
-    if os.path.exists(raw_path):
-        print(f"Raw file exists: {raw_path}")
-        df = pd.read_parquet(raw_path)
-    else:
-        print(f"Downloading {exchange} {symbol} {tf} from {start}")
-        df = data_pipeline.download_ohlcv(exchange, symbol, tf, start)
-        if df.empty:
-            print("No data fetched.")
-            return
-        df.to_parquet(raw_path, index=False)
+    ex = getattr(ccxt, exchange)()
+    print(f"Downloading {exchange} {symbol} {tf} from {start}")
+    df = data_pipeline.download_ohlcv(exchange, symbol, tf, start)
+    df = data_pipeline.add_funding_rate(df, ex, symbol)
     glassnode_key = os.environ.get("GLASSNODE_API_KEY")
     if glassnode_key:
         df = data_pipeline.enrich_onchain(df, glassnode_key)
-    feat_dir = f"data/features/{exchange}"
+    data_pipeline.save_delta(raw_dir, df)
+    feat_dir = f"data/features/{exchange}/{safe_symbol}_{tf}"
     os.makedirs(feat_dir, exist_ok=True)
-    feat_path = f"{feat_dir}/{safe_symbol}_{tf}_{start}_features.parquet"
-    if os.path.exists(feat_path):
-        print(f"Features file exists: {feat_path}")
-    else:
-        print(f"Creating features at {feat_path}")
-        data_pipeline.make_features(feat_path, df)
+    feats = data_pipeline.make_features(df)
+    data_pipeline.save_delta(feat_dir, feats)
     # Логирование пропусков
     nan_cols = df.isna().sum()
     missing = nan_cols[nan_cols > 0]

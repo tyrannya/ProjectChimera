@@ -1,0 +1,24 @@
+{
+  "id": null,
+  "uid": "nn-latency",
+  "title": "NN latency",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "histogram",
+      "title": "Latency Histogram",
+      "datasource": "Prometheus",
+      "targets": [{"expr": "histogram_quantile(0.9, sum(rate(nn_latency_ms_bucket[5m])) by (le))"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency ms",
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 10}]}}},
+      "targets": [{"expr": "nn_latency_ms"}]
+    }
+  ]
+}
