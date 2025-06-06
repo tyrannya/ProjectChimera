@@ -23,7 +23,7 @@ jobs:
         run: |
           if mlflow models list | grep -q 'nn_predictor'; then
             docker buildx build --push \
-              --file Dockerfile.nn_infer \
+              --file nn/Dockerfile.nn_infer \
               --tag ghcr.io/<org>/nn_infer:latest \
               --cache-from=type=gha --cache-to=type=gha,mode=max .
           fi

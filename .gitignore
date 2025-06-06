@@ -24,3 +24,11 @@ dist/
 # Bytecode cache
 *.pyc
 *.pyo
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite
+*.db
+.pytest_cache/
+ main
