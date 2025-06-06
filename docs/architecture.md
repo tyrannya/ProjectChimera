@@ -4,6 +4,7 @@
 компонентов.
 
 ```mermaid
+ codex/extend-architecture.md-with-components-description
 flowchart TD
     DP[data_pipeline] --> TR[train]
     TR --> ML[MLflow]
@@ -27,3 +28,11 @@ flowchart TD
 
 **Freqtrade** – торговый движок, который запускает стратегии и взаимодействует с
 биржей. Он обращается к BentoML за предсказаниями и исполняет сделки.
+=======
+flowchart LR
+    A[data_pipeline] --> B[train]
+    B --> C[MLflow]
+    C --> D[BentoML]
+    D --> E[Freqtrade]
+```
+ main
