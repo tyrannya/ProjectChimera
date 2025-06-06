@@ -34,3 +34,10 @@ model = client.get_latest_versions("nn_predictor", stages=[])[-1]
 client.set_registered_model_alias("nn_predictor", "prod", model.version)
 PY
 
+          if mlflow models list | grep -q 'nn_predictor'; then
+            docker buildx build --push \
+              --file nn/Dockerfile.nn_infer \
+              --tag ghcr.io/<org>/nn_infer:latest \
+              --cache-from=type=gha --cache-to=type=gha,mode=max .
+          fi
+ main
