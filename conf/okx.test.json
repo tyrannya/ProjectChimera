@@ -3,8 +3,10 @@
     "name": "okx",
     "type": "v5",
     "api_url": "https://www.okx.com",
+    "url": "https://www.okx.com",
     "key": "${OKX_TEST_KEY}",
-    "secret": "${OKX_TEST_SECRET}"
+    "secret": "${OKX_TEST_SECRET}",
+    "sandbox": true
   },
   "dry_run": true,
   "symbols": ["BTC/USDT"]
