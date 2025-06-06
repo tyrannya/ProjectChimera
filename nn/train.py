@@ -1,5 +1,3 @@
-
-
 """
 Train script для MinimalTST.
 
@@ -38,13 +36,21 @@ def load_data(path: str):
     y = []
     window = 100
     for i in range(window, len(df) - 1):
-        X.append(df.iloc[i - window:i][['close', 'return_1', 'ema_9', 'ema_21', 'volume']].values)
-        y.append(df.iloc[i + 1]['close'])
+        X.append(
+            df.iloc[i - window : i][
+                ["close", "return_1", "ema_9", "ema_21", "volume"]
+            ].values
+        )
+        y.append(df.iloc[i + 1]["close"])
     return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
 
 
 def policy_gradient_reward(pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-    return ((torch.sign(pred[1:] - pred[:-1]) == torch.sign(truth[1:] - truth[:-1])).float().mean())
+    return (
+        (torch.sign(pred[1:] - pred[:-1]) == torch.sign(truth[1:] - truth[:-1]))
+        .float()
+        .mean()
+    )
 
 
 def live_sharpe(pred: torch.Tensor, truth: torch.Tensor) -> float:
@@ -84,8 +90,12 @@ def evaluate(model, loader):
 def train_tst(config, features, device, epochs=10):
     X, y = load_data(features)
     split = int(len(X) * 0.8)
-    X_train, X_val = torch.tensor(X[:split]).to(device), torch.tensor(X[split:]).to(device)
-    y_train, y_val = torch.tensor(y[:split]).to(device), torch.tensor(y[split:]).to(device)
+    X_train, X_val = torch.tensor(X[:split]).to(device), torch.tensor(X[split:]).to(
+        device
+    )
+    y_train, y_val = torch.tensor(y[:split]).to(device), torch.tensor(y[split:]).to(
+        device
+    )
     train_ds = torch.utils.data.TensorDataset(X_train, y_train)
     val_ds = torch.utils.data.TensorDataset(X_val, y_val)
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=32, shuffle=True)
@@ -110,10 +120,15 @@ def save_and_register(model, example_input, output_dir="nn"):
     traced = torch.jit.trace(model, example_input)
     os.makedirs(output_dir, exist_ok=True)
     traced.save(os.path.join(output_dir, "model_ts.pt"))
-    torch.onnx.export(model, example_input, os.path.join(output_dir, "model_ts.onnx"),
-                      input_names=['input'], output_names=['output'],
-                      dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
-                      opset_version=17)
+    torch.onnx.export(
+        model,
+        example_input,
+        os.path.join(output_dir, "model_ts.onnx"),
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+        opset_version=17,
+    )
     mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment("nn_predictor")
     with mlflow.start_run():
@@ -127,29 +142,63 @@ def save_and_register(model, example_input, output_dir="nn"):
         MlflowClient().set_registered_model_alias(
             name="nn_predictor", alias="prod", version=model_version.version
         )
- main
+
+
+# main # Removed this line
 
 
 if __name__ == "__main__":
+    import logging  # Added import
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )  # Added logging config
+    logger = logging.getLogger(__name__)  # Added logger instance
+
+    logger.info("Starting NN training script.")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--features", required=True)
     parser.add_argument("--epochs", type=int, default=20)
     args = parser.parse_args()
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device}")
+
+    logger.info("Initializing Ray...")
     ray.init(ignore_reinit_error=True, include_dashboard=False)
+
     search_space = {"lr": tune.loguniform(1e-5, 1e-3)}
+
+    logger.info("Starting Ray Tune hyperparameter tuning...")
     analysis = tune.run(
-        tune.with_parameters(tune_trainable, features=args.features, device=device, epochs=args.epochs),
+        tune.with_parameters(
+            tune_trainable, features=args.features, device=device, epochs=args.epochs
+        ),
         resources_per_trial={"cpu": 2, "gpu": int(device == "cuda")},
         config=search_space,
-        num_samples=100,
+        num_samples=100,  # Consider reducing for faster testing if needed
         local_dir="./ray_results",
         metric="sharpe",
         mode="max",
     )
-    best_config = analysis.get_best_config(metric="sharpe")
-    best_config = analysis.get_best_config(metric="loss", mode="min")
+    logger.info("Ray Tune hyperparameter tuning completed.")
+
+    best_config = analysis.get_best_config(
+        metric="sharpe", mode="max"
+    )  # Corrected, was "sharpe" then "loss"
+    logger.info(
+        f"Best config found by Ray Tune (metric='sharpe', mode='max'): {best_config}"
+    )
+
+    logger.info("Training final model with best config...")
     model = train_tst(best_config, args.features, device, args.epochs)
+    logger.info("Final model training completed.")
+
     X, _ = load_data(args.features)
-    example_input = torch.tensor(X[:2]).to(device)
+    example_input = torch.tensor(X[:2]).to(device)  # Using first 2 samples as example
+
+    logger.info("Saving and registering model with MLflow...")
     save_and_register(model, example_input)
+    logger.info("Model saved and registered successfully.")
+    logger.info("NN training script finished.")

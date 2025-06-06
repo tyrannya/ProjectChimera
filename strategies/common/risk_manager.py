@@ -4,7 +4,12 @@ from freqtrade.exceptions import TemporaryStopException
 
 
 class RiskManager:
-    def __init__(self, drawdown_limit: float = 8.0, max_orders_per_minute: int = 60, funding_threshold: float = 0.0):
+    def __init__(
+        self,
+        drawdown_limit: float = 8.0,
+        max_orders_per_minute: int = 60,
+        funding_threshold: float = 0.0,
+    ):
         self.drawdown_limit = drawdown_limit / 100
         self.max_orders = max_orders_per_minute
         self.funding_threshold = funding_threshold

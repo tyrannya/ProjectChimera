@@ -1,0 +1,28 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0 # Use a recent version
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-yaml
+    -   id: check-added-large-files
+-   repo: https://github.com/psf/black
+    rev: 24.4.2 # Use a recent version
+    hooks:
+    -   id: black
+        language_version: python3.10 # Ensure consistency
+-   repo: https://github.com/PyCQA/flake8
+    rev: 7.0.0 # Use a recent version
+    hooks:
+    -   id: flake8
+        # Optionally, add args for flake8 if needed, e.g., --max-line-length=88 to match black
+        # args: ['--max-line-length=88']
+        additional_dependencies: ['radon'] # For McCabe complexity checks if desired
+-   repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0 # Use a recent version
+    hooks:
+    -   id: mypy
+        args: [--config-file=pyproject.toml, --ignore-missing-imports] # Ensure ignore-missing-imports is passed
+        # Mypy can be slow, so you might want to run it only on changed files or manually
+        # pass_filenames: false # if you want to run mypy on all files every time
+        additional_dependencies: ["types-requests", "types-PyYAML"] # Add if these are common untyped libs used
