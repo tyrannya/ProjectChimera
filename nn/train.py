@@ -105,7 +105,7 @@ if __name__ == "__main__":
         metric="loss",
         mode="min"
     )
-    best_config = analysis.get_best_config(metric="loss")
+    best_config = analysis.get_best_config(metric="loss", mode="min")
     model = train_tst(best_config, args.features, device, args.epochs)
     os.makedirs("nn", exist_ok=True)
     # Use an example input for tracing and export
