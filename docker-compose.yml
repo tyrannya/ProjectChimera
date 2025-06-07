@@ -19,7 +19,7 @@ services:
       - ./conf:/freqtrade/conf:ro
       - ./strategies:/freqtrade/user_data/strategies:ro
       - ./tools:/freqtrade/user_data/tools:ro
-    command: sleep infinity
+    command: trade
 
   # --- NN INFER (BentoML-сервис с нейросетью) -------------------
   nn_infer:
