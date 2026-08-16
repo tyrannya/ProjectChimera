@@ -1,87 +1,92 @@
-import os
-# import sys # sys is no longer used directly
+"""Download and validate historical OHLCV candles.
+
+    python -m tools.backfill --exchange binance --pair BTC/USDT \
+        --timeframe 1h --start 2023-01-01
+
+Writes validated candles to ``data/raw/<exchange>/<pair>_<timeframe>.parquet``
+plus a ``.meta.json`` sidecar with the validation report. Feature engineering is
+a separate step (``tools/build_features.py``) so that a re-run of the feature
+code does not require re-downloading the market data.
+"""
+
+from __future__ import annotations
+
 import argparse
+import json
 import logging
-from typing import Optional # Added import
-import pandas as pd
-import ccxt
-from nn import data_pipeline
+import sys
+from pathlib import Path
+
+from nn.data_pipeline import DataValidationError, download_ohlcv, validate_ohlcv
+
+logger = logging.getLogger(__name__)
 
 
-def main() -> None: # Added return type hint
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+def safe_name(pair: str) -> str:
+    return pair.replace("/", "_").replace(":", "_")
+
+
+def build_argparser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Download historical OHLCV candles.")
+    parser.add_argument("--exchange", required=True, help="ccxt exchange id, e.g. binance")
+    parser.add_argument("--pair", required=True, help="Trading pair, e.g. BTC/USDT")
+    parser.add_argument("--timeframe", required=True, help="Candle timeframe, e.g. 1h")
+    parser.add_argument("--start", required=True, help="Start date, YYYY-MM-DD")
+    parser.add_argument("--end", default=None, help="End date, YYYY-MM-DD (default: now)")
+    parser.add_argument("--out-dir", default="data/raw")
+    parser.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="Use the exchange's sandbox/testnet endpoint.",
     )
-    logger = logging.getLogger(__name__)  # Added logger instance
+    return parser
 
-    parser = argparse.ArgumentParser(
-        description="Download historical OHLCV data, enrich it, and create features."
-    )
-    parser.add_argument("exchange", type=str, help="Name of the exchange (e.g., 'binance').")
-    parser.add_argument("symbol", type=str, help="Trading symbol (e.g., 'BTC/USDT').")
-    parser.add_argument("start_date", type=str, help="Start date for data download (YYYY-MM-DD).")
-    parser.add_argument("tf", type=str, help="Timeframe for data (e.g., '1h', '4h', '1d').")
 
-    args = parser.parse_args()
-
-    exchange_name: str = args.exchange
-    symbol_str: str = args.symbol
-    start_date_str: str = args.start_date
-    timeframe: str = args.tf
-
-    safe_symbol: str = symbol_str.replace("/", "_")
-    raw_dir: str = f"data/raw/{exchange_name}/{safe_symbol}_{timeframe}"
-    os.makedirs(raw_dir, exist_ok=True)
-
-    # Initialize CCXT exchange instance
-    # TODO: Consider adding specific type hint for exchange instance if possible, e.g., ccxt.binance
-    # For now, ccxt.Exchange provides a general type.
-    try:
-        exchange_instance: ccxt.Exchange = getattr(ccxt, exchange_name)()
-    except AttributeError:
-        logger.error(f"Exchange '{exchange_name}' not found in ccxt library.")
-        return # Or sys.exit(1)
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    args = build_argparser().parse_args(argv)
 
     logger.info(
-        f"Downloading {exchange_name} {symbol_str} {timeframe} from {start_date_str}"
+        "Downloading %s %s %s from %s", args.exchange, args.pair, args.timeframe, args.start
     )
-    df: pd.DataFrame = data_pipeline.download_ohlcv(exchange_name, symbol_str, timeframe, start_date_str)
+    raw = download_ohlcv(
+        args.exchange,
+        args.pair,
+        args.timeframe,
+        args.start,
+        end_date=args.end,
+        sandbox=args.sandbox,
+    )
+    if raw.empty:
+        logger.error("Exchange returned no candles; nothing written.")
+        return 1
 
-    if df.empty:
-        logger.warning("Downloaded DataFrame is empty. Skipping further processing.")
-        return
+    try:
+        candles, report = validate_ohlcv(raw, args.timeframe)
+    except DataValidationError as exc:
+        logger.error("Downloaded data failed validation: %s", exc)
+        return 1
 
-    df = data_pipeline.add_funding_rate(df, exchange_instance, symbol_str)
+    logger.info("Validation report: %s", json.dumps(report.to_dict()))
 
-    glassnode_api_key: Optional[str] = os.environ.get("GLASSNODE_API_KEY")
-    if glassnode_api_key:
-        logger.info("GLASSNODE_API_KEY found, enriching with on-chain data.")
-        df = data_pipeline.enrich_onchain(df, glassnode_api_key)
-    else:
-        logger.info("GLASSNODE_API_KEY not found, skipping on-chain data enrichment.")
-
-    data_pipeline.save_delta(raw_dir, df)
-    logger.info(f"Raw data saved to {raw_dir}")
-
-    feat_dir: str = f"data/features/{exchange_name}/{safe_symbol}_{timeframe}"
-    os.makedirs(feat_dir, exist_ok=True)
-
-    features_df: pd.DataFrame = data_pipeline.make_features(df)
-    data_pipeline.save_delta(feat_dir, features_df)
-    logger.info(f"Features saved to {feat_dir}")
-
-    # Логирование пропусков
-    nan_cols: pd.Series = df.isna().sum() # Original df, not features_df, for missing source data
-    missing: pd.Series = nan_cols[nan_cols > 0]
-    if not missing.empty:
-        logger.warning(
-            "Columns with missing values after processing:"
-        )  # Replaced print with logger.warning
-        for col, count in missing.items():
-            logger.warning(f"  {col}: {count} missing values")
-    else:
-        logger.info("No missing values found in the processed data.")
+    out_dir = Path(args.out_dir) / args.exchange
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{safe_name(args.pair)}_{args.timeframe}.parquet"
+    candles.to_parquet(out_path, index=False)
+    out_path.with_suffix(".parquet.meta.json").write_text(
+        json.dumps(
+            {
+                "exchange": args.exchange,
+                "pair": args.pair,
+                "timeframe": args.timeframe,
+                "validation": report.to_dict(),
+            },
+            indent=2,
+        )
+    )
+    logger.info("Wrote %d candles to %s", len(candles), out_path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
