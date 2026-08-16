@@ -9,7 +9,7 @@
     "dry_run_wallet": 10000,
     "cancel_open_orders_on_exit": true,
     "trading_mode": "spot",
-    "timeframe": "1h",
+    "$comment_timeframe": "No 'timeframe' key on purpose. Freqtrade's config takes precedence over the strategy attribute, so setting it here would silently force every strategy onto the same timeframe regardless of what it declares (and of what its model was trained on). Each strategy sets its own.",
     "bot_name": "chimera",
     "initial_state": "running",
     "force_entry_enable": false,

@@ -292,3 +292,42 @@ def test_arb_mm_does_not_fake_a_spread(candles):
     strat = ArbMM(BASE_CONFIG)
     analyzed = strat.populate_indicators(candles.copy(), {"pair": "ETH/USDT"})
     assert analyzed["zscore"].isna().all()
+
+
+# --- real Freqtrade strategy resolution -------------------------------------
+@pytest.mark.parametrize("name", ["NNPredictorStrategy", "SwingSpot", "ScalpFutures", "ArbMM"])
+def test_strategies_load_through_freqtrades_own_resolver(name):
+    """The real integration point: Freqtrade must be able to load each class.
+
+    Catches things importing the module cannot — for example a `can_short`
+    strategy against a spot config, which Freqtrade refuses outright.
+    """
+    from pathlib import Path
+
+    from freqtrade.resolvers import StrategyResolver
+
+    from tools.run_bot import load_config, resolve_placeholders
+
+    root = Path(__file__).resolve().parents[1]
+    config = resolve_placeholders(load_config("binance", "test"), [])
+    config.update(
+        strategy=name,
+        runmode="dry_run",
+        user_data_dir=root / "user_data",
+        strategy_path=str(root / "strategies"),
+        datadir=root / "user_data" / "data",
+    )
+
+    strategy = StrategyResolver.load_strategy(config)
+    assert strategy.risk is not None, "every strategy must carry the risk engine"
+    assert strategy.stoploss < 0
+
+
+def test_base_config_does_not_override_strategy_timeframes():
+    """Freqtrade's config wins over the strategy attribute, so a `timeframe` in
+    base.json would silently force every strategy onto the same one."""
+    import json
+    from pathlib import Path
+
+    base = json.loads((Path(__file__).resolve().parents[1] / "conf" / "base.json").read_text())
+    assert "timeframe" not in base

@@ -97,7 +97,11 @@ jobs:
           for exchange in ("binance", "bybit", "okx"):
               for mode in ("test", "live"):
                   config = resolve_placeholders(load_config(exchange, mode), [])
-                  config.update(runmode="dry_run", stoploss=-0.05, minimal_roi={"0": 0.03})
+                  # StrategyResolver copies these off the strategy at load time.
+                  config.update(
+                      runmode="dry_run", stoploss=-0.05,
+                      minimal_roi={"0": 0.03}, timeframe="1h",
+                  )
                   validate_config_schema(config)
                   print(f"{exchange}.{mode}: valid (dry_run={config['dry_run']})")
           PY

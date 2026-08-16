@@ -33,9 +33,11 @@ def validated(exchange: str, mode: str) -> dict:
     config["strategy"] = "NNPredictorStrategy"
     config = resolve_placeholders(config, [])
     config["runmode"] = "dry_run"
-    # StrategyResolver copies these onto the config before Freqtrade validates.
+    # StrategyResolver copies these off the strategy onto the config before
+    # Freqtrade validates, so the configs themselves must not declare them.
     config["stoploss"] = NNPredictorStrategy.stoploss
     config["minimal_roi"] = NNPredictorStrategy.minimal_roi
+    config["timeframe"] = NNPredictorStrategy.timeframe
     validate_config_schema(config)
     return config
 

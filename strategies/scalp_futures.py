@@ -52,7 +52,12 @@ class ScalpFutures(RiskAwareStrategy):
     minimal_roi = {"0": 0.01}
     stoploss = -0.01
     startup_candle_count: int = 60
-    can_short = True
+    # False even though the idea is a two-sided scalper: Freqtrade refuses to
+    # load a can_short strategy against a spot config, and every config shipped
+    # here is spot. Leaving it True made the class unloadable rather than
+    # merely disabled. Set it back to True together with a futures config if
+    # the order-book work above is ever done.
+    can_short = False
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         close = dataframe["close"]
