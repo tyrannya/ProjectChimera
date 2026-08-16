@@ -1,159 +1,312 @@
+"""HTTP inference service.
+
+    uvicorn nn.infer_service:app --host 0.0.0.0 --port 3000
+
+Contract
+--------
+
+``POST /predict``::
+
+    {
+      "pair": "BTC/USDT",
+      "timeframe": "1h",
+      "timestamp": "2026-08-16T12:00:00Z",
+      "features": [[...], ...]          # (sequence_length, n_features), RAW
+    }
+
+    -> {
+      "model_version": "20260816T120000Z-a1b2c3",
+      "signal": "LONG",
+      "probabilities": {"SHORT": 0.08, "HOLD": 0.21, "LONG": 0.71},
+      "confidence": 0.71,
+      "decision_threshold": 0.55,
+      "served_at": "2026-08-16T12:00:00.123456+00:00"
+    }
+
+**The client sends raw, unscaled features.** Standardisation uses the scaler
+stored in the model's metadata and is applied here, so the strategy cannot
+apply the wrong scaler — or forget to.
+
+Status codes are meaningful: ``422`` for a body that does not parse, ``400``
+for a well-formed body whose matrix disagrees with the model's declared shape,
+``503`` when no model is loaded, ``500`` for an inference failure. A failure
+never returns a fabricated score.
+
+Why FastAPI and not BentoML
+---------------------------
+The previous service loaded its model at import time from the BentoML store,
+which made it impossible to import — and therefore to test — without a
+populated store, and added a third model-versioning system alongside MLflow and
+the on-disk artifacts. FastAPI and Pydantic are already in Freqtrade's own
+dependency tree, give schema validation and correct status codes for free, and
+let the whole contract be exercised by ``TestClient`` with a tiny model.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
 import time
-import traceback # Added
-import os # Added
-import sys # Added
-import bentoml
-from bentoml.io import NumpyNdarray, Text
-from bentoml.exceptions import InternalServerError, ServiceUnavailable # Added ServiceUnavailable
-import torch
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
 import numpy as np
+import torch
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
-# Add project root to sys.path to allow importing tools.telegram_notifier
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+from chimera import metrics
+from chimera.contracts import CLASS_ORDER, ModelMetadata, Signal, decide
+from chimera.notify import TelegramNotifier
+from nn.registry import DEFAULT_MODELS_DIR, load_model, resolve_current
 
-try:
-    from tools.telegram_notifier import TelegramNotifier
-except ImportError as e:
-    print(f"CRITICAL: Failed to import TelegramNotifier in nn/infer_service.py: {e}. Notifications will be disabled.")
-    TelegramNotifier = None
+logger = logging.getLogger(__name__)
 
-# model is loaded by BentoML, its type is typically Union[torch.ScriptModule, torch.nn.Module]
-# For simplicity, we can use a general type like 'Any' or a more specific one if known.
-# Let's assume model is a torch.ScriptModule as per bentoml.torchscript.load_model
-model: torch.ScriptModule = bentoml.torchscript.load_model("nn_predictor:prod")
-svc: bentoml.Service = bentoml.Service("nn_predictor_svc")
-
-notifier = None
-if TelegramNotifier:
-    try:
-        # Attempt to load .env file if python-dotenv is available for local dev
-        from dotenv import load_dotenv
-        dotenv_path = os.path.join(project_root, '.env') # .env in project root
-        if os.path.exists(dotenv_path):
-            load_dotenv(dotenv_path)
-            # svc.ctx.logger.info(f"InferService: Loaded .env from {dotenv_path}") # Requires svc to be fully init
-        # else:
-            # svc.ctx.logger.info(f"InferService: .env not found at {dotenv_path}")
-
-        notifier = TelegramNotifier()
-        # svc.ctx.logger.info("InferService: TelegramNotifier initialized successfully.") # svc.ctx.logger may not be ready here
-        print("InferService: TelegramNotifier initialized successfully.")
-    except ImportError:
-        # svc.ctx.logger.warning("InferService: python-dotenv not found. Cannot load .env. Relying on env vars for TelegramNotifier.")
-        print("InferService: python-dotenv not found. Cannot load .env. Relying on env vars for TelegramNotifier.")
-        try:
-            notifier = TelegramNotifier() # Try again, relying purely on env vars
-            print("InferService: TelegramNotifier initialized successfully (no dotenv).")
-        except ValueError as ve_no_dotenv:
-            print(f"InferService: Failed to initialize TelegramNotifier (dotenv not found, env vars likely missing): {ve_no_dotenv}")
-
-    except ValueError as e:
-        # svc.ctx.logger.warning(f"InferService: Failed to initialize TelegramNotifier: {e}. Service will run without Telegram notifications.")
-        print(f"InferService: Failed to initialize TelegramNotifier: {e}. Service will run without Telegram notifications.")
-    except Exception as e:
-        # svc.ctx.logger.error(f"InferService: Unexpected error during TelegramNotifier initialization: {e}")
-        print(f"InferService: Unexpected error during TelegramNotifier initialization: {e}")
-else:
-    print("InferService: TelegramNotifier class not available. Notifications disabled.")
+MAX_SEQUENCE_ROWS = 4096
 
 
-@svc.api(input=NumpyNdarray(), output=NumpyNdarray()) # Input is np.ndarray, output is np.ndarray
-async def predict(input_array: np.ndarray) -> np.ndarray:
-    start_time: float = time.monotonic()
-    try:
-        with torch.no_grad():
-            tensor: torch.Tensor = torch.from_numpy(input_array).float()
-            # Assuming the model might be on GPU, ensure tensor is moved to the model's device
-            # This is a good practice, though load_model might handle it for some runners.
-            # If model_device is known (e.g., "cuda" or "cpu"), use it.
-            # For now, let's assume model and tensor are on compatible devices or model handles it.
-            out: torch.Tensor = model(tensor)
+class PredictRequest(BaseModel):
+    """One prediction request. Extra fields are rejected, not ignored."""
 
-        output_numpy: np.ndarray = out.cpu().numpy()
-        latency_ms: float = (time.monotonic() - start_time) * 1000
-        svc.ctx.logger.info(f"Prediction successful. Latency: {latency_ms:.2f}ms")
-        return output_numpy
+    model_config = {"extra": "forbid"}
 
-    except Exception as e:
-        svc.ctx.logger.error(
-            f"Prediction error: {e}", exc_info=True
+    pair: str = Field(min_length=1, max_length=32)
+    timeframe: str = Field(min_length=2, max_length=8)
+    timestamp: datetime
+    features: list[list[float]] = Field(min_length=1)
+
+    @field_validator("features")
+    @classmethod
+    def _rectangular_and_finite(cls, value: list[list[float]]) -> list[list[float]]:
+        if len(value) > MAX_SEQUENCE_ROWS:
+            raise ValueError(f"at most {MAX_SEQUENCE_ROWS} rows allowed")
+        width = len(value[0])
+        if width == 0:
+            raise ValueError("feature rows must not be empty")
+        for i, row in enumerate(value):
+            if len(row) != width:
+                raise ValueError(f"row {i} has {len(row)} values, expected {width}")
+        array = np.asarray(value, dtype=np.float64)
+        if not np.isfinite(array).all():
+            raise ValueError("features must be finite (no NaN or inf)")
+        return value
+
+
+class PredictResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    model_version: str
+    signal: Signal
+    probabilities: dict[str, float]
+    confidence: float
+    decision_threshold: float
+    served_at: datetime
+
+
+class ModelHolder:
+    """Owns the loaded model. Kept off module scope so tests can inject one."""
+
+    def __init__(self) -> None:
+        self.model: Any = None
+        self.metadata: ModelMetadata | None = None
+        self._mean: np.ndarray | None = None
+        self._std: np.ndarray | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.model is not None and self.metadata is not None
+
+    def load(self, model_dir: str | Path) -> None:
+        model, metadata = load_model(model_dir)
+        self.model = model
+        self.metadata = metadata
+        self._mean = np.asarray(metadata.scaler_mean, dtype=np.float64)
+        self._std = np.asarray(metadata.scaler_std, dtype=np.float64)
+        if self._mean.shape != (metadata.n_features,) or self._std.shape != (
+            metadata.n_features,
+        ):
+            raise ValueError("scaler parameters do not match the feature count")
+        metrics.MODEL_INFO.labels(version=metadata.model_version).set(1)
+        logger.info(
+            "Loaded model %s: %d features, sequence length %d, threshold %.2f",
+            metadata.model_version,
+            metadata.n_features,
+            metadata.sequence_length,
+            metadata.decision_threshold,
         )
-        # Calculate latency even in case of error, if meaningful
-        latency_ms_error: float = (time.monotonic() - start_time) * 1000
-        svc.ctx.logger.info(
-            f"Prediction failed. Latency until error: {latency_ms_error:.2f}ms"
-        )
-        if notifier:
-            detailed_error = traceback.format_exc()
-            notifier.send_error(f"Критический сбой в nn/infer_service.py (predict endpoint):\n{detailed_error}")
-        raise InternalServerError(f"Prediction failed: {str(e)}")
 
-
-@svc.api(input=None, output=Text(), route="/livez") # Output is str
-async def livez() -> str:
-    return "ok"
-
-@svc.api(input=None, output=Text(), route="/readyz")
-async def readyz() -> str:
-    # 1. Model Loaded Check
-    # The model is loaded globally when the script starts.
-    # If `bentoml.torchscript.load_model` failed, it would raise an error at startup.
-    # So, if the service is running, the model object should exist.
-    # We can add an explicit check for None, though it's unlikely to be None if service started.
-    if model is None:
-        error_msg = "Readiness check failed: Model is not loaded (global model object is None)."
-        svc.ctx.logger.error(error_msg)
-        if notifier:
-            notifier.send_error(f"Критический сбой в nn/infer_service.py (readyz - model not loaded):\n{error_msg}")
-        raise ServiceUnavailable("Model not loaded")
-
-    # Check if the model is a torch.ScriptModule as expected (optional, but good for sanity)
-    if not isinstance(model, torch.jit.ScriptModule):
-        error_msg = f"Readiness check failed: Model is not a torch.jit.ScriptModule, type is {type(model)}."
-        svc.ctx.logger.error(error_msg)
-        if notifier:
-            notifier.send_error(f"Критический сбой в nn/infer_service.py (readyz - model type mismatch):\n{error_msg}")
-        raise ServiceUnavailable("Model is of unexpected type")
-
-    # 2. Model Inference Sanity Check
-    try:
-        # Determine device for the dummy tensor based on model's device if possible,
-        # or default to CPU/CUDA.
-        # A simple way: check if any parameters are on CUDA.
-        device_str = "cpu"
-        if next(model.parameters(), None) is not None and next(model.parameters()).is_cuda:
-            device_str = "cuda"
-
-        # If model has no parameters, or to be more robust, try to use model's device directly
-        # This part can be tricky if model is not yet moved to a device or device is unknown.
-        # For now, let's assume CPU or check CUDA availability.
-        if torch.cuda.is_available():
-             # Check if model is on CUDA. If model.device exists, use it.
-             # This is a heuristic; a more robust way is needed if model device is dynamic.
-             try:
-                 if next(model.parameters()).is_cuda:
-                     device_str = "cuda"
-             except StopIteration: # Model has no parameters
-                 pass # Keep device_str as "cpu" or make a guess
-
-        device = torch.device(device_str)
-
-        # Dimensions: batch_size=1, seq_len=100, num_features=5
-        # Based on nn/train.py: X.append(df.iloc[i - window:i][['close', 'return_1', 'ema_9', 'ema_21', 'volume']].values)
-        # So, num_features = 5. seq_len (window) = 100.
-        dummy_input = torch.randn(1, 100, 5, device=device).float()
-
+    def infer(self, features: np.ndarray) -> np.ndarray:
+        """Scale, run the model, return probabilities in ``CLASS_ORDER``."""
+        assert self.metadata is not None and self._mean is not None
+        scaled = ((features - self._mean) / self._std).astype(np.float32)
         with torch.no_grad():
-            model(dummy_input) # Perform a forward pass
-        svc.ctx.logger.info("Readiness check: Model inference sanity check passed.")
+            logits = self.model(torch.from_numpy(scaled[None, ...]))
+            proba = torch.softmax(logits.float(), dim=-1)[0].numpy()
+        return proba.astype(np.float64)
 
-    except Exception as e:
-        svc.ctx.logger.error(f"Readiness check failed: Model inference sanity check error: {e}", exc_info=True)
-        if notifier:
-            detailed_error = traceback.format_exc()
-            notifier.send_error(f"Критический сбой в nn/infer_service.py (readyz - inference check):\n{detailed_error}")
-        raise ServiceUnavailable(f"Model inference check failed: {str(e)}")
 
-    return "ok"
+holder = ModelHolder()
+notifier = TelegramNotifier()
+
+
+def _model_dir() -> Path:
+    """Where to load from: an explicit override, else the promoted model."""
+    override = os.environ.get("CHIMERA_MODEL_DIR")
+    if override:
+        return Path(override)
+    return resolve_current(os.environ.get("CHIMERA_MODELS_DIR", str(DEFAULT_MODELS_DIR)))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load the model at startup, but do not crash the process if it is absent.
+
+    A service that cannot load a model still starts and answers ``/livez``;
+    ``/readyz`` reports it as not ready, so an orchestrator can distinguish
+    "starting" from "broken" instead of watching a container crash-loop.
+    """
+    metrics.SERVICE_UP.labels(component="inference").set(0)
+    try:
+        holder.load(_model_dir())
+        metrics.SERVICE_UP.labels(component="inference").set(1)
+        notifier.send_event(
+            "Inference service started", f"model {holder.metadata.model_version}"
+        )
+    except Exception as exc:  # noqa: BLE001 - reported through /readyz
+        logger.error("Could not load a model at startup: %s", exc)
+        notifier.send_error("Inference service started without a model", str(exc))
+    yield
+    metrics.SERVICE_UP.labels(component="inference").set(0)
+    notifier.send_event("Inference service stopping")
+
+
+app = FastAPI(title="ProjectChimera inference", version="1.0.0", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """Return a clean 422 that does not echo the rejected input back.
+
+    FastAPI's default handler includes the offending value under ``input``.
+    That breaks twice: a body containing the non-standard JSON literal ``NaN``
+    parses fine on the way in but cannot be re-serialised on the way out, so
+    the service answers a malformed request with an unhandled encoder crash
+    instead of a 422; and echoing a whole feature matrix back makes error
+    responses enormous. Only the location and the message are returned.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": [
+                {"loc": [str(part) for part in err.get("loc", ())], "msg": err.get("msg", "")}
+                for err in exc.errors()
+            ]
+        },
+    )
+
+
+@app.get("/livez")
+async def livez() -> dict[str, str]:
+    """Liveness: the process is running. Says nothing about the model."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(response: Response) -> dict[str, Any]:
+    """Readiness: model loaded, metadata present, and a dummy inference passes.
+
+    Deliberately silent — no notification is sent from here. A health endpoint
+    is polled continuously, and alerting from it produces a message storm the
+    moment anything wobbles. Startup and shutdown alert; probes do not.
+    """
+    if not holder.ready:
+        response.status_code = 503
+        return {"status": "not ready", "reason": "no model loaded"}
+
+    metadata = holder.metadata
+    assert metadata is not None
+    try:
+        dummy = np.zeros((metadata.sequence_length, metadata.n_features), dtype=np.float64)
+        proba = holder.infer(dummy)
+        if proba.shape != (len(CLASS_ORDER),) or not np.isfinite(proba).all():
+            raise ValueError(f"dummy inference returned {proba!r}")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Readiness check failed: %s", exc)
+        response.status_code = 503
+        return {"status": "not ready", "reason": f"dummy inference failed: {exc}"}
+
+    return {
+        "status": "ok",
+        "model_version": metadata.model_version,
+        "sequence_length": metadata.sequence_length,
+        "n_features": metadata.n_features,
+        "decision_threshold": metadata.decision_threshold,
+        # The client builds its feature window from these, so a strategy can
+        # never send features computed with different windows than the model
+        # was trained on.
+        "feature_names": list(metadata.feature_names),
+        "feature_spec": metadata.feature_spec.to_dict(),
+    }
+
+
+@app.get("/metrics")
+async def prometheus_metrics() -> Response:
+    if not metrics.PROMETHEUS_AVAILABLE:
+        raise HTTPException(status_code=501, detail="prometheus_client is not installed")
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.post("/predict", response_model=PredictResponse)
+async def predict(request: PredictRequest) -> PredictResponse:
+    start = time.monotonic()
+
+    if not holder.ready:
+        metrics.mark_inference_failure("no_model")
+        raise HTTPException(status_code=503, detail="no model loaded")
+
+    metadata = holder.metadata
+    assert metadata is not None
+
+    features = np.asarray(request.features, dtype=np.float64)
+    expected = (metadata.sequence_length, metadata.n_features)
+    if features.shape != expected:
+        metrics.mark_inference_failure("bad_shape")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"features must have shape {expected} "
+                f"(sequence_length, n_features), got {features.shape}. "
+                f"Expected feature order: {metadata.feature_names}"
+            ),
+        )
+
+    try:
+        proba = holder.infer(features)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Inference failed for %s", request.pair)
+        metrics.mark_inference_failure("inference_error")
+        notifier.send_error("Inference failure", f"{type(exc).__name__}: {exc}")
+        # No fabricated score: the caller must be able to tell failure from a
+        # confident HOLD, because those two mean different things to the risk layer.
+        raise HTTPException(status_code=500, detail="inference failed") from exc
+
+    probabilities = {cls.value: round(float(p), 6) for cls, p in zip(CLASS_ORDER, proba)}
+    signal = decide(probabilities, metadata.decision_threshold)
+    confidence = float(max(probabilities.values()))
+
+    metrics.mark_inference_success(signal.value, confidence, time.monotonic() - start)
+
+    return PredictResponse(
+        model_version=metadata.model_version,
+        signal=signal,
+        probabilities=probabilities,
+        confidence=confidence,
+        decision_threshold=metadata.decision_threshold,
+        served_at=datetime.now(timezone.utc),
+    )

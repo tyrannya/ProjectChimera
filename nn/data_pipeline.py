@@ -1,163 +1,369 @@
-import os # Keep os, it might be used implicitly or in other parts not shown
-from typing import List, Dict, Any, Optional # Added imports
+"""Market data ingestion, validation and dataset construction.
+
+The contract this module upholds, in order:
+
+1. raw candles are downloaded with UTC timestamps;
+2. :func:`validate_ohlcv` proves the frame is well-formed before anything reads
+   it — sorted, unique, UTC, internally consistent OHLC, non-negative volume;
+3. :func:`build_dataset` joins causal features to a cost-aware label and drops
+   every row that cannot be honestly labelled;
+4. the result is written to Parquet with a metadata sidecar recording exactly
+   which specs produced it.
+
+Downloading needs ``ccxt``; everything else needs only pandas, so validation
+and dataset construction are testable without a network stack.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Mapping
+
+import numpy as np
 import pandas as pd
-import ccxt
-import requests
-from deltalake import write_deltalake
-import ta
+
+from chimera.contracts import HOLD_IDX, LONG_IDX, SHORT_IDX, TargetSpec
+from chimera.features import FeatureSpec, compute_features, feature_columns
+
+logger = logging.getLogger(__name__)
+
+OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
+REQUIRED_COLUMNS = ["date", *OHLCV_COLUMNS]
+
+_TIMEFRAME_MINUTES = {"m": 1, "h": 60, "d": 1440, "w": 10080}
+
+
+class DataValidationError(ValueError):
+    """Raised when a candle frame cannot be trusted."""
+
+
+def timeframe_to_minutes(timeframe: str) -> int:
+    """Convert a Freqtrade/ccxt timeframe string such as ``4h`` to minutes."""
+    timeframe = timeframe.strip().lower()
+    if len(timeframe) < 2 or timeframe[-1] not in _TIMEFRAME_MINUTES:
+        raise ValueError(f"Unsupported timeframe: {timeframe!r}")
+    try:
+        count = int(timeframe[:-1])
+    except ValueError as exc:
+        raise ValueError(f"Unsupported timeframe: {timeframe!r}") from exc
+    if count <= 0:
+        raise ValueError(f"Timeframe must be positive: {timeframe!r}")
+    return count * _TIMEFRAME_MINUTES[timeframe[-1]]
+
+
+@dataclass
+class ValidationReport:
+    """What :func:`validate_ohlcv` found. Logged, and stored with the dataset."""
+
+    rows_in: int = 0
+    rows_out: int = 0
+    duplicates_removed: int = 0
+    reordered: bool = False
+    missing_candles: int = 0
+    gap_count: int = 0
+    zero_volume_rows: int = 0
+    nan_rows_dropped: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def validate_ohlcv(
+    df: pd.DataFrame,
+    timeframe: str | None = None,
+    *,
+    drop_nan: bool = True,
+) -> tuple[pd.DataFrame, ValidationReport]:
+    """Normalise and check a candle frame.
+
+    Returns the cleaned frame and a report. Raises :class:`DataValidationError`
+    for problems that cannot be repaired without inventing data — a missing
+    column, a non-positive price, or a high/low that contradicts the open/close.
+
+    Repairable problems (unsorted rows, duplicate timestamps, naive datetimes)
+    are fixed and counted. Missing candles are *reported, never filled*:
+    forward-filling a gap fabricates market data that a backtest would then
+    trade on.
+    """
+    report = ValidationReport(rows_in=len(df))
+
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise DataValidationError(f"missing required columns: {missing}")
+
+    out = df.loc[:, REQUIRED_COLUMNS].copy()
+
+    # --- timestamps: UTC, unique, monotonic ---------------------------
+    out["date"] = pd.to_datetime(out["date"], utc=True)
+    if out["date"].isna().any():
+        raise DataValidationError("unparseable timestamps in 'date'")
+
+    before = len(out)
+    out = out.drop_duplicates(subset="date", keep="last")
+    report.duplicates_removed = before - len(out)
+
+    if not out["date"].is_monotonic_increasing:
+        report.reordered = True
+        out = out.sort_values("date")
+    out = out.reset_index(drop=True)
+
+    # --- numeric sanity -----------------------------------------------
+    for col in OHLCV_COLUMNS:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    if drop_nan:
+        before = len(out)
+        out = out.dropna(subset=OHLCV_COLUMNS).reset_index(drop=True)
+        report.nan_rows_dropped = before - len(out)
+
+    if out.empty:
+        report.rows_out = 0
+        return out, report
+
+    prices = out[["open", "high", "low", "close"]]
+    if (prices <= 0).to_numpy().any():
+        raise DataValidationError("non-positive price found in OHLC")
+    if (out["volume"] < 0).any():
+        raise DataValidationError("negative volume found")
+
+    body_high = out[["open", "close"]].max(axis=1)
+    body_low = out[["open", "close"]].min(axis=1)
+    if (out["high"] < body_high - 1e-9).any():
+        raise DataValidationError("high is below max(open, close) on some candles")
+    if (out["low"] > body_low + 1e-9).any():
+        raise DataValidationError("low is above min(open, close) on some candles")
+    if (out["high"] < out["low"]).any():
+        raise DataValidationError("high is below low on some candles")
+
+    report.zero_volume_rows = int((out["volume"] == 0).sum())
+
+    # --- gaps ----------------------------------------------------------
+    if timeframe is not None and len(out) > 1:
+        step = pd.Timedelta(minutes=timeframe_to_minutes(timeframe))
+        deltas = out["date"].diff().dropna()
+        gaps = deltas[deltas > step]
+        report.gap_count = int(len(gaps))
+        report.missing_candles = int(((gaps / step) - 1).round().sum())
+        if report.gap_count:
+            logger.warning(
+                "%d gaps in %s data, %d candles missing (not filled)",
+                report.gap_count,
+                timeframe,
+                report.missing_candles,
+            )
+
+    report.rows_out = len(out)
+    if report.zero_volume_rows:
+        logger.warning("%d zero-volume candles retained", report.zero_volume_rows)
+    return out, report
+
+
+def compute_future_return(close: pd.Series, horizon: int) -> pd.Series:
+    """Return over the next ``horizon`` candles, aligned to the *current* row.
+
+    ``shift(-horizon)`` looks forward on purpose — this is the label, not a
+    feature. The last ``horizon`` rows become NaN and are dropped by
+    :func:`build_dataset`, which is what keeps the forward look out of the
+    training inputs.
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1")
+    return close.shift(-horizon) / close - 1.0
+
+
+def compute_target(close: pd.Series, spec: TargetSpec) -> pd.Series:
+    """Cost-aware SHORT/HOLD/LONG labels. See :class:`TargetSpec`."""
+    future_return = compute_future_return(close, spec.horizon)
+    threshold = spec.cost_threshold
+
+    labels = pd.Series(np.nan, index=close.index, dtype="float64")
+    known = future_return.notna()
+    labels[known & (future_return > threshold)] = LONG_IDX
+    labels[known & (future_return < -threshold)] = SHORT_IDX
+    labels[known & (future_return.abs() <= threshold)] = HOLD_IDX
+    return labels
+
+
+@dataclass
+class DatasetMetadata:
+    """Provenance for a built dataset, written beside the Parquet file."""
+
+    exchange: str = ""
+    pair: str = ""
+    timeframe: str = ""
+    rows: int = 0
+    start: str = ""
+    end: str = ""
+    feature_names: list[str] = field(default_factory=feature_columns)
+    feature_spec: dict[str, int] = field(default_factory=lambda: FeatureSpec().to_dict())
+    target_spec: dict[str, Any] = field(default_factory=lambda: TargetSpec().to_dict())
+    class_balance: dict[str, int] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DatasetMetadata":
+        fields = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in data.items() if k in fields})
+
+
+def build_dataset(
+    ohlcv: pd.DataFrame,
+    feature_spec: FeatureSpec | None = None,
+    target_spec: TargetSpec | None = None,
+    *,
+    exchange: str = "",
+    pair: str = "",
+    timeframe: str = "",
+    validation: Mapping[str, Any] | None = None,
+) -> tuple[pd.DataFrame, DatasetMetadata]:
+    """Join causal features to cost-aware labels.
+
+    Three trims happen here, and each removes rows that would otherwise be a
+    lie:
+
+    * the first ``feature_spec.warmup`` rows, where indicators have not
+      converged;
+    * any row with a NaN feature;
+    * the last ``target_spec.horizon`` rows, whose future return is unknowable.
+    """
+    feature_spec = feature_spec or FeatureSpec()
+    target_spec = target_spec or TargetSpec()
+
+    if ohlcv.empty:
+        raise DataValidationError("cannot build a dataset from an empty frame")
+
+    features = compute_features(ohlcv, feature_spec)
+    target = compute_target(ohlcv["close"], target_spec)
+    future_return = compute_future_return(ohlcv["close"], target_spec.horizon)
+
+    frame = pd.concat(
+        [
+            ohlcv[["date", "close"]].reset_index(drop=True),
+            features.reset_index(drop=True),
+            future_return.rename("future_return").reset_index(drop=True),
+            target.rename("target").reset_index(drop=True),
+        ],
+        axis=1,
+    )
+
+    warmup = min(feature_spec.warmup, len(frame))
+    frame = frame.iloc[warmup:]
+    frame = frame.dropna().reset_index(drop=True)
+    frame["target"] = frame["target"].astype("int64")
+
+    if frame.empty:
+        raise DataValidationError(
+            f"no rows survived warm-up ({feature_spec.warmup}) and horizon "
+            f"({target_spec.horizon}); supply a longer history"
+        )
+
+    counts = frame["target"].value_counts().to_dict()
+    metadata = DatasetMetadata(
+        exchange=exchange,
+        pair=pair,
+        timeframe=timeframe,
+        rows=len(frame),
+        start=frame["date"].iloc[0].isoformat(),
+        end=frame["date"].iloc[-1].isoformat(),
+        feature_names=feature_columns(),
+        feature_spec=feature_spec.to_dict(),
+        target_spec=target_spec.to_dict(),
+        class_balance={
+            "SHORT": int(counts.get(SHORT_IDX, 0)),
+            "HOLD": int(counts.get(HOLD_IDX, 0)),
+            "LONG": int(counts.get(LONG_IDX, 0)),
+        },
+        validation=dict(validation or {}),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return frame, metadata
+
+
+def save_dataset(path: str | Path, frame: pd.DataFrame, metadata: DatasetMetadata) -> Path:
+    """Write ``frame`` to Parquet and ``metadata`` to ``<path>.meta.json``."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(path, index=False)
+    path.with_suffix(path.suffix + ".meta.json").write_text(
+        json.dumps(metadata.to_dict(), indent=2)
+    )
+    logger.info("Wrote %d rows to %s", len(frame), path)
+    return path
+
+
+def load_dataset(path: str | Path) -> tuple[pd.DataFrame, DatasetMetadata]:
+    """Read a dataset and its sidecar. Missing sidecar yields empty metadata."""
+    path = Path(path)
+    frame = pd.read_parquet(path)
+    meta_path = path.with_suffix(path.suffix + ".meta.json")
+    if meta_path.exists():
+        metadata = DatasetMetadata.from_dict(json.loads(meta_path.read_text()))
+    else:
+        logger.warning("No metadata sidecar next to %s", path)
+        metadata = DatasetMetadata()
+    return frame, metadata
 
 
 def download_ohlcv(
-    exchange_name: str, symbol: str, tf: str, start_date: str, sandbox: bool = False
+    exchange_name: str,
+    symbol: str,
+    timeframe: str,
+    start_date: str,
+    *,
+    end_date: str | None = None,
+    sandbox: bool = False,
+    limit: int = 1000,
+    max_batches: int = 10_000,
 ) -> pd.DataFrame:
-    ex: ccxt.Exchange = getattr(ccxt, exchange_name)()
-    if sandbox and hasattr(ex, "set_sandbox_mode"):
-        ex.set_sandbox_mode(True) # type: ignore # set_sandbox_mode might not be on all exchanges
+    """Page through an exchange's OHLCV endpoint via ccxt.
 
-    since: int = int(pd.Timestamp(start_date).timestamp() * 1000)
-    all_ohlcv: List[List[Any]] = [] # To store batches of OHLCV data
-    limit: int = 1000
+    Returns a frame with a UTC ``date`` column plus OHLCV. Not validated here —
+    callers pass the result to :func:`validate_ohlcv`.
+    """
+    import ccxt
 
-    while True:
-        # Type of batch can be List[List[Union[int, float]]]
-        # but List[Any] is simpler for now as ccxt types can be complex
-        batch: List[Any] = ex.fetch_ohlcv(symbol, tf, since=since, limit=limit)
+    if not hasattr(ccxt, exchange_name):
+        raise ValueError(f"Unknown exchange for ccxt: {exchange_name!r}")
+    exchange = getattr(ccxt, exchange_name)({"enableRateLimit": True})
+    if sandbox:
+        if not hasattr(exchange, "set_sandbox_mode"):
+            raise ValueError(f"{exchange_name} does not support sandbox mode")
+        exchange.set_sandbox_mode(True)
+
+    since = int(pd.Timestamp(start_date, tz="UTC").timestamp() * 1000)
+    until = (
+        int(pd.Timestamp(end_date, tz="UTC").timestamp() * 1000)
+        if end_date
+        else int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
+    )
+    step_ms = timeframe_to_minutes(timeframe) * 60_000
+
+    rows: list[list[Any]] = []
+    for _ in range(max_batches):
+        batch = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
         if not batch:
             break
-        all_ohlcv.extend(batch)
-        since = batch[-1][0] + 1 # Assuming timestamp is the first element
+        rows.extend(batch)
+        next_since = batch[-1][0] + step_ms
+        if next_since <= since or next_since >= until:
+            break
+        since = next_since
         if len(batch) < limit:
             break
-
-    if not all_ohlcv:
-        # Return empty DataFrame with expected columns if no data
-        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "datetime"])
-
-    df: pd.DataFrame = pd.DataFrame(
-        all_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
-    )
-    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
-
-    # Check for gaps, ensure ex.parse_timeframe returns an int
-    tf_ms_obj: Optional[int] = ex.parse_timeframe(tf)
-    if tf_ms_obj is None:
-        # Handle case where timeframe parsing fails, though unlikely for valid tfs
-        # Or raise an error: raise ValueError(f"Invalid timeframe: {tf}")
-        print(f"Warning: Could not parse timeframe {tf}, gap check skipped.")
     else:
-        tf_ms: int = tf_ms_obj * 1000
-        gaps: pd.Series = df["timestamp"].diff() > tf_ms
-        if gaps.any():
-            print("Warning: gaps found in OHLCV data") # Consider logging
+        logger.warning("Stopped after %d batches; data may be incomplete", max_batches)
 
-    if (df["volume"] == 0).any():
-        print("Warning: zero-volume bars detected") # Consider logging
-    return df
+    if not rows:
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-
-def enrich_onchain(
-    df: pd.DataFrame, glassnode_api_key: str, asset: str = "BTC"
-) -> pd.DataFrame:
-    if df.empty: # Handle empty input DataFrame
-        df["active_addresses"] = None
-        return df
-
-    url: str = f"https://api.glassnode.com/v1/metrics/addresses/active_count"
-    params: Dict[str, Any] = {
-        "a": asset,
-        "api_key": glassnode_api_key,
-        "s": int(df["timestamp"].min() // 1000), # Ensure df['timestamp'] is not empty
-        "u": int(df["timestamp"].max() // 1000), # Ensure df['timestamp'] is not empty
-        "i": "24h",
-    }
-
-    try:
-        resp: requests.Response = requests.get(url, params=params, timeout=10) # Added timeout
-        if resp.status_code == 200:
-            data: List[Dict[str, Any]] = resp.json()
-            if not data: # Handle empty response from Glassnode
-                df["active_addresses"] = None
-                return df
-            gdf: pd.DataFrame = pd.DataFrame(data)
-            gdf["timestamp"] = gdf["t"] * 1000
-            gdf = gdf[["timestamp", "v"]]
-            gdf.rename(columns={"v": "active_addresses"}, inplace=True)
-            df = pd.merge(df, gdf, on="timestamp", how="left") # Use pd.merge for clarity
-        else:
-            print(f"Warning: Glassnode API request failed with status {resp.status_code}: {resp.text}") # Consider logging
-            df["active_addresses"] = None
-    except requests.exceptions.RequestException as e:
-        print(f"Warning: Glassnode API request failed: {e}") # Consider logging
-        df["active_addresses"] = None
-    return df
-
-
-def add_funding_rate(df: pd.DataFrame, ex: ccxt.Exchange, symbol: str) -> pd.DataFrame:
-    if df.empty: # Handle empty input DataFrame
-        df["funding_rate"] = None
-        return df
-
-    fetch_funding_history_method: Optional[callable] = getattr(ex, "fetch_funding_rate_history", None)
-
-    if not fetch_funding_history_method:
-        df["funding_rate"] = None
-        return df
-
-    try:
-        # Assuming timestamp is present and not empty
-        funding_rates_data: List[Dict[str, Any]] = fetch_funding_history_method(
-            symbol, since=int(df["timestamp"].min()), limit=len(df)
-        )
-        if not funding_rates_data: # Handle empty response
-            df["funding_rate"] = None
-            return df
-
-        fr_df: pd.DataFrame = pd.DataFrame(funding_rates_data)
-        if "fundingRate" in fr_df.columns:
-            fr_df = fr_df[["timestamp", "fundingRate"]]
-            fr_df.rename(columns={"fundingRate": "funding_rate"}, inplace=True)
-            df = pd.merge(df, fr_df, on="timestamp", how="left") # Use pd.merge
-        else:
-            df["funding_rate"] = None
-    except Exception as e: # Catch specific exceptions if possible
-        print(f"Warning: Could not fetch or process funding rates: {e}") # Consider logging
-        df["funding_rate"] = None
-    return df
-
-
-def make_features(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty or 'close' not in df.columns or df['close'].isnull().all():
-        # Return empty DataFrame with expected feature columns if input is unsuitable
-        # Or define expected columns explicitly
-        return pd.DataFrame()
-
-    features: pd.DataFrame = pd.DataFrame(index=df.index)
-    features["close"] = df["close"]
-
-    # Ensure input series for TA functions are not all NaN, or handle potential errors
-    if not df["close"].isnull().all():
-        features["sma_20"] = ta.trend.sma_indicator(df["close"], window=20)
-        features["ema_50"] = ta.trend.ema_indicator(df["close"], window=50)
-        features["rsi"] = ta.momentum.rsi(df["close"], window=14)
-        macd_series: Optional[pd.Series] = ta.trend.macd_diff(df["close"])
-        features["macd"] = macd_series if macd_series is not None else pd.NA
-    else:
-        features["sma_20"] = pd.NA
-        features["ema_50"] = pd.NA
-        features["rsi"] = pd.NA
-        features["macd"] = pd.NA
-
-    features["return_1"] = df["close"].pct_change(1)
-    features["volume"] = df["volume"]
-
-    if "active_addresses" in df.columns:
-        features["active_addresses"] = df["active_addresses"]
-    if "funding_rate" in df.columns:
-        features["funding_rate"] = df["funding_rate"]
-
-    features = features.dropna() # Consider how NaNs from pct_change(1) or TA on short series are handled
-    return features
-
-
-def save_delta(path: str, df: pd.DataFrame) -> None:
-    write_deltalake(path, df, mode="append", overwrite_schema=True)
+    frame = pd.DataFrame(rows, columns=["timestamp", *OHLCV_COLUMNS])
+    frame["date"] = pd.to_datetime(frame["timestamp"], unit="ms", utc=True)
+    return frame[REQUIRED_COLUMNS]
