@@ -113,24 +113,33 @@ rm user_data/risk_state.json
 
 ## What has been verified, and what has not
 
-Verified locally, in this environment, without credentials or exchange access:
+Verified locally, without credentials or exchange access:
 
 - every module compiles and imports;
 - the full test suite passes against real Freqtrade, torch, pandas and FastAPI;
 - `conf/*.json` validate against Freqtrade's own JSON schema;
+- all four strategies load through Freqtrade's `StrategyResolver`, not just as
+  Python modules;
 - the live-trading gate refuses a live config and exits 2;
 - `docker compose config` parses;
 - the end-to-end smoke path runs: synthetic candles → features → training →
   artifact → reload → service → prediction → strategy interpretation → risk
   decision;
-- strategies import, instantiate against a real `IStrategy`, and produce the
-  expected signals for LONG/HOLD/SHORT and for every failure mode.
+- strategies produce the expected signals for LONG/HOLD/SHORT and for every
+  failure mode.
 
-**Not** verified here, and requiring your environment:
+Verified in CI (the `Docker build smoke` job, which is skipped on pull-request
+events and must be run via `workflow_dispatch`):
+
+- both images build from a clean checkout — `Dockerfile` and
+  `nn/Dockerfile.nn_infer`.
+
+**Not** verified anywhere yet, and requiring your environment:
 
 - a real dry-run session against a live exchange feed (needs outbound network to
   an exchange);
-- Docker image builds (the build needs registry access this environment lacks);
+- running the built images — they compile and install, but no container has been
+  started and exercised end to end;
 - Grafana rendering the provisioned dashboards against live Prometheus data;
 - Telegram delivery (needs a bot token);
 - anything about profitability, on any data.
