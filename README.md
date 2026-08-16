@@ -1,262 +1,281 @@
-# Crypto Trading Bot
+# ProjectChimera
 
-Минималистичный каркас для торгового бота, поддерживающего rule-based стратегии и нейросетевые модули. Инфраструктура включает Prometheus и Grafana для мониторинга, а также готова к быстрой разработке и тестированию.
+A research and **dry-run** platform for machine-learning crypto trading, built on
+[Freqtrade](https://www.freqtrade.io/) as the execution engine.
 
-## Архитектура
+It exists to make one chain reproducible and safe to run end to end:
 
-Ниже представлена общая схема работы бота и взаимодействия его основных компонентов.
-
-```mermaid
-graph LR
-    subgraph TradingEngine
-        Freqtrade["Freqtrade Bot"]
-        RiskManager["Risk Manager"]
-        Strategies["Rule-based Strategies (scalp, swing, arb)"]
-        NNStrategy["NN Predictor Strategy"]
-    end
-    subgraph NNWorkspace
-        DataPipeline["Data Pipeline"]
-        ModelDef["MTST Model"]
-        Train["Train + MLflow"]
-        InferService["BentoML Inference"]
-    end
-    subgraph Observability
-        Prom["Prometheus"]
-        Grafana["Grafana Dashboards"]
-        Alertman["Alertmanager"]
-    end
-    User["Trader / Admin"] -->|CLI| StartScript["tools/start.sh"]
-    StartScript --> Freqtrade
-    Freqtrade --> Strategies
-    Freqtrade --> RiskManager
-    Freqtrade --> NNStrategy
-    NNStrategy --> InferService
-    InferService --> ModelDef
-    Train --> ModelDef
-    DataPipeline --> Train
-    Prom --> Grafana
-    Grafana --> User
-    Prom --> Alertman
-    Alertman --> User
+```
+market data → validated dataset → features → leakage-safe training
+   → versioned model → inference service → Freqtrade strategy
+   → central risk controls → dry-run trading → metrics and alerts
 ```
 
-Основные компоненты системы:
+> **Historical backtest performance does not guarantee future profitability.**
+>
+> Nothing here is a claim that this system makes money, and nothing in it has
+> been tuned to make a backtest look good. The included synthetic data is for
+> exercising the pipeline, not for measuring it. Trading cryptocurrency risks
+> the loss of your capital.
 
-*   **TradingEngine**: Отвечает за исполнение торговых операций.
-    *   **Freqtrade Bot**: Основной торговый движок.
-    *   **Risk Manager**: Модуль управления рисками.
-    *   **Rule-based Strategies**: Традиционные стратегии, основанные на правилах (например, scalp, swing, arbitrage).
-    *   **NN Predictor Strategy**: Стратегия, использующая предсказания нейронной сети.
-*   **NNWorkspace**: Среда для разработки, обучения и развертывания моделей машинного обучения.
-    *   **Data Pipeline**: Конвейер для сбора, обработки и подготовки данных для обучения моделей.
-    *   **MTST Model**: Определение (архитектура) модели нейронной сети (например, многомерные временные ряды).
-    *   **Train + MLflow**: Процесс обучения модели с логированием экспериментов и артефактов в MLflow.
-    *   **BentoML Inference**: Сервис для развертывания обученной модели и предоставления API для получения предсказаний.
-*   **Observability**: Компоненты для мониторинга и оповещения.
-    *   **Prometheus**: Сбор метрик.
-    *   **Grafana Dashboards**: Визуализация метрик.
-    *   **Alertmanager**: Система оповещений.
+**LIVE TRADING: DISABLED BY DEFAULT.** See [Live trading protection](#live-trading-protection).
 
-Более подробное описание компонентов и их взаимодействия смотрите в [docs/architecture.md](docs/architecture.md).
+---
 
-## Структура каталогов
+## What works today
 
-- `conf/` — конфигурационные файлы.
-- `strategies/` — rule-based стратегии.
-- `nn/` — модули нейросети.
-- `tools/` — вспомогательные скрипты.
+| Component | Status | Notes |
+| --- | --- | --- |
+| Data download and validation | Working | UTC, deduplicated, gap-detected, OHLC-checked |
+| Feature engineering | Working | 14 causal, scale-free features; shared by training and strategy |
+| Cost-aware labelling | Working | SHORT/HOLD/LONG against a fee + slippage threshold |
+| Chronological splits, walk-forward | Working | Leakage prevented by index arithmetic, asserted in tests |
+| Training (`nn.train`) | Working | CPU-first, reproducible, baselines reported alongside |
+| Model artifacts and gated promotion | Working | On-disk artifact is the source of truth |
+| Inference service (`nn.infer_service`) | Working | FastAPI, schema-validated, `/livez` + `/readyz` |
+| `NNPredictorStrategy` | Working | Fails closed to HOLD on any inference problem |
+| `SwingSpot` | Working | Simple EMA/RSI, long-only spot |
+| Central risk engine + kill switch | Working | On the entry path via `confirm_trade_entry` |
+| Prometheus + Grafana | Working | Every panel queries a metric this code exports |
+| Telegram notifications | Working, optional | Absent credentials disable it silently |
+| MLflow tracking | Optional | `--mlflow`; artifacts do not depend on it |
+| Ray Tune | Optional | `--tune-trials N`; default 0 runs a single pass |
 
-## Настройка окружения
+### Experimental / disabled
 
-В корне проекта находится файл `.env.example` с перечнем переменных окружения.
-Скопируйте его в `.env` и заполните требуемые значения:
-- `docs/` — документация по архитектуре и модулям.
+| Component | Why |
+| --- | --- |
+| `ScalpFutures` | Needs an order-book feed this repository does not have, and depth is not available historically. Emits no entries. |
+| `ArbMM` | Freqtrade cannot execute a two-leg spread trade, and the second leg's data is absent. Emits no entries. |
 
-Дополнительные сведения о подключении риск‑менеджера см. в [docs/risk_manager.md](docs/risk_manager.md).
+Both are kept, unarmed, with the reasoning in their module docstrings. They are
+not silently broken strategies pretending to work — that was the previous state,
+and [`docs/engineering-audit.md`](docs/engineering-audit.md) records it.
 
-## Требования
+---
 
-- Docker и `docker-compose` для запуска инфраструктуры.
-- Python 3.10+ для обучения и запуска сервиса инференса.
+## Install
 
-## Переменные окружения
-
-Скопируйте `.env.example` в `.env` и заполните API‑ключи бирж:
- main
+Requires Python 3.11+. Docker is optional but recommended for the full stack.
 
 ```bash
-cp .env.example .env
+git clone https://github.com/tyrannya/projectchimera.git
+cd projectchimera
+
+python -m venv .venv && source .venv/bin/activate
+make setup          # installs .[all] and the pre-commit hooks
+
+cp .env.example .env   # optional: only needed for real data or notifications
 ```
 
-### Переменные
+`pyproject.toml` is the single source of truth for dependencies. The extras map
+onto the containers:
 
-- `BINANCE_KEY` и `BINANCE_SECRET` — ключи API для работы с Binance в реальном режиме.
-- `BINANCE_TEST_KEY` и `BINANCE_TEST_SECRET` — ключи API Binance для тестовой сети.
-- `BYBIT_KEY` и `BYBIT_SECRET` — ключи API Bybit для реальной торговли.
-- `BYBIT_TEST_KEY` и `BYBIT_TEST_SECRET` — ключи API Bybit для тестового режима.
-- `OKX_KEY` и `OKX_SECRET` — ключи API OKX для реальной торговли.
-- `OKX_TEST_KEY` и `OKX_TEST_SECRET` — ключи API OKX для тестовой среды.
-- `GLASSNODE_API_KEY` — ключ API для Glassnode, используется для загрузки ончейн-метрик в `tools/backfill.py` (опционально).
+| Extra | For | Contains |
+| --- | --- | --- |
+| `.[trade]` | Freqtrade container | freqtrade |
+| `.[ml]` | Inference and training | torch, fastapi, uvicorn, ccxt |
+| `.[tracking]` | Optional | mlflow |
+| `.[tune]` | Optional | ray[tune] |
+| `.[dev]` | Development | pytest, black, flake8, mypy, pre-commit |
+| `.[all]` | Everything | all of the above |
 
-Указывайте только те ключи, которые соответствуют используемым биржам и режимам работы.
-=======
-Переменные вида `BINANCE_KEY`, `BYBIT_SECRET` и другие используются скриптами и
-в Docker‑контейнерах.
+`requirements*.txt` are thin pointers at these extras so Docker can cache the
+install layer; they never diverge from `pyproject.toml`.
 
-## Запуск бота через `docker-compose`
-
-Поднимите инфраструктуру:
+## Run the tests
 
 ```bash
-docker-compose up -d
+make test           # pytest
+make lint           # pre-commit over every file
+make check          # compileall + pytest + pre-commit + docker compose config
 ```
 
-Далее запустите бота с нужными параметрами, например для Binance в тестовом
-режиме:
+## Try it without a network
 
 ```bash
-./tools/start.sh binance test
+make smoke
 ```
 
-Скрипт объединит базовую конфигурацию с файлом `conf/binance.test.json` и
-запустит контейнер `freqtrade`.
+This walks synthetic candles → features → a one-epoch model → artifact → the
+inference service → a strategy decision → a risk decision, in under a minute on
+CPU. It proves the plumbing, not profitability.
 
-## Обучение нейросети
+---
+
+## The pipeline, step by step
+
+### 1. Download data
 
 ```bash
-cd nn
-pip install -r requirements.txt
-python train.py --features path/to/features.parquet --epochs 20
+make backfill EXCHANGE=binance PAIR=BTC/USDT TIMEFRAME=1h START=2023-01-01
 ```
 
-Модель сохраняется в каталог `nn/` и регистрируется в MLflow.
+Writes `data/raw/binance/BTC_USDT_1h.parquet` plus a `.meta.json` sidecar with the
+validation report (duplicates removed, gaps found, missing candles counted). Gaps
+are **reported, never filled** — forward-filling a gap invents market data that a
+backtest would then trade on.
 
-## Запуск сервиса инференса
+No exchange credentials are needed for public candle data.
 
-После обучения модели можно запустить BentoML‑сервис:
+To work offline instead:
 
 ```bash
-docker-compose up -d nn_infer
+make sample         # synthetic candles in data/raw/synthetic/
 ```
 
-Он будет доступен на порту `3000` и использует модель с алиасом `prod` из
-реестра BentoML.
-=======
-## Запуск через Docker Compose
+### 2. Build features and labels
 
 ```bash
-docker compose up -d
+make features EXCHANGE=binance PAIR=BTC/USDT TIMEFRAME=1h
 ```
 
-Команда поднимет контейнеры бота, сервис нейросети, Prometheus и Grafana. При необходимости перед запуском можно выполнить `docker compose build`.
+Produces `data/datasets/binance_BTC_USDT_1h.parquet` with 14 features, a
+`future_return` column and a `target` column, plus metadata recording exactly
+which specs produced them.
 
-## Скрипт `tools/start.sh`
-
-Скрипт собирает конфигурацию из `conf/base.json` и `<exchange>.<mode>.json`, после чего стартует Freqtrade. Примеры:
+### 3. Train
 
 ```bash
-./tools/start.sh binance live  # запуск в боевом режиме
-./tools/start.sh bybit test    # dry-run на тестовой бирже
+make train DATASET=data/datasets/binance_BTC_USDT_1h.parquet EPOCHS=30
 ```
 
-## Конвейер данных, обучение нейросети и сервис инференса
-
-Процесс подготовки данных, обучения модели и запуска сервиса предсказаний выглядит следующим образом:
-
-1.  **Сбор данных**:
-    *   Исторические данные (OHLCV, ставки финансирования) загружаются с помощью скрипта `tools/backfill.py`. Например, для загрузки часовых данных BTC/USDT с Binance за период с 1 января 2023 года:
-        ```bash
-        python tools/backfill.py binance BTC/USDT 2023-01-01 1h
-        ```
-    *   Данные сохраняются в каталог `data/raw/<exchange>/<pair>/<timeframe>/`.
-
-2.  **Обогащение данных (опционально)**:
-    *   Если установлен ключ `GLASSNODE_API_KEY` в файле `.env`, скрипт `tools/backfill.py` также попытается загрузить ончейн-метрики с Glassnode и объединить их с историческими данными биржи с помощью функции `enrich_onchain` из `nn/data_pipeline.py`.
-
-3.  **Инженерия признаков**:
-    *   Скрипт `nn/data_pipeline.py` содержит функцию `make_features`, которая генерирует признаки для обучения модели на основе загруженных и обогащенных данных.
-    *   Обработанные данные с признаками сохраняются, например, в `data/features/<exchange>/<pair>/<timeframe>/features.parquet`.
-
-4.  **Обучение модели**:
-    *   Скрипт `nn/train.py` использует сгенерированные признаки для обучения нейросетевой модели. Пример запуска:
-        ```bash
-        python nn/train.py --features data/features/binance/BTC_USDT/1h/features.parquet --epochs 20
-        ```
-    *   В процессе обучения эксперименты логируются в MLflow (локально в каталоге `mlruns`), а обученная модель версионируется и сохраняется. Модель и лог MLflow также сохраняются в каталоге `nn/`.
-
-5.  **Запуск сервиса инференса**:
-    *   Обученная модель используется для предсказаний с помощью сервиса `nn/infer_service.py` (основанного на BentoML). Сервис запускается через Docker Compose:
-        ```bash
-        docker compose up -d nn_infer
-        ```
-    *   Этот сервис предоставляет HTTP API для получения предсказаний от модели (например, для использования в стратегии `NN Predictor Strategy` в Freqtrade). Он будет доступен на порту `3000`.
-    *   Проверить доступность сервиса можно, открыв в браузере `http://localhost:3000` или выполнив команду:
-        ```bash
-        curl http://localhost:3000/livez
-        ```
-    *   Для получения предсказаний (пример структуры запроса, реальные данные могут отличаться):
-        ```bash
-        curl -X POST -H "Content-Type: application/json" -d '[[0.1, 0.2, ..., 0.5]]' http://localhost:3000/predict
-        ```
-=======
-## Running tests
-
-Install development dependencies and execute pytest:
+or directly, for a short run:
 
 ```bash
-pytest
+python -m nn.train --dataset data/datasets/binance_BTC_USDT_1h.parquet \
+    --epochs 2 --tune-trials 0
 ```
 
-## Кодстайл и Линтинг
+Prints validation and test tables with both baselines beside the model, and
+writes `artifacts/models/<version>/` containing `model.pt`, `config.json`,
+`metadata.json` and `report.json`.
 
-В проекте настроены pre-commit хуки для автоматической проверки и форматирования кода.
-Это помогает поддерживать единый стиль кода и выявлять потенциальные ошибки на ранней стадии.
+Training **does not** promote a model. Pass `--promote` to make it live, and it
+will still only be promoted if it clears the gates in `nn/registry.py`.
 
-### Первоначальная настройка
+### 4. Walk-forward evaluation
 
-1.  Установите зависимости для разработки:
-    ```bash
-    pip install -r requirements-dev.txt
-    ```
-2.  Установите pre-commit хуки в ваш локальный git репозиторий:
-    ```bash
-    pre-commit install
-    ```
-
-После этого хуки будут автоматически запускаться перед каждым коммитом.
-
-### Ручной запуск
-
-Вы также можете запустить все хуки для всех файлов вручную:
 ```bash
-pre-commit run --all-files
+make walkforward DATASET=data/datasets/binance_BTC_USDT_1h.parquet
 ```
-Это может быть полезно для первоначальной проверки всего проекта или после обновления конфигурации хуков.
 
-## Workflow c помощью Makefile
+Retrains from scratch on each rolling fold and reports out-of-sample results to
+`artifacts/walkforward/{walkforward.json,walkforward.md}`.
 
-Для упрощения стандартных операций разработки и запуска в проекте предусмотрен `Makefile`.
-Он предоставляет набор команд для выполнения частых задач.
+### 5. Serve the model
 
-Чтобы увидеть все доступные команды и их описание, выполните:
 ```bash
-make
+make infer          # uvicorn on 127.0.0.1:3000
 ```
-или
+
 ```bash
-make help
+curl -s localhost:3000/livez
+curl -s localhost:3000/readyz | jq
 ```
 
-### Основные команды:
+`POST /predict` takes raw (unscaled) features; the service applies the scaler
+stored with the model:
 
-*   `make setup`: Установка зависимостей для разработки и pre-commit хуков.
-*   `make lint`: Запуск линтеров и форматировщиков кода.
-*   `make test`: Запуск юнит-тестов.
-*   `make train FEATURES=... EPOCHS=...`: Запуск обучения нейросети (не забудьте указать путь к файлу с признаками).
-*   `make backfill EXCHANGE=... SYMBOL=... START_DATE=... TF=...`: Запуск скрипта для скачивания данных.
-*   `make docker-up`: Сборка и запуск всех сервисов через docker-compose.
-*   `make docker-down`: Остановка всех сервисов, запущенных через docker-compose.
-*   `make clean`: Удаление временных файлов.
+```bash
+curl -s -X POST localhost:3000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"pair":"BTC/USDT","timeframe":"1h","timestamp":"2026-08-16T12:00:00Z",
+       "features":[[...], ...]}' | jq
+```
 
-Перед использованием `make train` или `make backfill` убедитесь, что вы указали корректные параметры, если стандартные значения вам не подходят.
- main
+```json
+{
+  "model_version": "20260816T120000Z-a1b2c3",
+  "signal": "LONG",
+  "probabilities": {"SHORT": 0.08, "HOLD": 0.21, "LONG": 0.71},
+  "confidence": 0.71,
+  "decision_threshold": 0.55,
+  "served_at": "2026-08-16T12:00:01.234567Z"
+}
+```
+
+Malformed bodies get `422`, a feature matrix of the wrong shape gets `400` with
+the expected shape and feature order in the message, and an inference failure
+gets `500` — never a fabricated score.
+
+### 6. Dry-run trading
+
+```bash
+make dry-run EXCHANGE=binance STRATEGY=NNPredictorStrategy
+```
+
+This merges `conf/base.json` with `conf/binance.test.json`, resolves `${VAR}`
+placeholders from the environment, runs the safety gate, and starts Freqtrade.
+No orders reach the exchange.
+
+### 7. Metrics
+
+```bash
+make docker-up
+```
+
+- Grafana — <http://localhost:3001> (admin/admin, change it)
+- Prometheus — <http://localhost:9090>
+- Inference — <http://localhost:3000/metrics>
+
+Two dashboards are provisioned: **Chimera / Trading** (equity, PnL, drawdown,
+exposure, open positions, rejected entries, kill-switch state) and **Chimera / ML
+and System** (inference latency, errors, prediction and confidence
+distributions, served model version, data staleness). A test asserts that every
+panel and alert rule queries a metric this code actually exports.
+
+---
+
+## Live trading protection
+
+ProjectChimera is dry-run only unless **two independent things** are true:
+
+1. `ENABLE_LIVE_TRADING` is set to exactly `I_UNDERSTAND_THE_RISK`; **and**
+2. the config explicitly sets `"dry_run": false` (`conf/<exchange>.live.json`).
+
+Neither alone is enough. In particular:
+
+- **Having exchange API keys does not enable live trading.**
+- Setting `dry_run: false` without the environment variable aborts the launch
+  with exit code 2, before any config is written.
+- Setting the environment variable without a live config still runs dry-run.
+- A config with no `dry_run` key at all is treated as dry-run — it fails closed.
+
+The gate lives in `chimera/safety.py` and is enforced by `tools/run_bot.py`
+before Freqtrade starts. `tests/test_safety.py` and `tests/test_config_and_cli.py`
+cover every path. CI never sets the variable and has no live-capable job.
+
+If you do enable live trading, you are choosing to risk real money, and the
+risk limits in `conf/base.json` are defaults you should review rather than trust.
+
+---
+
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | Component boundaries and data flow |
+| [docs/ml_pipeline.md](docs/ml_pipeline.md) | Features, the target, splits, metrics, promotion |
+| [docs/risk_manager.md](docs/risk_manager.md) | Limits, sizing arithmetic, the kill switch |
+| [docs/dry_run.md](docs/dry_run.md) | Running dry-run, and what is verified vs. not |
+| [docs/engineering-audit.md](docs/engineering-audit.md) | What was broken before this rebuild |
+
+## Repository layout
+
+```
+chimera/       Shared, dependency-light core: features, contracts, risk, safety,
+               metrics, notifications, inference client. No torch, no freqtrade.
+nn/            Data pipeline, model, training, evaluation, walk-forward,
+               artifact registry, inference service.
+strategies/    Freqtrade strategies and the risk-aware base class.
+tools/         CLI entrypoints: backfill, build_features, run_bot, smoke.
+conf/          Freqtrade configs, Prometheus, Alertmanager, alert rules.
+grafana/       Datasource and dashboard provisioning.
+tests/         The test suite.
+docs/          Architecture, ML pipeline, risk, dry-run, audit.
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
