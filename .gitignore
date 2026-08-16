@@ -1,34 +1,38 @@
+# Secrets and runtime configuration
+.env
+user_data/
+!user_data/.gitkeep
+
 # Python artifacts
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg
+*.egg-info/
+build/
+dist/
 
-# Virtual environment directories
+# Virtual environments
 venv/
 env/
 ENV/
 .venv/
 
-# Environment files
-.env
+# Test and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
 
-# MLflow output
+# Data and model artifacts: reproducible from the pipeline, too large for git
+data/
+artifacts/
 mlruns/
+!mlruns/.gitkeep
+ray_results/
 
-# Packaging
-*.egg-info/
-*.egg
-build/
-dist/
-
-# Bytecode cache
-*.pyc
-*.pyo
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# Databases
 *.sqlite
 *.db
-.pytest_cache/
- main
