@@ -185,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
         args.strategy,
         "--userdir",
         str(REPO_ROOT / "user_data"),
+        # Explicit, because Freqtrade otherwise looks under <userdir>/strategies.
+        # user_data is a mounted volume in Docker, so the strategies shipped in
+        # the image would be shadowed by whatever the host directory contains.
+        "--strategy-path",
+        str(REPO_ROOT / "strategies"),
         *args.extra,
     ]
     logger.info("Starting: %s", " ".join(command))

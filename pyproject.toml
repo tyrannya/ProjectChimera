@@ -49,8 +49,14 @@ dev = [
 ]
 all = ["projectchimera[trade,ml,tracking,tune,dev]"]
 
-[tool.setuptools]
-packages = ["chimera", "nn", "strategies", "strategies.common", "tools"]
+[tool.setuptools.packages.find]
+# Discovered rather than listed. Each container image copies only the packages
+# it actually needs before installing, and an explicit `packages = [...]` list
+# makes setuptools fail with "package directory 'nn' does not exist" whenever a
+# declared package is absent. Globbing tolerates a partial source tree, so the
+# same pyproject.toml installs cleanly in the Freqtrade image, the inference
+# image and a full checkout.
+include = ["chimera*", "nn*", "strategies*", "tools*"]
 
 [tool.black]
 line-length = 95
