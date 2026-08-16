@@ -1,13 +1,90 @@
 {
-  "risk": {
-    "max_drawdown": 0.08
-  },
-  "initial_state": "paused",
-  "timeframes": ["1m", "4h"],
-  "protections": [
-    {
-      "method": "CooldownPeriod",
-      "cooldown_time": 60
-    }
-  ]
+    "$comment": "Shared defaults. Merged with conf/<exchange>.<mode>.json by tools/run_bot.py. dry_run here is the safe default; only an explicit live config plus ENABLE_LIVE_TRADING can change it.",
+    "max_open_trades": 3,
+    "stake_currency": "USDT",
+    "stake_amount": 200,
+    "tradable_balance_ratio": 0.99,
+    "fiat_display_currency": "USD",
+    "dry_run": true,
+    "dry_run_wallet": 10000,
+    "cancel_open_orders_on_exit": true,
+    "trading_mode": "spot",
+    "timeframe": "1h",
+    "bot_name": "chimera",
+    "initial_state": "running",
+    "force_entry_enable": false,
+    "fee": 0.0005,
+    "unfilledtimeout": {
+        "entry": 10,
+        "exit": 10,
+        "unit": "minutes"
+    },
+    "entry_pricing": {
+        "$comment": "price_side 'other' crosses the spread rather than joining the book. It fills more like a market order, which is the conservative assumption for a signal-driven strategy and keeps backtest fills closer to reality.",
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+    "exit_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "order_types": {
+        "entry": "limit",
+        "exit": "limit",
+        "stoploss": "market",
+        "stoploss_on_exchange": false
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        }
+    ],
+    "protections": [
+        {
+            "method": "CooldownPeriod",
+            "stop_duration_candles": 2
+        },
+        {
+            "method": "MaxDrawdown",
+            "lookback_period_candles": 48,
+            "trade_limit": 10,
+            "stop_duration_candles": 12,
+            "max_allowed_drawdown": 0.1
+        }
+    ],
+    "$comment_telegram": "No 'telegram' block on purpose. Freqtrade's schema requires token and chat_id whenever the block is present, and ProjectChimera sends its own notifications through chimera.notify instead. Freqtrade's built-in Telegram stays off by default.",
+    "$comment_api_server": "No 'api_server' block on purpose. The REST API is off by default; enabling it opens a control plane that can start, stop and force-enter trades.",
+    "internals": {
+        "process_throttle_secs": 5
+    },
+    "risk": {
+        "$comment": "Consumed by chimera.risk.RiskEngine via strategies/common/risk_manager.py. Unknown keys are ignored.",
+        "max_drawdown_pct": 0.15,
+        "max_daily_loss_pct": 0.05,
+        "max_open_positions": 3,
+        "max_total_exposure_pct": 1.0,
+        "max_exposure_per_asset_pct": 0.35,
+        "risk_per_trade_pct": 0.01,
+        "max_position_pct": 0.25,
+        "max_leverage": 1.0,
+        "min_stop_distance_pct": 0.005,
+        "max_stop_distance_pct": 0.15,
+        "max_orders_per_minute": 10,
+        "loss_streak_limit": 3,
+        "cooldown_seconds": 3600,
+        "max_data_staleness_s": 300,
+        "max_inference_staleness_s": 300,
+        "state_file": "user_data/risk_state.json"
+    },
+    "nn_infer_url": "http://nn_infer:3000",
+    "nn_timeout_s": 2.0,
+    "nn_retries": 1,
+    "nn_fallback_strategy": false
 }

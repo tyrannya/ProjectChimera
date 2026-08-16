@@ -1,12 +1,19 @@
 {
-  "exchange": {
-    "name": "bybit",
-    "type": "v5",
-    "api_url": "https://api.bybit.com",
-    "url": "https://api.bybit.com",
-    "key": "${BYBIT_KEY}",
-    "secret": "${BYBIT_SECRET}"
-  },
-  "dry_run": false,
-  "symbols": ["BTC/USDT"]
+    "$comment": "LIVE TRADING on bybit. Real orders, real money. tools/run_bot.py refuses to start with this config unless ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK is set in the environment. Setting dry_run=false here is NOT sufficient on its own.",
+    "dry_run": false,
+    "exchange": {
+        "name": "bybit",
+        "key": "${BYBIT_KEY}",
+        "secret": "${BYBIT_SECRET}",
+        "ccxt_config": {
+            "enableRateLimit": true
+        },
+        "ccxt_async_config": {
+            "enableRateLimit": true
+        },
+        "pair_whitelist": [
+            "BTC/USDT"
+        ],
+        "pair_blacklist": []
+    }
 }
