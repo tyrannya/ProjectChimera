@@ -2,6 +2,7 @@
 
     python -m nn.train --dataset data/datasets/binance_BTC_USDT_1h.parquet
     python -m nn.train --dataset ... --epochs 2 --tune-trials 0   # smoke run
+    python -m nn.train --dataset ... --validation-only            # research run
 
 The pipeline, in order, with the leakage-relevant step called out at each turn:
 
@@ -16,6 +17,13 @@ The pipeline, in order, with the leakage-relevant step called out at each turn:
 9. score model and baselines on validation, then score the test split *once*;
 10. save the artifact, and promote only if the validation gates pass.
 
+Steps 4 to 8 are the *research core* — :class:`ResearchData`,
+:func:`prepare_research_windows` and :func:`fit_and_validate` — which
+``nn.experiment`` and ``nn.walkforward`` import rather than reimplement. Those
+functions take a training and a validation split and nothing else, so no amount
+of misuse can make them touch test rows: step 9 is the only code in the
+repository that windows the test block, and ``--validation-only`` skips it.
+
 CPU is the default and fully supported path. GPU and mixed precision are used
 only when CUDA is actually present. Ray Tune is optional and off by default:
 ``--tune-trials 0`` (the default) runs a single training pass.
@@ -28,6 +36,7 @@ import json
 import logging
 import os
 import random
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,8 +50,8 @@ from chimera.contracts import CLASS_ORDER, ModelMetadata, TargetSpec
 from chimera.features import FeatureSpec
 from nn import evaluate as ev
 from nn.baselines import MajorityClassBaseline, MomentumBaseline
-from nn.data_pipeline import load_dataset, timeframe_to_minutes
-from nn.dataset import StandardScaler, build_windows, chronological_split
+from nn.data_pipeline import DatasetMetadata, load_dataset, timeframe_to_minutes
+from nn.dataset import Split, StandardScaler, build_windows, chronological_split
 from nn.model_def import MTST, MTSTConfig
 from nn.registry import (
     DEFAULT_MODELS_DIR,
@@ -105,6 +114,256 @@ def predict_proba(
         logits = model(batch)
         chunks.append(torch.softmax(logits.float(), dim=-1).cpu().numpy())
     return np.concatenate(chunks).astype(np.float64)
+
+
+# --- the research core -------------------------------------------------------
+#
+# Everything from here to `fit_and_validate` is shared by nn.train,
+# nn.experiment and nn.walkforward. It exists so those three cannot drift apart
+# on the feature/target contract, and so the "never touch test" rule is a
+# property of the signatures rather than a habit of the callers.
+
+
+@dataclass(frozen=True)
+class ResearchData:
+    """The arrays every research entrypoint needs, loaded once."""
+
+    ds_meta: DatasetMetadata
+    feature_names: list[str]
+    feature_spec: FeatureSpec
+    target_spec: TargetSpec
+    features: np.ndarray
+    targets: np.ndarray
+    future_return: np.ndarray
+    segment_ids: np.ndarray | None
+    dates: np.ndarray
+    candles_per_year: float
+
+    @property
+    def n_rows(self) -> int:
+        return len(self.features)
+
+    def period(self, split: Split) -> dict[str, Any]:
+        """Wall-clock boundaries of a split, so a report can be audited later."""
+        return {
+            "start": str(self.dates[split.start]),
+            "end": str(self.dates[split.end - 1]),
+            "rows": len(split),
+            "row_range": [split.start, split.end],
+        }
+
+
+def load_research_data(path: str | Path) -> ResearchData:
+    """Load a built dataset and check it against its own metadata."""
+    frame, ds_meta = load_dataset(path)
+    feature_names = list(ds_meta.feature_names)
+    missing = [c for c in feature_names if c not in frame.columns]
+    if missing:
+        raise SystemExit(f"dataset is missing feature columns: {missing}")
+
+    segment_ids = (
+        frame["segment_id"].to_numpy(dtype=np.int64) if "segment_id" in frame.columns else None
+    )
+    if segment_ids is None and int(ds_meta.validation.get("gap_count", 0)) > 0:
+        logger.warning(
+            "Dataset reports market-data gaps but has no segment_id column; "
+            "rebuild it with the current tools.build_features before trusting this run."
+        )
+
+    return ResearchData(
+        ds_meta=ds_meta,
+        feature_names=feature_names,
+        feature_spec=FeatureSpec.from_dict(ds_meta.feature_spec),
+        target_spec=TargetSpec.from_dict(ds_meta.target_spec),
+        features=frame[feature_names].to_numpy(dtype=np.float64),
+        targets=frame["target"].to_numpy(dtype=np.int64),
+        future_return=frame["future_return"].to_numpy(dtype=np.float64),
+        segment_ids=segment_ids,
+        dates=frame["date"].to_numpy(),
+        candles_per_year=365 * 24 * 60 / timeframe_to_minutes(ds_meta.timeframe or "1h"),
+    )
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    """One point in the research search space.
+
+    The fields are exactly the dimensions ``nn.experiment`` can vary. Defaults
+    match the ``nn.train`` CLI defaults, which are not tuned against any test
+    result.
+    """
+
+    seed: int = 42
+    lr: float = 3e-4
+    seq_len: int = 64
+    d_model: int = 64
+    n_heads: int = 4
+    num_layers: int = 2
+    dropout: float = 0.1
+    epochs: int = 30
+    batch_size: int = 64
+    patience: int = 5
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PreparedWindows:
+    """Scaled, windowed training and validation tensors for one fold.
+
+    Note what is *absent*: there is no test field, and
+    :func:`prepare_research_windows` takes no test split. Test windows are built
+    in exactly one place, :func:`main`, and only when ``--validation-only`` is
+    off.
+    """
+
+    scaler: StandardScaler
+    train: Split
+    validation: Split
+    seq_len: int
+    X_train: np.ndarray
+    y_train: np.ndarray
+    X_val: np.ndarray
+    y_val: np.ndarray
+    idx_val: np.ndarray
+
+
+def prepare_research_windows(
+    data: ResearchData, train_split: Split, val_split: Split, seq_len: int
+) -> PreparedWindows:
+    """Fit the scaler on training rows only, then window train and validation.
+
+    Raises ``ValueError`` — rather than returning something empty — when a split
+    is too short to hold one window plus its label horizon, or when validation
+    does not lie strictly after training.
+    """
+    if val_split.start < train_split.end:
+        raise ValueError(
+            f"validation must begin at or after the end of training: training ends at "
+            f"row {train_split.end}, validation starts at row {val_split.start}"
+        )
+
+    scaler = StandardScaler().fit(data.features[train_split.start : train_split.end])
+    scaled = scaler.transform(data.features)
+
+    built = []
+    for split in (train_split, val_split):
+        X, y, idx = build_windows(
+            scaled,
+            data.targets,
+            split,
+            seq_len,
+            data.target_spec.horizon,
+            segment_ids=data.segment_ids,
+        )
+        if len(X) == 0:
+            raise ValueError(
+                f"the {split.name} split produced no samples. Use a longer dataset, a "
+                f"shorter seq_len ({seq_len}), or different split sizes."
+            )
+        built.append((X, y, idx))
+
+    (X_train, y_train, _), (X_val, y_val, idx_val) = built
+    return PreparedWindows(
+        scaler=scaler,
+        train=train_split,
+        validation=val_split,
+        seq_len=seq_len,
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
+        idx_val=idx_val,
+    )
+
+
+@dataclass(frozen=True)
+class ValidationRun:
+    """The result of fitting one configuration and scoring it on validation."""
+
+    model: MTST
+    config: MTSTConfig
+    threshold: float
+    threshold_report: dict[str, Any]
+    #: ``majority_baseline`` / ``momentum_baseline`` / ``mtst``, on validation.
+    reports: dict[str, dict[str, Any]]
+    train_info: dict[str, Any]
+    #: The fitted baselines, so a later sealed-test run scores the same objects.
+    baselines: dict[str, Any]
+
+
+def fit_and_validate(
+    data: ResearchData,
+    prepared: PreparedWindows,
+    run: RunConfig,
+    *,
+    device: torch.device,
+) -> ValidationRun:
+    """Train one configuration and score it on validation.
+
+    Fits everything that gets fitted: the weights, the early-stopping epoch and
+    the decision threshold. All three use the training and validation blocks in
+    ``prepared`` and nothing else.
+    """
+    set_seed(run.seed)
+    config = MTSTConfig(
+        input_dim=len(data.feature_names),
+        seq_len=run.seq_len,
+        d_model=run.d_model,
+        n_heads=run.n_heads,
+        num_layers=run.num_layers,
+        dropout=run.dropout,
+    )
+    model, train_info = train_model(
+        config,
+        prepared.X_train,
+        prepared.y_train,
+        prepared.X_val,
+        prepared.y_val,
+        device=device,
+        epochs=run.epochs,
+        batch_size=run.batch_size,
+        lr=run.lr,
+        patience=run.patience,
+    )
+
+    val_proba = predict_proba(model, prepared.X_val, device)
+    val_return = data.future_return[prepared.idx_val]
+    threshold, threshold_report = ev.select_threshold(val_proba, val_return, data.target_spec)
+
+    baselines = {
+        "majority_baseline": MajorityClassBaseline().fit(prepared.y_train),
+        "momentum_baseline": MomentumBaseline(
+            feature_index=data.feature_names.index("ema_cross")
+        ),
+    }
+
+    def score(proba: np.ndarray) -> dict[str, Any]:
+        return ev.evaluate(
+            proba,
+            prepared.y_val,
+            val_return,
+            data.target_spec,
+            threshold,
+            candles_per_year=data.candles_per_year,
+        )
+
+    reports = {
+        name: score(baseline.predict_proba(prepared.X_val))
+        for name, baseline in baselines.items()
+    }
+    reports["mtst"] = score(val_proba)
+
+    return ValidationRun(
+        model=model,
+        config=config,
+        threshold=threshold,
+        threshold_report=threshold_report,
+        reports=reports,
+        train_info=train_info,
+        baselines=baselines,
+    )
 
 
 def train_model(
@@ -212,10 +471,10 @@ def tune_learning_rate(
 
     best_lr, best_loss = candidates[0], float("inf")
     for lr in candidates:
-        _, info = build(lr)
-        if info["best_val_loss"] < best_loss:
-            best_loss, best_lr = info["best_val_loss"], lr
-        logger.info("trial lr=%.2e -> val_loss=%.5f", lr, info["best_val_loss"])
+        val_loss = build(lr).train_info["best_val_loss"]
+        if val_loss < best_loss:
+            best_loss, best_lr = val_loss, lr
+        logger.info("trial lr=%.2e -> val_loss=%.5f", lr, val_loss)
     logger.info("Best learning rate from %d trials: %.2e", trials, best_lr)
     return best_lr
 
@@ -251,6 +510,15 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Promote to current if the validation gates pass.",
     )
     parser.add_argument(
+        "--validation-only",
+        action="store_true",
+        help=(
+            "Research mode: leave the test split sealed. Trains, selects the "
+            "threshold and reports on validation only. Cannot be combined with "
+            "--promote, and the artifact it writes can never be promoted."
+        ),
+    )
+    parser.add_argument(
         "--mlflow",
         action="store_true",
         help="Also log this run to MLflow (optional, off by default).",
@@ -263,161 +531,140 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     args = build_argparser().parse_args(argv)
+    if args.validation_only and args.promote:
+        raise SystemExit(
+            "--promote cannot be combined with --validation-only: a research run "
+            "leaves the test split sealed, so it has no out-of-sample estimate and "
+            "must never put a model in front of traffic."
+        )
     set_seed(args.seed)
     device = resolve_device(args.device)
     logger.info("Training on %s with seed %d", device, args.seed)
 
     # --- 1. data ------------------------------------------------------
-    frame, ds_meta = load_dataset(args.dataset)
-    feature_names = ds_meta.feature_names
-    missing = [c for c in feature_names if c not in frame.columns]
-    if missing:
-        raise SystemExit(f"dataset is missing feature columns: {missing}")
-
-    target_spec = TargetSpec.from_dict(ds_meta.target_spec)
-    feature_spec = FeatureSpec.from_dict(ds_meta.feature_spec)
-
-    features = frame[feature_names].to_numpy(dtype=np.float64)
-    targets = frame["target"].to_numpy(dtype=np.int64)
-    future_return = frame["future_return"].to_numpy(dtype=np.float64)
-    segment_ids = (
-        frame["segment_id"].to_numpy(dtype=np.int64) if "segment_id" in frame.columns else None
-    )
-    if segment_ids is None and int(ds_meta.validation.get("gap_count", 0)) > 0:
-        logger.warning(
-            "Dataset reports market-data gaps but has no segment_id column; "
-            "rebuild it with the current tools.build_features before trusting this run."
-        )
-
-    plan = chronological_split(len(frame), args.train_frac, args.val_frac)
+    data = load_research_data(args.dataset)
+    plan = chronological_split(data.n_rows, args.train_frac, args.val_frac)
     logger.info("Split plan: %s", json.dumps(plan.to_dict()))
-
-    # --- 2. scaler: train rows only ------------------------------------
-    scaler = StandardScaler().fit(features[plan.train.start : plan.train.end])
-    scaled = scaler.transform(features)
-
-    windows = {
-        split.name: build_windows(
-            scaled,
-            targets,
-            split,
-            args.seq_len,
-            target_spec.horizon,
-            segment_ids=segment_ids,
+    if args.validation_only:
+        logger.warning(
+            "VALIDATION-ONLY research run: the test split (%d rows, %s to %s) "
+            "REMAINS SEALED and will not be evaluated.",
+            len(plan.test),
+            data.period(plan.test)["start"],
+            data.period(plan.test)["end"],
         )
-        for split in plan
-    }
-    for name, (X, _, _) in windows.items():
-        logger.info("%s: %d samples", name, len(X))
-        if len(X) == 0:
-            raise SystemExit(
-                f"the {name} split produced no samples. Use a longer dataset, a "
-                f"shorter --seq-len ({args.seq_len}), or different split fractions."
-            )
 
-    X_train, y_train, _ = windows["train"]
-    X_val, y_val, idx_val = windows["validation"]
-    X_test, y_test, idx_test = windows["test"]
+    # --- 2-5. scaler on train rows, windows, training, threshold ---------
+    # All of it lives in the research core, which is given the train and
+    # validation splits only.
+    try:
+        prepared = prepare_research_windows(data, plan.train, plan.validation, args.seq_len)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    logger.info(
+        "train: %d samples, validation: %d samples", len(prepared.X_train), len(prepared.X_val)
+    )
 
-    candles_per_year = 365 * 24 * 60 / timeframe_to_minutes(ds_meta.timeframe or "1h")
-
-    # --- 3. baselines ---------------------------------------------------
-    majority = MajorityClassBaseline().fit(y_train)
-    momentum = MomentumBaseline(feature_index=feature_names.index("ema_cross"))
-
-    # --- 4. train --------------------------------------------------------
-    config = MTSTConfig(
-        input_dim=len(feature_names),
+    run_config = RunConfig(
+        seed=args.seed,
+        lr=args.lr,
         seq_len=args.seq_len,
         d_model=args.d_model,
         n_heads=args.n_heads,
         num_layers=args.num_layers,
         dropout=args.dropout,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        patience=args.patience,
     )
 
-    def build(lr: float) -> tuple[MTST, dict[str, Any]]:
-        set_seed(args.seed)
-        return train_model(
-            config,
-            X_train,
-            y_train,
-            X_val,
-            y_val,
-            device=device,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            lr=lr,
-            patience=args.patience,
-        )
+    def build(lr: float) -> ValidationRun:
+        return fit_and_validate(data, prepared, replace(run_config, lr=lr), device=device)
 
     lr = args.lr
     if args.tune_trials > 0:
         lr = tune_learning_rate(args.tune_trials, build, seed=args.seed)
-    model, train_info = build(lr)
+    result = build(lr)
 
-    # --- 5. threshold on validation --------------------------------------
-    val_proba = predict_proba(model, X_val, device)
-    threshold, threshold_report = ev.select_threshold(
-        val_proba, future_return[idx_val], target_spec
-    )
+    model, threshold = result.model, result.threshold
+    validation_reports = result.reports
     logger.info(
         "Selected decision threshold %.2f on validation (%d trades, net %.4f)",
         threshold,
-        threshold_report["n_trades"],
-        threshold_report["net_return"],
+        result.threshold_report["n_trades"],
+        result.threshold_report["net_return"],
     )
 
-    # --- 6. reports -------------------------------------------------------
-    def report_for(proba: np.ndarray, split_name: str) -> dict[str, Any]:
-        _, y, idx = windows[split_name]
-        return ev.evaluate(
-            proba,
-            y,
-            future_return[idx],
-            target_spec,
-            threshold,
-            candles_per_year=candles_per_year,
+    # --- 6. the one and only test evaluation -------------------------------
+    # This block is the only place in the repository that windows the test
+    # split. It runs after every fitted quantity (weights, scaler, threshold,
+    # early-stopping epoch) is frozen, and not at all in research mode.
+    test_reports: dict[str, Any] | None = None
+    if not args.validation_only:
+        scaled = prepared.scaler.transform(data.features)
+        X_test, y_test, idx_test = build_windows(
+            scaled,
+            data.targets,
+            plan.test,
+            args.seq_len,
+            data.target_spec.horizon,
+            segment_ids=data.segment_ids,
         )
+        if len(X_test) == 0:
+            raise SystemExit(
+                f"the test split produced no samples. Use a longer dataset, a "
+                f"shorter --seq-len ({args.seq_len}), or different split fractions."
+            )
+        logger.info("test: %d samples", len(X_test))
 
-    validation_reports = {
-        "majority_baseline": report_for(majority.predict_proba(X_val), "validation"),
-        "momentum_baseline": report_for(momentum.predict_proba(X_val), "validation"),
-        "mtst": report_for(val_proba, "validation"),
-    }
+        def test_score(proba: np.ndarray) -> dict[str, Any]:
+            return ev.evaluate(
+                proba,
+                y_test,
+                data.future_return[idx_test],
+                data.target_spec,
+                threshold,
+                candles_per_year=data.candles_per_year,
+            )
 
-    # The test split is scored exactly once, here, after every fitted quantity
-    # (weights, scaler, threshold, early-stopping epoch) is frozen.
-    test_reports = {
-        "majority_baseline": report_for(majority.predict_proba(X_test), "test"),
-        "momentum_baseline": report_for(momentum.predict_proba(X_test), "test"),
-        "mtst": report_for(predict_proba(model, X_test, device), "test"),
-    }
+        test_reports = {
+            name: test_score(baseline.predict_proba(X_test))
+            for name, baseline in result.baselines.items()
+        }
+        test_reports["mtst"] = test_score(predict_proba(model, X_test, device))
 
     print("\nValidation (used for model selection):")
     print(ev.compare(validation_reports))
-    print("\nTest (held out, scored once):")
-    print(ev.compare(test_reports))
+    if test_reports is None:
+        print(
+            "\nTest: SEALED — not evaluated in this validation-only research run.\n"
+            "Freeze your research decisions, then re-run without --validation-only "
+            "to spend the test split once."
+        )
+    else:
+        print("\nTest (held out, scored once):")
+        print(ev.compare(test_reports))
 
     # --- 7. artifact -------------------------------------------------------
     version = new_version(f"{args.dataset}{args.seed}{lr}")
     metadata = ModelMetadata(
         model_version=version,
-        feature_names=list(feature_names),
+        feature_names=list(data.feature_names),
         sequence_length=args.seq_len,
-        feature_spec=feature_spec,
-        target_spec=target_spec,
-        scaler_mean=scaler.mean.tolist(),
-        scaler_std=scaler.std.tolist(),
+        feature_spec=data.feature_spec,
+        target_spec=data.target_spec,
+        scaler_mean=prepared.scaler.mean.tolist(),
+        scaler_std=prepared.scaler.std.tolist(),
         decision_threshold=threshold,
         trained_at=datetime.now(timezone.utc).isoformat(),
-        dataset_start=ds_meta.start,
-        dataset_end=ds_meta.end,
+        dataset_start=data.ds_meta.start,
+        dataset_end=data.ds_meta.end,
         # Temporal provenance, so a later backtest can prove it is out-of-sample.
-        train_end=str(frame["date"].iloc[plan.train.end - 1]),
-        validation_end=str(frame["date"].iloc[plan.validation.end - 1]),
-        exchange=ds_meta.exchange,
-        pair=ds_meta.pair,
-        timeframe=ds_meta.timeframe,
+        train_end=str(data.dates[plan.train.end - 1]),
+        validation_end=str(data.dates[plan.validation.end - 1]),
+        exchange=data.ds_meta.exchange,
+        pair=data.ds_meta.pair,
+        timeframe=data.ds_meta.timeframe,
         validation_metrics=validation_reports["mtst"],
     )
 
@@ -433,16 +680,32 @@ def main(argv: list[str] | None = None) -> int:
         "learning_rate": lr,
         "device": str(device),
         "split_plan": plan.to_dict(),
-        "dataset": ds_meta.to_dict(),
-        "training": train_info,
-        "threshold_selection": threshold_report,
+        "periods": {split.name: data.period(split) for split in plan},
+        "dataset": data.ds_meta.to_dict(),
+        "training": result.train_info,
+        "threshold_selection": result.threshold_report,
         "validation": validation_reports,
         "test": test_reports,
-        "promotion": {"gates": gates.to_dict(), "passed": passed, "failures": failures},
+        # Read by nn.registry.promote, which refuses a research_only artifact.
+        "research_only": bool(args.validation_only),
+        "test_evaluated": test_reports is not None,
+        "promotion": {
+            "gates": gates.to_dict(),
+            "passed": passed,
+            "failures": failures,
+            "eligible": not args.validation_only,
+        },
     }
     save_model(args.models_dir, version, model, metadata, report)
 
-    if passed:
+    if args.validation_only:
+        logger.warning(
+            "Research artifact %s saved. Validation gates %s, but a validation-only "
+            "run is never promotable: its test split was never scored.",
+            version,
+            "passed" if passed else "failed",
+        )
+    elif passed:
         logger.info("Model %s passed the promotion gates", version)
         if args.promote:
             promote(args.models_dir, version)
@@ -493,6 +756,8 @@ def _log_to_mlflow(
                 }
             )
             for split in ("validation", "test"):
+                if report.get(split) is None:  # sealed test in a research run
+                    continue
                 trading = report[split]["mtst"]["trading"]
                 classification = report[split]["mtst"]["classification"]
                 mlflow.log_metrics(

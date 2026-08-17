@@ -154,14 +154,33 @@ writes `artifacts/models/<version>/` containing `model.pt`, `config.json`,
 Training **does not** promote a model. Pass `--promote` to make it live, and it
 will still only be promoted if it clears the gates in `nn/registry.py`.
 
-### 4. Walk-forward evaluation
+The command above scores the held-out test split, which is worth doing exactly
+once. While you are still choosing a model, use research mode instead:
 
 ```bash
+python -m nn.train --dataset DATASET --validation-only --epochs 30
+```
+
+It reports on validation and leaves the test split sealed. See
+[the research workflow](docs/ml_pipeline.md#the-research-workflow).
+
+### 4. Research: experiment grids and walk-forward validation
+
+```bash
+make experiment DATASET=data/datasets/binance_BTC_USDT_1h.parquet
 make walkforward DATASET=data/datasets/binance_BTC_USDT_1h.parquet
 ```
 
-Retrains from scratch on each rolling fold and reports out-of-sample results to
+`nn.experiment` runs a predeclared grid over seed, learning rate, sequence
+length and model size, ranks the configurations by a stated validation
+objective, and writes `artifacts/experiments/{experiments.json,experiments.csv}`.
+
+`nn.walkforward` retrains from scratch on each expanding fold and validates on
+the block that follows it, reporting mean +/- std across folds to
 `artifacts/walkforward/{walkforward.json,walkforward.md}`.
+
+Neither one scores the test split. Only the plain `nn.train` run in step 3 does,
+and only that run's artifact can be promoted.
 
 ### 5. Serve the model
 

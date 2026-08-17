@@ -119,6 +119,13 @@ fitted quantity is frozen. It is not used for hyperparameter tuning, threshold
 selection, feature selection, early stopping, or the promotion decision. Those
 all use validation.
 
+The estimate is only worth having *once*. Every time a decision is made after
+looking at a test number — a different learning rate, a wider model, one more
+epoch — that number stops being an estimate of unseen performance and becomes a
+second validation score, with none of the honesty and all of the confidence.
+The workflow below exists to make that failure mode hard to fall into by
+accident. See [The research workflow](#the-research-workflow).
+
 ## Baselines
 
 A Transformer that does not beat "always predict the majority class" has learned
@@ -268,18 +275,133 @@ the strategy would equally have had live, not scored predictions.
 **Walk-forward remains the recommended research method** — it retrains per fold,
 so the question never arises.
 
-## Walk-forward
+## The research workflow
 
-`nn.walkforward` repeats the whole procedure on rolling windows:
+**Development, repeated as often as you like:**
 
 ```
-fold 0: [--- train ---][ val ][ test ]
-fold 1:        [--- train ---][ val ][ test ]
-fold 2:               [--- train ---][ val ][ test ]
+train  ->  validation  /  walk-forward validation  ->  choose a candidate
 ```
 
-Nothing carries between folds — each refits its scaler, retrains, and re-selects
-its threshold. The summary reports how many folds the model beat both baselines
-in, because beating them in one fold out of four is not evidence of anything.
+**Once, and only after the research decisions are frozen:**
+
+```
+one sealed test evaluation
+```
+
+**Then:**
+
+```
+Freqtrade backtest  ->  dry-run
+```
+
+**Never:** tune repeatedly against the same test set. Each pass burns the only
+out-of-sample estimate the project has, and the damage is invisible — the
+numbers keep looking fine while meaning progressively less.
+
+### During development: leave test sealed
+
+```bash
+# one configuration
+python -m nn.train --dataset DATASET --validation-only --epochs 30
+
+# a predeclared grid
+python -m nn.experiment --dataset DATASET --seed 1 2 3 --lr 1e-4 3e-4 1e-3 --epochs 20
+
+# expanding-window walk-forward
+python -m nn.walkforward --dataset DATASET --folds 4 --epochs 20
+```
+
+`--validation-only` is research mode. It trains, early-stops, selects the
+decision threshold and reports on validation, and then stops. The test split is
+not scored, not printed, and — the part that matters — never windowed at all:
+`nn/train.py` contains exactly one block that builds test windows, and research
+mode skips it. The run says so on stdout, records `"test_evaluated": false` and
+`"research_only": true` in `report.json`, and the artifact it writes can never
+be promoted. `--promote` together with `--validation-only` is refused by the CLI,
+and `registry.promote()` refuses a `research_only` artifact even when called
+directly, so reaching past the CLI does not help.
+
+`nn.experiment` and `nn.walkforward` have no research mode to forget to switch
+on: neither one has any code path that windows test. All three entrypoints share
+one core in `nn/train.py` — `prepare_research_windows` and `fit_and_validate` —
+whose signatures take a training split and a validation split and nothing else.
+The guarantee is a property of those signatures, and
+`tests/test_research_workflow.py` asserts it by spying on `build_windows` and
+checking the test split never appears.
+
+### The experiment runner
+
+`nn.experiment` runs the full cartesian product of the values passed on the
+command line, over seven dimensions: `seed`, `lr`, `seq_len`, `d_model`,
+`n_heads`, `num_layers`, `dropout`. Omitting a flag pins that dimension to its
+`nn.train` default rather than searching it. The grid is enumerated and written
+out before any training starts, so what was searched is on the record.
+
+Configurations are ranked by a stated validation objective — `net_return`
+(default, net of the configured round-trip costs), `sharpe` or `macro_f1` —
+with macro F1 as the tie-break. Both baselines are refitted for every run and
+reported next to it, because a ranking of models against each other says nothing
+about whether any of them beat a rule.
+
+A configuration that raises is recorded with its error and appears in both
+output files and the console summary. It is never silently dropped: a grid that
+quietly shrinks is how a search comes to be reported over settings it never
+actually tried.
+
+Output: `artifacts/experiments/experiments.json` and `experiments.csv`.
+
+### Walk-forward validation
+
+`nn.walkforward` asks the harder question — does the *procedure* keep working as
+the market moves? The training window expands, and each fold is validated on the
+block immediately after it:
+
+```
+fold 0: [--- train ---][ val ]
+fold 1: [------ train ------][ val ]
+fold 2: [--------- train --------][ val ]
+```
+
+Sizes are configurable: `--folds`, `--min-train-frac` (or `--min-train-size`),
+`--val-frac` (or `--val-size`) and `--step`, which defaults to spreading the
+folds evenly over the rows after the first training window.
+
+Per fold, and asserted rather than intended:
+
+- the scaler is fitted on that fold's training rows only;
+- early stopping and threshold selection use that fold's validation rows only;
+- no input window or label horizon crosses a fold boundary, and none crosses a
+  market-data gap — folds go through the same `build_windows` segment check as
+  `nn.train`;
+- validation begins at or after the row where training ends, so no fold can be
+  influenced by rows a later fold validates on.
+
+Reported per fold and aggregated as mean ± standard deviation across folds:
+macro F1, directional accuracy, coverage, trade count, net return after costs,
+Sharpe, max drawdown — for the model and both baselines. The summary also counts
+how many folds the model beat both baselines in, because beating them in one
+fold out of four is not evidence of anything.
+
+**These are validation numbers.** Walk-forward is what makes it affordable to
+iterate without spending the sealed estimate; it is not itself an out-of-sample
+result. An earlier version of this module scored a per-fold test block, which
+meant every research iteration quietly consumed the thing the test split exists
+to provide.
 
 Output: `artifacts/walkforward/walkforward.json` and `walkforward.md`.
+
+### Spending the test split
+
+When the research decisions are frozen — architecture, hyperparameters, feature
+set, horizon — run training once without `--validation-only`:
+
+```bash
+python -m nn.train --dataset DATASET --epochs 30 --seq-len 64
+```
+
+That run scores test once, after the weights, scaler, threshold and
+early-stopping epoch are all frozen, and it is the only run whose artifact can
+be promoted. If the result disappoints, the honest options are to accept it or
+to collect more data — not to adjust and re-run. A number produced by the second
+attempt is not the same kind of number as one produced by the first.

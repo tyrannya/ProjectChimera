@@ -184,10 +184,23 @@ def promote(models_dir: str | Path, version: str) -> Path:
 
     Callers must have run :func:`check_gates` first; this function only writes
     the pointer, so there is exactly one place where a model becomes live.
+
+    Refuses artifacts written by a ``--validation-only`` research run. Those
+    have no out-of-sample estimate at all — their test split was deliberately
+    left sealed — so the refusal holds even when the caller reaches past the
+    ``nn.train`` CLI and calls this function directly.
     """
     models_dir = Path(models_dir)
     if not (models_dir / version).exists():
         raise FileNotFoundError(f"cannot promote unknown version {version}")
+
+    report_path = models_dir / version / "report.json"
+    if report_path.exists() and json.loads(report_path.read_text()).get("research_only"):
+        raise ValueError(
+            f"cannot promote {version}: it came from a validation-only research run, "
+            "so its test split was never scored. Retrain without --validation-only."
+        )
+
     pointer = models_dir / CURRENT_POINTER
     pointer.write_text(
         json.dumps(

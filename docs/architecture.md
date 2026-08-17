@@ -118,7 +118,8 @@ inputs computed differently than the ones it learned from.
 | `baselines.py` | Majority-class and momentum baselines the model must beat. |
 | `train.py` | The training entrypoint. |
 | `evaluate.py` | Classification and trading metrics; threshold selection. |
-| `walkforward.py` | Rolling-fold out-of-sample evaluation. |
+| `experiment.py` | Predeclared config grids, scored on validation only. |
+| `walkforward.py` | Expanding-window walk-forward *validation*. |
 | `registry.py` | Artifact save/load, promotion gates, `current.json`. |
 | `infer_service.py` | The FastAPI service. |
 
