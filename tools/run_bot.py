@@ -135,8 +135,14 @@ def main(argv: list[str] | None = None) -> int:
     missing: list[str] = []
     config = resolve_placeholders(config, missing)
 
+    # The committed live profile keeps dry_run=true and marks its intent, so
+    # that running Freqtrade directly against any file in conf/ cannot trade for
+    # real. --mode live is what asks; the gate below is what grants.
+    request_live = args.mode == "live" or config.get("chimera_live_intent") is True
+    config.pop("chimera_live_intent", None)
+
     try:
-        config = enforce_dry_run(config)
+        config = enforce_dry_run(config, request_live=request_live)
     except LiveTradingBlocked as exc:
         logger.error("%s", exc)
         logger.error(
@@ -192,8 +198,17 @@ def main(argv: list[str] | None = None) -> int:
         str(REPO_ROOT / "strategies"),
         *args.extra,
     ]
+    # Freqtrade's IResolver imports strategy modules by file path, so the
+    # repository root is not on sys.path in the child process and every
+    # `from chimera...` / `from strategies...` import in a strategy fails with
+    # "No module named". Verified with `freqtrade list-strategies`, which
+    # reports LOAD FAILED for all four strategies without this.
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{REPO_ROOT}{os.pathsep}{existing}" if existing else str(REPO_ROOT)
+
     logger.info("Starting: %s", " ".join(command))
-    return subprocess.call(command)
+    return subprocess.call(command, env=env)
 
 
 if __name__ == "__main__":

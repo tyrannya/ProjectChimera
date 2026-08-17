@@ -60,8 +60,15 @@ def test_test_configs_are_dry_run(exchange):
 
 
 @pytest.mark.parametrize("exchange", EXCHANGES)
-def test_live_configs_are_the_only_ones_asking_for_live(exchange):
-    assert load_config(exchange, "live")["dry_run"] is False
+def test_live_profiles_declare_intent_without_being_live(exchange):
+    """The live profile must be recognisable to the launcher yet inert on disk.
+
+    Previously these files carried dry_run=false, which meant the whole safety
+    system depended on the user entering through tools/run_bot.py.
+    """
+    config = load_config(exchange, "live")
+    assert config["dry_run"] is True
+    assert config["chimera_live_intent"] is True
 
 
 def test_no_config_contains_a_literal_credential():
@@ -248,7 +255,16 @@ def test_enforce_dry_run_is_what_blocks_the_launcher(monkeypatch):
     from chimera.safety import enforce_dry_run
 
     with pytest.raises(LiveTradingBlocked):
-        enforce_dry_run(load_config("binance", "live"))
+        enforce_dry_run(load_config("binance", "live"), request_live=True)
+
+
+def test_a_hand_edited_live_config_still_needs_the_acknowledgement():
+    """Defence in depth: no committed file sets dry_run=false, but if one ever
+    reaches the gate it must not sail through on the config alone."""
+    from chimera.safety import enforce_dry_run
+
+    with pytest.raises(LiveTradingBlocked):
+        enforce_dry_run({"dry_run": False})
 
 
 # --- repository hygiene ---------------------------------------------------------

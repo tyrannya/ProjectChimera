@@ -73,7 +73,7 @@ def test_metrics_module_defines_the_expected_families():
         "chimera_model_info",
         "chimera_last_successful_inference_timestamp",
         "chimera_service_up",
-        "chimera_data_staleness_seconds",
+        "chimera_data_delay_seconds",
     ):
         assert expected in names, f"{expected} is not exported"
 

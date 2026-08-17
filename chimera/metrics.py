@@ -100,9 +100,9 @@ SERVICE_UP = Gauge(f"{_PREFIX}_service_up", "1 when the component is ready", ["c
 API_FAILURES = Counter(
     f"{_PREFIX}_api_failures_total", "Outbound API call failures", ["component"]
 )
-DATA_STALENESS = Gauge(
-    f"{_PREFIX}_data_staleness_seconds",
-    "Age of the newest candle the strategy has seen",
+DATA_DELAY = Gauge(
+    f"{_PREFIX}_data_delay_seconds",
+    "Seconds the newest candle is late past its close (0 when on time)",
     ["pair"],
 )
 

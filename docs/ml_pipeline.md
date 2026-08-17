@@ -226,6 +226,48 @@ The previous code called `mlflow.register_model` twice per run and set the `prod
 alias unconditionally on completion — two versions per run, both auto-promoted,
 with no criterion at all.
 
+## Backtesting a saved model is guarded against in-sample evaluation
+
+`NNPredictorStrategy` can load one finished artifact and run it over any
+historical range. Features are causal, so that is computationally sound — but it
+is not automatically *statistically* out-of-sample. Backtesting a model trained
+through 2026-01 over 2025-01 to 2026-06 scores it largely on data it was fitted
+on, and the result looks excellent while meaning nothing.
+
+Artifacts therefore record temporal provenance:
+
+| Field | Meaning |
+| --- | --- |
+| `train_end` | last candle the **weights** saw |
+| `validation_end` | last candle the early-stopping epoch and threshold saw |
+| `training_cutoff` | `validation_end or train_end` — the real in-sample boundary |
+
+The cutoff is `validation_end`, not `train_end`: early stopping and the decision
+threshold were both fitted on validation, so data in between is in-sample too.
+
+Before an offline backtest emits a single signal, the strategy checks that its
+first *evaluated* candle is strictly after the cutoff, and raises
+`InSampleBacktestError` otherwise:
+
+```
+ML backtest overlaps the model training period for BTC/USDT. Model
+20260816T120000Z-a1b2c3 was fitted on data through 2025-06-01, but this
+backtest starts evaluating at 2025-03-01. Use data after 2025-06-01 or run
+nn.walkforward, which retrains per fold.
+```
+
+It raises rather than quietly holding over the overlapping stretch: a partially
+in-sample backtest that still prints a summary is more dangerous than a failed
+run, because the summary reads as a result. An artifact with no temporal
+metadata is refused too — "cannot prove it is out-of-sample" is not "safe".
+
+The check is on the first evaluated candle, not the first row: Freqtrade
+prepends `startup_candle_count` rows to warm indicators up, and those are inputs
+the strategy would equally have had live, not scored predictions.
+
+**Walk-forward remains the recommended research method** — it retrains per fold,
+so the question never arises.
+
 ## Walk-forward
 
 `nn.walkforward` repeats the whole procedure on rolling windows:

@@ -60,10 +60,10 @@ groups:
   - name: chimera-data
     rules:
       - alert: MarketDataStale
-        expr: chimera_data_staleness_seconds > 900
+        expr: chimera_data_delay_seconds > 900
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Market data for {{ $labels.pair }} is stale"
+          summary: "Market data for {{ $labels.pair }} is late"
           description: "The risk engine blocks entries on stale data."

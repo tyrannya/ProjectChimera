@@ -4,12 +4,21 @@ ProjectChimera is dry-run only unless the operator takes two independent,
 deliberate actions:
 
 1. set ``ENABLE_LIVE_TRADING`` to the exact token ``I_UNDERSTAND_THE_RISK``;
-2. pass a config that explicitly sets ``dry_run`` to ``false``.
+2. ask the launcher for live mode (``tools/run_bot.py --mode live``).
 
 Either one alone is not enough, and the presence of exchange API keys is never
-sufficient on its own. If the environment variable is absent or holds anything
-else, :func:`resolve_trading_mode` forces dry-run regardless of what the config
-file says.
+sufficient on its own.
+
+**No committed config is independently live-capable.** Every file in ``conf/``
+keeps ``dry_run: true``, including the ``*.live.json`` profiles, which instead
+carry ``"chimera_live_intent": true``. :func:`enforce_dry_run` is the only place
+in the repository that ever sets ``dry_run`` to ``False``, and it writes that to
+a private generated config rather than back to the tree. So pointing Freqtrade
+straight at a checked-in config cannot place a real order, and the safety system
+does not depend on the operator entering through the launcher.
+
+The config-level check remains as defence in depth: a hand-edited config that
+does set ``dry_run: false`` still has to pass the same acknowledgement gate.
 """
 
 from __future__ import annotations
@@ -65,35 +74,48 @@ class TradingMode:
         return not self.dry_run
 
 
-def resolve_trading_mode(config: Mapping[str, Any]) -> TradingMode:
+def resolve_trading_mode(config: Mapping[str, Any], request_live: bool = False) -> TradingMode:
     """Decide whether this process may trade live.
 
-    ``config`` is a parsed Freqtrade config. A missing ``dry_run`` key is
-    treated as dry-run, so a truncated or unexpected config fails closed.
+    Live trading needs a deliberate request *and* the environment
+    acknowledgement. There are two ways a request can arrive:
+
+    ``request_live``
+        the operator asked the launcher for live mode (``--mode live``). This is
+        the supported path, and the reason no committed config carries
+        ``dry_run: false``.
+
+    ``config["dry_run"] is False``
+        a config already asks for real orders. No committed file does, but a
+        hand-edited or generated one might, and it must still pass the gate
+        rather than sneak past it — defence in depth for anything that reaches
+        this function without going through the launcher.
+
+    A missing ``dry_run`` key is treated as dry-run, so a truncated or
+    unexpected config fails closed.
     """
-    wants_live = config.get("dry_run") is False
+    wants_live = request_live or config.get("dry_run") is False
     if not wants_live:
-        return TradingMode(dry_run=True, reason="config requests dry-run")
+        return TradingMode(dry_run=True, reason="dry-run requested")
     if not live_trading_acknowledged():
         raise LiveTradingBlocked(
-            f"config sets dry_run=false but {LIVE_TRADING_ENV_VAR} is not set to "
+            f"live trading was requested but {LIVE_TRADING_ENV_VAR} is not set to "
             f"{LIVE_TRADING_ACK!r}. Refusing to start: live trading requires an "
             "explicit acknowledgement in the environment."
         )
     return TradingMode(
         dry_run=False,
-        reason=(
-            f"config requests live trading and {LIVE_TRADING_ENV_VAR} " "acknowledges the risk"
-        ),
+        reason=f"live trading requested and {LIVE_TRADING_ENV_VAR} acknowledges the risk",
     )
 
 
-def enforce_dry_run(config: dict[str, Any]) -> dict[str, Any]:
+def enforce_dry_run(config: dict[str, Any], request_live: bool = False) -> dict[str, Any]:
     """Return ``config`` with ``dry_run`` set to the value the gate permits.
 
     Mutates and returns the mapping so it can be handed straight to Freqtrade.
+    This is the only place ``dry_run`` is ever set to ``False``.
     """
-    mode = resolve_trading_mode(config)
+    mode = resolve_trading_mode(config, request_live)
     config["dry_run"] = mode.dry_run
     if mode.live:
         logger.warning("LIVE TRADING ENABLED: %s", mode.reason)

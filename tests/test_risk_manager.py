@@ -120,8 +120,8 @@ def test_non_positive_equity_halts():
 # --- exposure and position count ------------------------------------------
 def test_max_open_positions_is_enforced():
     engine = RiskEngine(RiskLimits(max_open_positions=2))
-    engine.open_position("BTC/USDT", 100.0)
-    engine.open_position("ETH/USDT", 100.0)
+    engine.set_position_exposure("BTC/USDT", 100.0)
+    engine.set_position_exposure("ETH/USDT", 100.0)
     decision = entry(engine, pair="SOL/USDT")
     assert not decision.allowed
     assert "max open positions" in decision.reason
@@ -129,13 +129,13 @@ def test_max_open_positions_is_enforced():
 
 def test_existing_pair_may_still_be_added_to_at_the_position_cap():
     engine = RiskEngine(RiskLimits(max_open_positions=1))
-    engine.open_position("BTC/USDT", 100.0)
+    engine.set_position_exposure("BTC/USDT", 100.0)
     assert entry(engine, pair="BTC/USDT").allowed
 
 
 def test_total_exposure_cap_is_enforced():
     engine = RiskEngine(RiskLimits(max_total_exposure_pct=0.30, max_open_positions=10))
-    engine.open_position("ETH/USDT", 2_900.0)
+    engine.set_position_exposure("ETH/USDT", 2_900.0)
     decision = entry(engine)
     assert not decision.allowed
     assert "exposure" in decision.reason
@@ -195,9 +195,9 @@ def test_a_win_resets_the_loss_streak():
 
 
 def test_stale_market_data_blocks_entry():
-    engine = RiskEngine(RiskLimits(max_data_staleness_s=300))
-    assert not entry(engine, data_age_s=600).allowed
-    assert entry(engine, data_age_s=10).allowed
+    engine = RiskEngine(RiskLimits(max_data_delay_s=300))
+    assert not entry(engine, data_delay_s=600).allowed
+    assert entry(engine, data_delay_s=10).allowed
 
 
 def test_stale_inference_blocks_entry():

@@ -236,7 +236,7 @@
     },
     {
       "id": 8,
-      "title": "Market data staleness",
+      "title": "Market data delay past candle close",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -256,7 +256,7 @@
       },
       "targets": [
         {
-          "expr": "chimera_data_staleness_seconds",
+          "expr": "chimera_data_delay_seconds",
           "legendFormat": "{{pair}}",
           "refId": "A"
         }

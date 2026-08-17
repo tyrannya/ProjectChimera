@@ -102,6 +102,12 @@ class ModelMetadata:
     trained_at: str = ""
     dataset_start: str = ""
     dataset_end: str = ""
+    #: Last candle in the training split — the newest data the *weights* saw.
+    train_end: str = ""
+    #: Last candle in the validation split. Early stopping and the decision
+    #: threshold were fitted on validation, so this — not ``train_end`` — is the
+    #: point after which data is genuinely unseen. See :attr:`training_cutoff`.
+    validation_end: str = ""
     exchange: str = ""
     pair: str = ""
     timeframe: str = ""
@@ -111,6 +117,18 @@ class ModelMetadata:
     @property
     def n_features(self) -> int:
         return len(self.feature_names)
+
+    @property
+    def training_cutoff(self) -> str:
+        """Newest timestamp any fitted quantity in this artifact has seen.
+
+        Everything at or before it is in-sample: the weights were fitted on the
+        training split, and the early-stopping epoch and decision threshold were
+        chosen on validation. Only data strictly after this point is an honest
+        out-of-sample test. Empty when the artifact predates this field, which
+        callers must treat as "unknown", never as "safe".
+        """
+        return self.validation_end or self.train_end
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +144,8 @@ class ModelMetadata:
             "trained_at": self.trained_at,
             "dataset_start": self.dataset_start,
             "dataset_end": self.dataset_end,
+            "train_end": self.train_end,
+            "validation_end": self.validation_end,
             "exchange": self.exchange,
             "pair": self.pair,
             "timeframe": self.timeframe,
@@ -147,6 +167,8 @@ class ModelMetadata:
             trained_at=str(data.get("trained_at", "")),
             dataset_start=str(data.get("dataset_start", "")),
             dataset_end=str(data.get("dataset_end", "")),
+            train_end=str(data.get("train_end", "")),
+            validation_end=str(data.get("validation_end", "")),
             exchange=str(data.get("exchange", "")),
             pair=str(data.get("pair", "")),
             timeframe=str(data.get("timeframe", "")),

@@ -219,10 +219,12 @@ def test_inference_age_tracks_the_last_successful_prediction(strategy, candles):
     assert age is not None and age < 5
 
 
-def test_data_age_is_reported_for_the_risk_engine(strategy, candles):
-    now = pd.Timestamp(candles["date"].iloc[-1]).to_pydatetime() + timedelta(minutes=30)
-    age = strategy.data_age_seconds("BTC/USDT", now)
-    assert age == pytest.approx(1800, abs=1)
+def test_data_delay_is_reported_for_the_risk_engine(strategy, candles):
+    """Delay is measured past the candle's close, so a 1h candle sampled 90
+    minutes after it opened is 30 minutes late, not 90."""
+    now = pd.Timestamp(candles["date"].iloc[-1]).to_pydatetime() + timedelta(minutes=90)
+    delay = strategy.data_delay_seconds("BTC/USDT", now)
+    assert delay == pytest.approx(1800, abs=1)
 
 
 # --- risk integration ---------------------------------------------------------------

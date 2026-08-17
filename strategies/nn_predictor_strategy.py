@@ -43,12 +43,13 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from freqtrade.enums import RunMode
+from freqtrade.exchange import timeframe_to_seconds
 
 from chimera import metrics
 from chimera.contracts import Signal
@@ -60,6 +61,54 @@ logger = logging.getLogger(__name__)
 
 #: Numeric encoding of Signal for the dataframe columns.
 _SIGNAL_CODE = {Signal.SHORT: -1, Signal.HOLD: 0, Signal.LONG: 1}
+
+
+class InSampleBacktestError(RuntimeError):
+    """Raised when an offline backtest would score a model on its own training data."""
+
+
+def _assert_out_of_sample(first_evaluated, metadata, pair: str) -> None:
+    """Refuse to backtest a model over data it was fitted on.
+
+    An artifact can be pointed at any historical range, and evaluating one over
+    its own training period produces a backtest that looks excellent and means
+    nothing. Freqtrade cannot know this; only the artifact's temporal
+    provenance can tell us.
+
+    The check is on the first *evaluated* candle, not the first row of the
+    dataframe: Freqtrade prepends ``startup_candle_count`` rows to warm the
+    indicators up, and those are inputs the strategy would equally have had in
+    live trading, not scored predictions.
+
+    Raises rather than silently holding. A partially in-sample backtest that
+    quietly returns no signals for the overlapping stretch is a more dangerous
+    artefact than a failed run, because its summary still reads as a result.
+    """
+    cutoff = metadata.training_cutoff
+    if not cutoff:
+        raise InSampleBacktestError(
+            f"Model {metadata.model_version} has no training-cutoff metadata "
+            "(train_end/validation_end), so this backtest cannot be shown to be "
+            "out-of-sample. Retrain with the current nn.train, or use nn.walkforward."
+        )
+
+    cutoff_ts = pd.Timestamp(cutoff)
+    first_ts = pd.Timestamp(first_evaluated)
+    # Compare like with like: dataset timestamps are tz-aware UTC, but an
+    # artifact written from a naive frame may not be.
+    if cutoff_ts.tzinfo is None and first_ts.tzinfo is not None:
+        cutoff_ts = cutoff_ts.tz_localize("UTC")
+    elif cutoff_ts.tzinfo is not None and first_ts.tzinfo is None:
+        first_ts = first_ts.tz_localize("UTC")
+
+    if first_ts <= cutoff_ts:
+        raise InSampleBacktestError(
+            f"ML backtest overlaps the model training period for {pair}. "
+            f"Model {metadata.model_version} was fitted on data through "
+            f"{cutoff_ts.date()}, but this backtest starts evaluating at "
+            f"{first_ts.date()}. Use data after {cutoff_ts.date()} or run "
+            "nn.walkforward, which retrains per fold."
+        )
 
 
 class NNPredictorStrategy(RiskAwareStrategy):
@@ -197,6 +246,8 @@ class NNPredictorStrategy(RiskAwareStrategy):
         if rows.size == 0:
             return result
 
+        _assert_out_of_sample(dataframe["date"].iloc[rows[0]], metadata, pair)
+
         offsets = np.arange(-seq_len + 1, 1)
         windows = scaled[rows[:, None] + offsets[None, :]].astype(np.float32)
 
@@ -286,8 +337,18 @@ class NNPredictorStrategy(RiskAwareStrategy):
         return dataframe
 
     # ------------------------------------------------------------------
-    def data_age_seconds(self, pair: str, current_time: datetime) -> float | None:
-        """Age of the newest candle, for the risk engine's staleness guard."""
+    def data_delay_seconds(self, pair: str, current_time: datetime) -> float | None:
+        """How late the newest candle is past its close.
+
+        An OHLCV timestamp is the candle's **open** time, so measuring
+        ``now - date`` reports a just-closed 1h candle as 3600s old and the
+        300s guard rejected every entry. The candle's close is
+        ``open + timeframe``; Freqtrade computes candle age the same way in
+        ``IStrategy.ignore_expired_candle``.
+
+        Clamped at zero: near a boundary, or with mild clock skew, ``now`` can
+        fall a fraction before the close, and a negative delay is not staleness.
+        """
         if self.dp is None:
             return None
         try:
@@ -296,12 +357,19 @@ class NNPredictorStrategy(RiskAwareStrategy):
             return None
         if dataframe is None or dataframe.empty:
             return None
-        last = pd.Timestamp(dataframe["date"].iloc[-1]).to_pydatetime()
-        if last.tzinfo is None:
-            last = last.replace(tzinfo=timezone.utc)
-        age = (current_time - last).total_seconds()
-        metrics.DATA_STALENESS.labels(pair=pair).set(age)
-        return age
+
+        last_open = pd.Timestamp(dataframe["date"].iloc[-1]).to_pydatetime()
+        if last_open.tzinfo is None:
+            last_open = last_open.replace(tzinfo=timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+
+        # Freqtrade's own parser, so this agrees with the engine's notion of a
+        # timeframe for every value Freqtrade itself accepts.
+        close = last_open + timedelta(seconds=timeframe_to_seconds(self.timeframe))
+        delay = max(0.0, (current_time - close).total_seconds())
+        metrics.DATA_DELAY.labels(pair=pair).set(delay)
+        return delay
 
     def inference_age_seconds(self, pair: str) -> float | None:
         received = self._last_prediction_at.get(pair)

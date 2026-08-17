@@ -397,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
         trained_at=datetime.now(timezone.utc).isoformat(),
         dataset_start=ds_meta.start,
         dataset_end=ds_meta.end,
+        # Temporal provenance, so a later backtest can prove it is out-of-sample.
+        train_end=str(frame["date"].iloc[plan.train.end - 1]),
+        validation_end=str(frame["date"].iloc[plan.validation.end - 1]),
         exchange=ds_meta.exchange,
         pair=ds_meta.pair,
         timeframe=ds_meta.timeframe,

@@ -182,7 +182,7 @@ def run_smoke(workdir: Path, rows: int = 1200, epochs: int = 1, seq_len: int = 2
         equity=10_000.0,
         entry_price=entry_price,
         stop_price=entry_price * 0.95,
-        data_age_s=0.0,
+        data_delay_s=0.0,
         inference_age_s=0.0,
     )
     results["risk"] = {

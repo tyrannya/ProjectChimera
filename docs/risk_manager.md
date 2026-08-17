@@ -17,9 +17,52 @@ placing the order. Returning `False` stops the order.
 | Freqtrade callback | Risk engine action |
 | --- | --- |
 | `bot_loop_start` | `update_equity()` — recompute drawdown and daily loss, publish metrics |
-| `custom_stake_amount` | `position_size()` — risk-based sizing |
-| `confirm_trade_entry` | `evaluate_entry()` — **the gate** |
-| `order_filled` | `open_position()` / `close_position()` / `record_trade_result()` |
+| `custom_stake_amount` | `position_size()` — proposes risk-based sizing |
+| `leverage` | clamps to `max_leverage` and records it for the gate |
+| `confirm_trade_entry` | `evaluate_entry()` — **the gate**, on the real order |
+| `order_filled` | `set_position_exposure()` / `close_position()` / `record_trade_result()` |
+
+### The gate judges the actual order
+
+`custom_stake_amount` only *proposes* a size. Freqtrade then runs
+`get_valid_enter_price_and_stake`, which may raise the stake to the exchange
+minimum, cap it, or round it, and finally computes
+`amount = (stake / rate) * leverage` before calling `confirm_trade_entry`.
+
+So the gate reconstructs what is actually being committed:
+
+```
+committed stake = amount * rate / leverage
+```
+
+and applies every limit to *that*, additionally rejecting the entry if it
+exceeds what risk-based sizing would have allowed. An exchange minimum cannot
+silently inflate a position past the risk envelope — if it would, the trade is
+refused rather than taken at a size whose stated risk-per-trade is untrue.
+
+Freqtrade does not pass leverage to `confirm_trade_entry`, so the `leverage()`
+callback records it per pair. On spot it is always 1.0.
+
+### Exposure bookkeeping
+
+`order_filled` fires for **every** order reaching a closed state — entries,
+partial fills, position adjustments and partial exits — and Freqtrade recomputes
+`trade.stake_amount` as the trade's *total* stake each time. Exposure is
+therefore **set**, not accumulated: `set_position_exposure(pair, stake)`. Adding
+instead double-counted, reporting 400 of exposure for a 200 position that filled
+in two parts.
+
+State is keyed by pair because Freqtrade opens at most one trade per pair — it
+removes pairs with an open trade from the candidate whitelist. Position
+adjustments extend that one trade.
+
+**Order-rate accounting** counts orders this gate *approves for submission*,
+which is the rate the exchange actually sees. Rejected signals are not orders,
+and counting fills instead would let a burst of unfilled orders through.
+
+**Restart:** exposure is rebuilt from `order_filled` callbacks, so a restart
+starts from an empty map until orders fill. The halt flag, by contrast, is
+persisted — see the kill switch below.
 
 The gate is a synchronous local check. No network call, no external service, and
 nothing that can fail open.
@@ -96,12 +139,21 @@ The daily-loss budget resets when the UTC date changes.
 | `max_orders_per_minute` | 10 | **Halt** — a runaway loop is a bug, not a busy day |
 | `loss_streak_limit` | 3 | Start a cooldown |
 | `cooldown_seconds` | 3600 | Reject entries while active |
-| `max_data_staleness_s` | 300 | Reject entry |
+| `max_data_delay_s` | 300 | Reject entry |
 | `max_inference_staleness_s` | 300 | Reject entry |
 
-The staleness guards are fed by `data_age_seconds()` and
+The freshness guards are fed by `data_delay_seconds()` and
 `inference_age_seconds()`, which `NNPredictorStrategy` implements from the last
-candle timestamp and the last successful prediction.
+candle and the last successful prediction.
+
+**`max_data_delay_s` is a delay past the candle's close, not the candle's age.**
+An OHLCV timestamp is the candle's *open* time, so a 1h candle that has only
+just closed is already 3600s "old". Measuring age that way meant a 300s limit
+rejected every single NN entry. The guard now computes
+`now - (candle_open + timeframe)`, which is how Freqtrade itself measures candle
+age in `IStrategy.ignore_expired_candle`, and clamps at zero so clock skew near
+a boundary cannot read as staleness. Because it is a delay past close, one value
+is meaningful on any timeframe.
 
 ### Futures
 
@@ -164,7 +216,7 @@ decision = engine.evaluate_entry(
     equity=10_000.0,
     entry_price=60_000.0,
     stop_price=57_000.0,
-    data_age_s=30.0,
+    data_delay_s=30.0,
     inference_age_s=45.0,
 )
 

@@ -61,7 +61,13 @@ class RiskLimits:
     max_orders_per_minute: int = 10
     loss_streak_limit: int = 3
     cooldown_seconds: float = 3600.0
-    max_data_staleness_s: float = 300.0
+    #: How late the newest candle may be *past its close* before entries are
+    #: blocked. Not the candle's age: an OHLCV timestamp is the candle's OPEN
+    #: time, so a just-closed 1h candle is already 3600s "old" while being
+    #: perfectly fresh. Freqtrade measures the same way in
+    #: ``IStrategy.ignore_expired_candle``. Because this is a delay past close,
+    #: one value is meaningful across every timeframe.
+    max_data_delay_s: float = 300.0
     max_inference_staleness_s: float = 300.0
 
     # --- futures guards --------------------------------------------------
@@ -245,8 +251,25 @@ class RiskEngine:
         else:
             self.state.consecutive_losses = 0
 
-    def open_position(self, pair: str, stake: float) -> None:
-        self.state.open_positions[pair] = self.state.open_positions.get(pair, 0.0) + stake
+    def set_position_exposure(self, pair: str, stake: float) -> None:
+        """Record ``pair``'s *current total* exposure, replacing any previous value.
+
+        Assignment, not accumulation. Freqtrade calls ``order_filled`` once per
+        order that reaches a closed state — entries, partial fills, position
+        adjustments and partial exits alike — and
+        ``LocalTrade.recalc_trade_from_orders`` rewrites ``trade.stake_amount``
+        to the trade's total stake each time. Adding that total on every
+        callback double-counted: two fills of one 200 position reported 400.
+
+        Keyed by pair because Freqtrade opens at most one trade per pair — it
+        removes pairs with an open trade from the candidate whitelist in
+        ``FreqtradeBot.enter_positions``. Position adjustments extend that one
+        trade rather than creating a second.
+        """
+        if stake > 0:
+            self.state.open_positions[pair] = stake
+        else:
+            self.state.open_positions.pop(pair, None)
 
     def close_position(self, pair: str) -> None:
         self.state.open_positions.pop(pair, None)
@@ -317,7 +340,8 @@ class RiskEngine:
         entry_price: float,
         stop_price: float,
         leverage: float = 1.0,
-        data_age_s: float | None = None,
+        proposed_stake: float | None = None,
+        data_delay_s: float | None = None,
         inference_age_s: float | None = None,
         funding_rate: float | None = None,
         liquidation_price: float | None = None,
@@ -328,6 +352,18 @@ class RiskEngine:
         Checks run cheapest-and-most-fatal first. The returned reason is what
         gets logged and exported as a ``rejected_entries`` metric label, so it
         is written to be readable in a dashboard.
+
+        ``proposed_stake`` is the stake the caller is *actually about to
+        commit*, in quote currency. When it is given, every limit is applied to
+        that number and the trade is additionally rejected if it exceeds what
+        risk-based sizing would have allowed — so an exchange minimum, a
+        rounding step or any other Freqtrade adjustment cannot quietly inflate a
+        position past the risk envelope. When it is omitted the engine falls
+        back to its own sizing, which is what a caller that has not yet built an
+        order (a pre-trade check) needs.
+
+        ``data_delay_s`` is how late the newest candle is *past its close*, not
+        its age since opening. See :attr:`RiskLimits.max_data_delay_s`.
         """
         lim = self.limits
 
@@ -344,10 +380,11 @@ class RiskEngine:
         if equity <= 0:
             return RiskDecision(False, "no equity")
 
-        if data_age_s is not None and data_age_s > lim.max_data_staleness_s:
+        if data_delay_s is not None and data_delay_s > lim.max_data_delay_s:
             return RiskDecision(
                 False,
-                f"market data stale: {data_age_s:.0f}s > {lim.max_data_staleness_s:.0f}s",
+                f"market data late: {data_delay_s:.0f}s past candle close > "
+                f"{lim.max_data_delay_s:.0f}s",
             )
 
         if inference_age_s is not None and inference_age_s > lim.max_inference_staleness_s:
@@ -386,9 +423,25 @@ class RiskEngine:
                     f"{lim.min_liquidation_distance_pct:.2%}",
                 )
 
-        stake = self.position_size(equity, entry_price, stop_price, leverage)
-        if stake <= 0:
+        allowed_stake = self.position_size(equity, entry_price, stop_price, leverage)
+        if allowed_stake <= 0:
             return RiskDecision(False, "position sizing returned zero stake")
+
+        stake = allowed_stake if proposed_stake is None else proposed_stake
+        if stake <= 0:
+            return RiskDecision(False, "order stake is zero")
+
+        # An exchange minimum, a precision step or any other Freqtrade
+        # adjustment may have raised the order above what risk-based sizing
+        # permits. Getting filled at a size we would never have chosen is the
+        # failure this check exists to stop; taking the trade anyway would mean
+        # the stated risk-per-trade is simply untrue.
+        if stake > allowed_stake + 1e-9:
+            return RiskDecision(
+                False,
+                f"order stake {stake:.2f} exceeds the risk-based maximum "
+                f"{allowed_stake:.2f}",
+            )
 
         projected = self.total_exposure + stake
         if projected > equity * lim.max_total_exposure_pct:

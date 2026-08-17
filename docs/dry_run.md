@@ -79,7 +79,7 @@ $ echo $?
 | `chimera_drawdown` | Grafana / Trading | Distance below peak equity |
 | `chimera_predictions_total` | Grafana / ML | If everything is HOLD, the model is not trading |
 | `chimera_inference_errors_total` | Grafana / ML | Client/service disagreement or an outage |
-| `chimera_data_staleness_seconds` | Grafana / ML | Above `max_data_staleness_s`, entries are blocked |
+| `chimera_data_delay_seconds` | Grafana / ML | Seconds past candle close; above `max_data_delay_s`, entries are blocked |
 
 An all-HOLD prediction stream is normal on a fresh or under-trained model and is
 the intended failure mode, not a bug.

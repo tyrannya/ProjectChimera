@@ -232,15 +232,25 @@ panel and alert rule queries a metric this code actually exports.
 ProjectChimera is dry-run only unless **two independent things** are true:
 
 1. `ENABLE_LIVE_TRADING` is set to exactly `I_UNDERSTAND_THE_RISK`; **and**
-2. the config explicitly sets `"dry_run": false` (`conf/<exchange>.live.json`).
+2. the launcher is asked for live mode (`--mode live`, which selects
+   `conf/<exchange>.live.json`).
 
 Neither alone is enough. In particular:
 
 - **Having exchange API keys does not enable live trading.**
-- Setting `dry_run: false` without the environment variable aborts the launch
+- Asking for `--mode live` without the environment variable aborts the launch
   with exit code 2, before any config is written.
-- Setting the environment variable without a live config still runs dry-run.
+- Setting the environment variable without asking for live mode still runs dry-run.
 - A config with no `dry_run` key at all is treated as dry-run — it fails closed.
+
+**No committed config file is independently live-capable.** Every file in
+`conf/` — including the `.live.json` profiles — keeps `dry_run: true`. The live
+profiles mark themselves with `"chimera_live_intent": true`, and
+`tools/run_bot.py` is the only thing that ever sets `dry_run: false`, writing it
+to a private generated config after the gate passes. Cloning this repository and
+pointing Freqtrade straight at any committed config cannot place a real order,
+so the safety system does not depend on the user entering through the launcher.
+A test asserts this over every file in `conf/`.
 
 The gate lives in `chimera/safety.py` and is enforced by `tools/run_bot.py`
 before Freqtrade starts. `tests/test_safety.py` and `tests/test_config_and_cli.py`
