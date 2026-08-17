@@ -9,7 +9,7 @@ The pipeline, in order, with the leakage-relevant step called out at each turn:
 2. load the dataset built by ``tools/build_features.py``;
 3. split chronologically into train / validation / test (``nn.dataset``);
 4. **fit the scaler on training rows only**, then transform all three;
-5. build windows so no sample straddles a split boundary;
+5. build windows so no sample straddles a split or market-data gap boundary;
 6. fit the baselines on training data;
 7. train, selecting the best epoch **on validation**;
 8. select the decision threshold **on validation**;
@@ -280,6 +280,16 @@ def main(argv: list[str] | None = None) -> int:
     features = frame[feature_names].to_numpy(dtype=np.float64)
     targets = frame["target"].to_numpy(dtype=np.int64)
     future_return = frame["future_return"].to_numpy(dtype=np.float64)
+    segment_ids = (
+        frame["segment_id"].to_numpy(dtype=np.int64)
+        if "segment_id" in frame.columns
+        else None
+    )
+    if segment_ids is None and int(ds_meta.validation.get("gap_count", 0)) > 0:
+        logger.warning(
+            "Dataset reports market-data gaps but has no segment_id column; "
+            "rebuild it with the current tools.build_features before trusting this run."
+        )
 
     plan = chronological_split(len(frame), args.train_frac, args.val_frac)
     logger.info("Split plan: %s", json.dumps(plan.to_dict()))
@@ -289,7 +299,14 @@ def main(argv: list[str] | None = None) -> int:
     scaled = scaler.transform(features)
 
     windows = {
-        split.name: build_windows(scaled, targets, split, args.seq_len, target_spec.horizon)
+        split.name: build_windows(
+            scaled,
+            targets,
+            split,
+            args.seq_len,
+            target_spec.horizon,
+            segment_ids=segment_ids,
+        )
         for split in plan
     }
     for name, (X, _, _) in windows.items():
