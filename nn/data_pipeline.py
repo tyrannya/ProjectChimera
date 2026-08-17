@@ -55,6 +55,26 @@ def timeframe_to_minutes(timeframe: str) -> int:
     return count * _TIMEFRAME_MINUTES[timeframe[-1]]
 
 
+def _contiguous_segment_ids(dates: pd.Series, timeframe: str) -> pd.Series:
+    """Return monotonically increasing ids for uninterrupted candle runs.
+
+    A new segment begins whenever the elapsed time differs from exactly one
+    requested candle. Features, targets and sequence windows must never bridge
+    such a boundary: doing so would silently turn a multi-hour outage into one
+    apparent one-hour transition.
+    """
+    if len(dates) == 0:
+        return pd.Series(dtype="int64", index=dates.index)
+    if not timeframe:
+        return pd.Series(np.zeros(len(dates), dtype=np.int64), index=dates.index)
+
+    step = pd.Timedelta(minutes=timeframe_to_minutes(timeframe))
+    parsed = pd.to_datetime(dates, utc=True)
+    breaks = parsed.diff().ne(step)
+    breaks.iloc[0] = True
+    return (breaks.cumsum() - 1).astype("int64")
+
+
 @dataclass
 class ValidationReport:
     """What :func:`validate_ohlcv` found. Logged, and stored with the dataset."""
@@ -224,10 +244,14 @@ def build_dataset(
     timeframe: str = "",
     validation: Mapping[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, DatasetMetadata]:
-    """Join causal features to cost-aware labels.
+    """Join causal features to cost-aware labels without crossing data gaps.
 
-    Three trims happen here, and each removes rows that would otherwise be a
-    lie:
+    Each uninterrupted candle run is processed independently. This means an
+    exchange outage resets rolling/EMA state, and neither a feature nor a target
+    can use prices from the other side of a missing-candle gap.
+
+    Within every segment three trims happen, and each removes rows that would
+    otherwise be a lie:
 
     * the first ``feature_spec.warmup`` rows, where indicators have not
       converged;
@@ -240,30 +264,47 @@ def build_dataset(
     if ohlcv.empty:
         raise DataValidationError("cannot build a dataset from an empty frame")
 
-    features = compute_features(ohlcv, feature_spec)
-    target = compute_target(ohlcv["close"], target_spec)
-    future_return = compute_future_return(ohlcv["close"], target_spec.horizon)
+    source = ohlcv.reset_index(drop=True).copy()
+    source["date"] = pd.to_datetime(source["date"], utc=True)
+    source["segment_id"] = _contiguous_segment_ids(source["date"], timeframe).to_numpy()
 
-    frame = pd.concat(
-        [
-            ohlcv[["date", "close"]].reset_index(drop=True),
-            features.reset_index(drop=True),
-            future_return.rename("future_return").reset_index(drop=True),
-            target.rename("target").reset_index(drop=True),
-        ],
-        axis=1,
-    )
+    blocks: list[pd.DataFrame] = []
+    for segment_id, group in source.groupby("segment_id", sort=True):
+        candles = group[["date", *OHLCV_COLUMNS]].reset_index(drop=True)
+        features = compute_features(candles, feature_spec)
+        target = compute_target(candles["close"], target_spec)
+        future_return = compute_future_return(candles["close"], target_spec.horizon)
 
-    warmup = min(feature_spec.warmup, len(frame))
-    frame = frame.iloc[warmup:]
-    frame = frame.dropna().reset_index(drop=True)
-    frame["target"] = frame["target"].astype("int64")
+        block = pd.concat(
+            [
+                candles[["date", "close"]].reset_index(drop=True),
+                pd.Series(segment_id, index=candles.index, name="segment_id", dtype="int64"),
+                features.reset_index(drop=True),
+                future_return.rename("future_return").reset_index(drop=True),
+                target.rename("target").reset_index(drop=True),
+            ],
+            axis=1,
+        )
 
-    if frame.empty:
+        warmup = min(feature_spec.warmup, len(block))
+        block = block.iloc[warmup:].dropna().reset_index(drop=True)
+        if not block.empty:
+            blocks.append(block)
+
+    if not blocks:
         raise DataValidationError(
             f"no rows survived warm-up ({feature_spec.warmup}) and horizon "
             f"({target_spec.horizon}); supply a longer history"
         )
+
+    frame = pd.concat(blocks, ignore_index=True)
+
+    # A feature can itself become undefined on an otherwise valid candle (for
+    # example volume_change immediately after zero volume). After dropping such
+    # a row, split the final dataset again so sequence windows cannot jump over
+    # the missing observation either.
+    frame["segment_id"] = _contiguous_segment_ids(frame["date"], timeframe).to_numpy()
+    frame["target"] = frame["target"].astype("int64")
 
     counts = frame["target"].value_counts().to_dict()
     metadata = DatasetMetadata(
