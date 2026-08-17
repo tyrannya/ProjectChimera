@@ -281,9 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     targets = frame["target"].to_numpy(dtype=np.int64)
     future_return = frame["future_return"].to_numpy(dtype=np.float64)
     segment_ids = (
-        frame["segment_id"].to_numpy(dtype=np.int64)
-        if "segment_id" in frame.columns
-        else None
+        frame["segment_id"].to_numpy(dtype=np.int64) if "segment_id" in frame.columns else None
     )
     if segment_ids is None and int(ds_meta.validation.get("gap_count", 0)) > 0:
         logger.warning(
