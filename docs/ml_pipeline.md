@@ -233,6 +233,24 @@ The previous code called `mlflow.register_model` twice per run and set the `prod
 alias unconditionally on completion — two versions per run, both auto-promoted,
 with no criterion at all.
 
+### Promotion fails closed
+
+Beyond the gates, `promote()` reads the artifact's own `report.json` and
+requires positive evidence that the sealed test split was actually spent:
+
+| Condition | Result |
+| --- | --- |
+| `research_only: false` **and** `test_evaluated: true` | may be promoted |
+| `research_only: true` (a `--validation-only` run) | refused |
+| `test_evaluated: false` | refused |
+| either field missing, null, or not a boolean | refused |
+| `report.json` missing or unparseable | refused |
+
+Absence of a warning is not evidence. An artifact whose provenance cannot be
+read is one whose out-of-sample performance is unknown, and "unknown" must not
+resolve to "serve it". Research artifacts are still written and kept — they are
+useful for inspection — they simply cannot become `current.json`.
+
 ## Backtesting a saved model is guarded against in-sample evaluation
 
 `NNPredictorStrategy` can load one finished artifact and run it over any
@@ -349,7 +367,16 @@ output files and the console summary. It is never silently dropped: a grid that
 quietly shrinks is how a search comes to be reported over settings it never
 actually tried.
 
-Output: `artifacts/experiments/experiments.json` and `experiments.csv`.
+The grid is written to `experiment_plan.json` **before the first model trains**,
+and that file is not rewritten afterwards — a plan that only appears once the
+results are in is a description of what finished, not a predeclaration. The
+manifest carries a `plan_hash` over the grid, the fixed parameters and the
+dataset, which the results file repeats, so results can be tied back to the plan
+they came from. Running a different grid into a directory that already holds a
+plan is refused rather than allowed to overwrite the record.
+
+Output: `artifacts/experiments/experiment_plan.json` (written first),
+`experiments.json` and `experiments.csv`.
 
 ### Walk-forward validation
 
@@ -363,12 +390,21 @@ fold 1: [------ train ------][ val ]
 fold 2: [--------- train --------][ val ]
 ```
 
-Sizes are configurable: `--folds`, `--min-train-frac` (or `--min-train-size`),
-`--val-frac` (or `--val-size`) and `--step`, which defaults to spreading the
-folds evenly over the rows after the first training window.
+**Folds are planned over the research region only** — rows `[0,
+sealed_test_start)`, where the boundary comes from
+`nn.dataset.sealed_test_start` under the same 70/15/15 contract `nn.train` uses.
+`--train-frac` and `--val-frac` locate that boundary and do nothing else.
+
+Fold geometry is configurable as fractions *of the research region*: `--folds`,
+`--min-train-frac` (or `--min-train-size`), `--fold-val-frac` (or
+`--fold-val-size`) and `--step`, which defaults to spreading the folds evenly
+over the research region after the first training window. Asking for more rows
+than the research region holds is an error — the sealed rows are never borrowed
+to make up the difference.
 
 Per fold, and asserted rather than intended:
 
+- no planned row, training or validation, reaches the sealed boundary;
 - the scaler is fitted on that fold's training rows only;
 - early stopping and threshold selection use that fold's validation rows only;
 - no input window or label horizon crosses a fold boundary, and none crosses a
@@ -385,11 +421,26 @@ fold out of four is not evidence of anything.
 
 **These are validation numbers.** Walk-forward is what makes it affordable to
 iterate without spending the sealed estimate; it is not itself an out-of-sample
-result. An earlier version of this module scored a per-fold test block, which
-meant every research iteration quietly consumed the thing the test split exists
-to provide.
+result.
 
-Output: `artifacts/walkforward/walkforward.json` and `walkforward.md`.
+Two earlier versions got this wrong, in ways worth recording because the second
+looked fine:
+
+1. The first scored an explicit per-fold **test** block, so every research
+   iteration consumed the estimate outright.
+2. Its replacement stopped naming any split "test", but still planned folds over
+   the whole dataset. With the default geometry the last two validation windows
+   landed inside the sealed block — on a 56,726-row dataset, 1,890 and 8,508
+   rows past the boundary. The output read `test_evaluated: false` and was
+   wrong: those were sealed rows labelled "validation".
+
+Renaming a split does not unseal its rows. That is why the boundary is a row
+index both modules compute the same way, and why the regression tests compare
+row indices instead of split names — a name-based check is exactly what let the
+second bug through.
+
+Output: `artifacts/walkforward/walkforward.json` (which records
+`sealed_test.start_row` and the sealed period) and `walkforward.md`.
 
 ### Spending the test split
 

@@ -85,6 +85,24 @@ def chronological_split(
     )
 
 
+def sealed_test_start(n_rows: int, train_frac: float = 0.7, val_frac: float = 0.15) -> int:
+    """First row of the sealed test block: the boundary research must not cross.
+
+    Delegates to :func:`chronological_split` with the same defaults ``nn.train``
+    uses, so the single-split trainer and the walk-forward planner cannot
+    disagree by a row about where sealed data begins. Research tooling plans
+    over ``[0, sealed_test_start)`` and nothing else.
+
+    Naming a split "validation" does not make its rows unsealed. Walk-forward
+    once planned folds over the whole dataset, which put its last two validation
+    windows inside the test block — the metrics were labelled validation and
+    were, in substance, test. This function exists so that boundary is a number
+    both sides compute the same way, and so tests can assert on row indices
+    rather than on split names.
+    """
+    return chronological_split(n_rows, train_frac, val_frac).test.start
+
+
 def window_indices(split: Split, seq_len: int, horizon: int) -> np.ndarray:
     """Row indices that can produce a valid sample inside ``split``.
 

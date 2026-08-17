@@ -181,6 +181,11 @@ def test_a_badly_calibrated_model_is_rejected():
     assert any("calibration" in f for f in failures)
 
 
+#: The minimum a report must say for promote() to accept the artifact: this run
+#: was not research, and it did score the sealed test split.
+SEALED_REPORT = {"research_only": False, "test_evaluated": True}
+
+
 def test_training_alone_does_not_promote(tmp_path, config, metadata):
     """Saving an artifact must not make it live; only promote() does that."""
     save_model(tmp_path, "v1", MTST(config), metadata)
@@ -189,7 +194,7 @@ def test_training_alone_does_not_promote(tmp_path, config, metadata):
 
 
 def test_promote_points_current_at_the_version(tmp_path, config, metadata):
-    save_model(tmp_path, "v1", MTST(config), metadata)
+    save_model(tmp_path, "v1", MTST(config), metadata, SEALED_REPORT)
     promote(tmp_path, "v1")
     assert resolve_current(tmp_path) == tmp_path / "v1"
 
@@ -200,7 +205,7 @@ def test_promoting_an_unknown_version_raises(tmp_path):
 
 
 def test_a_dangling_pointer_raises(tmp_path, config, metadata):
-    save_model(tmp_path, "v1", MTST(config), metadata)
+    save_model(tmp_path, "v1", MTST(config), metadata, SEALED_REPORT)
     promote(tmp_path, "v1")
     (tmp_path / "current.json").write_text(json.dumps({"version": "deleted"}))
     with pytest.raises(FileNotFoundError, match="not in"):

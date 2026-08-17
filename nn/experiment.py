@@ -3,9 +3,12 @@
     python -m nn.experiment --dataset data/datasets/binance_BTC_USDT_1h.parquet \
         --seed 1 2 --lr 1e-4 3e-4 --seq-len 32 64 --epochs 10
 
-Runs a **predeclared** grid — the full cartesian product of the values given on
-the command line, enumerated and written to the output file *before* any
-training starts — and scores every configuration on validation.
+Runs a **predeclared** grid: the full cartesian product of the values given on
+the command line, enumerated and written to ``experiment_plan.json`` *before the
+first model trains*, then scored on validation. The manifest is written once and
+never rewritten, so what was searched is on the record even if the run is
+interrupted, and a results file can be checked against the plan it came from
+through the ``plan_hash`` both carry.
 
 The test split is never touched. Not "not by default": this module has no code
 path that windows it. It calls :func:`nn.train.prepare_research_windows`, whose
@@ -25,19 +28,22 @@ its failures is worse than none:
 * **It does not claim profitability.** It ranks configurations by a stated
   validation objective. That is a selection signal, not a result.
 
-Output: ``experiments.json`` (full reports) and ``experiments.csv`` (one row per
-run, for a spreadsheet or a plot).
+Output: ``experiment_plan.json`` (the manifest, written first),
+``experiments.json`` (full reports) and ``experiments.csv`` (one row per run,
+for a spreadsheet or a plot).
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import itertools
 import json
 import logging
 import sys
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -116,6 +122,89 @@ def build_grid(values: dict[str, list[Any]], base: RunConfig) -> list[RunConfig]
         replace(base, **dict(zip(GRID_DIMENSIONS, combination)))
         for combination in itertools.product(*axes)
     ]
+
+
+PLAN_FILE = "experiment_plan.json"
+
+
+def build_plan(
+    args: argparse.Namespace,
+    configs: list[RunConfig],
+    data: Any,
+    plan: Any,
+    argv: list[str] | None,
+) -> dict[str, Any]:
+    """The immutable manifest: everything decided before any model was trained.
+
+    ``plan_hash`` covers the grid, the fixed parameters and the dataset — the
+    inputs that define the search — so a results file can be tied back to the
+    plan it came from, and a plan that was quietly edited between the manifest
+    and the results does not match.
+    """
+    manifest = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "argv": list(argv) if argv is not None else sys.argv[1:],
+        "dataset": data.ds_meta.to_dict(),
+        "dataset_path": args.dataset,
+        "split_plan": plan.to_dict(),
+        "periods": {
+            "train": data.period(plan.train),
+            "validation": data.period(plan.validation),
+        },
+        "sealed_test": {
+            "start_row": plan.test.start,
+            "period": data.period(plan.test),
+            "evaluated": False,
+        },
+        "objective": args.objective,
+        "grid": {name: getattr(args, name) for name in GRID_DIMENSIONS},
+        "fixed": {
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "patience": args.patience,
+            "train_frac": args.train_frac,
+            "val_frac": args.val_frac,
+            "device": args.device,
+        },
+        "n_runs": len(configs),
+        "runs": [
+            {"run_id": run_id, "config": config.to_dict()}
+            for run_id, config in enumerate(configs)
+        ],
+    }
+    material = json.dumps(
+        {
+            "grid": manifest["grid"],
+            "fixed": manifest["fixed"],
+            "objective": manifest["objective"],
+            "dataset": manifest["dataset"],
+            "runs": manifest["runs"],
+        },
+        sort_keys=True,
+        default=str,
+    )
+    manifest["plan_hash"] = hashlib.sha256(material.encode()).hexdigest()[:16]
+    return manifest
+
+
+def write_plan(out_dir: Path, manifest: dict[str, Any]) -> Path:
+    """Persist the manifest, refusing to clobber a different existing plan.
+
+    An experiment directory holds one plan. Overwriting it with a different one
+    would leave results that silently belong to a search nobody can reconstruct.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / PLAN_FILE
+    if path.exists():
+        existing = json.loads(path.read_text())
+        if existing.get("plan_hash") != manifest["plan_hash"]:
+            raise SystemExit(
+                f"{path} already holds a different experiment plan "
+                f"({existing.get('plan_hash')} != {manifest['plan_hash']}). Use a new "
+                "--out directory rather than overwriting the record of what was run."
+            )
+    path.write_text(json.dumps(manifest, indent=2, default=str))
+    return path
 
 
 def flatten_run(record: dict[str, Any], objective_name: str) -> dict[str, Any]:
@@ -252,13 +341,23 @@ def main(argv: list[str] | None = None) -> int:
     base = RunConfig(epochs=args.epochs, batch_size=args.batch_size, patience=args.patience)
     configs = build_grid({name: getattr(args, name) for name in GRID_DIMENSIONS}, base)
 
+    # The manifest goes to disk before a single weight is initialised: a
+    # predeclared grid that is only written out once the results are in is not
+    # predeclared, it is a description of what happened to finish.
+    out_dir = Path(args.out)
+    manifest = build_plan(args, configs, data, plan, argv)
+    plan_path = write_plan(out_dir, manifest)
     logger.warning(
-        "Validation-only experiment: %d configurations, validation rows %s to %s. "
-        "The test split (%d rows) REMAINS SEALED.",
+        "Wrote the experiment plan (%d configurations, plan_hash %s) to %s before "
+        "training. Validation rows %s to %s; the test split (%d rows, from row %d) "
+        "REMAINS SEALED.",
         len(configs),
+        manifest["plan_hash"],
+        plan_path,
         data.period(plan.validation)["start"],
         data.period(plan.validation)["end"],
         len(plan.test),
+        plan.test.start,
     )
 
     records: list[dict[str, Any]] = []
@@ -312,28 +411,20 @@ def main(argv: list[str] | None = None) -> int:
     failed = [r for r in records if r["status"] != "ok"]
     ranked = ok + sorted(failed, key=lambda r: r["run_id"])
 
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "experiments.json").write_text(
         json.dumps(
             {
-                "argv": list(argv) if argv is not None else sys.argv[1:],
-                "dataset": data.ds_meta.to_dict(),
-                "split_plan": plan.to_dict(),
-                "periods": {
-                    "train": data.period(plan.train),
-                    "validation": data.period(plan.validation),
-                },
+                "plan_hash": manifest["plan_hash"],
+                "plan_file": PLAN_FILE,
+                "argv": manifest["argv"],
+                "dataset": manifest["dataset"],
+                "split_plan": manifest["split_plan"],
+                "periods": manifest["periods"],
+                "sealed_test": manifest["sealed_test"],
                 "test_evaluated": False,
                 "objective": args.objective,
-                "grid": {name: getattr(args, name) for name in GRID_DIMENSIONS},
-                "fixed": {
-                    "epochs": args.epochs,
-                    "batch_size": args.batch_size,
-                    "patience": args.patience,
-                    "train_frac": args.train_frac,
-                    "val_frac": args.val_frac,
-                },
+                "grid": manifest["grid"],
+                "fixed": manifest["fixed"],
                 "n_runs": len(records),
                 "n_failed": len(failed),
                 "runs": ranked,

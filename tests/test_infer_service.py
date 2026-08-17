@@ -42,7 +42,15 @@ def models_dir(tmp_path):
         pair="BTC/USDT",
         timeframe="1h",
     )
-    save_model(tmp_path, "test-v1", MTST(config).eval(), metadata)
+    # promote() fails closed, so the fixture must look like what it stands in
+    # for: an artifact from a run that actually scored the sealed test split.
+    save_model(
+        tmp_path,
+        "test-v1",
+        MTST(config).eval(),
+        metadata,
+        {"research_only": False, "test_evaluated": True},
+    )
     promote(tmp_path, "test-v1")
     return tmp_path
 

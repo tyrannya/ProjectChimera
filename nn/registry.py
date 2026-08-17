@@ -179,27 +179,72 @@ def check_gates(
     return (not failures), failures
 
 
+def require_sealed_test_evidence(model_dir: str | Path, version: str) -> dict[str, Any]:
+    """Read ``report.json`` and insist it proves the sealed test was spent.
+
+    **Fails closed.** Promotion requires positive evidence, not the absence of a
+    warning: the report must exist, parse, and say in as many words that this
+    was not a research run (``research_only: false``) and that the test split
+    was actually evaluated (``test_evaluated: true``). A missing report, a
+    corrupt one, missing fields, or anything other than those exact booleans is
+    a refusal.
+
+    The earlier version refused only when a report existed *and* said
+    ``research_only: true``, so every ambiguous case — no report, truncated
+    write, an artifact from an older or hand-rolled pipeline — promoted
+    silently. Ambiguity about whether a model has ever been scored
+    out-of-sample is not a reason to serve it.
+    """
+    report_path = Path(model_dir) / "report.json"
+    if not report_path.exists():
+        raise ValueError(
+            f"cannot promote {version}: no report.json in {model_dir}. Promotion "
+            "requires a report proving the sealed test split was evaluated."
+        )
+    try:
+        report = json.loads(report_path.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"cannot promote {version}: report.json is not readable JSON ({exc})."
+        ) from exc
+    if not isinstance(report, dict):
+        raise ValueError(
+            f"cannot promote {version}: report.json is a {type(report).__name__}, "
+            "not an object."
+        )
+
+    if report.get("research_only") is not False:
+        raise ValueError(
+            f"cannot promote {version}: report.json does not state "
+            f"'research_only': false (found {report.get('research_only')!r}). A "
+            "validation-only research run leaves the test split sealed, so it has "
+            "no out-of-sample estimate. Retrain without --validation-only."
+        )
+    if report.get("test_evaluated") is not True:
+        raise ValueError(
+            f"cannot promote {version}: report.json does not state "
+            f"'test_evaluated': true (found {report.get('test_evaluated')!r}). Only "
+            "a run that actually scored the held-out test split may be promoted."
+        )
+    return report
+
+
 def promote(models_dir: str | Path, version: str) -> Path:
     """Point ``current.json`` at ``version``.
 
     Callers must have run :func:`check_gates` first; this function only writes
     the pointer, so there is exactly one place where a model becomes live.
 
-    Refuses artifacts written by a ``--validation-only`` research run. Those
-    have no out-of-sample estimate at all — their test split was deliberately
-    left sealed — so the refusal holds even when the caller reaches past the
-    ``nn.train`` CLI and calls this function directly.
+    Promotion also requires the artifact itself to carry evidence that the
+    sealed test split was evaluated — see :func:`require_sealed_test_evidence`.
+    That check lives here rather than in the CLI so it holds when a caller
+    reaches past ``nn.train`` and promotes directly.
     """
     models_dir = Path(models_dir)
     if not (models_dir / version).exists():
         raise FileNotFoundError(f"cannot promote unknown version {version}")
 
-    report_path = models_dir / version / "report.json"
-    if report_path.exists() and json.loads(report_path.read_text()).get("research_only"):
-        raise ValueError(
-            f"cannot promote {version}: it came from a validation-only research run, "
-            "so its test split was never scored. Retrain without --validation-only."
-        )
+    require_sealed_test_evidence(models_dir / version, version)
 
     pointer = models_dir / CURRENT_POINTER
     pointer.write_text(

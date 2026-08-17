@@ -18,11 +18,23 @@ threshold there. Nothing carries between folds, and validation always begins at
 or after the row where training ends — asserted in
 ``tests/test_research_workflow.py``, not merely intended.
 
-**This is a validation tool.** It reports validation metrics per fold and
-aggregates them; it never scores the test split. That is the point: walk-forward
-is what you use *during* research, so that the single sealed test evaluation
-stays worth having. Earlier versions of this module scored a per-fold test
-block, which quietly spent that estimate every time anyone iterated.
+**This is a validation tool, and it is bounded.** Folds are planned over
+``[0, sealed_test_start)`` — the rows before the sealed test block under the
+same 70/15/15 contract ``nn.train`` uses — and never over the dataset length.
+That distinction is the whole safeguard, and it was learned the hard way twice:
+
+* an early version scored an explicit per-fold *test* block, spending the sealed
+  estimate on every research iteration;
+* its replacement stopped naming any split "test" but still planned folds over
+  all rows, so with the default geometry the last two validation windows landed
+  inside the sealed block. The output said ``test_evaluated: false`` and was
+  wrong — the rows were sealed rows wearing the label "validation".
+
+Renaming a split does not unseal its rows. So the boundary is a row index that
+both this module and ``nn.train`` compute through
+:func:`nn.dataset.sealed_test_start`, the planner takes that index rather than
+``n_rows``, and ``tests/test_research_workflow.py`` asserts on row indices —
+never on split names, which is exactly the check that missed it.
 
 Results are written as JSON and a short Markdown summary, with the baselines
 alongside every fold — a model that beats its baselines in one fold out of four
@@ -39,7 +51,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from nn.dataset import Split
+from nn.dataset import Split, sealed_test_start
 from nn.train import (
     ResearchData,
     RunConfig,
@@ -66,16 +78,24 @@ SUMMARY_METRICS = {
 
 
 def plan_expanding_folds(
-    n_rows: int, folds: int, min_train: int, val_size: int, step: int
+    boundary: int, folds: int, min_train: int, val_size: int, step: int
 ) -> list[tuple[Split, Split]]:
     """Expanding training windows, each validated on the block right after it.
+
+    ``boundary`` is the first sealed row — normally
+    :func:`nn.dataset.sealed_test_start`. **Every row this function hands out,
+    training and validation alike, is strictly below it.** The planner takes the
+    boundary rather than the dataset length precisely because the two are not
+    the same number: planning over the dataset length is what silently walked
+    the last folds into the sealed block.
 
     Fold ``k`` trains on rows ``[0, min_train + k*step)`` and validates on the
     ``val_size`` rows that follow. Training therefore only ever grows forward in
     time, and no fold's validation rows are available to an earlier fold.
 
-    Raises when the dataset is too short for the requested plan, rather than
-    quietly returning fewer folds than asked for.
+    Raises when the research region is too short for the requested plan, rather
+    than quietly returning fewer folds than asked for — or, worse, borrowing the
+    rows it is short by from the sealed block.
     """
     if folds < 1:
         raise ValueError("folds must be at least 1")
@@ -86,11 +106,12 @@ def plan_expanding_folds(
         )
 
     needed = min_train + step * (folds - 1) + val_size
-    if needed > n_rows:
+    if needed > boundary:
         raise ValueError(
             f"need {needed} rows for {folds} expanding folds with min_train={min_train}, "
-            f"val_size={val_size}, step={step}; the dataset has {n_rows}. Reduce "
-            "--folds, --min-train-frac or --val-frac."
+            f"val_size={val_size}, step={step}, but only {boundary} rows lie before the "
+            "sealed test block. Reduce --folds, --min-train-frac or --fold-val-frac; "
+            "the sealed rows are not available to make up the difference."
         )
 
     plans = []
@@ -102,6 +123,16 @@ def plan_expanding_folds(
                 Split("validation", train_end, train_end + val_size),
             )
         )
+
+    # The arithmetic above already guarantees this; assert it anyway, because
+    # the failure it guards against is invisible in the output — sealed rows
+    # scored under the name "validation" look exactly like validation.
+    for train_split, val_split in plans:
+        if train_split.end > boundary or val_split.end > boundary:
+            raise AssertionError(
+                f"fold plan crosses the sealed boundary {boundary}: "
+                f"train ends {train_split.end}, validation ends {val_split.end}"
+            )
     return plans
 
 
@@ -174,13 +205,18 @@ def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def to_markdown(results: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+def to_markdown(
+    results: list[dict[str, Any]], summary: dict[str, Any], sealed: dict[str, Any]
+) -> str:
     lines = [
         "# Walk-forward validation",
         "",
         "Expanding training window; each fold is validated on the block that follows",
         "it. Every fold refits its scaler, retrains, and selects its own threshold.",
-        "**The test split was not evaluated.**",
+        "",
+        f"**Sealed test block:** rows {sealed['row_range'][0]}-{sealed['row_range'][1]}, "
+        f"{sealed['start'][:10]} to {sealed['end'][:10]}. No fold below plans, trains",
+        "on, or scores a row at or after that boundary.",
         "",
         "| fold | train period | validation period | model | trades | net return | "
         "Sharpe | max DD | macro F1 | dir acc | coverage |",
@@ -243,23 +279,40 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--out", default="artifacts/walkforward")
     parser.add_argument("--folds", type=int, default=4)
+    # The sealed-test contract, with the same flags and defaults as nn.train.
+    # Walk-forward uses them for one purpose: to locate the first sealed row.
     parser.add_argument(
-        "--min-train-frac",
+        "--train-frac",
         type=float,
-        default=0.5,
-        help="Fraction of the dataset in the first fold's training window.",
-    )
-    parser.add_argument(
-        "--min-train-size", type=int, default=None, help="Rows; overrides --min-train-frac."
+        default=0.70,
+        help="nn.train's train fraction. Used only to locate the sealed test block.",
     )
     parser.add_argument(
         "--val-frac",
         type=float,
         default=0.15,
-        help="Fraction of the dataset in each fold's validation window.",
+        help="nn.train's validation fraction. Used only to locate the sealed test block.",
+    )
+
+    # Fold geometry. These fractions are of the *research* region — the rows
+    # before the sealed boundary — not of the whole dataset.
+    parser.add_argument(
+        "--min-train-frac",
+        type=float,
+        default=0.5,
+        help="Fraction of the research region in the first fold's training window.",
     )
     parser.add_argument(
-        "--val-size", type=int, default=None, help="Rows; overrides --val-frac."
+        "--min-train-size", type=int, default=None, help="Rows; overrides --min-train-frac."
+    )
+    parser.add_argument(
+        "--fold-val-frac",
+        type=float,
+        default=0.15,
+        help="Fraction of the research region in each fold's validation window.",
+    )
+    parser.add_argument(
+        "--fold-val-size", type=int, default=None, help="Rows; overrides --fold-val-frac."
     )
     parser.add_argument(
         "--step",
@@ -267,7 +320,7 @@ def build_argparser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Rows the training window grows by between folds. Defaults to spreading "
-            "the folds evenly over the rows after the first training window."
+            "the folds evenly over the research region after the first training window."
         ),
     )
     parser.add_argument("--epochs", type=int, default=10)
@@ -284,16 +337,21 @@ def build_argparser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_sizes(args: argparse.Namespace, n_rows: int) -> tuple[int, int, int]:
-    """Turn the CLI's fractions into row counts."""
-    min_train = args.min_train_size or int(n_rows * args.min_train_frac)
-    val_size = args.val_size or int(n_rows * args.val_frac)
+def resolve_sizes(args: argparse.Namespace, research_rows: int) -> tuple[int, int, int]:
+    """Turn the CLI's fractions into row counts.
+
+    ``research_rows`` is the number of rows before the sealed boundary, never
+    the dataset length: every fraction here is a fraction of what research is
+    allowed to use.
+    """
+    min_train = args.min_train_size or int(research_rows * args.min_train_frac)
+    val_size = args.fold_val_size or int(research_rows * args.fold_val_frac)
     if args.step is not None:
         step = args.step
     elif args.folds > 1:
-        # Spread the remaining folds evenly over whatever is left after the
-        # first training window and one validation window.
-        step = max(1, (n_rows - min_train - val_size) // (args.folds - 1))
+        # Spread the remaining folds evenly over whatever is left of the
+        # research region after the first training and validation windows.
+        step = max(1, (research_rows - min_train - val_size) // (args.folds - 1))
     else:
         step = 1
     return min_train, val_size, step
@@ -304,16 +362,22 @@ def main(argv: list[str] | None = None) -> int:
     args = build_argparser().parse_args(argv)
 
     data = load_research_data(args.dataset)
-    min_train, val_size, step = resolve_sizes(args, data.n_rows)
-    folds = plan_expanding_folds(data.n_rows, args.folds, min_train, val_size, step)
+    boundary = sealed_test_start(data.n_rows, args.train_frac, args.val_frac)
+    sealed_split = Split("sealed_test", boundary, data.n_rows)
+    min_train, val_size, step = resolve_sizes(args, boundary)
+    folds = plan_expanding_folds(boundary, args.folds, min_train, val_size, step)
     logger.warning(
-        "%d expanding folds over %d rows (min_train=%d, val=%d, step=%d). "
-        "Validation only: the test split is NOT evaluated here.",
+        "%d expanding folds over rows [0, %d) of %d (min_train=%d, val=%d, step=%d). "
+        "The sealed test block starts at row %d (%s) and is NOT planned over, "
+        "trained on, or evaluated.",
         len(folds),
+        boundary,
         data.n_rows,
         min_train,
         val_size,
         step,
+        boundary,
+        data.period(sealed_split)["start"],
     )
 
     run = RunConfig(
@@ -344,6 +408,12 @@ def main(argv: list[str] | None = None) -> int:
                 "dataset": data.ds_meta.to_dict(),
                 "config": vars(args),
                 "sizes": {"min_train": min_train, "val_size": val_size, "step": step},
+                "sealed_test": {
+                    "start_row": boundary,
+                    "period": data.period(sealed_split),
+                    "evaluated": False,
+                },
+                "research_rows": boundary,
                 "test_evaluated": False,
                 "folds": results,
                 "summary": summary,
@@ -352,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
             default=str,
         )
     )
-    markdown = to_markdown(results, summary)
+    markdown = to_markdown(results, summary, sealed=data.period(sealed_split))
     (out_dir / "walkforward.md").write_text(markdown)
     print(markdown)
     logger.info("Wrote results to %s", out_dir)

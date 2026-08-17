@@ -245,17 +245,26 @@ def prepare_research_windows(
         )
 
     scaler = StandardScaler().fit(data.features[train_split.start : train_split.end])
-    scaled = scaler.transform(data.features)
+
+    # Everything below works on rows [0, val_split.end) only. Rows after this
+    # fold are not merely unused — they are not in the arrays that get scaled
+    # and windowed, so no later row can reach a metric even by accident. The
+    # last sample a split can emit has its label at row ``end - 1``, so this
+    # prefix is exactly enough (asserted in tests/test_research_workflow.py).
+    visible = val_split.end
+    scaled = scaler.transform(data.features[:visible])
+    targets = data.targets[:visible]
+    segment_ids = None if data.segment_ids is None else data.segment_ids[:visible]
 
     built = []
     for split in (train_split, val_split):
         X, y, idx = build_windows(
             scaled,
-            data.targets,
+            targets,
             split,
             seq_len,
             data.target_spec.horizon,
-            segment_ids=data.segment_ids,
+            segment_ids=segment_ids,
         )
         if len(X) == 0:
             raise ValueError(
