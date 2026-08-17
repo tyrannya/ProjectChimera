@@ -17,6 +17,11 @@ computed from a price that falls in the validation block, and a validation
 window can never contain a training row. That is the embargo — it comes from
 the index arithmetic, not from a fudge factor.
 
+When ``segment_ids`` are supplied, windows and their label horizon are also
+required to stay inside one contiguous market-data segment. This prevents a
+missing exchange candle from being silently treated as if two non-adjacent
+hours were adjacent observations.
+
 **The scaler is fitted on training rows only** and applied unchanged to
 validation and test.
 """
@@ -103,15 +108,21 @@ def build_windows(
     split: Split,
     seq_len: int,
     horizon: int,
+    *,
+    segment_ids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Materialise ``(X, y, row_index)`` for one split.
 
-    ``X`` has shape ``(n_samples, seq_len, n_features)``.
+    ``X`` has shape ``(n_samples, seq_len, n_features)``. If ``segment_ids`` is
+    provided, a candidate is kept only when both its whole input sequence and
+    its embargoed label row belong to the same contiguous data segment.
     """
     if features.ndim != 2:
         raise ValueError(f"features must be 2-D, got shape {features.shape}")
     if len(features) != len(targets):
         raise ValueError("features and targets must have the same length")
+    if segment_ids is not None and len(segment_ids) != len(features):
+        raise ValueError("segment_ids must have the same length as features")
 
     idx = window_indices(split, seq_len, horizon)
     if idx.size == 0:
@@ -124,6 +135,16 @@ def build_windows(
     # Gather windows without a Python loop over samples.
     offsets = np.arange(-seq_len + 1, 1)
     window_rows = idx[:, None] + offsets[None, :]
+
+    if segment_ids is not None:
+        segments = np.asarray(segment_ids)
+        current_segment = segments[idx]
+        input_is_contiguous = (segments[window_rows] == current_segment[:, None]).all(axis=1)
+        label_is_contiguous = segments[idx + horizon] == current_segment
+        keep = input_is_contiguous & label_is_contiguous
+        idx = idx[keep]
+        window_rows = window_rows[keep]
+
     X = features[window_rows].astype(np.float32)
     y = targets[idx].astype(np.int64)
     return X, y, idx
