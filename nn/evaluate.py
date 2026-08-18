@@ -241,9 +241,7 @@ def trading_metrics(
     horizon = target_spec.horizon
     cost = target_spec.cost_threshold
     n = len(signals)
-    _, _, returns = realised_trades(
-        signals, future_return, target_spec, row_index=row_index
-    )
+    _, _, returns = realised_trades(signals, future_return, target_spec, row_index=row_index)
 
     n_trades = len(returns)
     if n_trades == 0:
@@ -351,9 +349,7 @@ def select_threshold(
 
     for threshold in grid:
         signals = signals_from_proba(proba, float(threshold))
-        report = trading_metrics(
-            signals, future_return, target_spec, row_index=row_index
-        )
+        report = trading_metrics(signals, future_return, target_spec, row_index=row_index)
         if report["n_trades"] < min_trades:
             continue
         score = report["net_return"]
