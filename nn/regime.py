@@ -58,12 +58,6 @@ from nn.dataset import Split, sample_indices
 
 logger = logging.getLogger(__name__)
 
-#: Feature columns to summarise, and which statistics each one gets.
-#:
-#: Keyed by the feature's real name in the dataset, never by column position:
-#: the feature contract is recorded in the artifact and can change between
-#: dataset builds, and a positional read would silently summarise the wrong
-#: column when it does.
 FEATURE_STATS: dict[str, tuple[str, ...]] = {
     "ema_cross": ("mean", "median", "std", "fraction_positive", "fraction_negative"),
     "ema_fast_ratio": ("mean", "median"),
@@ -96,13 +90,11 @@ class RegimeDataError(Exception):
 class ResearchFrame:
     """The processed dataset, already truncated at the sealed boundary."""
 
-    #: Rows ``[0, sealed_test_start)`` and nothing else.
     frame: pd.DataFrame
     sealed_test_start: int
     feature_names: list[str]
     target_spec: TargetSpec
     timeframe: str
-    #: Contiguous market-data segments, or ``None`` when the dataset has none.
     segment_ids: np.ndarray | None = None
 
     def block(self, start: int, end: int) -> pd.DataFrame:
@@ -117,14 +109,8 @@ class ResearchFrame:
         return self.frame.iloc[start:end]
 
     def scored_rows(self, start: int, end: int, seq_len: int) -> np.ndarray:
-        """The rows in ``[start, end)`` the model was actually evaluated on.
-
-        Delegates to :func:`nn.dataset.sample_indices`, so this is the same set
-        ``build_windows`` produced during the run — window warm-up, label
-        embargo and market-gap filtering included — rather than a second reading
-        of the same rules.
-        """
-        self.block(start, end)  # boundary check, before any index arithmetic
+        """The rows in ``[start, end)`` the model was actually evaluated on."""
+        self.block(start, end)
         idx = sample_indices(
             Split("outer_validation", start, end),
             seq_len,
@@ -139,12 +125,6 @@ class ResearchFrame:
         return idx
 
 
-#: Dataset identity fields checked against the artifact before anything is read.
-#:
-#: `rows` first, because a row-count mismatch is the one that makes every index
-#: mean a different candle. The rest catch a dataset that happens to be the same
-#: length: a different pair, exchange, timeframe, span, feature contract or
-#: target definition is a different experiment however well the shapes line up.
 IDENTITY_FIELDS = (
     "rows",
     "exchange",
@@ -159,7 +139,7 @@ IDENTITY_FIELDS = (
 
 
 def _identity_mismatch(name: str, actual: Any, expected: Any) -> str | None:
-    """Compare one identity field, normalising the containers JSON round-trips."""
+    """Compare one identity field, normalising containers that JSON round-trips."""
     if expected is None:
         return None
     if isinstance(expected, Mapping):
@@ -177,15 +157,7 @@ def load_research_frame(
     sealed_test_start: int,
     identity: Mapping[str, Any] | None = None,
 ) -> ResearchFrame:
-    """Read the processed dataset and cut it at the sealed boundary immediately.
-
-    ``identity`` is the artifact's ``dataset`` block. Every field it carries that
-    :class:`~nn.data_pipeline.DatasetMetadata` also records is checked before
-    anything is computed, because a row index is only a claim about a candle if
-    the dataset is the one the index was recorded against — and a wrong file with
-    a coincidentally matching row count would otherwise be read as if it were the
-    right one.
-    """
+    """Read the processed dataset and cut it at the sealed boundary immediately."""
     frame, meta = load_dataset(path)
     n_rows = len(frame)
     identity = dict(identity or {})
@@ -207,8 +179,6 @@ def load_research_frame(
             + "; ".join(problems)
         )
 
-    # The metadata is a sidecar and can be stale or hand-edited; the frame's own
-    # timestamps are the thing the row indices actually point into.
     dates = pd.to_datetime(frame["date"], utc=True)
     for label, recorded, observed in (
         ("start", meta.start, dates.iloc[0]),
@@ -226,8 +196,6 @@ def load_research_frame(
             f"only {n_rows} rows"
         )
 
-    # The slice is the safeguard: sealed rows leave the process here, once, and
-    # nothing downstream has to remember not to look at them.
     research = frame.iloc[:sealed_test_start].copy()
     research["date"] = dates.iloc[:sealed_test_start].to_numpy()
     segment_ids = (
@@ -252,14 +220,7 @@ def _summarise(values: np.ndarray, statistics: Sequence[str]) -> dict[str, float
 def block_statistics(
     research: ResearchFrame, start: int, end: int, seq_len: int
 ) -> dict[str, Any]:
-    """What the processed dataset says about the rows the model was scored on.
-
-    Not the rows of the block. An outer block of ``n`` rows yields fewer than
-    ``n`` samples — the first ``seq_len - 1`` cannot open a window, the last
-    ``horizon`` cannot close a label, and gap-straddling candidates are dropped —
-    and these statistics exist to interpret a number computed over the samples.
-    Both counts are reported so the gap between them is visible.
-    """
+    """What the processed dataset says about the rows the model was scored on."""
     scored = research.scored_rows(start, end, seq_len)
     block = research.frame.iloc[scored]
     future_return = block["future_return"].to_numpy(dtype=np.float64)
@@ -293,7 +254,6 @@ def block_statistics(
     return {
         "row_range": [start, end],
         "block_rows": end - start,
-        # Every statistic below is over these rows, and only these rows.
         "scored_rows": len(scored),
         "scored_row_range": [int(scored[0]), int(scored[-1]) + 1],
         "seq_len": seq_len,
@@ -315,14 +275,8 @@ def block_statistics(
     }
 
 
-# --- raw OHLCV ----------------------------------------------------------------
 def load_raw_ohlcv(path: str | Path) -> pd.DataFrame:
-    """Read raw candles as a timestamp-indexed lookup table.
-
-    Fails closed on anything that would make a timestamp join ambiguous. The
-    alternative — dropping duplicates and carrying on — produces a table that
-    joins successfully and answers about the wrong candle.
-    """
+    """Read raw candles as a timestamp-indexed lookup table."""
     frame = pd.read_parquet(path)
     missing = [c for c in ("date", *OHLCV_COLUMNS) if c not in frame.columns]
     if missing:
@@ -344,13 +298,7 @@ def load_raw_ohlcv(path: str | Path) -> pd.DataFrame:
 
 
 def align_raw(raw: pd.DataFrame, timestamps: pd.Series, timeframe: str) -> pd.DataFrame:
-    """Match processed timestamps to raw candles exactly. Never positionally.
-
-    The processed dataset dropped warm-up and label rows, so processed row *i*
-    and raw row *i* are different candles. Any missing timestamp is an error:
-    silently returning the rows that did match would report a regime computed
-    over a different set of hours than the fold was scored on.
-    """
+    """Match processed timestamps to raw candles exactly. Never positionally."""
     wanted = pd.to_datetime(pd.Series(timestamps).reset_index(drop=True), utc=True)
     if wanted.duplicated().any():
         raise RegimeDataError("the processed block contains duplicate timestamps")
@@ -377,13 +325,7 @@ def align_raw(raw: pd.DataFrame, timestamps: pd.Series, timeframe: str) -> pd.Da
 def raw_block_statistics(
     raw: pd.DataFrame, timestamps: pd.Series, timeframe: str
 ) -> dict[str, Any]:
-    """Market behaviour over one outer block, from the raw candles it covers.
-
-    Candle-to-candle returns are taken only between timestamps exactly one
-    timeframe apart. A gap in the exchange's history is not a price move, and
-    treating it as one would put a fabricated jump in the volatility estimate;
-    the count of skipped pairs is reported instead of hidden.
-    """
+    """Market behaviour over one outer block, from the raw candles it covers."""
     candles = align_raw(raw, timestamps, timeframe)
     close = candles["close"].to_numpy(dtype=np.float64)
     open_ = candles["open"].to_numpy(dtype=np.float64)
@@ -414,7 +356,6 @@ def raw_block_statistics(
         "mean_abs_candle_return": (
             round(float(np.abs(returns).mean()), 8) if returns.size else 0.0
         ),
-        # A candle is positive when it closed above its own open.
         "positive_candle_fraction": round(float((close > open_).mean()), 8),
         "negative_candle_fraction": round(float((close < open_).mean()), 8),
         "max_drawdown": round(float((1.0 - close / peak).max()), 8),
@@ -422,7 +363,6 @@ def raw_block_statistics(
     }
 
 
-# --- LONG / SHORT attribution --------------------------------------------------
 PREDICTION_COLUMNS = (
     "fold",
     "seed",
@@ -467,6 +407,52 @@ def _prediction_artifact(path: Path, sealed_test_start: int) -> dict[str, Any]:
     return artifact
 
 
+def _integral_column(frame: pd.DataFrame, column: str, path: Path) -> np.ndarray:
+    """Return an integer column without silently truncating malformed floats."""
+    try:
+        numeric = pd.to_numeric(frame[column], errors="raise").to_numpy(dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise RegimeDataError(f"{path} has non-numeric {column} values") from exc
+    if not np.isfinite(numeric).all():
+        raise RegimeDataError(f"{path} has non-finite {column} values")
+    integer = numeric.astype(np.int64)
+    if not np.array_equal(numeric, integer.astype(np.float64)):
+        raise RegimeDataError(f"{path} has non-integral {column} values")
+    return integer
+
+
+def _prediction_report(part: pd.DataFrame, artifact: Mapping[str, Any], threshold: float) -> dict:
+    """Recompute the MTST report from persisted rows to bind parquet to JSON content."""
+    target_raw = (artifact.get("dataset") or {}).get("target_spec")
+    timeframe = (artifact.get("dataset") or {}).get("timeframe") or "1h"
+    if not isinstance(target_raw, Mapping):
+        raise RegimeDataError("walkforward artifact has no dataset.target_spec")
+    target_spec = TargetSpec.from_dict(target_raw)
+    candles_per_year = 365 * 24 * 60 / timeframe_to_minutes(str(timeframe))
+
+    ordered = part.sort_values("row_index")
+    proba = ordered[["p_short", "p_hold", "p_long"]].to_numpy(dtype=np.float64)
+    if not np.isfinite(proba).all():
+        raise RegimeDataError("prediction probabilities contain non-finite values")
+    actions = _integral_column(ordered, "selected_action", Path("outer_predictions.parquet"))
+    recomputed_actions = ev.signals_from_proba(proba, threshold)
+    if not np.array_equal(actions, recomputed_actions):
+        raise RegimeDataError(
+            "persisted selected_action does not match probabilities and selected threshold"
+        )
+
+    targets = _integral_column(ordered, "true_target", Path("outer_predictions.parquet"))
+    return ev.evaluate(
+        proba,
+        targets,
+        ordered["future_return"].to_numpy(dtype=np.float64),
+        target_spec,
+        threshold,
+        candles_per_year=candles_per_year,
+        row_index=ordered["row_index"].to_numpy(dtype=np.int64),
+    )
+
+
 def _validate_predictions_against_artifact(
     frame: pd.DataFrame, artifact: Mapping[str, Any], path: Path
 ) -> None:
@@ -480,10 +466,15 @@ def _validate_predictions_against_artifact(
             f"{path.parent / 'walkforward.json'} has no integer config.seed to validate"
         )
 
-    try:
-        actual_folds = set(frame["fold"].astype(int).tolist())
-    except (TypeError, ValueError) as exc:
-        raise RegimeDataError(f"{path} has non-integer fold values") from exc
+    fold_values = _integral_column(frame, "fold", path)
+    seed_values = _integral_column(frame, "seed", path)
+    row_values = _integral_column(frame, "row_index", path)
+    frame = frame.copy()
+    frame["fold"] = fold_values
+    frame["seed"] = seed_values
+    frame["row_index"] = row_values
+
+    actual_folds = set(fold_values.tolist())
     expected_folds = {int(fold.get("fold", position)) for position, fold in enumerate(folds)}
     if actual_folds != expected_folds:
         raise RegimeDataError(
@@ -493,7 +484,7 @@ def _validate_predictions_against_artifact(
 
     for position, fold in enumerate(folds):
         fold_id = int(fold.get("fold", position))
-        part = frame[frame["fold"].astype(int) == fold_id]
+        part = frame[frame["fold"] == fold_id]
         samples = (fold.get("samples") or {}).get("outer_validation")
         if samples is None:
             raise RegimeDataError(
@@ -504,8 +495,7 @@ def _validate_predictions_against_artifact(
                 f"{path} fold {fold_id} has {len(part)} rows, artifact scored {samples}"
             )
 
-        periods = fold.get("periods") or {}
-        outer = (periods.get("outer_validation") or {}).get("row_range")
+        outer = ((fold.get("periods") or {}).get("outer_validation") or {}).get("row_range")
         if not isinstance(outer, list) or len(outer) != 2:
             raise RegimeDataError(
                 f"artifact fold {fold_id} has no outer_validation row_range to validate {path}"
@@ -521,7 +511,7 @@ def _validate_predictions_against_artifact(
                 f"range [{start}, {end})"
             )
 
-        seeds = set(part["seed"].astype(int).tolist())
+        seeds = set(part["seed"].tolist())
         expected_seed = base_seed + fold_id
         if seeds != {expected_seed}:
             raise RegimeDataError(
@@ -529,25 +519,38 @@ def _validate_predictions_against_artifact(
                 f"only {expected_seed} from artifact config.seed={base_seed}"
             )
 
-        expected_threshold = float((fold.get("selection") or {}).get("threshold"))
+        threshold_raw = (fold.get("selection") or {}).get("threshold")
+        if threshold_raw is None:
+            raise RegimeDataError(f"artifact fold {fold_id} has no selection.threshold")
+        expected_threshold = float(threshold_raw)
         thresholds = part["threshold"].to_numpy(dtype=np.float64)
-        if not np.allclose(thresholds, expected_threshold, rtol=0.0, atol=1e-12):
+        if not np.isfinite(thresholds).all() or not np.allclose(
+            thresholds, expected_threshold, rtol=0.0, atol=1e-12
+        ):
             raise RegimeDataError(
                 f"{path} fold {fold_id} threshold does not match artifact selection "
                 f"threshold {expected_threshold}"
             )
 
+        recorded_report = (fold.get("outer_validation") or {}).get("mtst")
+        if not isinstance(recorded_report, Mapping):
+            raise RegimeDataError(f"artifact fold {fold_id} has no outer_validation.mtst report")
+        try:
+            recomputed_report = _prediction_report(part, artifact, expected_threshold)
+        except (TypeError, ValueError) as exc:
+            raise RegimeDataError(
+                f"{path} fold {fold_id} cannot be recomputed against its artifact: {exc}"
+            ) from exc
+        if recomputed_report != dict(recorded_report):
+            raise RegimeDataError(
+                f"{path} fold {fold_id} does not reproduce the artifact's MTST report; "
+                "the parquet is stale, unrelated, or was produced under different "
+                "evaluation semantics"
+            )
+
 
 def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFrame:
-    """Read outer predictions only after proving they belong to their artifact.
-
-    The conventional filename is not identity. A reused output directory can
-    contain a parquet from an interrupted or older run, so the adjacent JSON
-    must explicitly declare the file and its folds, seeds, row ranges, sample
-    counts and selected thresholds must match before attribution is allowed.
-    The source directory is retained as an internal run identity so two
-    independent runs with the same seed never become one trade stream.
-    """
+    """Read outer predictions only after proving they belong to their artifact."""
     path = Path(path)
     artifact = _prediction_artifact(path, sealed_test_start)
     frame = pd.read_parquet(path)
@@ -557,7 +560,8 @@ def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFram
     if frame.empty:
         raise RegimeDataError(f"{path} contains no predictions")
 
-    highest = int(frame["row_index"].max())
+    row_values = _integral_column(frame, "row_index", path)
+    highest = int(row_values.max())
     if highest >= sealed_test_start:
         raise RegimeDataError(
             f"{path} contains row {highest}, at or beyond the sealed test block starting "
@@ -566,6 +570,9 @@ def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFram
 
     _validate_predictions_against_artifact(frame, artifact, path)
     frame = frame.copy()
+    frame["fold"] = _integral_column(frame, "fold", path)
+    frame["seed"] = _integral_column(frame, "seed", path)
+    frame["row_index"] = row_values
     frame["_run_name"] = path.parent.name
     return frame
 
@@ -573,24 +580,7 @@ def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFram
 def direction_attribution(
     predictions: pd.DataFrame, target_spec: TargetSpec
 ) -> dict[str, Any]:
-    """Split realised trades into LONG and SHORT, with the same cost model.
-
-    The trades come from :func:`nn.evaluate.realised_trades` — the function
-    ``trading_metrics`` itself uses — so the two sides partition exactly the
-    trades produced under the same gap-aware row-index semantics, and no second
-    transaction-cost implementation exists to drift from the first.
-
-    What it does **not** give you is a decomposition of the fold's net return.
-    That figure compounds; ``additive_trade_return_sum`` adds. The two sides'
-    sums therefore do not add up to the reported net return, and the field is
-    named for what it is rather than for what it would be convenient to call it.
-
-    Trades are generated per source run, fold and training seed. Source-run
-    identity matters even when two independent runs intentionally reused the
-    same ``--seed``. Non-overlap is enforced against persisted ``row_index``, not
-    compressed-array position, so a market-data gap cannot let a pre-gap trade
-    suppress valid post-gap signals.
-    """
+    """Split realised trades into LONG and SHORT with exact run and row identity."""
     short_idx, hold_idx, long_idx = range(len(CLASS_ORDER))
     directions: list[np.ndarray] = []
     returns: list[np.ndarray] = []
@@ -621,11 +611,6 @@ def direction_attribution(
             "median_net_return": (
                 round(float(np.median(selected)), 8) if selected.size else 0.0
             ),
-            # Deliberately *not* called a contribution to net return: the
-            # reported net return compounds (prod(1+r) - 1), so this additive
-            # sum does not partition it. It is the arithmetic total of the
-            # side's per-trade returns, useful for comparing the two sides
-            # against each other and nothing more.
             "additive_trade_return_sum": round(float(selected.sum()), 8),
         }
 
@@ -636,8 +621,6 @@ def direction_attribution(
         "long": side(all_directions > 0),
         "short": side(all_directions < 0),
         "hold_samples": int((actions == hold_idx).sum()),
-        # Signal coverage, matching nn.evaluate's definition: how often each
-        # side was called at all, before the non-overlap rule drops any.
         "long_coverage": round(float((actions == long_idx).mean()), 6),
         "short_coverage": round(float((actions == short_idx).mean()), 6),
     }
