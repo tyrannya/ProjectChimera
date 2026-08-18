@@ -146,10 +146,31 @@ def classification_metrics(
     }
 
 
+def _trade_rows(n: int, row_index: np.ndarray | None) -> np.ndarray:
+    """Return the candle-row coordinate for each scored sample.
+
+    A scored array can be compressed around market-data gaps because samples
+    whose window/label crosses a gap are removed. In that case array position is
+    not candle time, so non-overlap must be enforced against the persisted
+    dataset row indices instead. With no explicit indices, preserve the historic
+    contiguous-array behaviour exactly.
+    """
+    if row_index is None:
+        return np.arange(n, dtype=np.int64)
+    rows = np.asarray(row_index, dtype=np.int64)
+    if rows.ndim != 1 or len(rows) != n:
+        raise ValueError("row_index must be a 1-D array with one entry per signal")
+    if len(rows) > 1 and np.any(np.diff(rows) <= 0):
+        raise ValueError("row_index must be strictly increasing")
+    return rows
+
+
 def realised_trades(
     signals: np.ndarray,
     future_return: np.ndarray,
     target_spec: TargetSpec,
+    *,
+    row_index: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The non-overlapping trades a signal series actually takes.
 
@@ -158,8 +179,10 @@ def realised_trades(
     its return after the round-trip cost.
 
     Trades are taken greedily in time order and held for ``horizon`` candles;
-    signals that fire while a position is open are ignored. Overlapping the
-    trades instead would count the same price move several times.
+    signals that fire while a position is open are ignored. When ``row_index``
+    is supplied, candle distance is measured in those dataset rows rather than
+    compressed-array positions, so a market-data gap cannot make a pre-gap trade
+    suppress valid post-gap signals.
 
     This is the single definition of "what trades did this signal series take,
     and what did each one net". :func:`trading_metrics` aggregates it, and
@@ -168,8 +191,12 @@ def realised_trades(
     """
     signals = np.asarray(signals, dtype=np.int64)
     future_return = np.asarray(future_return, dtype=np.float64)
+    if len(signals) != len(future_return):
+        raise ValueError("signals and future_return must have the same length")
+
     horizon = target_spec.horizon
     cost = target_spec.cost_threshold  # round-trip fees + slippage
+    rows = _trade_rows(len(signals), row_index)
 
     positions: list[int] = []
     directions: list[float] = []
@@ -181,10 +208,14 @@ def realised_trades(
         if direction == 0.0:
             i += 1
             continue
+        entry_row = int(rows[i])
         positions.append(i)
         directions.append(float(direction))
         returns.append(direction * future_return[i] - cost)
-        i += horizon
+        i += 1
+        next_row = entry_row + horizon
+        while i < n and int(rows[i]) < next_row:
+            i += 1
 
     return (
         np.asarray(positions, dtype=np.int64),
@@ -199,16 +230,20 @@ def trading_metrics(
     target_spec: TargetSpec,
     *,
     candles_per_year: float = 24 * 365,
+    row_index: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Score a signal series as a sequence of non-overlapping trades.
 
     The trades themselves come from :func:`realised_trades`; everything here is
-    aggregation over them.
+    aggregation over them. ``row_index`` keeps the non-overlap rule in candle
+    coordinates when the scored sample array is discontinuous around gaps.
     """
     horizon = target_spec.horizon
     cost = target_spec.cost_threshold
     n = len(signals)
-    _, _, returns = realised_trades(signals, future_return, target_spec)
+    _, _, returns = realised_trades(
+        signals, future_return, target_spec, row_index=row_index
+    )
 
     n_trades = len(returns)
     if n_trades == 0:
@@ -267,13 +302,18 @@ def evaluate(
     threshold: float,
     *,
     candles_per_year: float = 24 * 365,
+    row_index: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Full report for one model on one split."""
     signals = signals_from_proba(proba, threshold)
     return {
         "classification": classification_metrics(proba, y_true, threshold),
         "trading": trading_metrics(
-            signals, future_return, target_spec, candles_per_year=candles_per_year
+            signals,
+            future_return,
+            target_spec,
+            candles_per_year=candles_per_year,
+            row_index=row_index,
         ),
     }
 
@@ -285,6 +325,7 @@ def select_threshold(
     *,
     grid: np.ndarray | None = None,
     min_trades: int = 10,
+    row_index: np.ndarray | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Pick the decision threshold on a validation split.
 
@@ -292,6 +333,10 @@ def select_threshold(
     ``min_trades`` trades — a threshold that fires three times and gets lucky is
     not a threshold. Must never be called with test data: the returned value is
     a fitted parameter.
+
+    ``row_index`` is the validation sample's dataset-row coordinate. It keeps
+    threshold selection on the same gap-aware trade semantics used by frozen
+    evaluation and attribution.
 
     Falls back to the most permissive grid point when no threshold clears the
     trade floor, and the caller sees ``n_trades`` in the returned report and can
@@ -306,7 +351,9 @@ def select_threshold(
 
     for threshold in grid:
         signals = signals_from_proba(proba, float(threshold))
-        report = trading_metrics(signals, future_return, target_spec)
+        report = trading_metrics(
+            signals, future_return, target_spec, row_index=row_index
+        )
         if report["n_trades"] < min_trades:
             continue
         score = report["net_return"]
@@ -318,7 +365,10 @@ def select_threshold(
     if not best_report:
         best_threshold = float(grid[0])
         best_report = trading_metrics(
-            signals_from_proba(proba, best_threshold), future_return, target_spec
+            signals_from_proba(proba, best_threshold),
+            future_return,
+            target_spec,
+            row_index=row_index,
         )
     return best_threshold, best_report
 
