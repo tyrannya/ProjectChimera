@@ -1708,3 +1708,260 @@ def test_a_disagreement_about_the_scored_rows_is_refused(real_regime_runs, tmp_p
 
     with pytest.raises(SystemExit, match="disagree about which rows were evaluated"):
         wf_diagnostics.main([str(directory), "--dataset", str(real_regime_runs["dataset"])])
+
+
+# --- 13. deterministic baselines are seed-invariant ---------------------------
+#
+# The market in a fold does not depend on the seed, and neither do the rules.
+# The majority baseline is fitted on training rows and the momentum baseline has
+# no fitted state at all, so two runs differing only in --seed must report
+# byte-identical baseline numbers on every outer block. They did not: every model
+# was scored at the MTST-selected threshold, so a rule whose probabilities were
+# the class prior (or a fabricated confidence) changed action when that threshold
+# moved.
+
+
+def test_deterministic_baselines_are_identical_across_seed_only_reruns(
+    real_regime_runs,
+):
+    """The floor must not move when only the seed moves.
+
+    Same dataset, same geometry, different seed. The MTST reports are expected to
+    differ; the baselines are not.
+    """
+    artifacts = [
+        json.loads((directory / wf_diagnostics.ARTIFACT_NAME).read_text())
+        for directory in real_regime_runs["runs"]
+    ]
+    seeds = {artifact["config"]["seed"] for artifact in artifacts}
+    assert len(seeds) == len(artifacts) > 1, "the runs must actually differ in seed"
+
+    reference = artifacts[0]
+    for artifact in artifacts[1:]:
+        for fold_a, fold_b in zip(reference["folds"], artifact["folds"]):
+            assert (
+                fold_a["periods"] == fold_b["periods"]
+            ), "the runs must share geometry for this comparison to mean anything"
+            for baseline in ("majority_baseline", "momentum_baseline"):
+                assert (
+                    fold_a["outer_validation"][baseline]
+                    == fold_b["outer_validation"][baseline]
+                ), f"fold {fold_a['fold']} {baseline} differs across seeds"
+
+
+def test_the_mtst_reports_do_differ_across_seeds(real_regime_runs):
+    """The control: if nothing differed, the test above would be vacuous."""
+    artifacts = [
+        json.loads((directory / wf_diagnostics.ARTIFACT_NAME).read_text())
+        for directory in real_regime_runs["runs"]
+    ]
+    mtst = [
+        [fold["outer_validation"]["mtst"]["trading"]["net_return"] for fold in a["folds"]]
+        for a in artifacts
+    ]
+    assert len({tuple(values) for values in mtst}) > 1, "seeds must change the model"
+
+
+def test_the_diagnostics_report_zero_baseline_seed_spread(real_regime_runs, tmp_path):
+    """End to end: the seed-stability table shows the rules as flat lines."""
+    out = tmp_path / "diag"
+    assert (
+        wf_diagnostics.main(
+            [str(d) for d in real_regime_runs["runs"]]
+            + ["--dataset", str(real_regime_runs["dataset"]), "--out", str(out)]
+        )
+        == 0
+    )
+    summary = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["summary"]
+
+    for baseline in ("majority_baseline", "momentum_baseline"):
+        for metric in walkforward.SUMMARY_METRICS:
+            stats = summary["per_model"][baseline][metric]
+            assert stats["across_runs"]["std"] == 0.0, f"{baseline}.{metric} moved"
+            for fold in stats["per_fold"]:
+                assert fold["std"] == 0.0, f"{baseline}.{metric} moved within a fold"
+
+    # The model, by contrast, does move: the assertion above is not vacuous.
+    assert (
+        summary["per_model"]["mtst"]["net_return"]["across_runs"]["std"] > 0.0
+    ), "the model must vary across seeds, or this proves nothing"
+
+
+# --- 14. hypothesis wording follows the observed distributions ----------------
+def separability_of(net_by_fold, tmp_path):
+    """The separability hypothesis for a controlled set of per-fold returns."""
+    runs = stability_runs(tmp_path, net_by_fold)
+    stability = wf_diagnostics.fold_model_stability(runs)
+    best, worst = wf_diagnostics.best_and_worst(stability)
+    comparison = wf_diagnostics.compare_best_worst(None, stability, best, worst)
+    return (
+        wf_diagnostics._separability_candidate(
+            stability,
+            best,
+            worst,
+            lambda *metrics: max(
+                (
+                    abs(row["relative_difference"] or 0.0)
+                    for row in comparison
+                    if row["metric"] in metrics
+                ),
+                default=0.0,
+            ),
+        ),
+        best,
+        worst,
+    )
+
+
+def test_non_overlapping_folds_are_not_called_inseparable(tmp_path):
+    """The real BTC shape: worst fold negative in every seed, ranges disjoint.
+
+    The wording used to be fixed, and said the folds were "not cleanly separable
+    yet" regardless of what the numbers showed.
+    """
+    candidate, best, worst = separability_of(
+        {
+            "a": [0.388, -0.125],
+            "b": [0.150, -0.249],
+            "c": [-0.012, -0.200],
+        },
+        tmp_path,
+    )
+    observed = candidate["observed"]
+
+    assert (best, worst) == (0, 1)
+    assert observed["ranges_overlap"] is False
+    assert observed["worst_positive_seeds"] == 0
+    assert observed["seeds"] == 3
+    assert "consistently worse" in candidate["hypothesis"]
+    assert "negative in all 3 observed seeds" in candidate["evidence"]
+    assert "no overlap" in candidate["evidence"]
+    # It must still refuse to generalise from one fold per regime.
+    assert "sample of one" in candidate["evidence"]
+    assert "independent periods" in candidate["hypothesis"]
+    assert "not cleanly separable" not in candidate["evidence"]
+
+
+def test_overlapping_folds_are_called_inseparable(tmp_path):
+    """The other branch, on data where the ranges genuinely overlap."""
+    candidate, best, worst = separability_of(
+        {"a": [0.30, 0.20], "b": [0.10, 0.25], "c": [0.22, 0.05]},
+        tmp_path,
+    )
+    observed = candidate["observed"]
+
+    assert observed["ranges_overlap"] is True
+    assert "unlucky draw" in candidate["hypothesis"]
+    assert "the ranges overlap" in candidate["evidence"]
+    assert "consistently worse" not in candidate["hypothesis"]
+
+
+def test_a_worst_fold_that_is_sometimes_positive_is_described_as_such(tmp_path):
+    """Disjoint ranges, but the worst fold is not negative everywhere."""
+    candidate, _, _ = separability_of(
+        {"a": [0.90, 0.20], "b": [0.80, 0.10], "c": [0.70, -0.05]},
+        tmp_path,
+    )
+    assert candidate["observed"]["ranges_overlap"] is False
+    assert candidate["observed"]["worst_positive_seeds"] == 2
+    assert "positive in only 2/3 observed seeds" in candidate["evidence"]
+
+
+def test_the_observed_numbers_back_the_wording(tmp_path):
+    """The claim and the numbers that chose it travel together in the report."""
+    candidate, best, worst = separability_of(
+        {"a": [0.40, -0.10], "b": [0.20, -0.30]}, tmp_path
+    )
+    observed = candidate["observed"]
+
+    assert observed["best_fold"] == best and observed["worst_fold"] == worst
+    assert observed["best_range"] == [pytest.approx(0.2), pytest.approx(0.4)]
+    assert observed["worst_range"] == [pytest.approx(-0.3), pytest.approx(-0.1)]
+    for value in observed["best_range"] + observed["worst_range"]:
+        assert f"{value:+.6f}" in candidate["evidence"]
+
+
+def test_the_separability_hypothesis_reaches_the_report(real_regime_runs, tmp_path):
+    """End to end: whichever branch fires, it carries its observed numbers."""
+    out = tmp_path / "diag"
+    wf_diagnostics.main(
+        [str(d) for d in real_regime_runs["runs"]]
+        + ["--dataset", str(real_regime_runs["dataset"]), "--out", str(out)]
+    )
+    analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["analysis"]
+
+    with_observed = [h for h in analysis["hypotheses"] if "observed" in h]
+    if with_observed:
+        observed = with_observed[0]["observed"]
+        assert observed["best_fold"] == analysis["best_fold"]
+        assert observed["worst_fold"] == analysis["worst_fold"]
+        assert isinstance(observed["ranges_overlap"], bool)
+
+
+# --- 15. artifacts produced before the baseline fix are labelled --------------
+def test_legacy_baseline_scoring_is_detected_and_labelled(tmp_path, capsys):
+    """A deterministic baseline that moved across seeds dates the artifact.
+
+    It cannot be a finding: the majority rule is fitted on training rows and the
+    momentum rule on nothing, so on identical geometry and data their numbers are
+    a constant. Spread means the runs predate the fix that stopped baselines being
+    scored at the threshold selected for the model.
+    """
+    runs = []
+    for index, (name, majority) in enumerate(
+        {"run_a": [-0.01, -0.02, -0.03], "run_b": [-0.05, -0.02, -0.03]}.items()
+    ):
+        runs.append(
+            write_run(
+                tmp_path / name,
+                seed=42 + 100 * index,
+                returns={
+                    "majority_baseline": majority,
+                    "momentum_baseline": [0.0, 0.0, 0.0],
+                    "mtst": [0.1, 0.2, 0.3],
+                },
+            )
+        )
+
+    assert (
+        wf_diagnostics.main(
+            [str(r) for r in runs],
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert "predate the baseline scoring fix" in printed
+    assert "majority_baseline shows" in printed
+    assert "MTST columns are unaffected" in printed
+
+
+def test_a_clean_run_set_carries_no_legacy_warning(tmp_path, capsys):
+    """The control: constant baselines produce no note at all."""
+    runs = [
+        write_run(
+            tmp_path / name,
+            seed=seed,
+            returns={
+                "majority_baseline": [-0.01, -0.02, -0.03],
+                "momentum_baseline": [0.0, 0.0, 0.0],
+                "mtst": mtst,
+            },
+        )
+        for name, seed, mtst in (
+            ("run_a", 42, [0.1, 0.2, 0.3]),
+            ("run_b", 142, [0.2, 0.1, 0.4]),
+        )
+    ]
+    out = tmp_path / "diag"
+    assert wf_diagnostics.main([str(r) for r in runs] + ["--out", str(out)]) == 0
+
+    assert "predate the baseline scoring fix" not in capsys.readouterr().out
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    assert payload["legacy_baseline_scoring"] == []
+
+
+def test_real_runs_written_after_the_fix_have_constant_baselines(real_regime_runs):
+    """End to end on artifacts nn.walkforward wrote with the current code."""
+    runs = [wf_diagnostics.load_run(d) for d in real_regime_runs["runs"]]
+    summary = wf_diagnostics.aggregate(runs)
+    assert wf_diagnostics.deterministic_baseline_drift(summary) == []

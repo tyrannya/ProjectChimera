@@ -210,10 +210,43 @@ def test_threshold_selection_falls_back_rather_than_crashing():
 def test_majority_baseline_learns_the_class_prior():
     y = np.array([HOLD_IDX] * 70 + [LONG_IDX] * 20 + [SHORT_IDX] * 10)
     baseline = MajorityClassBaseline().fit(y)
+
+    # The prior is kept for inspection...
+    assert baseline.prior[HOLD_IDX] == pytest.approx(0.7)
+    assert baseline.prior[LONG_IDX] == pytest.approx(0.2)
+    # ...but the emitted action is a hard one-hot on the majority class.
+    assert baseline.majority == HOLD_IDX
     proba = baseline.predict_proba(np.zeros((5, 1)))
     assert proba.shape == (5, 3)
-    assert proba[0, HOLD_IDX] == pytest.approx(0.7)
-    assert proba[0, LONG_IDX] == pytest.approx(0.2)
+    assert proba[0].tolist() == [0.0, 1.0, 0.0]
+
+
+def test_majority_baseline_ties_break_deterministically():
+    """Two runs on the same training rows must not disagree about the floor."""
+    y = np.array([SHORT_IDX] * 30 + [HOLD_IDX] * 30 + [LONG_IDX] * 30)
+    first = MajorityClassBaseline().fit(y).majority
+    second = MajorityClassBaseline().fit(y[::-1].copy()).majority
+    assert first == second == SHORT_IDX
+
+
+def test_the_majority_baseline_action_does_not_depend_on_the_threshold():
+    """Regression: the floor must not move when the model's threshold moves.
+
+    The baseline used to emit the empirical class prior, so a threshold above
+    the prior's largest entry silently suppressed it to HOLD — making a rule
+    with no fitted parameters vary across seed-only reruns, because the
+    threshold it was scored at came from the model.
+    """
+    for majority, y in (
+        (HOLD_IDX, [HOLD_IDX] * 70 + [LONG_IDX] * 20 + [SHORT_IDX] * 10),
+        (LONG_IDX, [LONG_IDX] * 45 + [SHORT_IDX] * 40 + [HOLD_IDX] * 15),
+        (SHORT_IDX, [SHORT_IDX] * 50 + [HOLD_IDX] * 30 + [LONG_IDX] * 20),
+    ):
+        baseline = MajorityClassBaseline().fit(np.array(y))
+        proba = baseline.predict_proba(np.zeros((6, 1)))
+        for threshold in (0.0, 0.34, 0.5, 0.7, 0.9, 1.0):
+            actions = set(signals_from_proba(proba, threshold).tolist())
+            assert actions == {majority}, (majority, threshold, actions)
 
 
 def test_momentum_baseline_follows_the_trend_feature():
@@ -223,6 +256,21 @@ def test_momentum_baseline_follows_the_trend_feature():
     X[2, -1, 0] = 0.0  # flat
     proba = MomentumBaseline(feature_index=0).predict_proba(X)
     assert proba.argmax(axis=1).tolist() == [LONG_IDX, SHORT_IDX, HOLD_IDX]
+    assert proba.sum(axis=1).tolist() == [1.0, 1.0, 1.0]
+
+
+def test_the_momentum_baseline_action_does_not_depend_on_the_threshold():
+    """The same regression, for the other rule: it had a fabricated confidence."""
+    X = np.zeros((3, 4, 2))
+    X[0, -1, 0] = 0.05
+    X[1, -1, 0] = -0.05
+    proba = MomentumBaseline(feature_index=0).predict_proba(X)
+    for threshold in (0.0, 0.34, 0.5, 0.7, 0.9, 1.0):
+        assert signals_from_proba(proba, threshold).tolist() == [
+            LONG_IDX,
+            SHORT_IDX,
+            HOLD_IDX,
+        ], threshold
 
 
 def test_momentum_baseline_rejects_2d_input():

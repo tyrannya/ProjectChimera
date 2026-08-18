@@ -55,7 +55,11 @@ from torch.utils.data import DataLoader, TensorDataset
 from chimera.contracts import CLASS_ORDER, ModelMetadata, TargetSpec
 from chimera.features import FeatureSpec
 from nn import evaluate as ev
-from nn.baselines import MajorityClassBaseline, MomentumBaseline
+from nn.baselines import (
+    BASELINE_DECISION_THRESHOLD,
+    MajorityClassBaseline,
+    MomentumBaseline,
+)
 from nn.data_pipeline import DatasetMetadata, load_dataset, timeframe_to_minutes
 from nn.dataset import Split, StandardScaler, build_windows, chronological_split
 from nn.model_def import MTST, MTSTConfig
@@ -354,18 +358,21 @@ def fit_and_validate(
         ),
     }
 
-    def score(proba: np.ndarray) -> dict[str, Any]:
+    def score(proba: np.ndarray, decision_threshold: float = threshold) -> dict[str, Any]:
         return ev.evaluate(
             proba,
             prepared.y_val,
             val_return,
             data.target_spec,
-            threshold,
+            decision_threshold,
             candles_per_year=data.candles_per_year,
         )
 
+    # Baselines are scored at their own declared threshold, never the model's.
+    # Theirs is fitted on nothing; the model's is fitted on the inner block, and
+    # letting it govern the baselines made the floor move with the seed.
     reports = {
-        name: score(baseline.predict_proba(prepared.X_val))
+        name: score(baseline.predict_proba(prepared.X_val), BASELINE_DECISION_THRESHOLD)
         for name, baseline in baselines.items()
     }
     reports["mtst"] = score(val_proba)
@@ -446,18 +453,21 @@ def score_frozen_split(
 
     future_return = data.future_return[idx]
 
-    def score(proba: np.ndarray) -> dict[str, Any]:
+    def score(proba: np.ndarray, decision_threshold: float = threshold) -> dict[str, Any]:
         return ev.evaluate(
             proba,
             y,
             future_return,
             data.target_spec,
-            threshold,
+            decision_threshold,
             candles_per_year=data.candles_per_year,
         )
 
     proba = predict_proba(model, X, device)
-    reports = {name: score(baseline.predict_proba(X)) for name, baseline in baselines.items()}
+    reports = {
+        name: score(baseline.predict_proba(X), BASELINE_DECISION_THRESHOLD)
+        for name, baseline in baselines.items()
+    }
     reports["mtst"] = score(proba)
     return FrozenScore(reports=reports, idx=idx, y=y, proba=proba)
 

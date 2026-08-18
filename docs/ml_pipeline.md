@@ -643,6 +643,26 @@ diagnostics and ranked by the size of the difference behind them. None is
 implemented or tuned — a diagnostic that quietly starts fitting is how a
 research tool becomes a source of overfitting.
 
+Their wording follows the observed numbers rather than being fixed in the
+source. Whether the best and worst folds separate is a property of the data: if
+their per-seed ranges overlap, the report says the two cannot be told apart yet;
+if they do not, it says the worst fold behaves consistently worse across every
+seed observed — and in both cases it records the ranges, the seed count and the
+positive-seed count that chose the wording, so the sentence can be checked
+against the numbers. Neither branch generalises: one fold per regime is a sample
+of one, and seed count is not a substitute for independent periods.
+
+**Baselines are scored at their own declared threshold.** Every model used to be
+scored at the threshold selected for MTST, which made the "floor" move with the
+seed: `MajorityClassBaseline` emitted the empirical class prior, so a threshold
+above the prior's largest entry silently suppressed it to HOLD. Both baselines
+now emit one-hot actions — the vector *is* the decision, so no threshold can
+change it — and are scored at `nn.baselines.BASELINE_DECISION_THRESHOLD`, a
+declared constant fitted on nothing. On identical geometry and data their reports
+are byte-identical across seeds, which is asserted. A run set that shows
+deterministic-baseline spread predates this fix, and the report says so rather
+than presenting it as a finding.
+
 Output: `regime_diagnostics.json` and `regime_diagnostics.md` under `--out`,
 with sections for the integrity audit, dataset/sealed status, fold geometry,
 market regime statistics, seed stability, per-fold model stability, best vs

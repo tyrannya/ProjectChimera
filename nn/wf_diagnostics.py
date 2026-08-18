@@ -102,6 +102,15 @@ REGIONS = ("train", "inner_validation", "outer_validation")
 #: Target class names, in the dataset's own order.
 _CLASS_LABELS = [c.value for c in CLASS_ORDER]
 
+#: Baselines whose outer reports cannot legitimately vary across seed-only runs.
+#:
+#: The majority rule is fitted on training rows and the momentum rule is fitted
+#: on nothing, so on identical geometry and data their numbers are a constant.
+#: Spread here is therefore not a finding about the market — it is evidence that
+#: the artifacts predate the fix that stopped baselines being scored at the
+#: model's own selected threshold.
+DETERMINISTIC_BASELINES = ("majority_baseline", "momentum_baseline")
+
 
 @dataclass(frozen=True)
 class RunArtifact:
@@ -745,6 +754,76 @@ def attribution_report(runs: list[RunArtifact], target_spec: Any = None) -> dict
 
 
 # --- candidate hypotheses ------------------------------------------------------
+def _separability_candidate(
+    stability: list[dict[str, Any]],
+    best: int,
+    worst: int,
+    largest: Any,
+) -> dict[str, Any]:
+    """Whether the two folds separate, stated from the observed distributions.
+
+    Deliberately not fixed wording. Whether the per-fold spread across seeds
+    swamps the difference between folds is a property of the numbers in front of
+    us, and asserting either answer in the source would put a claim in the report
+    that the data had never been asked about.
+    """
+    by_fold = {entry["fold"]: entry["net_return"] for entry in stability}
+    best_net, worst_net = by_fold[best], by_fold[worst]
+    seeds = worst_net["seeds"]
+    ranges = (
+        f"across {seeds} seed(s) fold {best} spans "
+        f"[{best_net['min']:+.6f}, {best_net['max']:+.6f}] and fold {worst} spans "
+        f"[{worst_net['min']:+.6f}, {worst_net['max']:+.6f}]"
+    )
+    overlapping = worst_net["max"] >= best_net["min"]
+
+    if overlapping:
+        hypothesis = (
+            f"Fold {worst} may be a harder regime, or may be an unlucky draw — the two "
+            f"cannot be told apart from these runs. Compare it against fold {best} on "
+            "more seeds before treating the across-fold mean as a single number."
+        )
+        evidence = (
+            f"{ranges}, and the ranges overlap, so the per-fold seed spread is "
+            "comparable to the difference between the folds"
+        )
+    else:
+        consistency = (
+            f"fold {worst} is negative in all {seeds} observed seeds"
+            if worst_net["positive_seeds"] == 0
+            else f"fold {worst} is positive in only "
+            f"{worst_net['positive_seeds']}/{seeds} observed seeds"
+        )
+        hypothesis = (
+            f"Fold {worst} behaves consistently worse than fold {best} across every "
+            "seed observed, so it is worth characterising as a regime rather than "
+            "dismissed as noise — then replicated on independent periods and assets "
+            "before the characterisation is generalised."
+        )
+        evidence = (
+            f"{ranges} with no overlap, and {consistency}. Consistent within these "
+            "seeds; one fold per regime is still a sample of one, and seed count is "
+            "not a substitute for independent periods"
+        )
+
+    return {
+        "hypothesis": hypothesis,
+        "evidence": evidence,
+        "strength": largest("mtst net return", "directional accuracy"),
+        # Recorded so a reader can check the wording against the numbers that
+        # chose it, rather than trusting the sentence.
+        "observed": {
+            "best_fold": best,
+            "worst_fold": worst,
+            "seeds": seeds,
+            "best_range": [best_net["min"], best_net["max"]],
+            "worst_range": [worst_net["min"], worst_net["max"]],
+            "ranges_overlap": bool(overlapping),
+            "worst_positive_seeds": worst_net["positive_seeds"],
+        },
+    }
+
+
 def candidate_hypotheses(
     comparison: list[dict[str, Any]],
     stability: list[dict[str, Any]],
@@ -834,24 +913,35 @@ def candidate_hypotheses(
             ),
             "strength": max(threshold_spread, largest("selected threshold", "coverage")),
         },
-        {
-            "hypothesis": (
-                f"Fold {worst} may be a genuinely harder regime rather than an unlucky "
-                f"draw: compare it against fold {best} on more seeds before treating "
-                "the across-fold mean as a single number."
-            ),
-            "evidence": (
-                "the per-fold spread across seeds is comparable to the difference "
-                "between folds, so the two are not cleanly separable yet."
-            ),
-            "strength": largest("mtst net return", "directional accuracy"),
-        },
+        _separability_candidate(stability, best, worst, largest),
     ]
     candidates.sort(key=lambda candidate: candidate["strength"], reverse=True)
     return [
         {"rank": rank, **candidate, "strength": round(candidate["strength"], 6)}
         for rank, candidate in enumerate(candidates[:3], start=1)
     ]
+
+
+def deterministic_baseline_drift(summary: dict[str, Any]) -> list[str]:
+    """Deterministic baselines whose reported numbers moved across seeds.
+
+    Impossible under the current scoring rules, so a non-empty result dates the
+    artifacts rather than describing them: they were produced when every model —
+    baselines included — was scored at the threshold selected for the *model*, so
+    a rule with no fitted parameters inherited the model's seed dependence.
+    """
+    drifted = []
+    for name in DETERMINISTIC_BASELINES:
+        stats = summary.get("per_model", {}).get(name, {})
+        moved = any(
+            metric.get("across_runs", {}).get("std", 0.0) != 0.0
+            or any(fold.get("std", 0.0) != 0.0 for fold in metric.get("per_fold", []))
+            for metric in stats.values()
+            if isinstance(metric, dict)
+        )
+        if moved:
+            drifted.append(name)
+    return drifted
 
 
 def to_markdown(
@@ -927,6 +1017,24 @@ def to_markdown(
         "seed sensitivity of the whole procedure — retraining changes the answer by "
         "this much.",
         "",
+    ]
+
+    drifted = deterministic_baseline_drift(summary)
+    if drifted:
+        lines += [
+            f"> **These artifacts predate the baseline scoring fix.** "
+            f"{', '.join(drifted)} {'show' if len(drifted) > 1 else 'shows'} "
+            "non-zero spread across seeds, which is "
+            "impossible for a rule with no fitted parameters on identical geometry "
+            "and data. They were produced when every model was scored at the "
+            "threshold selected for the *model*, so the baselines inherited its seed "
+            "dependence. Their columns below are historical; re-running "
+            "`nn.walkforward` regenerates them as the constants they should be. The "
+            "MTST columns are unaffected.",
+            "",
+        ]
+
+    lines += [
         "| model | metric | mean of run means | std | min | max |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
@@ -1384,6 +1492,9 @@ def main(argv: list[str] | None = None) -> int:
                     "comparability_problems": mismatches,
                     "sealed_test_evaluated": False,
                     "aggregated_from": "outer_validation",
+                    "legacy_baseline_scoring": (
+                        deterministic_baseline_drift(summary) if summary else []
+                    ),
                     "summary": summary,
                     "analysis": analysis,
                 },
