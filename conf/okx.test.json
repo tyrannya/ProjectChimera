@@ -1,13 +1,19 @@
 {
-  "exchange": {
-    "name": "okx",
-    "type": "v5",
-    "api_url": "https://www.okx.com",
-    "url": "https://www.okx.com",
-    "key": "${OKX_TEST_KEY}",
-    "secret": "${OKX_TEST_SECRET}",
-    "sandbox": true
-  },
-  "dry_run": true,
-  "symbols": ["BTC/USDT"]
+    "$comment": "Dry-run (paper trading) on okx. No orders reach the exchange. This is the default and recommended configuration.",
+    "dry_run": true,
+    "exchange": {
+        "name": "okx",
+        "key": "${OKX_TEST_KEY}",
+        "secret": "${OKX_TEST_SECRET}",
+        "ccxt_config": {
+            "enableRateLimit": true
+        },
+        "ccxt_async_config": {
+            "enableRateLimit": true
+        },
+        "pair_whitelist": [
+            "BTC/USDT"
+        ],
+        "pair_blacklist": []
+    }
 }

@@ -1,0 +1,10 @@
+# Wires Grafana to Prometheus. Without this the repository's dashboards had no
+# data source and could never have rendered.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

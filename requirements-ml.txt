@@ -1,0 +1,3 @@
+# Training and inference container: model, HTTP service, market data download.
+# Add [tracking] for MLflow and [tune] for Ray Tune — both are optional.
+-e .[ml]

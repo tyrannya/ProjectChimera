@@ -1,12 +1,33 @@
-FROM python:3.10-slim
+# Inference service. Build from the repository root:
+#   docker build -f nn/Dockerfile.nn_infer -t chimera-nn-infer .
+FROM python:3.11-slim
 
-WORKDIR /src/nn
+# curl is needed by the compose healthcheck.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Копируем только requirements.txt и ставим зависимости
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+WORKDIR /app
 
-# Теперь копируем остальной код сервиса
-COPY . /src/nn
+# Dependencies first for layer caching. The CPU wheel index keeps the image
+# from pulling ~2GB of CUDA libraries that a dry-run inference service never uses.
+COPY pyproject.toml ./
+COPY chimera/ ./chimera/
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -e ".[ml]"
 
-CMD ["bentoml", "serve", "service:svc", "--port", "3000"]
+COPY nn/ ./nn/
+
+RUN useradd --create-home --uid 10001 chimera \
+    && mkdir -p /app/artifacts \
+    && chown -R chimera:chimera /app
+USER chimera
+
+ENV PYTHONPATH=/app \
+    CHIMERA_MODELS_DIR=/app/artifacts/models
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:3000/livez || exit 1
+
+CMD ["uvicorn", "nn.infer_service:app", "--host", "0.0.0.0", "--port", "3000"]

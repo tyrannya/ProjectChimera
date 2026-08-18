@@ -1,0 +1,69 @@
+# Alert rules. Every expression references a metric defined in chimera/metrics.py
+# and exported by a running service.
+groups:
+  - name: chimera-risk
+    rules:
+      - alert: RiskHalted
+        expr: chimera_risk_halted == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Risk engine has halted trading"
+          description: "New entries are blocked. Inspect the bot logs for the halt reason."
+
+      - alert: DrawdownHigh
+        expr: chimera_drawdown > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Drawdown above 10%"
+          description: "Current drawdown {{ $value | humanizePercentage }} from peak equity."
+
+  - name: chimera-ml
+    rules:
+      - alert: InferenceServiceDown
+        expr: chimera_service_up{component="inference"} == 0 or up{job="nn_infer"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Inference service is not ready"
+          description: "The NN strategy will hold rather than trade while this persists."
+
+      - alert: InferenceErrorsRising
+        expr: rate(chimera_inference_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inference errors above 0.1/s"
+          description: "Kind: {{ $labels.kind }}."
+
+      - alert: InferenceStale
+        expr: time() - chimera_last_successful_inference_timestamp > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful inference for 15 minutes"
+
+      - alert: InferenceLatencyHigh
+        expr: histogram_quantile(0.9, sum(rate(chimera_inference_latency_seconds_bucket[5m])) by (le)) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p90 inference latency above 1s"
+
+  - name: chimera-data
+    rules:
+      - alert: MarketDataStale
+        expr: chimera_data_delay_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Market data for {{ $labels.pair }} is late"
+          description: "The risk engine blocks entries on stale data."

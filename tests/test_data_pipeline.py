@@ -1,126 +1,186 @@
-import pytest
-import pandas as pd
+"""OHLCV validation, target construction and dataset assembly."""
+
+from __future__ import annotations
+
 import numpy as np
-from nn.data_pipeline import make_features
+import pandas as pd
+import pytest
 
-@pytest.fixture
-def sample_ohlcv_df() -> pd.DataFrame:
+from chimera.contracts import HOLD_IDX, LONG_IDX, SHORT_IDX, TargetSpec
+from chimera.features import FeatureSpec, feature_columns
+from nn.data_pipeline import (
+    DataValidationError,
+    build_dataset,
+    compute_future_return,
+    compute_target,
+    load_dataset,
+    save_dataset,
+    timeframe_to_minutes,
+    validate_ohlcv,
+)
+
+
+# --- timeframe parsing ---------------------------------------------------
+@pytest.mark.parametrize(
+    ("timeframe", "minutes"), [("1m", 1), ("5m", 5), ("1h", 60), ("4h", 240), ("1d", 1440)]
+)
+def test_timeframe_to_minutes(timeframe, minutes):
+    assert timeframe_to_minutes(timeframe) == minutes
+
+
+@pytest.mark.parametrize("bad", ["", "h", "0h", "-1h", "1y", "abc"])
+def test_timeframe_rejects_nonsense(bad):
+    with pytest.raises(ValueError):
+        timeframe_to_minutes(bad)
+
+
+# --- validation ----------------------------------------------------------
+def test_validate_accepts_clean_candles(candles):
+    out, report = validate_ohlcv(candles, "1h")
+    assert len(out) == len(candles)
+    assert report.duplicates_removed == 0
+    assert report.gap_count == 0
+    assert out["date"].is_monotonic_increasing
+
+
+def test_validate_sorts_unordered_rows(candles):
+    shuffled = candles.iloc[::-1].reset_index(drop=True)
+    out, report = validate_ohlcv(shuffled, "1h")
+    assert report.reordered is True
+    assert out["date"].is_monotonic_increasing
+    pd.testing.assert_series_equal(out["close"], candles["close"], check_names=False)
+
+
+def test_validate_deduplicates_timestamps(candles):
+    doubled = pd.concat([candles, candles.iloc[100:110]], ignore_index=True)
+    out, report = validate_ohlcv(doubled, "1h")
+    assert report.duplicates_removed == 10
+    assert out["date"].is_unique
+
+
+def test_validate_converts_naive_timestamps_to_utc(candles):
+    naive = candles.copy()
+    naive["date"] = naive["date"].dt.tz_localize(None)
+    out, _ = validate_ohlcv(naive, "1h")
+    assert str(out["date"].dt.tz) == "UTC"
+
+
+def test_validate_counts_missing_candles_without_filling(candles):
+    with_gap = candles.drop(index=range(200, 205)).reset_index(drop=True)
+    out, report = validate_ohlcv(with_gap, "1h")
+    assert report.gap_count == 1
+    assert report.missing_candles == 5
+    # The gap is reported, never fabricated.
+    assert len(out) == len(candles) - 5
+
+
+def test_validate_rejects_missing_columns(candles):
+    with pytest.raises(DataValidationError, match="missing required columns"):
+        validate_ohlcv(candles.drop(columns=["high"]), "1h")
+
+
+def test_validate_rejects_non_positive_prices(candles):
+    broken = candles.copy()
+    broken.loc[10, "close"] = 0.0
+    with pytest.raises(DataValidationError, match="non-positive price"):
+        validate_ohlcv(broken, "1h")
+
+
+def test_validate_rejects_negative_volume(candles):
+    broken = candles.copy()
+    broken.loc[10, "volume"] = -1.0
+    with pytest.raises(DataValidationError, match="negative volume"):
+        validate_ohlcv(broken, "1h")
+
+
+def test_validate_rejects_inconsistent_ohlc(candles):
+    broken = candles.copy()
+    broken.loc[10, "high"] = broken.loc[10, "low"] * 0.5
+    with pytest.raises(DataValidationError):
+        validate_ohlcv(broken, "1h")
+
+
+# --- targets -------------------------------------------------------------
+def test_future_return_is_forward_looking_by_exactly_horizon():
+    close = pd.Series([100.0, 110.0, 121.0, 133.1])
+    out = compute_future_return(close, horizon=1)
+    assert out.iloc[0] == pytest.approx(0.10)
+    assert out.iloc[1] == pytest.approx(0.10)
+    assert pd.isna(out.iloc[-1])
+
+
+def test_target_uses_the_cost_threshold():
+    spec = TargetSpec(horizon=1, fee_rate=0.001, slippage_rate=0.001)
+    assert spec.cost_threshold == pytest.approx(0.004)
+
+    # +1% clears the 0.4% threshold, +0.2% does not, -1% clears it downward.
+    close = pd.Series([100.0, 101.0, 101.2, 100.188, 100.0])
+    labels = compute_target(close, spec)
+    assert labels.iloc[0] == LONG_IDX
+    assert labels.iloc[1] == HOLD_IDX
+    assert labels.iloc[2] == SHORT_IDX
+    assert pd.isna(labels.iloc[-1])
+
+
+def test_last_horizon_rows_have_no_target():
+    spec = TargetSpec(horizon=5)
+    close = pd.Series(np.linspace(100, 200, 50))
+    labels = compute_target(close, spec)
+    assert labels.iloc[-5:].isna().all()
+    assert labels.iloc[:-5].notna().all()
+
+
+# --- dataset -------------------------------------------------------------
+def test_build_dataset_drops_warmup_and_horizon(candles):
+    feature_spec = FeatureSpec()
+    target_spec = TargetSpec(horizon=6)
+    frame, metadata = build_dataset(candles, feature_spec, target_spec, timeframe="1h")
+
+    assert set(feature_columns()) <= set(frame.columns)
+    assert {"date", "close", "future_return", "target"} <= set(frame.columns)
+    assert frame.notna().to_numpy().all()
+    assert len(frame) <= len(candles) - feature_spec.warmup - target_spec.horizon
+    assert metadata.rows == len(frame)
+    assert sum(metadata.class_balance.values()) == len(frame)
+
+
+def test_dataset_target_matches_its_own_future_return(candles):
+    """The stored label and the stored future return must agree.
+
+    If these ever diverge, the model is trained against one definition and
+    evaluated against another.
     """
-    Generates a sample OHLCV DataFrame for testing.
-    Includes enough data to generate meaningful indicator values.
-    """
-    np.random.seed(42) # for reproducibility
-    num_rows = 100
-    data = {
-        'timestamp': pd.date_range(start='2023-01-01', periods=num_rows, freq='1h').astype(np.int64) // 10**9,
-        'open': np.random.uniform(100, 200, num_rows),
-        'high': np.random.uniform(200, 300, num_rows),
-        'low': np.random.uniform(50, 100, num_rows),
-        'close': np.random.uniform(100, 200, num_rows),
-        'volume': np.random.uniform(1000, 5000, num_rows),
-        'active_addresses': np.random.randint(1000, 2000, num_rows), # Optional column
-        'funding_rate': np.random.uniform(-0.001, 0.001, num_rows) # Optional column
-    }
-    df = pd.DataFrame(data)
-    # Ensure high is always >= open and close, and low is always <= open and close
-    df['high'] = df[['high', 'open', 'close']].max(axis=1)
-    df['low'] = df[['low', 'open', 'close']].min(axis=1)
-    return df
+    target_spec = TargetSpec(horizon=6)
+    frame, _ = build_dataset(candles, FeatureSpec(), target_spec, timeframe="1h")
+    threshold = target_spec.cost_threshold
 
-def test_make_features_creates_columns(sample_ohlcv_df: pd.DataFrame):
-    """
-    Tests that make_features creates the expected columns.
-    """
-    input_df = sample_ohlcv_df.copy()
-    output_df = make_features(input_df)
-
-    assert isinstance(output_df, pd.DataFrame)
-
-    expected_columns = [
-        'close',
-        'sma_20',
-        'ema_50',
-        'rsi',
-        'macd',
-        'return_1',
-        'volume',
-        'active_addresses', # Present in fixture
-        'funding_rate'    # Present in fixture
-    ]
-
-    for col in expected_columns:
-        assert col in output_df.columns, f"Expected column '{col}' not found in output."
-
-    # Check number of rows: make_features drops rows with NaNs
-    # The number of NaNs depends on the largest lookback period of indicators
-    # e.g., ema_50 needs 49 prior data points, return_1 needs 1.
-    # So, after dropna(), we expect num_rows - (max_lookback - 1) if all indicators start at same time.
-    # MACD uses EMA(12) and EMA(26), so effective lookback is around 25 for MACD.
-    # EMA_50 has the largest explicit lookback.
-    # The dropna() will remove rows where any of these are NaN.
-    # For EMA_50, the first 49 values will be NaN.
-    # For return_1, the first value is NaN.
-    # Thus, at least 49 rows will be dropped if input is >= 50.
-    if len(input_df) >= 50:
-         assert len(output_df) <= len(input_df) - 49, \
-             "Number of rows in output_df is not consistent with dropna behavior for EMA_50."
-    elif not input_df.empty:
-         assert len(output_df) < len(input_df) # Should drop at least one row for return_1 if not empty
-    else: # if input_df is empty
-        assert len(output_df) == 0
+    expected = np.where(
+        frame["future_return"] > threshold,
+        LONG_IDX,
+        np.where(frame["future_return"] < -threshold, SHORT_IDX, HOLD_IDX),
+    )
+    np.testing.assert_array_equal(frame["target"].to_numpy(), expected)
 
 
-def test_make_features_handles_empty_input():
-    """
-    Tests make_features with an empty DataFrame.
-    """
-    empty_df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume']) # Ensure correct columns for initial check
-    output_df = make_features(empty_df)
-    assert isinstance(output_df, pd.DataFrame)
-    assert output_df.empty, "Expected an empty DataFrame for empty input."
-
-def test_make_features_handles_empty_input_no_columns():
-    """
-    Tests make_features with an empty DataFrame that has no columns.
-    """
-    empty_df_no_cols = pd.DataFrame()
-    output_df = make_features(empty_df_no_cols)
-    assert isinstance(output_df, pd.DataFrame)
-    assert output_df.empty, "Expected an empty DataFrame for empty input with no columns."
+def test_build_dataset_rejects_too_little_history(small_candles):
+    with pytest.raises(DataValidationError, match="no rows survived"):
+        build_dataset(small_candles.iloc[:60], FeatureSpec(), TargetSpec())
 
 
-def test_make_features_handles_insufficient_data(sample_ohlcv_df: pd.DataFrame):
-    """
-    Tests make_features with insufficient data for indicators.
-    """
-    insufficient_df = sample_ohlcv_df.head(5).copy() # Only 5 rows
-    output_df = make_features(insufficient_df)
-    assert isinstance(output_df, pd.DataFrame)
-    # make_features calls dropna(). With only 5 rows, most indicators will be NaN,
-    # and 'return_1' will be NaN for the first row.
-    # Thus, all rows should be dropped.
-    assert output_df.empty, "Expected an empty DataFrame due to dropna() with insufficient data."
+def test_build_dataset_rejects_empty_input():
+    with pytest.raises(DataValidationError):
+        build_dataset(pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"]))
 
-def test_make_features_without_optional_columns(sample_ohlcv_df: pd.DataFrame):
-    """
-    Tests that make_features works correctly when optional columns ('active_addresses', 'funding_rate') are not present.
-    """
-    input_df = sample_ohlcv_df.drop(columns=['active_addresses', 'funding_rate']).copy()
-    output_df = make_features(input_df)
 
-    assert isinstance(output_df, pd.DataFrame)
-    assert 'active_addresses' not in output_df.columns
-    assert 'funding_rate' not in output_df.columns
+def test_dataset_roundtrips_with_metadata(candles, tmp_path):
+    frame, metadata = build_dataset(
+        candles, exchange="binance", pair="BTC/USDT", timeframe="1h"
+    )
+    path = save_dataset(tmp_path / "ds.parquet", frame, metadata)
 
-    expected_base_columns = [
-        'close', 'sma_20', 'ema_50', 'rsi', 'macd', 'return_1', 'volume'
-    ]
-    for col in expected_base_columns:
-        assert col in output_df.columns, f"Expected base column '{col}' not found."
-
-    if len(input_df) >= 50:
-         assert len(output_df) <= len(input_df) - 49
-    elif not input_df.empty:
-         assert len(output_df) < len(input_df)
-    else:
-        assert len(output_df) == 0
+    loaded, loaded_meta = load_dataset(path)
+    pd.testing.assert_frame_equal(loaded, frame)
+    assert loaded_meta.pair == "BTC/USDT"
+    assert loaded_meta.timeframe == "1h"
+    assert loaded_meta.feature_names == feature_columns()
+    assert loaded_meta.target_spec["horizon"] == TargetSpec().horizon

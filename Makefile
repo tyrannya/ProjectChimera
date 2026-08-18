@@ -1,75 +1,105 @@
-.PHONY: help setup lint test clean train backfill docker-build docker-up docker-down docker-logs
-DEFAULT_GOAL := help
+.DEFAULT_GOAL := help
+.PHONY: help setup lint format test smoke sample backfill features train \
+	research experiment walkforward \
+        infer dry-run docker-build docker-up docker-down docker-logs check clean
 
-help:
-	@echo "Crypto Trading Bot Makefile"
-	@echo "---------------------------"
-	@echo "Available commands:"
-	@echo "  setup          - Install development dependencies (from requirements-dev.txt) and pre-commit hooks."
-	@echo "  lint           - Run linters and formatters (pre-commit run --all-files)."
-	@echo "  test           - Run tests using pytest."
-	@echo "  clean          - Remove temporary build, test, and Python files (e.g., __pycache__, .pytest_cache)."
-	@echo "  train          - Run neural network training (nn/train.py). Args: FEATURES, EPOCHS. Example: make train FEATURES=data/features/my_data.parquet EPOCHS=30"
-	@echo "  backfill       - Run data backfilling (tools/backfill.py). Args: EXCHANGE, SYMBOL, START_DATE, TF. Example: make backfill EXCHANGE=binance SYMBOL=BTC/USDT START_DATE=2023-01-01 TF=4h"
-	@echo "  docker-build   - Build or rebuild services using docker-compose."
-	@echo "  docker-up      - Start services using docker-compose in detached mode."
-	@echo "  docker-down    - Stop services using docker-compose."
-	@echo "  docker-logs    - Follow logs for docker-compose services."
+PYTHON  ?= python
+EXCHANGE ?= binance
+PAIR     ?= BTC/USDT
+TIMEFRAME ?= 1h
+START    ?= 2023-01-01
+PAIR_SAFE = $(subst /,_,$(PAIR))
+CANDLES  ?= data/raw/$(EXCHANGE)/$(PAIR_SAFE)_$(TIMEFRAME).parquet
+DATASET  ?= data/datasets/$(EXCHANGE)_$(PAIR_SAFE)_$(TIMEFRAME).parquet
+MODELS   ?= artifacts/models
+EPOCHS   ?= 30
+SEQ_LEN  ?= 64
+STRATEGY ?= NNPredictorStrategy
+MODE     ?= test
 
-setup:
-	pip install -r requirements-dev.txt
-	pre-commit install
+help:  ## Show this help
+	@echo "ProjectChimera — dry-run research platform"
 	@echo ""
-	@echo "Development environment setup complete."
-	@echo "For NN training, remember to install dependencies specific to the 'nn' module:"
-	@echo "  cd nn && pip install -r requirements.txt && cd .."
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Common variables: EXCHANGE=$(EXCHANGE) PAIR=$(PAIR) TIMEFRAME=$(TIMEFRAME)"
+	@echo "                  EPOCHS=$(EPOCHS) SEQ_LEN=$(SEQ_LEN) MODE=$(MODE)"
+	@echo ""
+	@echo "LIVE TRADING IS OFF. See README 'Live trading protection'."
 
-lint:
+setup:  ## Install everything and the pre-commit hooks
+	$(PYTHON) -m pip install --upgrade pip setuptools wheel
+	$(PYTHON) -m pip install -e ".[all]"
+	pre-commit install
+
+lint:  ## Run all pre-commit hooks over the repository
 	pre-commit run --all-files
 
-test:
+format:  ## Auto-format with black
+	black chimera nn strategies tools tests
+
+test:  ## Run the test suite
 	pytest
 
-clean:
-	find . -type f -name "*.py[co]" -delete
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	find . -type d -name ".pytest_cache" -exec rm -rf {} +
-	find . -type d -name ".mypy_cache" -exec rm -rf {} +
-	rm -rf htmlcov
-	rm -rf .coverage
-	rm -rf build/
-	rm -rf dist/
-	rm -rf *.egg-info/
-	rm -rf ray_results/
-	@echo "Cleaned temporary files."
+smoke:  ## End-to-end smoke: data -> features -> training -> service -> risk
+	$(PYTHON) -m tools.smoke
 
-# Note: For FEATURES in train target, using an absolute path or path relative to Makefile root is recommended.
-FEATURES ?= data/features/default_feature_set.parquet # Default placeholder, user should override
-EPOCHS ?= 20
-train:
-	@echo "Starting training with FEATURES=$(FEATURES) and EPOCHS=$(EPOCHS)..."
-	@if [ ! -f "$(FEATURES)" ]; then \
-		echo "Warning: Features file $(FEATURES) not found. Please specify a valid FEATURES path."; \
-		echo "Example: make train FEATURES=path/to/your/features.parquet"; \
-	fi
-	python nn/train.py --features $(FEATURES) --epochs $(EPOCHS)
+check: ## Everything the Definition of Done requires
+	$(PYTHON) -m compileall -q .
+	pytest
+	pre-commit run --all-files
+	docker compose config --quiet
+	@echo "All acceptance checks passed."
 
-EXCHANGE ?= binance
-SYMBOL ?= BTC/USDT
-START_DATE ?= 2023-01-01
-TF ?= 1h
-backfill:
-	@echo "Starting backfill for $(EXCHANGE) $(SYMBOL) from $(START_DATE) using $(TF) timeframe..."
-	python tools/backfill.py $(EXCHANGE) $(SYMBOL) $(START_DATE) $(TF)
+sample:  ## Generate synthetic candles (no network needed)
+	$(PYTHON) -m tools.make_sample_data --rows 5000 --out data/raw/synthetic/SYNTH_USDT_1h.parquet
 
-docker-build:
-	docker-compose build
+backfill:  ## Download candles. Args: EXCHANGE PAIR TIMEFRAME START
+	$(PYTHON) -m tools.backfill --exchange $(EXCHANGE) --pair $(PAIR) \
+		--timeframe $(TIMEFRAME) --start $(START)
 
-docker-up:
-	docker-compose up -d
+features:  ## Build a training dataset from downloaded candles
+	$(PYTHON) -m tools.build_features --candles $(CANDLES) --out $(DATASET) \
+		--exchange $(EXCHANGE) --pair $(PAIR) --timeframe $(TIMEFRAME)
 
-docker-down:
-	docker-compose down
+train:  ## Train a model. Args: DATASET EPOCHS SEQ_LEN
+	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \
+		--epochs $(EPOCHS) --seq-len $(SEQ_LEN)
 
-docker-logs:
-	docker-compose logs -f
+research:  ## Train on validation only, leaving the test split sealed
+	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \
+		--epochs $(EPOCHS) --seq-len $(SEQ_LEN) --validation-only
+
+experiment:  ## Grid search scored on validation only. Args: DATASET EPOCHS SEQ_LEN
+	$(PYTHON) -m nn.experiment --dataset $(DATASET) --epochs $(EPOCHS) \
+		--seq-len $(SEQ_LEN) --seed 1 2 3 --lr 1e-4 3e-4 1e-3 \
+		--out artifacts/experiments
+
+walkforward:  ## Walk-forward validation across expanding folds
+	$(PYTHON) -m nn.walkforward --dataset $(DATASET) --folds 4 --epochs $(EPOCHS) \
+		--seq-len $(SEQ_LEN) --out artifacts/walkforward
+
+infer:  ## Serve the promoted model on port 3000
+	CHIMERA_MODELS_DIR=$(MODELS) uvicorn nn.infer_service:app --host 127.0.0.1 --port 3000
+
+dry-run:  ## Start Freqtrade in dry-run. Args: EXCHANGE STRATEGY
+	$(PYTHON) -m tools.run_bot --exchange $(EXCHANGE) --mode $(MODE) --strategy $(STRATEGY)
+
+docker-build:  ## Build all images
+	docker compose build
+
+docker-up:  ## Start the whole stack in the background
+	docker compose up -d
+
+docker-down:  ## Stop the stack
+	docker compose down
+
+docker-logs:  ## Follow logs from all services
+	docker compose logs -f
+
+clean:  ## Remove caches and build artifacts (keeps data/ and artifacts/)
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find . -type f -name '*.py[co]' -delete
+	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage build dist *.egg-info ray_results
+	@echo "Cleaned. data/ and artifacts/ were left alone."

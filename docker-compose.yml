@@ -1,59 +1,148 @@
-# =====  docker-compose.yml  =====
-# Для Docker Desktop на Windows/Mac, только архитектура linux/amd64
+# ProjectChimera stack. Every service is dry-run/research only.
+#
+#   freqtrade   - trading engine, runs strategies through the risk layer
+#   nn_infer    - HTTP inference service the NN strategy calls
+#   prometheus  - scrapes metrics from nn_infer and freqtrade
+#   grafana     - dashboards over Prometheus
+#   alertmanager- routes Prometheus alerts
+#
+# Live trading is NOT reachable from this file: tools/run_bot.py refuses to
+# start a live config unless ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK is in the
+# environment, and the default command below asks for the dry-run config.
+
+name: chimera
 
 networks:
   bot_net:
     driver: bridge
 
+volumes:
+  prometheus_data:
+  grafana_data:
+  model_artifacts:
+
 services:
-  # --- FREQTRADE (core bot) ------------------------------------
+  # --- FREQTRADE (execution engine) ---------------------------------------
   freqtrade:
-    image: ghcr.io/tyrannya/projectchimera:latest
-    platform: linux/amd64
-    container_name: freqtrade
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chimera/freqtrade:local
+    container_name: chimera_freqtrade
+    restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
+    environment:
+      # Explicitly blank: the container cannot trade live unless the operator
+      # sets this in their own environment.
+      ENABLE_LIVE_TRADING: ""
+    command: ["--exchange", "binance", "--mode", "test", "--strategy", "NNPredictorStrategy"]
+    depends_on:
+      nn_infer:
+        condition: service_healthy
     networks:
       - bot_net
     volumes:
-      - ./conf:/freqtrade/conf:ro
-      - ./strategies:/freqtrade/user_data/strategies:ro
-      - ./tools:/freqtrade/user_data/tools:ro
-    command: trade
+      - ./conf:/chimera/conf:ro
+      - ./strategies:/chimera/strategies:ro
+      - ./user_data:/chimera/user_data
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f tools.run_bot > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
-  # --- NN INFER (BentoML-сервис с нейросетью) -------------------
+  # --- NN INFERENCE --------------------------------------------------------
   nn_infer:
-    image: ghcr.io/tyrannya/nn_infer:latest
-    platform: linux/amd64
-    container_name: nn_infer
+    build:
+      context: .
+      dockerfile: nn/Dockerfile.nn_infer
+    image: chimera/nn-infer:local
+    container_name: chimera_nn_infer
+    restart: unless-stopped
+    environment:
+      CHIMERA_MODELS_DIR: /app/artifacts/models
     networks:
       - bot_net
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # Trained models land here; the service serves whatever current.json points at.
+      - model_artifacts:/app/artifacts
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/livez"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/livez"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # --- PROMETHEUS ----------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: chimera_prometheus
+    restart: unless-stopped
+    user: "65534:65534"
+    networks:
+      - bot_net
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./conf/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./conf/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
       interval: 30s
       timeout: 5s
       retries: 3
 
-  # --- PROMETHEUS ----------------------------------------------
-  prometheus:
-    image: prom/prometheus:latest
-    platform: linux/amd64
-    container_name: prometheus
-    networks:
-      - bot_net
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./conf/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-
-  # --- GRAFANA --------------------------------------------------
+  # --- GRAFANA -------------------------------------------------------------
   grafana:
-    image: grafana/grafana:latest
-    platform: linux/amd64
-    container_name: grafana
+    image: grafana/grafana:11.1.0
+    container_name: chimera_grafana
+    restart: unless-stopped
+    user: "472:472"
     networks:
       - bot_net
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      # Without this mount the dashboards in the repository were never loaded.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # --- ALERTMANAGER --------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: chimera_alertmanager
+    restart: unless-stopped
+    user: "65534:65534"
+    networks:
+      - bot_net
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./conf/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

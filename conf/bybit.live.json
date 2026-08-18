@@ -1,12 +1,20 @@
 {
-  "exchange": {
-    "name": "bybit",
-    "type": "v5",
-    "api_url": "https://api.bybit.com",
-    "url": "https://api.bybit.com",
-    "key": "${BYBIT_KEY}",
-    "secret": "${BYBIT_SECRET}"
-  },
-  "dry_run": false,
-  "symbols": ["BTC/USDT"]
+    "$comment": "LIVE profile for bybit. Note dry_run stays TRUE in this file on purpose: pointing Freqtrade directly at any committed config must never place a real order. tools/run_bot.py --mode live is the only thing that sets dry_run=false, and only after ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK is present in the environment. It writes that setting to a private generated config, never back to this file.",
+    "dry_run": true,
+    "chimera_live_intent": true,
+    "exchange": {
+        "name": "bybit",
+        "key": "${BYBIT_KEY}",
+        "secret": "${BYBIT_SECRET}",
+        "ccxt_config": {
+            "enableRateLimit": true
+        },
+        "ccxt_async_config": {
+            "enableRateLimit": true
+        },
+        "pair_whitelist": [
+            "BTC/USDT"
+        ],
+        "pair_blacklist": []
+    }
 }

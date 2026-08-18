@@ -1,27 +1,32 @@
+# Alert routing. The default receiver only logs — there is no webhook URL in
+# this file, because a placeholder URL that silently swallows critical alerts is
+# worse than no receiver at all.
+#
+# To send alerts to Telegram, replace the `null` receiver below with a
+# `telegram_configs` block and supply the bot token via an Alertmanager
+# `--config.file` templated from your secret store. Do not paste a token here:
+# this file is in version control.
 route:
-  receiver: telegram_receiver
+  receiver: "null"
+  group_by: ["alertname", "severity"]
   group_wait: 30s
   group_interval: 5m
-  repeat_interval: 1h
+  # Critical alerts repeat hourly; warnings are grouped so one fault does not
+  # produce a notification storm.
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: "null"
+      repeat_interval: 1h
 
 receivers:
-  - name: telegram_receiver
-    webhook_configs:
-      - url: "https://example.com/test-telegram-webhook"   # TEST WEBHOOK PLACEHOLDER
+  - name: "null"
 
-# Alert rules: (обычно их кладут в отдельный файл, но правило здесь для справки)
-# - alert: KillSwitchFired
-#   expr: kill_switch_fired == 1
-#   for: 0m
-#   labels:
-#     severity: critical
-#   annotations:
-#     description: "Kill switch activated!"
-
-# - alert: InferLatencyHigh
-#   expr: avg_over_time(infer_latency_ms[5m]) > 20
-#   for: 5m
-#   labels:
-#     severity: warning
-#   annotations:
-#     description: "NN inference latency > 20ms for 5m"
+inhibit_rules:
+  # While trading is halted, downstream warnings are consequences, not news.
+  - source_matchers:
+      - alertname = "RiskHalted"
+    target_matchers:
+      - severity = "warning"
+    equal: ["job"]

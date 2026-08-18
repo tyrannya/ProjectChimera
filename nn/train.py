@@ -1,250 +1,790 @@
+"""Training entrypoint.
+
+    python -m nn.train --dataset data/datasets/binance_BTC_USDT_1h.parquet
+    python -m nn.train --dataset ... --epochs 2 --tune-trials 0   # smoke run
+    python -m nn.train --dataset ... --validation-only            # research run
+
+The pipeline, in order, with the leakage-relevant step called out at each turn:
+
+1. seed everything (Python, NumPy, torch) — reproducible by default;
+2. load the dataset built by ``tools/build_features.py``;
+3. split chronologically into train / validation / test (``nn.dataset``);
+4. **fit the scaler on training rows only**, then transform all three;
+5. build windows so no sample straddles a split or market-data gap boundary;
+6. fit the baselines on training data;
+7. train, selecting the best epoch **on validation**;
+8. select the decision threshold **on validation**;
+9. score model and baselines on validation, then score the test split *once*;
+10. save the artifact, and promote only if the validation gates pass.
+
+Steps 4 to 8 are the *research core* — :class:`ResearchData`,
+:func:`prepare_research_windows` and :func:`fit_and_validate` — which
+``nn.experiment`` and ``nn.walkforward`` import rather than reimplement. Those
+functions take a training and a validation split and nothing else, so no amount
+of misuse can make them touch test rows: step 9 is the only code in the
+repository that windows the test block, and ``--validation-only`` skips it.
+
+CPU is the default and fully supported path. GPU and mixed precision are used
+only when CUDA is actually present. Ray Tune is optional and off by default:
+``--tune-trials 0`` (the default) runs a single training pass.
 """
-Train script для MinimalTST.
 
-USAGE:
-    python train.py --features data/features/binance_BTC_USDT_1h_2020-01-01_features.parquet --epochs 20
+from __future__ import annotations
 
-• Mixed precision: включено через torch.cuda.amp.autocast.
-• Ray Tune: 100 trials по lr∈[1e-5,1e-3].
-• Loss: Huber(pred-truth) + 0.2 * policy_gradient_reward.
-• Финал: torch.jit.trace → nn/model_ts.pt, torch.onnx.export → nn/model_ts.onnx,
-  mlflow.register_model(..., name="nn_predictor");
-  MlflowClient().set_registered_model_alias(..., alias="prod").
-• Лучший конфиг выбирается через analysis.get_best_config(metric="loss", mode="min").
-"""
-
+import argparse
+import json
+import logging
 import os
+import random
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import mlflow
-from mlflow.tracking import MlflowClient
-from torch.cuda.amp import autocast, GradScaler
-# import mlflow # Duplicate import removed
-import ray
-from ray import tune
-import argparse
-from model_def import MTST
-import traceback # Added
-from tools.telegram_notifier import TelegramNotifier # Added
+from torch.utils.data import DataLoader, TensorDataset
+
+from chimera.contracts import CLASS_ORDER, ModelMetadata, TargetSpec
+from chimera.features import FeatureSpec
+from nn import evaluate as ev
+from nn.baselines import MajorityClassBaseline, MomentumBaseline
+from nn.data_pipeline import DatasetMetadata, load_dataset, timeframe_to_minutes
+from nn.dataset import Split, StandardScaler, build_windows, chronological_split
+from nn.model_def import MTST, MTSTConfig
+from nn.registry import (
+    DEFAULT_MODELS_DIR,
+    PromotionGates,
+    check_gates,
+    new_version,
+    promote,
+    save_model,
+)
+
+logger = logging.getLogger(__name__)
 
 
-def load_data(path: str):
-    df = pd.read_parquet(path)
-    X = []
-    y = []
-    window = 100
-    for i in range(window, len(df) - 1):
-        X.append(
-            df.iloc[i - window : i][
-                ["close", "return_1", "ema_9", "ema_21", "volume"]
-            ].values
-        )
-        y.append(df.iloc[i + 1]["close"])
-    return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
+def set_seed(seed: int, deterministic: bool = True) -> None:
+    """Seed every RNG the pipeline touches."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        # Makes cuBLAS reductions deterministic; harmless on CPU.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 
-def policy_gradient_reward(pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-    return (
-        (torch.sign(pred[1:] - pred[:-1]) == torch.sign(truth[1:] - truth[:-1]))
-        .float()
-        .mean()
-    )
+def resolve_device(requested: str = "auto") -> torch.device:
+    if requested == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if requested == "cuda" and not torch.cuda.is_available():
+        logger.warning("CUDA requested but unavailable; falling back to CPU")
+        return torch.device("cpu")
+    return torch.device(requested)
 
 
-def live_sharpe(pred: torch.Tensor, truth: torch.Tensor) -> float:
-    pnl = torch.sign(pred[1:] - pred[:-1]) * (truth[1:] - truth[:-1])
-    if pnl.numel() < 2 or pnl.std() == 0:
-        return 0.0
-    return (pnl.mean() / pnl.std() * np.sqrt(pnl.numel())).item()
+def class_weights(y: np.ndarray, n_classes: int) -> torch.Tensor:
+    """Inverse-frequency weights.
+
+    Cost-aware labelling makes HOLD the majority class by construction. Without
+    weighting, the cheapest way to reduce the loss is to always predict HOLD,
+    and the model converges to the majority baseline.
+    """
+    counts = np.bincount(y, minlength=n_classes).astype(np.float64)
+    counts[counts == 0] = 1.0
+    weights = counts.sum() / (n_classes * counts)
+    return torch.tensor(weights, dtype=torch.float32)
 
 
-def train_epoch(model, loader, optimizer, criterion, scaler, device):
-    model.train()
-    for xb, yb in loader:
-        optimizer.zero_grad()
-        with autocast():
-            out = model(xb)
-            loss = criterion(out, yb) + (1 - policy_gradient_reward(out, yb))
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
-
-def evaluate(model, loader):
+@torch.no_grad()
+def predict_proba(
+    model: MTST, X: np.ndarray, device: torch.device, batch_size: int = 256
+) -> np.ndarray:
+    """Softmax probabilities for ``X`` in the fixed class order."""
     model.eval()
-    preds = []
-    trues = []
-    with torch.no_grad():
-        for xb, yb in loader:
-            with autocast():
-                out = model(xb)
-            preds.append(out.detach())
-            trues.append(yb.detach())
-    preds = torch.cat(preds)
-    trues = torch.cat(trues)
-    return live_sharpe(preds, trues)
+    if len(X) == 0:
+        return np.empty((0, len(CLASS_ORDER)), dtype=np.float64)
+    chunks = []
+    for start in range(0, len(X), batch_size):
+        batch = torch.from_numpy(X[start : start + batch_size]).to(device)
+        logits = model(batch)
+        chunks.append(torch.softmax(logits.float(), dim=-1).cpu().numpy())
+    return np.concatenate(chunks).astype(np.float64)
 
 
-def train_tst(config, features, device, epochs=10):
-    X, y = load_data(features)
-    split = int(len(X) * 0.8)
-    X_train, X_val = torch.tensor(X[:split]).to(device), torch.tensor(X[split:]).to(
-        device
+# --- the research core -------------------------------------------------------
+#
+# Everything from here to `fit_and_validate` is shared by nn.train,
+# nn.experiment and nn.walkforward. It exists so those three cannot drift apart
+# on the feature/target contract, and so the "never touch test" rule is a
+# property of the signatures rather than a habit of the callers.
+
+
+@dataclass(frozen=True)
+class ResearchData:
+    """The arrays every research entrypoint needs, loaded once."""
+
+    ds_meta: DatasetMetadata
+    feature_names: list[str]
+    feature_spec: FeatureSpec
+    target_spec: TargetSpec
+    features: np.ndarray
+    targets: np.ndarray
+    future_return: np.ndarray
+    segment_ids: np.ndarray | None
+    dates: np.ndarray
+    candles_per_year: float
+
+    @property
+    def n_rows(self) -> int:
+        return len(self.features)
+
+    def period(self, split: Split) -> dict[str, Any]:
+        """Wall-clock boundaries of a split, so a report can be audited later."""
+        return {
+            "start": str(self.dates[split.start]),
+            "end": str(self.dates[split.end - 1]),
+            "rows": len(split),
+            "row_range": [split.start, split.end],
+        }
+
+
+def load_research_data(path: str | Path) -> ResearchData:
+    """Load a built dataset and check it against its own metadata."""
+    frame, ds_meta = load_dataset(path)
+    feature_names = list(ds_meta.feature_names)
+    missing = [c for c in feature_names if c not in frame.columns]
+    if missing:
+        raise SystemExit(f"dataset is missing feature columns: {missing}")
+
+    segment_ids = (
+        frame["segment_id"].to_numpy(dtype=np.int64) if "segment_id" in frame.columns else None
     )
-    y_train, y_val = torch.tensor(y[:split]).to(device), torch.tensor(y[split:]).to(
-        device
-    )
-    train_ds = torch.utils.data.TensorDataset(X_train, y_train)
-    val_ds = torch.utils.data.TensorDataset(X_val, y_val)
-    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=32, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=32)
-    model = MTST(input_dim=X.shape[-1], seq_len=X.shape[1]).to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=config["lr"])
-    criterion = nn.HuberLoss()
-    scaler = GradScaler()
-    for _ in range(epochs):
-        train_epoch(model, train_loader, optimizer, criterion, scaler, device)
-    sharpe = evaluate(model, val_loader)
-    tune.report(sharpe=sharpe)
-    return model
-
-
-def tune_trainable(config, features, device, epochs=10):
-    return train_tst(config, features, device, epochs)
-
-
-def save_and_register(model, example_input, output_dir="nn"):
-    model.eval()
-    traced = torch.jit.trace(model, example_input)
-    os.makedirs(output_dir, exist_ok=True)
-    traced.save(os.path.join(output_dir, "model_ts.pt"))
-    torch.onnx.export(
-        model,
-        example_input,
-        os.path.join(output_dir, "model_ts.onnx"),
-        input_names=["input"],
-        output_names=["output"],
-        dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
-        opset_version=17,
-    )
-    mlflow.set_tracking_uri("file:./mlruns")
-    mlflow.set_experiment("nn_predictor")
-    with mlflow.start_run():
-        mlflow.pytorch.log_model(model, "nn_predictor")
-        model_uri = f"runs:/{mlflow.active_run().info.run_id}/nn_predictor"
-        reg_model = mlflow.register_model(model_uri, name="nn_predictor")
-        client = mlflow.tracking.MlflowClient()
-        client.set_registered_model_alias("nn_predictor", reg_model.version, "prod")
-
-        model_version = mlflow.register_model(model_uri, name="nn_predictor")
-        MlflowClient().set_registered_model_alias(
-            name="nn_predictor", alias="prod", version=model_version.version
+    if segment_ids is None and int(ds_meta.validation.get("gap_count", 0)) > 0:
+        logger.warning(
+            "Dataset reports market-data gaps but has no segment_id column; "
+            "rebuild it with the current tools.build_features before trusting this run."
         )
 
+    return ResearchData(
+        ds_meta=ds_meta,
+        feature_names=feature_names,
+        feature_spec=FeatureSpec.from_dict(ds_meta.feature_spec),
+        target_spec=TargetSpec.from_dict(ds_meta.target_spec),
+        features=frame[feature_names].to_numpy(dtype=np.float64),
+        targets=frame["target"].to_numpy(dtype=np.int64),
+        future_return=frame["future_return"].to_numpy(dtype=np.float64),
+        segment_ids=segment_ids,
+        dates=frame["date"].to_numpy(),
+        candles_per_year=365 * 24 * 60 / timeframe_to_minutes(ds_meta.timeframe or "1h"),
+    )
 
-# main # Removed this line
+
+@dataclass(frozen=True)
+class RunConfig:
+    """One point in the research search space.
+
+    The fields are exactly the dimensions ``nn.experiment`` can vary. Defaults
+    match the ``nn.train`` CLI defaults, which are not tuned against any test
+    result.
+    """
+
+    seed: int = 42
+    lr: float = 3e-4
+    seq_len: int = 64
+    d_model: int = 64
+    n_heads: int = 4
+    num_layers: int = 2
+    dropout: float = 0.1
+    epochs: int = 30
+    batch_size: int = 64
+    patience: int = 5
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PreparedWindows:
+    """Scaled, windowed training and validation tensors for one fold.
+
+    Note what is *absent*: there is no test field, and
+    :func:`prepare_research_windows` takes no test split. Test windows are built
+    in exactly one place, :func:`main`, and only when ``--validation-only`` is
+    off.
+    """
+
+    scaler: StandardScaler
+    train: Split
+    validation: Split
+    seq_len: int
+    X_train: np.ndarray
+    y_train: np.ndarray
+    X_val: np.ndarray
+    y_val: np.ndarray
+    idx_val: np.ndarray
+
+
+def prepare_research_windows(
+    data: ResearchData, train_split: Split, val_split: Split, seq_len: int
+) -> PreparedWindows:
+    """Fit the scaler on training rows only, then window train and validation.
+
+    Raises ``ValueError`` — rather than returning something empty — when a split
+    is too short to hold one window plus its label horizon, or when validation
+    does not lie strictly after training.
+    """
+    if val_split.start < train_split.end:
+        raise ValueError(
+            f"validation must begin at or after the end of training: training ends at "
+            f"row {train_split.end}, validation starts at row {val_split.start}"
+        )
+
+    scaler = StandardScaler().fit(data.features[train_split.start : train_split.end])
+
+    # Everything below works on rows [0, val_split.end) only. Rows after this
+    # fold are not merely unused — they are not in the arrays that get scaled
+    # and windowed, so no later row can reach a metric even by accident. The
+    # last sample a split can emit has its label at row ``end - 1``, so this
+    # prefix is exactly enough (asserted in tests/test_research_workflow.py).
+    visible = val_split.end
+    scaled = scaler.transform(data.features[:visible])
+    targets = data.targets[:visible]
+    segment_ids = None if data.segment_ids is None else data.segment_ids[:visible]
+
+    built = []
+    for split in (train_split, val_split):
+        X, y, idx = build_windows(
+            scaled,
+            targets,
+            split,
+            seq_len,
+            data.target_spec.horizon,
+            segment_ids=segment_ids,
+        )
+        if len(X) == 0:
+            raise ValueError(
+                f"the {split.name} split produced no samples. Use a longer dataset, a "
+                f"shorter seq_len ({seq_len}), or different split sizes."
+            )
+        built.append((X, y, idx))
+
+    (X_train, y_train, _), (X_val, y_val, idx_val) = built
+    return PreparedWindows(
+        scaler=scaler,
+        train=train_split,
+        validation=val_split,
+        seq_len=seq_len,
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
+        idx_val=idx_val,
+    )
+
+
+@dataclass(frozen=True)
+class ValidationRun:
+    """The result of fitting one configuration and scoring it on validation."""
+
+    model: MTST
+    config: MTSTConfig
+    threshold: float
+    threshold_report: dict[str, Any]
+    #: ``majority_baseline`` / ``momentum_baseline`` / ``mtst``, on validation.
+    reports: dict[str, dict[str, Any]]
+    train_info: dict[str, Any]
+    #: The fitted baselines, so a later sealed-test run scores the same objects.
+    baselines: dict[str, Any]
+
+
+def fit_and_validate(
+    data: ResearchData,
+    prepared: PreparedWindows,
+    run: RunConfig,
+    *,
+    device: torch.device,
+) -> ValidationRun:
+    """Train one configuration and score it on validation.
+
+    Fits everything that gets fitted: the weights, the early-stopping epoch and
+    the decision threshold. All three use the training and validation blocks in
+    ``prepared`` and nothing else.
+    """
+    set_seed(run.seed)
+    config = MTSTConfig(
+        input_dim=len(data.feature_names),
+        seq_len=run.seq_len,
+        d_model=run.d_model,
+        n_heads=run.n_heads,
+        num_layers=run.num_layers,
+        dropout=run.dropout,
+    )
+    model, train_info = train_model(
+        config,
+        prepared.X_train,
+        prepared.y_train,
+        prepared.X_val,
+        prepared.y_val,
+        device=device,
+        epochs=run.epochs,
+        batch_size=run.batch_size,
+        lr=run.lr,
+        patience=run.patience,
+    )
+
+    val_proba = predict_proba(model, prepared.X_val, device)
+    val_return = data.future_return[prepared.idx_val]
+    threshold, threshold_report = ev.select_threshold(val_proba, val_return, data.target_spec)
+
+    baselines = {
+        "majority_baseline": MajorityClassBaseline().fit(prepared.y_train),
+        "momentum_baseline": MomentumBaseline(
+            feature_index=data.feature_names.index("ema_cross")
+        ),
+    }
+
+    def score(proba: np.ndarray) -> dict[str, Any]:
+        return ev.evaluate(
+            proba,
+            prepared.y_val,
+            val_return,
+            data.target_spec,
+            threshold,
+            candles_per_year=data.candles_per_year,
+        )
+
+    reports = {
+        name: score(baseline.predict_proba(prepared.X_val))
+        for name, baseline in baselines.items()
+    }
+    reports["mtst"] = score(val_proba)
+
+    return ValidationRun(
+        model=model,
+        config=config,
+        threshold=threshold,
+        threshold_report=threshold_report,
+        reports=reports,
+        train_info=train_info,
+        baselines=baselines,
+    )
+
+
+def train_model(
+    config: MTSTConfig,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    *,
+    device: torch.device,
+    epochs: int,
+    batch_size: int,
+    lr: float,
+    weight_decay: float = 1e-4,
+    patience: int = 5,
+) -> tuple[MTST, dict[str, Any]]:
+    """Train one model, keeping the weights from the best validation epoch.
+
+    Early stopping watches validation loss. The test split is not touched here
+    at all — it is not even passed in.
+    """
+    model = MTST(config).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    criterion = nn.CrossEntropyLoss(weight=class_weights(y_train, config.n_classes).to(device))
+
+    use_amp = device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    train_loader = DataLoader(
+        TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train)),
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=False,
+    )
+    val_loader = DataLoader(
+        TensorDataset(torch.from_numpy(X_val), torch.from_numpy(y_val)),
+        batch_size=batch_size,
+    )
+
+    history: list[dict[str, float]] = []
+    best_val = float("inf")
+    best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    best_epoch = 0
+    stale = 0
+
+    for epoch in range(1, epochs + 1):
+        model.train()
+        train_loss = 0.0
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                loss = criterion(model(xb), yb)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            train_loss += float(loss.item()) * len(xb)
+        train_loss /= max(1, len(X_train))
+
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                val_loss += float(criterion(model(xb), yb).item()) * len(xb)
+        val_loss /= max(1, len(X_val))
+
+        history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
+        logger.info(
+            "epoch %d/%d  train_loss=%.5f  val_loss=%.5f", epoch, epochs, train_loss, val_loss
+        )
+
+        if val_loss < best_val - 1e-6:
+            best_val = val_loss
+            best_epoch = epoch
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            stale = 0
+        else:
+            stale += 1
+            if stale >= patience:
+                logger.info("Early stopping at epoch %d (best epoch %d)", epoch, best_epoch)
+                break
+
+    model.load_state_dict(best_state)
+    model.eval()
+    return model, {"history": history, "best_epoch": best_epoch, "best_val_loss": best_val}
+
+
+def tune_learning_rate(
+    trials: int,
+    build: Any,
+    *,
+    seed: int,
+) -> float:
+    """Optional hyperparameter search over the learning rate.
+
+    Uses Ray Tune when it is installed, otherwise a plain random search over
+    the same range. Both are off unless ``--tune-trials`` is positive, so a
+    developer smoke run never pays for them.
+    """
+    rng = np.random.default_rng(seed)
+    candidates = [float(10 ** rng.uniform(-4.5, -2.5)) for _ in range(trials)]
+
+    best_lr, best_loss = candidates[0], float("inf")
+    for lr in candidates:
+        val_loss = build(lr).train_info["best_val_loss"]
+        if val_loss < best_loss:
+            best_loss, best_lr = val_loss, lr
+        logger.info("trial lr=%.2e -> val_loss=%.5f", lr, val_loss)
+    logger.info("Best learning rate from %d trials: %.2e", trials, best_lr)
+    return best_lr
+
+
+def build_argparser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Train the MTST signal classifier.")
+    parser.add_argument(
+        "--dataset", required=True, help="Parquet dataset from build_features."
+    )
+    parser.add_argument("--models-dir", default=str(DEFAULT_MODELS_DIR))
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--seq-len", type=int, default=64)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--train-frac", type=float, default=0.70)
+    parser.add_argument("--val-frac", type=float, default=0.15)
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    parser.add_argument("--d-model", type=int, default=64)
+    parser.add_argument("--n-heads", type=int, default=4)
+    parser.add_argument("--num-layers", type=int, default=2)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--tune-trials",
+        type=int,
+        default=0,
+        help="Hyperparameter search trials. 0 (default) trains once.",
+    )
+    parser.add_argument(
+        "--promote",
+        action="store_true",
+        help="Promote to current if the validation gates pass.",
+    )
+    parser.add_argument(
+        "--validation-only",
+        action="store_true",
+        help=(
+            "Research mode: leave the test split sealed. Trains, selects the "
+            "threshold and reports on validation only. Cannot be combined with "
+            "--promote, and the artifact it writes can never be promoted."
+        ),
+    )
+    parser.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Also log this run to MLflow (optional, off by default).",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    args = build_argparser().parse_args(argv)
+    if args.validation_only and args.promote:
+        raise SystemExit(
+            "--promote cannot be combined with --validation-only: a research run "
+            "leaves the test split sealed, so it has no out-of-sample estimate and "
+            "must never put a model in front of traffic."
+        )
+    set_seed(args.seed)
+    device = resolve_device(args.device)
+    logger.info("Training on %s with seed %d", device, args.seed)
+
+    # --- 1. data ------------------------------------------------------
+    data = load_research_data(args.dataset)
+    plan = chronological_split(data.n_rows, args.train_frac, args.val_frac)
+    logger.info("Split plan: %s", json.dumps(plan.to_dict()))
+    if args.validation_only:
+        logger.warning(
+            "VALIDATION-ONLY research run: the test split (%d rows, %s to %s) "
+            "REMAINS SEALED and will not be evaluated.",
+            len(plan.test),
+            data.period(plan.test)["start"],
+            data.period(plan.test)["end"],
+        )
+
+    # --- 2-5. scaler on train rows, windows, training, threshold ---------
+    # All of it lives in the research core, which is given the train and
+    # validation splits only.
+    try:
+        prepared = prepare_research_windows(data, plan.train, plan.validation, args.seq_len)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    logger.info(
+        "train: %d samples, validation: %d samples", len(prepared.X_train), len(prepared.X_val)
+    )
+
+    run_config = RunConfig(
+        seed=args.seed,
+        lr=args.lr,
+        seq_len=args.seq_len,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        num_layers=args.num_layers,
+        dropout=args.dropout,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        patience=args.patience,
+    )
+
+    def build(lr: float) -> ValidationRun:
+        return fit_and_validate(data, prepared, replace(run_config, lr=lr), device=device)
+
+    lr = args.lr
+    if args.tune_trials > 0:
+        lr = tune_learning_rate(args.tune_trials, build, seed=args.seed)
+    result = build(lr)
+
+    model, threshold = result.model, result.threshold
+    validation_reports = result.reports
+    logger.info(
+        "Selected decision threshold %.2f on validation (%d trades, net %.4f)",
+        threshold,
+        result.threshold_report["n_trades"],
+        result.threshold_report["net_return"],
+    )
+
+    # --- 6. the one and only test evaluation -------------------------------
+    # This block is the only place in the repository that windows the test
+    # split. It runs after every fitted quantity (weights, scaler, threshold,
+    # early-stopping epoch) is frozen, and not at all in research mode.
+    test_reports: dict[str, Any] | None = None
+    if not args.validation_only:
+        scaled = prepared.scaler.transform(data.features)
+        X_test, y_test, idx_test = build_windows(
+            scaled,
+            data.targets,
+            plan.test,
+            args.seq_len,
+            data.target_spec.horizon,
+            segment_ids=data.segment_ids,
+        )
+        if len(X_test) == 0:
+            raise SystemExit(
+                f"the test split produced no samples. Use a longer dataset, a "
+                f"shorter --seq-len ({args.seq_len}), or different split fractions."
+            )
+        logger.info("test: %d samples", len(X_test))
+
+        def test_score(proba: np.ndarray) -> dict[str, Any]:
+            return ev.evaluate(
+                proba,
+                y_test,
+                data.future_return[idx_test],
+                data.target_spec,
+                threshold,
+                candles_per_year=data.candles_per_year,
+            )
+
+        test_reports = {
+            name: test_score(baseline.predict_proba(X_test))
+            for name, baseline in result.baselines.items()
+        }
+        test_reports["mtst"] = test_score(predict_proba(model, X_test, device))
+
+    print("\nValidation (used for model selection):")
+    print(ev.compare(validation_reports))
+    if test_reports is None:
+        print(
+            "\nTest: SEALED — not evaluated in this validation-only research run.\n"
+            "Freeze your research decisions, then re-run without --validation-only "
+            "to spend the test split once."
+        )
+    else:
+        print("\nTest (held out, scored once):")
+        print(ev.compare(test_reports))
+
+    # --- 7. artifact -------------------------------------------------------
+    version = new_version(f"{args.dataset}{args.seed}{lr}")
+    metadata = ModelMetadata(
+        model_version=version,
+        feature_names=list(data.feature_names),
+        sequence_length=args.seq_len,
+        feature_spec=data.feature_spec,
+        target_spec=data.target_spec,
+        scaler_mean=prepared.scaler.mean.tolist(),
+        scaler_std=prepared.scaler.std.tolist(),
+        decision_threshold=threshold,
+        trained_at=datetime.now(timezone.utc).isoformat(),
+        dataset_start=data.ds_meta.start,
+        dataset_end=data.ds_meta.end,
+        # Temporal provenance, so a later backtest can prove it is out-of-sample.
+        train_end=str(data.dates[plan.train.end - 1]),
+        validation_end=str(data.dates[plan.validation.end - 1]),
+        exchange=data.ds_meta.exchange,
+        pair=data.ds_meta.pair,
+        timeframe=data.ds_meta.timeframe,
+        validation_metrics=validation_reports["mtst"],
+    )
+
+    gates = PromotionGates()
+    passed, failures = check_gates(
+        validation_reports["mtst"],
+        {k: v for k, v in validation_reports.items() if k.endswith("baseline")},
+        gates,
+    )
+
+    report = {
+        "args": vars(args),
+        "learning_rate": lr,
+        "device": str(device),
+        "split_plan": plan.to_dict(),
+        "periods": {split.name: data.period(split) for split in plan},
+        "dataset": data.ds_meta.to_dict(),
+        "training": result.train_info,
+        "threshold_selection": result.threshold_report,
+        "validation": validation_reports,
+        "test": test_reports,
+        # Read by nn.registry.promote, which refuses a research_only artifact.
+        "research_only": bool(args.validation_only),
+        "test_evaluated": test_reports is not None,
+        "promotion": {
+            "gates": gates.to_dict(),
+            "passed": passed,
+            "failures": failures,
+            "eligible": not args.validation_only,
+        },
+    }
+    save_model(args.models_dir, version, model, metadata, report)
+
+    if args.validation_only:
+        logger.warning(
+            "Research artifact %s saved. Validation gates %s, but a validation-only "
+            "run is never promotable: its test split was never scored.",
+            version,
+            "passed" if passed else "failed",
+        )
+    elif passed:
+        logger.info("Model %s passed the promotion gates", version)
+        if args.promote:
+            promote(args.models_dir, version)
+        else:
+            logger.info("Pass --promote to make it the served model")
+    else:
+        logger.warning("Model %s NOT promoted:", version)
+        for failure in failures:
+            logger.warning("  - %s", failure)
+
+    if args.mlflow:
+        _log_to_mlflow(version, args, report, metadata)
+
+    return 0
+
+
+def _log_to_mlflow(
+    version: str, args: argparse.Namespace, report: dict[str, Any], metadata: ModelMetadata
+) -> None:
+    """Mirror the run into MLflow, if it is installed.
+
+    Optional and best-effort: a tracking failure must not fail a training run
+    whose artifact is already safely on disk. Registers the model **once** — the
+    previous code called ``register_model`` twice per run and set the ``prod``
+    alias unconditionally, creating two versions and auto-promoting both.
+    """
+    try:
+        import mlflow
+    except ImportError:
+        logger.warning("--mlflow given but mlflow is not installed; skipping")
+        return
+
+    try:
+        mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns"))
+        mlflow.set_experiment("chimera_signal_classifier")
+        with mlflow.start_run(run_name=version):
+            mlflow.log_params(
+                {
+                    "seq_len": args.seq_len,
+                    "d_model": args.d_model,
+                    "n_heads": args.n_heads,
+                    "num_layers": args.num_layers,
+                    "learning_rate": report["learning_rate"],
+                    "seed": args.seed,
+                    "horizon": metadata.target_spec.horizon,
+                    "cost_threshold": metadata.target_spec.cost_threshold,
+                    "decision_threshold": metadata.decision_threshold,
+                }
+            )
+            for split in ("validation", "test"):
+                if report.get(split) is None:  # sealed test in a research run
+                    continue
+                trading = report[split]["mtst"]["trading"]
+                classification = report[split]["mtst"]["classification"]
+                mlflow.log_metrics(
+                    {
+                        f"{split}_macro_f1": classification["macro_f1"],
+                        f"{split}_directional_accuracy": classification[
+                            "directional_accuracy"
+                        ],
+                        f"{split}_coverage": classification["coverage"],
+                        f"{split}_net_return": trading["net_return"],
+                        f"{split}_sharpe": trading["sharpe"],
+                        f"{split}_max_drawdown": trading["max_drawdown"],
+                    }
+                )
+            mlflow.log_artifacts(str(Path(args.models_dir) / version), "model")
+    except Exception as exc:  # noqa: BLE001 - tracking is not load-bearing
+        logger.warning("MLflow logging failed (%s); artifact on disk is unaffected", exc)
 
 
 if __name__ == "__main__":
-    import logging  # Added import
-
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-    )  # Added logging config
-    logger = logging.getLogger(__name__)  # Added logger instance
-
-    logger.info("Starting NN training script.")
-
-    notifier = None
-    try:
-        # Attempt to load .env file if python-dotenv is available
-        # This is primarily for local development convenience.
-        # In production, environment variables should be set directly.
-        from dotenv import load_dotenv
-        # Assuming .env is in project root, and nn is a subdirectory
-        dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-        if os.path.exists(dotenv_path):
-            load_dotenv(dotenv_path)
-            logger.info(f"Loaded .env file from {dotenv_path}")
-        else:
-            logger.info(f".env file not found at {dotenv_path}, relying on environment variables being set manually.")
-
-        notifier = TelegramNotifier()
-        logger.info("TelegramNotifier initialized successfully.")
-    except ImportError:
-        logger.warning("python-dotenv library not found. Cannot load .env file. Relying on environment variables for TelegramNotifier.")
-    except ValueError as e:
-        logger.warning(f"Failed to initialize TelegramNotifier: {e}. Training will continue without Telegram notifications.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during TelegramNotifier initialization: {e}. Training will continue without Telegram notifications.")
-
-    try:
-        if notifier:
-            notifier.send("⚙️ Началось обучение модели (Hyperparameter Tuning)...")
-
-        parser = argparse.ArgumentParser()
-    parser.add_argument("--features", required=True)
-    parser.add_argument("--epochs", type=int, default=20)
-    args = parser.parse_args()
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using device: {device}")
-
-    logger.info("Initializing Ray...")
-    ray.init(ignore_reinit_error=True, include_dashboard=False)
-
-    search_space = {"lr": tune.loguniform(1e-5, 1e-3)}
-
-    logger.info("Starting Ray Tune hyperparameter tuning...")
-    analysis = tune.run(
-        tune.with_parameters(
-            tune_trainable, features=args.features, device=device, epochs=args.epochs
-        ),
-        resources_per_trial={"cpu": 2, "gpu": int(device == "cuda")},
-        config=search_space,
-        num_samples=100,  # Consider reducing for faster testing if needed
-        local_dir="./ray_results",
-        metric="sharpe",
-        mode="max",
-    )
-    logger.info("Ray Tune hyperparameter tuning completed.")
-
-    best_config = analysis.get_best_config(
-        metric="sharpe", mode="max"
-    )  # Corrected, was "sharpe" then "loss"
-    logger.info(
-        f"Best config found by Ray Tune (metric='sharpe', mode='max'): {best_config}"
-    )
-
-    logger.info("Training final model with best config...")
-    model = train_tst(best_config, args.features, device, args.epochs)
-    logger.info("Final model training completed.")
-
-    X, _ = load_data(args.features)
-    example_input = torch.tensor(X[:2]).to(device)  # Using first 2 samples as example
-
-    logger.info("Saving and registering model with MLflow...")
-    save_and_register(model, example_input)
-    logger.info("Model saved and registered successfully.")
-
-    if notifier:
-        notifier.send("✅ Модель успешно обучена и сохранена (включая MLflow регистрацию).")
-
-    logger.info("NN training script finished.")
-
-    except Exception as e:
-        logger.error(f"An error occurred during the training process: {e}")
-        detailed_error = traceback.format_exc()
-        logger.error(detailed_error)
-        if notifier:
-            notifier.send_error(f"Ошибка в процессе обучения модели nn/train.py:\n{detailed_error}")
-        # Consider re-raising the exception if the script should fail explicitly
-        # raise e
-    finally:
-        if ray.is_initialized():
-            ray.shutdown()
-            logger.info("Ray successfully shut down.")
+    raise SystemExit(main())

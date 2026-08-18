@@ -1,13 +1,19 @@
 {
-  "exchange": {
-    "name": "binance",
-    "type": "futures",
-    "api_url": "https://testnet.binancefuture.com",
-    "url": "https://testnet.binancefuture.com",
-    "key": "${BINANCE_TEST_KEY}",
-    "secret": "${BINANCE_TEST_SECRET}",
-    "sandbox": true
-  },
-  "dry_run": true,
-  "symbols": ["BTC/USDT"]
+    "$comment": "Dry-run (paper trading) on binance. No orders reach the exchange. This is the default and recommended configuration.",
+    "dry_run": true,
+    "exchange": {
+        "name": "binance",
+        "key": "${BINANCE_TEST_KEY}",
+        "secret": "${BINANCE_TEST_SECRET}",
+        "ccxt_config": {
+            "enableRateLimit": true
+        },
+        "ccxt_async_config": {
+            "enableRateLimit": true
+        },
+        "pair_whitelist": [
+            "BTC/USDT"
+        ],
+        "pair_blacklist": []
+    }
 }

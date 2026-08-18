@@ -1,142 +1,181 @@
-# Архитектура системы
+# Architecture
 
-Ниже представлена общая схема работы бота и взаимодействия его основных
-компонентов.
+This describes the code as it is, not as it is intended to become.
+
+## Boundaries
+
+The system has one execution engine (Freqtrade) and a strict rule about who may
+do what:
+
+- **ML code never places orders.** Nothing under `nn/` imports an exchange
+  client for trading, opens a position, or manages one. The inference service's
+  only output is a probability vector.
+- **The strategy never trains.** It consumes predictions; it does not fit
+  anything. The one place it touches a model directly is offline backtesting,
+  where it loads a frozen artifact read-only.
+- **Every entry passes the risk engine.** `confirm_trade_entry` is the single
+  gate, and it is a synchronous local check — no network call stands between a
+  halted account and a blocked order.
+- **`chimera/` never imports torch or freqtrade.** It is loaded in every
+  container, so it stays light enough to be.
+
+## Flow
 
 ```mermaid
-graph LR
-    subgraph TradingEngine
-        Freqtrade["Freqtrade Bot"]
-        RiskManager["Risk Manager"]
-        Strategies["Rule-based Strategies (scalp, swing, arb)"]
-        NNStrategy["NN Predictor Strategy"]
+flowchart TD
+    subgraph Data
+        BF["tools/backfill.py<br/>ccxt download"]
+        VAL["nn/data_pipeline.py<br/>validate_ohlcv"]
+        FEAT["chimera/features.py<br/>compute_features"]
+        TGT["nn/data_pipeline.py<br/>compute_target"]
+        DS[("data/datasets/*.parquet<br/>+ .meta.json")]
     end
-    subgraph NNWorkspace
-        DataPipeline["Data Pipeline"]
-        ModelDef["MTST Model"]
-        Train["Train + MLflow"]
-        InferService["BentoML Inference"]
+
+    subgraph Training
+        SPLIT["nn/dataset.py<br/>chronological_split<br/>build_windows"]
+        SCALE["StandardScaler<br/>fitted on train only"]
+        TRAIN["nn/train.py"]
+        BASE["nn/baselines.py"]
+        EVAL["nn/evaluate.py"]
+        GATE{"nn/registry.py<br/>check_gates"}
+        ART[("artifacts/models/&lt;version&gt;/")]
+        CUR[("current.json")]
     end
+
+    subgraph Serving
+        SVC["nn/infer_service.py<br/>FastAPI"]
+    end
+
+    subgraph Trading
+        CLIENT["chimera/inference_client.py"]
+        STRAT["strategies/nn_predictor_strategy.py"]
+        RISK["chimera/risk.py<br/>RiskEngine"]
+        FT["Freqtrade<br/>dry-run execution"]
+    end
+
     subgraph Observability
-        Prom["Prometheus"]
-        Grafana["Grafana Dashboards"]
-        Alertman["Alertmanager"]
+        MET["chimera/metrics.py"]
+        PROM["Prometheus"]
+        GRAF["Grafana"]
+        ALERT["Alertmanager"]
+        TG["chimera/notify.py<br/>Telegram (optional)"]
     end
-    User["Trader / Admin"] -->|CLI| StartScript["tools/start.sh"]
-    StartScript --> Freqtrade
-    Freqtrade --> Strategies
-    Freqtrade --> RiskManager
-    Freqtrade --> NNStrategy
-    NNStrategy --> InferService
-    InferService --> ModelDef
-    Train --> ModelDef
-    DataPipeline --> Train
-    Prom --> Grafana
-    Grafana --> User
-    Prom --> Alertman
-    Alertman --> User
+
+    BF --> VAL --> FEAT --> DS
+    VAL --> TGT --> DS
+    DS --> SPLIT --> SCALE --> TRAIN
+    TRAIN --> EVAL
+    BASE --> EVAL
+    EVAL --> GATE
+    TRAIN --> ART
+    GATE -->|passed and --promote| CUR
+    CUR --> SVC
+    ART --> SVC
+    SVC <--> CLIENT
+    CLIENT --> STRAT
+    FEAT --> STRAT
+    STRAT -->|entry signal| FT
+    FT -->|confirm_trade_entry| RISK
+    RISK -->|allow + stake| FT
+    ART -.->|backtest only, in-process| STRAT
+    STRAT --> MET
+    RISK --> MET
+    SVC --> MET
+    MET --> PROM --> GRAF
+    PROM --> ALERT
+    RISK --> TG
+    SVC --> TG
 ```
 
-## Описание компонентов
+## Components
 
-Эта секция предоставляет более детальное описание каждого компонента, показанного на диаграмме выше.
+### `chimera/` — the shared core
 
-### TradingEngine
+Imported by every other package and by every container. Contains no heavy
+dependencies on purpose.
 
-Основной модуль, отвечающий за непосредственное выполнение торговых операций, управление стратегиями и рисками.
+| Module | Responsibility |
+| --- | --- |
+| `features.py` | The definition of a feature vector. Causal, deterministic, fixed column order. |
+| `contracts.py` | `Signal`, `TargetSpec`, `ModelMetadata`, and `decide()`. The shared vocabulary. |
+| `risk.py` | `RiskEngine`: limits, sizing, kill switch. No Freqtrade dependency. |
+| `safety.py` | The live-trading gate and environment validation. |
+| `inference_client.py` | HTTP client with caching and fail-closed semantics. |
+| `metrics.py` | Every Prometheus series the system exports. |
+| `notify.py` | Optional Telegram, deduplicated and rate limited. |
 
-#### Freqtrade Bot
-*   Центральный элемент торгового движка. Freqtrade - это open-source бот для торговли криптовалютами.
-*   Отвечает за:
-    *   Подключение к биржам.
-    *   Получение рыночных данных (цены, объемы).
-    *   Исполнение ордеров (покупка/продажа).
-    *   Управление активными сделками.
-    *   Ведение истории сделок.
-    *   Предоставление API для пользовательских стратегий.
-*   Взаимодействует с `Risk Manager`, `Rule-based Strategies` и `NN Predictor Strategy`.
+`features.py` being shared is the load-bearing decision: the training pipeline
+and the live strategy call the *same function*, so a model cannot be served
+inputs computed differently than the ones it learned from.
 
-#### Risk Manager
-*   Модуль, предназначенный для контроля и управления рисками.
-*   Задачи:
-    *   Определение максимального размера позиции.
-    *   Управление стоп-лоссами и тейк-профитами на уровне портфеля.
-    *   Мониторинг общего риска по всем активным позициям.
-    *   Может временно приостанавливать торговлю при достижении определенных лимитов убытков или волатильности рынка.
-*   Интегрируется с Freqtrade для применения правил риска к сделкам.
+### `nn/` — data, model, training, serving
 
-#### Rule-based Strategies (scalp, swing, arb)
-*   Традиционные торговые стратегии, основанные на заранее определенных правилах и технических индикаторах.
-*   Примеры:
-    *   **Scalping**: Краткосрочные стратегии, нацеленные на получение небольшой прибыли от множества сделок.
-    *   **Swing Trading**: Среднесрочные стратегии, удерживающие позиции от нескольких дней до недель, чтобы заработать на "свингах" (колебаниях) цены.
-    *   **Arbitrage**: Стратегии, использующие разницу в ценах на один и тот же актив на разных биржах или в разных парах.
-*   Реализуются как пользовательские стратегии в Freqtrade.
+| Module | Responsibility |
+| --- | --- |
+| `data_pipeline.py` | Download, validate, label, assemble and persist datasets. |
+| `dataset.py` | Chronological splits, windowing, scaling. Where leakage is prevented. |
+| `model_def.py` | `MTST`: a small configurable Transformer classifier. |
+| `baselines.py` | Majority-class and momentum baselines the model must beat. |
+| `train.py` | The training entrypoint. |
+| `evaluate.py` | Classification and trading metrics; threshold selection. |
+| `experiment.py` | Predeclared config grids, scored on validation only. |
+| `walkforward.py` | Expanding-window walk-forward *validation*. |
+| `registry.py` | Artifact save/load, promotion gates, `current.json`. |
+| `infer_service.py` | The FastAPI service. |
 
-#### NN Predictor Strategy
-*   Специализированная стратегия Freqtrade, которая интегрируется с сервисом инференса нейронной сети (`InferService`).
-*   Получает предсказания от модели (например, направление движения цены или вероятность определенного события).
-*   На основе этих предсказаний генерирует торговые сигналы (покупка/продажа).
-*   Может комбинировать предсказания нейросети с традиционными техническими индикаторами или правилами.
+### `strategies/` — Freqtrade
 
-### NNWorkspace
+`RiskAwareStrategy` (in `strategies/common/risk_manager.py`) is the base class.
+It binds the risk engine to four Freqtrade callbacks, verified against the
+installed version:
 
-Пространство, посвященное всем аспектам работы с нейронными сетями: от сбора данных до обучения моделей и их последующего развертывания для использования в реальном времени.
+| Callback | What it does |
+| --- | --- |
+| `bot_loop_start` | Reads equity, updates drawdown and daily-loss state, publishes metrics. |
+| `custom_stake_amount` | Risk-based sizing from the stop distance. |
+| `confirm_trade_entry` | **The gate.** Returns False to block the order. |
+| `order_filled` | Tracks exposure, loss streaks and the order rate. |
 
-#### Data Pipeline
-*   Конвейер данных, автоматизирующий сбор, очистку, преобразование и хранение данных, необходимых для обучения моделей.
-*   Этапы:
-    *   **Сбор данных**: Загрузка исторических данных (OHLCV, объемы, ставки финансирования и т.д.) с бирж (`tools/backfill.py`).
-    *   **Обогащение данных**: Добавление дополнительных данных, например, ончейн-метрик с Glassnode (`enrich_onchain` в `nn/data_pipeline.py`), если настроено.
-    *   **Инженерия признаков**: Создание новых признаков из существующих данных, которые могут улучшить производительность модели (`make_features` в `nn/data_pipeline.py`).
-    *   **Хранение**: Сохранение обработанных данных в форматах, удобных для обучения (например, Parquet) в каталогах `data/raw/` и `data/features/`.
+## Design decisions and why
 
-#### MTST Model (Multivariate Time Series Transformer)
-*   Обозначает архитектуру или тип модели машинного обучения, используемой для предсказаний. В данном контексте, это может быть модель, основанная на трансформерах, для анализа многомерных временных рядов.
-*   Определение модели, ее слоев, параметров и т.д., находится в кодовой базе нейросетевого модуля (`nn/`).
+### FastAPI instead of BentoML
 
-#### Train + MLflow
-*   Процесс обучения выбранной модели (`MTST Model`) на подготовленных данных из `Data Pipeline`.
-*   Скрипт `nn/train.py` управляет циклом обучения.
-*   **MLflow** используется для:
-    *   **Трекинга экспериментов**: Запись параметров, метрик (например, точность, потери), артефактов (например, сериализованные модели, графики) каждого запуска обучения.
-    *   **Версионирования моделей**: Регистрация обученных моделей в реестре MLflow, что позволяет отслеживать различные версии и выбирать лучшие для развертывания.
-    *   Локально данные MLflow сохраняются в каталоге `mlruns`.
+The previous service loaded its model at import time from the BentoML store, so
+the module could not be imported — or tested — without a populated store, and it
+introduced a third model-versioning system alongside MLflow and the on-disk
+artifacts. FastAPI and Pydantic are already in Freqtrade's dependency tree, give
+schema validation and correct status codes directly, and let the entire contract
+be exercised with `TestClient` against a tiny model. BentoML was not removed for
+being disliked; it was removed because it made the service untestable and added a
+redundant registry.
 
-#### BentoML Inference Service
-*   Сервис, отвечающий за развертывание обученной и версионированной модели из MLflow для предоставления предсказаний по запросу.
-*   Использует **BentoML** для:
-    *   Упаковки модели и ее зависимостей в готовый к развертыванию формат (Bento).
-    *   Создания стандартизированного API (обычно HTTP/REST) для получения предсказаний от модели.
-    *   Обеспечения возможности масштабирования и управления развернутыми моделями.
-*   Сервис (`nn/infer_service.py`) запускается в Docker-контейнере (`nn_infer`) и доступен для `NN Predictor Strategy`.
+### The artifact directory, not a tracking server
 
-### Observability
+`artifacts/models/<version>/` is the source of truth. A model loads with torch
+and the standard library alone, so inference never depends on MLflow being
+reachable. MLflow logging remains available behind `--mlflow` for experiment
+tracking, which is what it is good at.
 
-Набор инструментов и практик для мониторинга состояния системы, сбора метрик, визуализации данных и настройки оповещений о критических событиях.
+### Predictions in backtest come from a local model, not HTTP
 
-#### Prometheus
-*   Система мониторинга и временных рядов с открытым исходным кодом.
-*   Собирает метрики с различных компонентов системы (Freqtrade, NN Infer Service, системные метрики) по принципу pull-модели через HTTP эндпоинты.
-*   Хранит метрики в базе данных временных рядов.
-*   Предоставляет язык запросов PromQL для анализа метрик.
+Calling a service once per historical row is slow and dishonest — today's model
+answering for a 2023 candle. In backtest and hyperopt the strategy loads a frozen
+artifact and batches the dataframe through it in-process. Because features are
+causal, batching introduces no look-ahead. Without a configured artifact the
+strategy emits no signals and says so, instead of quietly backtesting something
+else.
 
-#### Grafana Dashboards
-*   Платформа для визуализации и анализа данных с открытым исходным кодом.
-*   Подключается к Prometheus как к источнику данных.
-*   Позволяет создавать интерактивные дашборды для отображения метрик в виде графиков, таблиц, индикаторов и т.д.
-*   Используется для визуального мониторинга производительности и состояния торгового бота и связанных сервисов.
+### The kill switch is local state
 
-#### Alertmanager
-*   Компонент Prometheus, отвечающий за обработку и отправку оповещений.
-*   Получает правила оповещений от Prometheus.
-*   Дедуплицирует, группирует и маршрутирует оповещения различным получателям (например, email, Slack, PagerDuty).
-*   Позволяет настроить оповещения о нештатных ситуациях, таких как сбои в работе бота, проблемы с сервисом инференса, или аномальное рыночное поведение.
+`RiskEngine.halted` is checked synchronously at the top of `evaluate_entry` and
+persisted to disk so a restart does not clear it. The previous implementation
+fired `requests.post("http://localhost:8080/api/v1/stop")` with no timeout and no
+error handling and treated that as the guarantee — a guard that fails open
+whenever the network does.
 
-### User Interaction
+## What is deliberately absent
 
-#### Trader / Admin
-*   Пользователь системы, который взаимодействует с ней для настройки, запуска, мониторинга и управления.
-
-#### StartScript (`tools/start.sh`)
-*   CLI-инструмент (скрипт командной строки), который упрощает запуск и конфигурацию Freqtrade, объединяя базовые и специфичные для биржи/режима конфигурационные файлы.
+- No second trading engine. Freqtrade executes; nothing else does.
+- No order placement from `nn/`.
+- No live-capable path in CI.
+- No metric on a dashboard that nothing exports.
