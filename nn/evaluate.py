@@ -146,6 +146,53 @@ def classification_metrics(
     }
 
 
+def realised_trades(
+    signals: np.ndarray,
+    future_return: np.ndarray,
+    target_spec: TargetSpec,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The non-overlapping trades a signal series actually takes.
+
+    Returns ``(positions, directions, net_returns)``: the index into ``signals``
+    each trade was entered at, its direction (``-1.0`` short, ``+1.0`` long), and
+    its return after the round-trip cost.
+
+    Trades are taken greedily in time order and held for ``horizon`` candles;
+    signals that fire while a position is open are ignored. Overlapping the
+    trades instead would count the same price move several times.
+
+    This is the single definition of "what trades did this signal series take,
+    and what did each one net". :func:`trading_metrics` aggregates it, and
+    per-direction attribution splits it — neither reimplements the cost model,
+    so a change to costs cannot land in one and not the other.
+    """
+    signals = np.asarray(signals, dtype=np.int64)
+    future_return = np.asarray(future_return, dtype=np.float64)
+    horizon = target_spec.horizon
+    cost = target_spec.cost_threshold  # round-trip fees + slippage
+
+    positions: list[int] = []
+    directions: list[float] = []
+    returns: list[float] = []
+    i = 0
+    n = len(signals)
+    while i < n:
+        direction = _DIRECTION[signals[i]]
+        if direction == 0.0:
+            i += 1
+            continue
+        positions.append(i)
+        directions.append(float(direction))
+        returns.append(direction * future_return[i] - cost)
+        i += horizon
+
+    return (
+        np.asarray(positions, dtype=np.int64),
+        np.asarray(directions, dtype=np.float64),
+        np.asarray(returns, dtype=np.float64),
+    )
+
+
 def trading_metrics(
     signals: np.ndarray,
     future_return: np.ndarray,
@@ -155,26 +202,13 @@ def trading_metrics(
 ) -> dict[str, Any]:
     """Score a signal series as a sequence of non-overlapping trades.
 
-    Trades are taken greedily in time order and held for ``horizon`` candles;
-    signals that fire while a position is open are ignored. Overlapping the
-    trades instead would count the same price move several times and inflate
-    every metric here.
+    The trades themselves come from :func:`realised_trades`; everything here is
+    aggregation over them.
     """
-    signals = np.asarray(signals, dtype=np.int64)
-    future_return = np.asarray(future_return, dtype=np.float64)
     horizon = target_spec.horizon
-    cost = target_spec.cost_threshold  # round-trip fees + slippage
-
-    returns: list[float] = []
-    i = 0
+    cost = target_spec.cost_threshold
     n = len(signals)
-    while i < n:
-        direction = _DIRECTION[signals[i]]
-        if direction == 0.0:
-            i += 1
-            continue
-        returns.append(direction * future_return[i] - cost)
-        i += horizon
+    _, _, returns = realised_trades(signals, future_return, target_spec)
 
     n_trades = len(returns)
     if n_trades == 0:
@@ -193,7 +227,7 @@ def trading_metrics(
             "cost_per_trade": round(cost, 6),
         }
 
-    trade_returns = np.asarray(returns)
+    trade_returns = returns
     equity = np.cumprod(1.0 + trade_returns)
     peak = np.maximum.accumulate(equity)
     max_drawdown = float((1.0 - equity / peak).max())

@@ -551,9 +551,9 @@ def spied_run(dataset, tmp_path_factory):
             return originals["train_model"](config, X_train, y_train, X_val, y_val, **kwargs)
 
         def frozen_spy(data_arg, scaler, split, seq_len, **kwargs):
-            reports, idx = originals["frozen"](data_arg, scaler, split, seq_len, **kwargs)
-            record["frozen_splits"].append((split.name, split.start, split.end, idx))
-            return reports, idx
+            scored = originals["frozen"](data_arg, scaler, split, seq_len, **kwargs)
+            record["frozen_splits"].append((split.name, split.start, split.end, scored.idx))
+            return scored
 
         def majority_spy(self, y):
             record["majority_fits"].append(np.asarray(y).copy())
@@ -701,7 +701,7 @@ def test_frozen_scoring_respects_market_data_gaps():
     scaler = train.StandardScaler().fit(data.features[:150])
     model = MTST(MTSTConfig(input_dim=2, seq_len=8, d_model=8, n_heads=2, num_layers=1))
 
-    reports, idx = train.score_frozen_split(
+    scored = train.score_frozen_split(
         data,
         scaler,
         outer,
@@ -711,6 +711,7 @@ def test_frozen_scoring_respects_market_data_gaps():
         threshold=0.5,
         device=torch.device("cpu"),
     )
+    reports, idx = scored.reports, scored.idx
 
     assert set(reports) == {"mtst"}
     assert idx.min() - 7 >= outer.start and idx.max() + 4 <= outer.end - 1
@@ -978,9 +979,9 @@ def test_walkforward_row_indices_stay_below_the_boundary(dataset, tmp_path, monk
         return prepared
 
     def frozen_spy(data_arg, scaler, split, seq_len, **kwargs):
-        reports, idx = original_frozen(data_arg, scaler, split, seq_len, **kwargs)
-        seen.append(int(idx.max()) + horizon)
-        return reports, idx
+        scored = original_frozen(data_arg, scaler, split, seq_len, **kwargs)
+        seen.append(int(scored.idx.max()) + horizon)
+        return scored
 
     monkeypatch.setattr(train, "prepare_research_windows", prepare_spy)
     monkeypatch.setattr(walkforward, "prepare_research_windows", prepare_spy)

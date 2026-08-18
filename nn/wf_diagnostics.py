@@ -43,15 +43,52 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nn.walkforward import MODELS, SUMMARY_METRICS
+import pandas as pd
+
+from chimera.contracts import CLASS_ORDER
+from nn.regime import (
+    RegimeDataError,
+    block_statistics,
+    direction_attribution,
+    load_predictions,
+    load_raw_ohlcv,
+    load_research_frame,
+    raw_block_statistics,
+)
+from nn.walkforward import MODELS, PREDICTIONS_NAME, SUMMARY_METRICS
 
 logger = logging.getLogger(__name__)
 
 #: The file `nn.walkforward` writes, looked up when a directory is given.
 ARTIFACT_NAME = "walkforward.json"
 
+#: What this tool writes into ``--out``.
+REPORT_JSON = "regime_diagnostics.json"
+REPORT_MD = "regime_diagnostics.md"
+
+#: Dataset identity fields that must match for runs to be one seed study.
+#:
+#: A different feature contract, target spec, horizon or cost model makes two
+#: runs measurements of different systems, however similar the numbers look.
+#: `created_at` and `class_balance` are deliberately absent: the first differs
+#: for every build, the second is a summary of the same rows.
+IDENTITY_FIELDS = (
+    "rows",
+    "pair",
+    "timeframe",
+    "exchange",
+    "start",
+    "end",
+    "feature_names",
+    "feature_spec",
+    "target_spec",
+)
+
 #: The three regions of a fold, in the order they must appear in time.
 REGIONS = ("train", "inner_validation", "outer_validation")
+
+#: Target class names, in the dataset's own order.
+_CLASS_LABELS = [c.value for c in CLASS_ORDER]
 
 
 @dataclass(frozen=True)
@@ -296,7 +333,7 @@ def compare_runs(runs: list[RunArtifact]) -> list[str]:
                 f"{run.name} does not share {reference.name}'s fold geometry "
                 f"({', '.join(differing)} differ)"
             )
-        for key in ("rows", "pair", "timeframe"):
+        for key in IDENTITY_FIELDS:
             if run.dataset.get(key) != reference.dataset.get(key):
                 problems.append(
                     f"{run.name} dataset {key} is {run.dataset.get(key)!r}, "
@@ -407,15 +444,381 @@ def _compare_to_baselines(runs: list[RunArtifact], n_folds: int) -> dict[str, An
     }
 
 
+# --- per-fold model stability, and which fold is best and worst ---------------
+def fold_model_stability(runs: list[RunArtifact]) -> list[dict[str, Any]]:
+    """Per fold, how the model behaved across seeds.
+
+    The market in a fold is the same whichever seed ran; only the model changes.
+    Putting the two side by side is what makes "fold 2 is a hard regime"
+    separable from "fold 2 got an unlucky initialisation".
+    """
+    stability = []
+    for fold in range(runs[0].n_folds):
+        net_returns = [run.metric(run.folds[fold], "mtst", "net_return") for run in runs]
+        entry: dict[str, Any] = {
+            "fold": fold,
+            "net_return": {
+                **_spread(net_returns),
+                "median": round(statistics.median(net_returns), 6),
+                "positive_seeds": sum(1 for value in net_returns if value > 0),
+                "seeds": len(net_returns),
+                "values": {run.name: round(value, 6) for run, value in zip(runs, net_returns)},
+            },
+        }
+        for metric in ("directional_accuracy", "coverage", "n_trades"):
+            entry[metric] = _spread(
+                [run.metric(run.folds[fold], "mtst", metric) for run in runs]
+            )
+        for field in ("threshold", "best_epoch"):
+            entry[field] = _spread(
+                [float(run.folds[fold]["selection"][field]) for run in runs]
+            )
+        stability.append(entry)
+    return stability
+
+
+def best_and_worst(stability: list[dict[str, Any]]) -> tuple[int, int]:
+    """The folds with the highest and lowest mean MTST outer net return.
+
+    Chosen from the data every time. Naming a fold in the source would make the
+    comparison a description of one dataset rather than a diagnostic.
+    """
+    ranked = sorted(stability, key=lambda entry: entry["net_return"]["mean"])
+    return ranked[-1]["fold"], ranked[0]["fold"]
+
+
+# --- dataset-backed regime statistics ----------------------------------------
+def regime_report(
+    runs: list[RunArtifact],
+    research: Any,
+    raw: Any = None,
+) -> list[dict[str, Any]]:
+    """Market statistics for every unique outer block.
+
+    The runs share a geometry by the time this is called — ``compare_runs`` has
+    already refused them otherwise — so the unique outer blocks are the first
+    run's, and the statistics belong to the fold rather than to any seed.
+    """
+    blocks = []
+    for fold in runs[0].folds:
+        start, end = RunArtifact.rows(fold, "outer_validation")
+        entry = block_statistics(research, start, end)
+        entry["fold"] = fold.get("fold")
+        if raw is not None:
+            timestamps = research.block(start, end)["date"]
+            entry["market"] = raw_block_statistics(raw, timestamps, research.timeframe)
+        blocks.append(entry)
+    return blocks
+
+
+def _relative(best: float, worst: float) -> float | None:
+    """Difference normalised by the larger magnitude: bounded, and sign-safe.
+
+    A plain percentage change explodes when the denominator is near zero, which
+    is exactly where several of these metrics live (mean net return, mean
+    ema_cross). This stays finite and still ranks a doubling above a nudge.
+    """
+    scale = max(abs(best), abs(worst))
+    return round((best - worst) / scale, 6) if scale > 1e-12 else None
+
+
+def compare_best_worst(
+    regime: list[dict[str, Any]] | None,
+    stability: list[dict[str, Any]],
+    best: int,
+    worst: int,
+) -> list[dict[str, Any]]:
+    """Rank what differs most between the best and worst fold.
+
+    Descriptive only. A row here says two numbers differ, and the ordering says
+    by how much relative to their own scale — neither says one produced the
+    other.
+    """
+    by_fold = {entry["fold"]: entry for entry in stability}
+    rows: list[tuple[str, str, float, float]] = [
+        (
+            "model",
+            "mtst net return",
+            by_fold[best]["net_return"]["mean"],
+            by_fold[worst]["net_return"]["mean"],
+        ),
+        (
+            "model",
+            "directional accuracy",
+            by_fold[best]["directional_accuracy"]["mean"],
+            by_fold[worst]["directional_accuracy"]["mean"],
+        ),
+        (
+            "model",
+            "coverage",
+            by_fold[best]["coverage"]["mean"],
+            by_fold[worst]["coverage"]["mean"],
+        ),
+        (
+            "model",
+            "trades",
+            by_fold[best]["n_trades"]["mean"],
+            by_fold[worst]["n_trades"]["mean"],
+        ),
+        (
+            "model",
+            "selected threshold",
+            by_fold[best]["threshold"]["mean"],
+            by_fold[worst]["threshold"]["mean"],
+        ),
+    ]
+
+    if regime is not None:
+        blocks = {entry["fold"]: entry for entry in regime}
+        best_block, worst_block = blocks[best], blocks[worst]
+
+        def add(group: str, label: str, reader) -> None:
+            rows.append((group, label, reader(best_block), reader(worst_block)))
+
+        add("target", "future_return mean", lambda b: b["future_return"]["mean"])
+        add("target", "future_return std", lambda b: b["future_return"]["std"])
+        add("target", "future_return mean abs", lambda b: b["future_return"]["mean_abs"])
+        add(
+            "target",
+            "positive future_return fraction",
+            lambda b: b["future_return"]["fraction_positive"],
+        )
+        for name in _CLASS_LABELS:
+            add(
+                "target",
+                f"{name} fraction",
+                lambda b, name=name: b["target_distribution"][name]["fraction"],
+            )
+        add("volatility", "atr_norm mean", lambda b: b["features"]["atr_norm"]["mean"])
+        add("volatility", "atr_norm p90", lambda b: b["features"]["atr_norm"]["p90"])
+        add(
+            "volatility",
+            "realized_vol mean",
+            lambda b: b["features"]["realized_vol"]["mean"],
+        )
+        add("volatility", "realized_vol p90", lambda b: b["features"]["realized_vol"]["p90"])
+        add("volatility", "hl_range mean", lambda b: b["features"]["hl_range"]["mean"])
+        add("trend", "ema_cross mean", lambda b: b["features"]["ema_cross"]["mean"])
+        add(
+            "trend",
+            "ema_cross fraction positive",
+            lambda b: b["features"]["ema_cross"]["fraction_positive"],
+        )
+        add("trend", "ema_cross std", lambda b: b["features"]["ema_cross"]["std"])
+        add("volume", "volume_z mean", lambda b: b["features"]["volume_z"]["mean"])
+        add("volume", "volume_z p90 abs", lambda b: b["features"]["volume_z"]["p90_abs"])
+        add(
+            "volume",
+            "volume_change mean",
+            lambda b: b["features"]["volume_change"]["mean"],
+        )
+        if "market" in best_block and "market" in worst_block:
+            add("market", "BTC market return", lambda b: b["market"]["market_return"])
+            add(
+                "market",
+                "annualised volatility",
+                lambda b: b["market"]["annualised_volatility"],
+            )
+            add(
+                "market",
+                "mean abs hourly return",
+                lambda b: b["market"]["mean_abs_candle_return"],
+            )
+            add(
+                "market",
+                "positive candle fraction",
+                lambda b: b["market"]["positive_candle_fraction"],
+            )
+            add("market", "market max drawdown", lambda b: b["market"]["max_drawdown"])
+
+    comparison = [
+        {
+            "group": group,
+            "metric": label,
+            "best_fold": round(float(best_value), 8),
+            "worst_fold": round(float(worst_value), 8),
+            "absolute_difference": round(float(best_value) - float(worst_value), 8),
+            "relative_difference": _relative(float(best_value), float(worst_value)),
+        }
+        for group, label, best_value, worst_value in rows
+    ]
+    comparison.sort(key=lambda row: abs(row["relative_difference"] or 0.0), reverse=True)
+    return comparison
+
+
+# --- LONG / SHORT attribution -------------------------------------------------
+def attribution_report(runs: list[RunArtifact], target_spec: Any = None) -> dict[str, Any]:
+    """Exact per-direction attribution, or the reason it cannot be computed.
+
+    Never approximated. The aggregate reports in ``walkforward.json`` do not
+    carry per-sample predictions, and a direction split inferred from them would
+    be a guess wearing the costume of a measurement.
+    """
+    available = {run.name: (run.path.parent / PREDICTIONS_NAME) for run in runs}
+    present = {name: path for name, path in available.items() if path.is_file()}
+    if not present:
+        return {
+            "available": False,
+            "reason": (
+                "directional trade attribution unavailable for this legacy artifact "
+                "because outer sample predictions were not persisted"
+            ),
+            "expected_file": PREDICTIONS_NAME,
+        }
+    if target_spec is None:
+        return {
+            "available": False,
+            "reason": (
+                "outer sample predictions were found, but attribution needs the "
+                "dataset's target spec for its cost model: re-run with --dataset"
+            ),
+            "expected_file": PREDICTIONS_NAME,
+        }
+
+    missing = sorted(set(available) - set(present))
+    per_run: dict[str, Any] = {}
+    frames = []
+    for name, path in present.items():
+        predictions = load_predictions(
+            path, sealed_test_start=next(r for r in runs if r.name == name).sealed_test_start
+        )
+        frames.append(predictions)
+        per_run[name] = direction_attribution(predictions, target_spec)
+
+    combined = pd.concat(frames, ignore_index=True)
+    return {
+        "available": True,
+        "runs_with_predictions": sorted(present),
+        "runs_without_predictions": missing,
+        "overall": direction_attribution(combined, target_spec),
+        "per_run": per_run,
+        "per_fold": {
+            int(fold): direction_attribution(group, target_spec)
+            for fold, group in combined.groupby("fold", sort=True)
+        },
+    }
+
+
+# --- candidate hypotheses ------------------------------------------------------
+def candidate_hypotheses(
+    comparison: list[dict[str, Any]],
+    stability: list[dict[str, Any]],
+    attribution: dict[str, Any],
+    best: int,
+    worst: int,
+    horizon: int | None,
+) -> list[dict[str, Any]]:
+    """Three ranked research questions, generated from the diagnostics.
+
+    Each is a hypothesis to *test*, not a finding, and each is ranked by the
+    size of the difference that suggested it. None of them is implemented or
+    tuned here; a diagnostic that quietly starts fitting is how a research tool
+    becomes a source of overfitting.
+    """
+    strength = {row["metric"]: abs(row["relative_difference"] or 0.0) for row in comparison}
+
+    def largest(*metrics: str) -> float:
+        return max((strength.get(metric, 0.0) for metric in metrics), default=0.0)
+
+    horizon_label = f"{horizon}-candle" if horizon else "fixed-horizon"
+    threshold_spread = max(entry["threshold"]["std"] for entry in stability)
+
+    candidates = [
+        {
+            "hypothesis": (
+                f"The {horizon_label} target may behave differently across volatility "
+                "regimes; a volatility-normalised target threshold is worth testing."
+            ),
+            "evidence": (
+                "realised volatility and ATR differ most between the best and worst "
+                "fold, and the label is defined against a fixed cost threshold "
+                "regardless of how far price typically moves in that window."
+            ),
+            "strength": largest(
+                "annualised volatility", "realized_vol mean", "atr_norm mean", "atr_norm p90"
+            ),
+        },
+        {
+            "hypothesis": (
+                "The class prior shifts with the regime; the cost-threshold labelling "
+                "may need to be regime-aware before class balance is interpretable."
+            ),
+            "evidence": (
+                "the SHORT/HOLD/LONG mix and the future-return distribution differ "
+                "between the two folds, so the model faces a different problem in each."
+            ),
+            "strength": largest(
+                "SHORT fraction",
+                "LONG fraction",
+                "HOLD fraction",
+                "future_return std",
+                "future_return mean abs",
+            ),
+        },
+        {
+            "hypothesis": (
+                "The feature set may lack regime context: nothing in it states which "
+                "regime the window belongs to, only what just happened within it."
+            ),
+            "evidence": (
+                "trend orientation and volume behaviour differ between the folds while "
+                "the feature contract is identical across every run."
+            ),
+            "strength": largest(
+                "ema_cross mean",
+                "ema_cross fraction positive",
+                "volume_z mean",
+                "volume_z p90 abs",
+            ),
+        },
+        {
+            "hypothesis": (
+                "LONG and SHORT may need separate decision thresholds rather than one "
+                "symmetric cut."
+            ),
+            "evidence": (
+                (
+                    "per-direction attribution is available and can be read directly"
+                    if attribution.get("available")
+                    else "per-direction attribution is not available for these runs, so "
+                    "this cannot yet be checked — it needs a run that persists outer "
+                    "predictions"
+                )
+                + f"; the selected threshold varies by up to {threshold_spread:.3f} "
+                "across seeds on a single fold."
+            ),
+            "strength": max(threshold_spread, largest("selected threshold", "coverage")),
+        },
+        {
+            "hypothesis": (
+                f"Fold {worst} may be a genuinely harder regime rather than an unlucky "
+                f"draw: compare it against fold {best} on more seeds before treating "
+                "the across-fold mean as a single number."
+            ),
+            "evidence": (
+                "the per-fold spread across seeds is comparable to the difference "
+                "between folds, so the two are not cleanly separable yet."
+            ),
+            "strength": largest("mtst net return", "directional accuracy"),
+        },
+    ]
+    candidates.sort(key=lambda candidate: candidate["strength"], reverse=True)
+    return [
+        {"rank": rank, **candidate, "strength": round(candidate["strength"], 6)}
+        for rank, candidate in enumerate(candidates[:3], start=1)
+    ]
+
+
 def to_markdown(
     runs: list[RunArtifact],
     audits: dict[str, list[str]],
     mismatches: list[str],
     summary: dict[str, Any] | None,
+    analysis: dict[str, Any] | None = None,
 ) -> str:
     reference = runs[0]
     lines = [
-        "# Walk-forward diagnostics",
+        "# Walk-forward regime diagnostics",
         "",
         f"{len(runs)} run(s), read from disk. Sealed test block starts at row "
         f"{reference.sealed_test_start} and is not opened by this tool.",
@@ -536,18 +939,242 @@ def to_markdown(
     for name, wins in comparison["per_run"].items():
         lines.append(f"| {name} | {wins}/{summary['folds']} |")
 
+    if analysis:
+        lines += _analysis_markdown(analysis, reference)
+
     lines += [
         "",
-        "## Reading this",
+        "## Limitations",
         "",
-        "These are outer-validation blocks: nothing was fitted on them, which is what",
-        "makes them comparable across seeds. The spread here measures how stable the",
-        "research procedure is, not out-of-sample performance — the folds were run",
-        "repeatedly during model development. It is not a claim of profitability, and",
-        "the sealed test block remains unopened.",
+        "- These are outer-validation blocks: nothing was fitted on them, which is",
+        "  what makes them comparable across seeds. They are still research blocks,",
+        "  re-run while the method was being built. Seed spread measures the stability",
+        "  of the research procedure, not out-of-sample performance, and this report is",
+        "  not a claim of profitability. The sealed test block remains unopened.",
+        "- Every difference reported above is a **coincidence in the data**, not a",
+        "  cause. One fold per regime is a sample of one; nothing here establishes that",
+        "  a market property produced a model outcome.",
+        "- Regime statistics describe the outer block only. The model was trained on",
+        "  everything before it, so a fold's difficulty also depends on how much its",
+        "  training window resembled it — which these numbers do not measure.",
+        "- Per-fold seed spread is not a confidence interval on performance.",
         "",
     ]
     return "\n".join(lines)
+
+
+def _analysis_markdown(analysis: dict[str, Any], reference: RunArtifact) -> list[str]:
+    """The dataset-backed sections: regimes, stability, best vs worst, attribution."""
+    lines: list[str] = []
+    regime = analysis.get("regime")
+    stability = analysis["fold_stability"]
+    best, worst = analysis["best_fold"], analysis["worst_fold"]
+
+    lines += [
+        "",
+        "## Dataset / sealed-test status",
+        "",
+        (
+            f"- Processed dataset: `{analysis['dataset']}`"
+            if analysis.get("dataset")
+            else "- Processed dataset: not given (`--dataset`), so no regime statistics below."
+        ),
+    ]
+    if analysis.get("dataset"):
+        lines += [
+            (
+                f"- Raw OHLCV: `{analysis['raw']}`"
+                if analysis.get("raw")
+                else "- Raw OHLCV: not given (`--raw`), so market-level statistics are absent."
+            ),
+            f"- Rows read: `[0, {reference.sealed_test_start})`. The frame is truncated at "
+            "the sealed boundary on load, so no statistic below can have seen a sealed row.",
+            f"- Highest outer row used: {analysis['highest_outer_row']} "
+            f"(sealed test starts at {reference.sealed_test_start}).",
+            "- Sealed test evaluated: **no**.",
+        ]
+
+    if regime:
+        lines += [
+            "",
+            "## Market regime statistics (outer blocks)",
+            "",
+            "Identical across seeds by construction — the market in a fold does not",
+            "depend on which seed trained on it.",
+            "",
+            "| fold | rows | period | fut ret mean | fut ret std | fut ret abs "
+            "| pos frac |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for block in regime:
+            returns = block["future_return"]
+            lines.append(
+                f"| {block['fold']} | {block['rows']} | {block['period']['start'][:10]} to "
+                f"{block['period']['end'][:10]} | {returns['mean']:+.6f} | "
+                f"{returns['std']:.6f} | {returns['mean_abs']:.6f} | "
+                f"{returns['fraction_positive']:.4f} |"
+            )
+
+        lines += [
+            "",
+            "### Feature regime",
+            "",
+            "| fold | ema_cross mean | ema_cross >0 | atr_norm mean | atr_norm p90 | "
+            "realized_vol mean | realized_vol p90 | hl_range mean | volume_z mean | "
+            "volume_z p90abs |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for block in regime:
+            f = block["features"]
+            lines.append(
+                f"| {block['fold']} | {f['ema_cross']['mean']:+.6f} | "
+                f"{f['ema_cross']['fraction_positive']:.4f} | {f['atr_norm']['mean']:.6f} | "
+                f"{f['atr_norm']['p90']:.6f} | {f['realized_vol']['mean']:.6f} | "
+                f"{f['realized_vol']['p90']:.6f} | {f['hl_range']['mean']:.6f} | "
+                f"{f['volume_z']['mean']:+.6f} | {f['volume_z']['p90_abs']:.6f} |"
+            )
+
+        lines += [
+            "",
+            "### Target distribution",
+            "",
+            "| fold | "
+            + " | ".join(f"{name} n | {name} frac | {name} mean ret" for name in _CLASS_LABELS)
+            + " |",
+            "| --- |" + " --- |" * (3 * len(_CLASS_LABELS)),
+        ]
+        for block in regime:
+            cells = []
+            for name in _CLASS_LABELS:
+                entry = block["target_distribution"][name]
+                cells += [
+                    str(entry["count"]),
+                    f"{entry['fraction']:.4f}",
+                    f"{entry['mean_future_return']:+.6f}",
+                ]
+            lines.append(f"| {block['fold']} | " + " | ".join(cells) + " |")
+
+        if any("market" in block for block in regime):
+            lines += [
+                "",
+                "### Raw market behaviour (timestamp-aligned OHLCV)",
+                "",
+                "| fold | start close | end close | market return | mean hourly | "
+                "std hourly | ann. vol | mean abs hourly | pos candles | max DD | gaps |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            ]
+            for block in regime:
+                m = block.get("market")
+                if not m:
+                    continue
+                lines.append(
+                    f"| {block['fold']} | {m['start_close']:.2f} | {m['end_close']:.2f} | "
+                    f"{m['market_return']:+.4f} | {m['mean_candle_return']:+.6f} | "
+                    f"{m['candle_return_std']:.6f} | {m['annualised_volatility']:.4f} | "
+                    f"{m['mean_abs_candle_return']:.6f} | "
+                    f"{m['positive_candle_fraction']:.4f} | {m['max_drawdown']:.4f} | "
+                    f"{m['gap_pairs_skipped']} |"
+                )
+
+    lines += [
+        "",
+        "## Per-fold model stability across seeds",
+        "",
+        "| fold | net return mean | std | median | positive seeds | dir acc mean±std | "
+        "coverage mean±std | trades mean±std | threshold mean±std | threshold range | "
+        "epoch mean±std |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for entry in stability:
+        net = entry["net_return"]
+        lines.append(
+            f"| {entry['fold']} | {net['mean']:+.6f} | {net['std']:.6f} | "
+            f"{net['median']:+.6f} | {net['positive_seeds']}/{net['seeds']} | "
+            f"{entry['directional_accuracy']['mean']:.4f}±"
+            f"{entry['directional_accuracy']['std']:.4f} | "
+            f"{entry['coverage']['mean']:.4f}±{entry['coverage']['std']:.4f} | "
+            f"{entry['n_trades']['mean']:.1f}±{entry['n_trades']['std']:.1f} | "
+            f"{entry['threshold']['mean']:.4f}±{entry['threshold']['std']:.4f} | "
+            f"{entry['threshold']['min']:.2f}–{entry['threshold']['max']:.2f} | "
+            f"{entry['best_epoch']['mean']:.2f}±{entry['best_epoch']['std']:.2f} |"
+        )
+
+    lines += [
+        "",
+        f"## Best vs worst regime — fold {best} (best) vs fold {worst} (worst)",
+        "",
+        "Selected from the data: highest and lowest mean MTST outer net return across",
+        "seeds. Ranked by difference relative to the larger magnitude. **These are",
+        "coincidences, not causes** — a row says the two folds differ, nothing more.",
+        "",
+        "| rank | group | metric | best fold | worst fold | absolute diff | relative |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for rank, row in enumerate(analysis["best_vs_worst"], start=1):
+        relative = (
+            "n/a"
+            if row["relative_difference"] is None
+            else (f"{row['relative_difference']:+.4f}")
+        )
+        lines.append(
+            f"| {rank} | {row['group']} | {row['metric']} | {row['best_fold']:+.6g} | "
+            f"{row['worst_fold']:+.6g} | {row['absolute_difference']:+.6g} | {relative} |"
+        )
+
+    lines += ["", "## LONG vs SHORT attribution", ""]
+    attribution = analysis["attribution"]
+    if not attribution.get("available"):
+        lines += [
+            f"**Unavailable.** {attribution['reason']}.",
+            "",
+            f"Nothing is approximated in its place: the aggregate reports do not carry "
+            f"per-sample predictions, and a direction split inferred from them would be a "
+            f"guess. Runs produced after this change write `{attribution['expected_file']}` "
+            "beside the artifact, and this section fills in automatically when present.",
+        ]
+    else:
+        overall = attribution["overall"]
+        lines += [
+            "Exact, from persisted outer predictions, using the same cost model as the",
+            "fold reports.",
+            "",
+            "| side | trades | hit rate | mean net | median net | cumulative | coverage |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for side, coverage_key in (("long", "long_coverage"), ("short", "short_coverage")):
+            entry = overall[side]
+            lines.append(
+                f"| {side.upper()} | {entry['trades']} | {entry['hit_rate']:.4f} | "
+                f"{entry['mean_net_return']:+.6f} | {entry['median_net_return']:+.6f} | "
+                f"{entry['cumulative_contribution']:+.6f} | "
+                f"{overall[coverage_key]:.4f} |"
+            )
+        lines.append(
+            f"\nHOLD / no-trade samples: {overall['hold_samples']} of {overall['samples']}."
+        )
+        if attribution.get("runs_without_predictions"):
+            lines.append(
+                "\nRuns without a predictions file (excluded from the split): "
+                + ", ".join(attribution["runs_without_predictions"])
+                + "."
+            )
+
+    lines += [
+        "",
+        "## Candidate hypotheses",
+        "",
+        "Research questions suggested by the diagnostics, ranked by the size of the",
+        "difference behind them. **None is implemented, tuned or tested here.**",
+        "",
+    ]
+    for candidate in analysis["hypotheses"]:
+        lines += [
+            f"{candidate['rank']}. **{candidate['hypothesis']}**",
+            f"   Coincides with: {candidate['evidence']} "
+            f"(signal strength {candidate['strength']:.4f}).",
+            "",
+        ]
+    return lines
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -568,9 +1195,80 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out",
         default=None,
-        help="Directory to write wf_diagnostics.json and wf_diagnostics.md into.",
+        help=(
+            "Directory to write regime_diagnostics.json and regime_diagnostics.md "
+            "into, e.g. artifacts/diagnostics/btc_regimes_v1."
+        ),
+    )
+    parser.add_argument(
+        "--dataset",
+        default=None,
+        help=(
+            "Processed dataset the artifacts' row indices address. Enables the "
+            "regime statistics. Read only up to the sealed boundary."
+        ),
+    )
+    parser.add_argument(
+        "--raw",
+        default=None,
+        help=(
+            "Raw OHLCV parquet, joined to the outer blocks on exact timestamps. "
+            "Enables market-level statistics. Requires --dataset."
+        ),
     )
     return parser
+
+
+def analyse(
+    runs: list[RunArtifact],
+    dataset: str | None,
+    raw_path: str | None,
+) -> dict[str, Any]:
+    """Fold stability, best/worst, regimes when a dataset is given, attribution.
+
+    The dataset is optional; everything that does not need it is computed either
+    way, so the five existing runs stay analysable without one.
+    """
+    reference = runs[0]
+    stability = fold_model_stability(runs)
+    best, worst = best_and_worst(stability)
+    highest_outer = max(
+        RunArtifact.rows(fold, "outer_validation")[1] - 1 for fold in reference.folds
+    )
+
+    research = None
+    regime = None
+    if dataset:
+        research = load_research_frame(
+            dataset,
+            sealed_test_start=reference.sealed_test_start,
+            expected_rows=reference.dataset.get("rows"),
+            expected_features=reference.dataset.get("feature_names"),
+            expected_target_spec=reference.dataset.get("target_spec"),
+        )
+        raw = load_raw_ohlcv(raw_path) if raw_path else None
+        regime = regime_report(runs, research, raw)
+
+    attribution = attribution_report(runs, research.target_spec if research else None)
+    comparison = compare_best_worst(regime, stability, best, worst)
+    horizon = (reference.dataset.get("target_spec") or {}).get("horizon")
+
+    return {
+        "dataset": dataset,
+        "raw": raw_path,
+        "sealed_test_start": reference.sealed_test_start,
+        "sealed_test_evaluated": False,
+        "highest_outer_row": highest_outer,
+        "fold_stability": stability,
+        "best_fold": best,
+        "worst_fold": worst,
+        "regime": regime,
+        "best_vs_worst": comparison,
+        "attribution": attribution,
+        "hypotheses": candidate_hypotheses(
+            comparison, stability, attribution, best, worst, horizon
+        ),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -592,13 +1290,25 @@ def main(argv: list[str] | None = None) -> int:
     comparable = not mismatches and not any(audits.values())
     summary = aggregate(runs) if comparable else None
 
-    markdown = to_markdown(runs, audits, mismatches, summary)
+    if args.raw and not args.dataset:
+        raise SystemExit(
+            "--raw needs --dataset: raw candles are matched to the outer blocks by the "
+            "timestamps in the processed dataset, so there is nothing to align without it."
+        )
+    analysis = None
+    if comparable:
+        try:
+            analysis = analyse(runs, args.dataset, args.raw)
+        except RegimeDataError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    markdown = to_markdown(runs, audits, mismatches, summary, analysis)
     print(markdown)
 
     if args.out:
         out_dir = Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "wf_diagnostics.json").write_text(
+        (out_dir / REPORT_JSON).write_text(
             json.dumps(
                 {
                     "runs": [
@@ -616,13 +1326,14 @@ def main(argv: list[str] | None = None) -> int:
                     "sealed_test_evaluated": False,
                     "aggregated_from": "outer_validation",
                     "summary": summary,
+                    "analysis": analysis,
                 },
                 indent=2,
                 default=str,
             )
             + "\n"
         )
-        (out_dir / "wf_diagnostics.md").write_text(markdown)
+        (out_dir / REPORT_MD).write_text(markdown + "\n")
         logger.info("Wrote diagnostics to %s", out_dir)
 
     problems = sum(len(found) for found in audits.values()) + len(mismatches)

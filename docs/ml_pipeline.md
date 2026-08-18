@@ -547,6 +547,77 @@ profitability — the outer blocks are still research blocks, re-run while the
 method was being built. The sealed test block stays unopened, and the tool
 refuses an artifact that says otherwise.
 
+### Regime diagnostics: what differed about the market
+
+`nn.wf_diagnostics` can say fold 2 earned more than fold 1. With `--dataset` it
+can say *what was different about the market* in those two stretches.
+
+```bash
+python -m nn.wf_diagnostics \
+    artifacts/walkforward/run_a artifacts/walkforward/run_b \
+    --dataset data/datasets/binance_BTC_USDT_1h.parquet \
+    --raw data/raw/binance/BTC_USDT_1h.parquet \
+    --out artifacts/diagnostics/btc_regimes_v1
+```
+
+Both data flags are optional. Without `--dataset` the audit, seed stability and
+per-fold model stability still run, so artifacts remain analysable with no
+dataset at hand. `--raw` requires `--dataset`.
+
+**Per outer block, from the processed dataset:** `future_return` mean, median,
+std, mean absolute and sign fractions; `ema_cross` mean/median/std and sign
+fractions; `ema_fast_ratio` and `ema_slow_ratio` mean and median; `atr_norm` and
+`realized_vol` mean/median/p90; `hl_range`, `volume_change` mean and median;
+`volume_z` mean, median and p90 of the absolute value; exact SHORT/HOLD/LONG
+counts and fractions with mean and median `future_return` per class. Columns are
+addressed by the feature names the artifact recorded, never by position.
+
+**Per outer block, from raw OHLCV:** start and end close, market return, mean /
+median / std candle return, annualised realised volatility, mean absolute candle
+return, positive and negative candle fractions, and max drawdown.
+
+Three rules make those numbers trustworthy rather than merely available:
+
+- **The sealed boundary is enforced by slicing.** `load_research_frame`
+  truncates the dataset at `sealed_test_start` on load, so a sealed row is not
+  in the frame at all and no off-by-one can reach one. Block ranges are checked
+  against the boundary again on the way in.
+- **Row indices only mean a candle against the dataset they were recorded on.**
+  A dataset whose row count, feature contract or target spec differs from the
+  artifact's is refused rather than silently reindexed.
+- **Raw candles join on timestamps, never on position.** The processed dataset
+  dropped warm-up and label rows, so processed row *i* is not raw row *i*. A
+  missing timestamp, a duplicate, or a timeframe that disagrees is an error.
+  Candle-to-candle returns are taken only between timestamps exactly one
+  timeframe apart, and the count of skipped pairs is reported.
+
+**Best vs worst.** The folds with the highest and lowest mean MTST outer net
+return across seeds are chosen from the data — never named in the source — and
+compared row by row, ranked by difference relative to the larger magnitude.
+Every row is a coincidence, not a cause: one fold per regime is a sample of one.
+
+**LONG / SHORT attribution.** Aggregate reports cannot answer "did the longs or
+the shorts lose the money?", and it is not approximated from them. Runs write
+`outer_predictions.parquet` beside the artifact — one row per outer sample with
+`fold`, `seed`, `row_index`, `timestamp`, `true_target`, `future_return`,
+`p_short`/`p_hold`/`p_long`, `selected_action` and `threshold`, outer rows only,
+with a sealed row refused before the file is created. When present, the
+diagnostics report exact per-direction trade counts, hit rates, mean/median net
+return, cumulative contribution, HOLD count and per-side coverage. The trades
+come from `nn.evaluate.realised_trades`, the same generator `trading_metrics`
+aggregates, so there is no second cost model to drift. When absent, the report
+says so and offers nothing in its place.
+
+**Candidate hypotheses.** Three research questions, generated from the
+diagnostics and ranked by the size of the difference behind them. None is
+implemented or tuned — a diagnostic that quietly starts fitting is how a
+research tool becomes a source of overfitting.
+
+Output: `regime_diagnostics.json` and `regime_diagnostics.md` under `--out`,
+with sections for the integrity audit, dataset/sealed status, fold geometry,
+market regime statistics, seed stability, per-fold model stability, best vs
+worst, attribution, hypotheses and limitations.
+
 ### Spending the test split
 
 When the research decisions are frozen — architecture, hyperparameters, feature

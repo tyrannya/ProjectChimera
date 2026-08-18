@@ -381,6 +381,25 @@ def fit_and_validate(
     )
 
 
+@dataclass(frozen=True)
+class FrozenScore:
+    """What a frozen evaluation produced on one split.
+
+    Carries the sample-level arrays as well as the reports, so a caller that
+    wants to persist per-sample predictions does not have to window the split a
+    second time to get them.
+    """
+
+    #: ``majority_baseline`` / ``momentum_baseline`` / ``mtst``.
+    reports: dict[str, dict[str, Any]]
+    #: Dataset row index of each scored sample.
+    idx: np.ndarray
+    #: True class of each scored sample, in the dataset's own encoding.
+    y: np.ndarray
+    #: The model's probabilities, in ``CLASS_ORDER``.
+    proba: np.ndarray
+
+
 def score_frozen_split(
     data: ResearchData,
     scaler: StandardScaler,
@@ -391,7 +410,7 @@ def score_frozen_split(
     baselines: dict[str, Any],
     threshold: float,
     device: torch.device,
-) -> tuple[dict[str, dict[str, Any]], np.ndarray]:
+) -> FrozenScore:
     """Score an already-frozen model, threshold and baselines on one split.
 
     Nothing here is fitted. The scaler, the weights, the decision threshold and
@@ -401,9 +420,10 @@ def score_frozen_split(
     block, and ``nn.walkforward``'s outer validation block.
 
     Rows are read up to ``split.end`` and no further, so a split that ends
-    before the sealed boundary cannot reach a sealed row even by accident.
-    Returns the reports and the row indices actually scored, so a caller — or a
-    test — can check where the samples came from instead of trusting the name.
+    before the sealed boundary cannot reach a sealed row even by accident. The
+    returned :class:`FrozenScore` carries the row indices actually scored, so a
+    caller — or a test — can check where the samples came from instead of
+    trusting the name.
 
     Raises ``ValueError`` when the split is too short to hold one window plus
     its label horizon, rather than reporting metrics over zero samples.
@@ -436,9 +456,10 @@ def score_frozen_split(
             candles_per_year=data.candles_per_year,
         )
 
+    proba = predict_proba(model, X, device)
     reports = {name: score(baseline.predict_proba(X)) for name, baseline in baselines.items()}
-    reports["mtst"] = score(predict_proba(model, X, device))
-    return reports, idx
+    reports["mtst"] = score(proba)
+    return FrozenScore(reports=reports, idx=idx, y=y, proba=proba)
 
 
 def train_model(
@@ -677,7 +698,7 @@ def main(argv: list[str] | None = None) -> int:
     test_reports: dict[str, Any] | None = None
     if not args.validation_only:
         try:
-            test_reports, idx_test = score_frozen_split(
+            scored = score_frozen_split(
                 data,
                 prepared.scaler,
                 plan.test,
@@ -689,7 +710,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         except ValueError as exc:
             raise SystemExit(f"{exc} (--seq-len is currently {args.seq_len})") from exc
-        logger.info("test: %d samples", len(idx_test))
+        test_reports = scored.reports
+        logger.info("test: %d samples", len(scored.idx))
 
     print("\nValidation (used for model selection):")
     print(ev.compare(validation_reports))

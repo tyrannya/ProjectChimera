@@ -55,9 +55,13 @@ never on split names, which is exactly the check that missed it.
 
 Results are written as JSON and a short Markdown summary, with the baselines
 alongside every fold — a model that beats its baselines in one fold out of four
-has not been shown to work. Outer-validation folds are research evidence used
-during model development. They are not an out-of-sample result: the sealed test
-block remains unopened.
+has not been shown to work. Per-sample outer predictions go beside them in
+``outer_predictions.parquet``, because the aggregates cannot answer "did the
+longs or the shorts lose the money?" and nothing can answer it after the fact
+without them. Outer rows only: writing a sealed-test prediction is refused.
+
+Outer-validation folds are research evidence used during model development. They
+are not an out-of-sample result: the sealed test block remains unopened.
 """
 
 from __future__ import annotations
@@ -70,6 +74,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
+
+from chimera.contracts import CLASS_ORDER
+from nn import evaluate as ev
 from nn.dataset import Split, sealed_test_start
 from nn.train import (
     ResearchData,
@@ -84,6 +93,14 @@ from nn.train import (
 logger = logging.getLogger(__name__)
 
 MODELS = ("majority_baseline", "momentum_baseline", "mtst")
+
+#: Per-sample outer-validation predictions, written beside walkforward.json.
+#:
+#: The reports in walkforward.json are aggregates; they cannot answer "did the
+#: longs or the shorts lose the money?". These rows can, and they are the only
+#: way to answer it after the fact without retraining. Outer rows only — a
+#: sealed-test prediction is never written, asserted before the file is created.
+PREDICTIONS_NAME = "outer_predictions.parquet"
 
 #: Metrics aggregated across folds: where to find each in an evaluation report.
 #: Every one of them is read from the fold's **outer** validation report.
@@ -221,7 +238,7 @@ def run_fold(
     # The model, the threshold and the baselines are now frozen. `selection`
     # also carries reports on the inner block; they are deliberately not
     # reported as this fold's performance — the threshold was chosen there.
-    outer_reports, idx_outer = score_frozen_split(
+    scored = score_frozen_split(
         data,
         prepared.scaler,
         plan.outer,
@@ -231,6 +248,8 @@ def run_fold(
         threshold=selection.threshold,
         device=device,
     )
+    outer_reports, idx_outer = scored.reports, scored.idx
+    predictions = outer_predictions(fold, run.seed + fold, data, scored, selection.threshold)
 
     return {
         "fold": fold,
@@ -251,7 +270,61 @@ def run_fold(
             "inner_validation_loss": selection.train_info["best_val_loss"],
         },
         "outer_validation": outer_reports,
-    }
+    }, predictions
+
+
+def outer_predictions(
+    fold: int,
+    seed: int,
+    data: ResearchData,
+    scored: Any,
+    threshold: float,
+) -> pd.DataFrame:
+    """One row per outer-validation sample: what was predicted, and what happened.
+
+    ``selected_action`` comes from :func:`nn.evaluate.signals_from_proba` — the
+    same function the reports use — so the persisted action is the action that
+    was scored, not a second interpretation of the threshold. Classes are the
+    dataset's own integer encoding (``CLASS_ORDER``), so nothing has to agree
+    about a second set of names.
+    """
+    actions = ev.signals_from_proba(scored.proba, threshold)
+    short_idx, hold_idx, long_idx = range(len(CLASS_ORDER))
+    return pd.DataFrame(
+        {
+            "fold": np.full(len(scored.idx), fold, dtype=np.int64),
+            "seed": np.full(len(scored.idx), seed, dtype=np.int64),
+            "row_index": scored.idx.astype(np.int64),
+            "timestamp": data.dates[scored.idx],
+            "true_target": scored.y.astype(np.int64),
+            "future_return": data.future_return[scored.idx],
+            "p_short": scored.proba[:, short_idx],
+            "p_hold": scored.proba[:, hold_idx],
+            "p_long": scored.proba[:, long_idx],
+            "selected_action": actions.astype(np.int64),
+            "threshold": np.full(len(scored.idx), float(threshold)),
+        }
+    )
+
+
+def write_predictions(out_dir: Path, frames: list[pd.DataFrame], boundary: int) -> Path:
+    """Write the per-sample outer predictions, refusing to persist a sealed row.
+
+    The outer blocks are below the boundary by construction, so this assertion
+    should never fire. It is here because the file it guards is the one thing
+    walk-forward writes that contains per-row market outcomes, and a silent
+    off-by-one would put sealed rows on disk under a research filename.
+    """
+    predictions = pd.concat(frames, ignore_index=True)
+    highest = int(predictions["row_index"].max())
+    if highest >= boundary:
+        raise AssertionError(
+            f"refusing to write outer predictions: row {highest} is at or beyond the "
+            f"sealed test block starting at {boundary}"
+        )
+    path = out_dir / PREDICTIONS_NAME
+    predictions.to_parquet(path, index=False)
+    return path
 
 
 def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -536,13 +609,22 @@ def main(argv: list[str] | None = None) -> int:
     device = resolve_device(args.device)
 
     results = []
+    predictions = []
     for i, plan in enumerate(folds):
         logger.info("--- fold %d/%d ---", i + 1, len(folds))
-        results.append(run_fold(i, data, plan, run, device=device))
+        record, fold_predictions = run_fold(i, data, plan, run, device=device)
+        results.append(record)
+        predictions.append(fold_predictions)
 
     summary = summarise(results)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    predictions_path = write_predictions(out_dir, predictions, boundary)
+    logger.info(
+        "Wrote %d outer predictions to %s",
+        sum(len(frame) for frame in predictions),
+        predictions_path,
+    )
     (out_dir / "walkforward.json").write_text(
         json.dumps(
             {
@@ -562,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
                 "research_rows": boundary,
                 "test_evaluated": False,
                 "reported_block": "outer_validation",
+                "outer_predictions": PREDICTIONS_NAME,
                 "folds": results,
                 "summary": summary,
             },
