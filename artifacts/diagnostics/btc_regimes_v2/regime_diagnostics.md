@@ -255,4 +255,3 @@ difference behind them. **None is implemented, tuned or tested here.**
   everything before it, so a fold's difficulty also depends on how much its
   training window resembled it — which these numbers do not measure.
 - Per-fold seed spread is not a confidence interval on performance.
-
