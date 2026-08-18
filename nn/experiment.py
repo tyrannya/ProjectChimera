@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from nn import evaluate as ev
 from nn.dataset import chronological_split
 from nn.train import (
     RunConfig,
@@ -75,11 +76,25 @@ GRID_DIMENSIONS = (
 #: validation block, at the threshold selected on that same block. The default,
 #: because it is the only one denominated in the thing the system exists to
 #: produce.
-#: ``sharpe`` — the same trades, risk-adjusted and annualised.
+#: ``annualised_sharpe`` — the same trades as a candle-level portfolio return
+#: series, risk-adjusted and annualised by the calendar. Undefined when the
+#: portfolio never moved, and a configuration whose objective is undefined ranks
+#: last rather than scoring zero: never trading is not a neutral result.
+#:
+#: This replaced a field named ``sharpe`` that annualised per-trade statistics by
+#: the number of trades the strategy *could* have taken back to back. The old
+#: name is deliberately not accepted as an alias — ranking a grid by a
+#: differently-defined metric without saying so is the failure the rename exists
+#: to prevent, so an old command line fails loudly instead of quietly meaning
+#: something else.
 #: ``macro_f1`` — classification quality, unweighted across the three classes.
 OBJECTIVES: dict[str, Callable[[dict[str, Any]], float]] = {
     "net_return": lambda report: report["trading"]["net_return"],
-    "sharpe": lambda report: report["trading"]["sharpe"],
+    "annualised_sharpe": lambda report: (
+        report["trading"]["annualised_sharpe"]
+        if report["trading"]["annualised_sharpe"] is not None
+        else float("-inf")
+    ),
     "macro_f1": lambda report: report["classification"]["macro_f1"],
 }
 
@@ -99,7 +114,9 @@ CSV_COLUMNS = (
         "coverage",
         "n_trades",
         "net_return",
-        "sharpe",
+        "annualised_sharpe",
+        "per_trade_sharpe",
+        "exposure",
         "max_drawdown",
         "calibration_error",
         "majority_macro_f1",
@@ -233,7 +250,9 @@ def flatten_run(record: dict[str, Any], objective_name: str) -> dict[str, Any]:
         calibration_error=mtst["classification"]["calibration_error"],
         n_trades=mtst["trading"]["n_trades"],
         net_return=mtst["trading"]["net_return"],
-        sharpe=mtst["trading"]["sharpe"],
+        annualised_sharpe=mtst["trading"]["annualised_sharpe"],
+        per_trade_sharpe=mtst["trading"]["per_trade_sharpe"],
+        exposure=mtst["trading"]["exposure"],
         max_drawdown=mtst["trading"]["max_drawdown"],
         majority_macro_f1=record["validation"]["majority_baseline"]["classification"][
             "macro_f1"
@@ -258,10 +277,10 @@ def to_markdown(records: list[dict[str, Any]], objective_name: str) -> str:
         "Validation metrics only — the test split was not evaluated.",
         "",
         "| rank | run | seed | lr | seq_len | d_model | heads | layers | dropout | "
-        "macro F1 | dir acc | coverage | trades | net return | Sharpe | max DD | "
-        "best baseline net |",
+        "macro F1 | dir acc | coverage | trades | net return | ann. Sharpe | "
+        "exposure | max DD | best baseline net |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
-        "--- | --- | --- | --- | --- |",
+        "--- | --- | --- | --- | --- | --- |",
     ]
     for rank, record in enumerate(ok, start=1):
         config = record["config"]
@@ -276,7 +295,8 @@ def to_markdown(records: list[dict[str, Any]], objective_name: str) -> str:
             f"{config['seq_len']} | {config['d_model']} | {config['n_heads']} | "
             f"{config['num_layers']} | {config['dropout']} | {cls['macro_f1']:.4f} | "
             f"{cls['directional_accuracy']:.4f} | {cls['coverage']:.4f} | "
-            f"{trade['n_trades']} | {trade['net_return']:+.4f} | {trade['sharpe']:.3f} | "
+            f"{trade['n_trades']} | {trade['net_return']:+.4f} | "
+            f"{ev.number(trade['annualised_sharpe'], '.3f')} | {trade['exposure']:.4f} | "
             f"{trade['max_drawdown']:.4f} | {best_baseline:+.4f} |"
         )
 

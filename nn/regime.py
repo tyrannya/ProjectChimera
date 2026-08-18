@@ -421,16 +421,44 @@ def _integral_column(frame: pd.DataFrame, column: str, path: Path) -> np.ndarray
     return integer
 
 
+#: Trading metrics a per-sample predictions file cannot reproduce.
+#:
+#: All four are read from a candle-level portfolio curve, which needs the close
+#: price at every candle through the last trade's exit — including candles after
+#: the last scored row, which by construction are not in a per-sample file. They
+#: are dropped from **both** sides of the binding comparison, named here so the
+#: exclusion is auditable rather than implicit. Everything else — every
+#: trade-level number, the whole classification report, and the actions
+#: themselves — is still compared exactly, so a stale or unrelated parquet is
+#: still refused.
+NON_REPRODUCIBLE_TRADING_METRICS = (
+    "annualised_sharpe",
+    "annualised_sharpe_reason",
+    "sharpe_basis",
+    "candle_max_drawdown",
+    "elapsed_intervals",
+)
+
+
+def _comparable_report(report: Mapping[str, Any]) -> dict[str, Any]:
+    """A report with only the fields a predictions file can reproduce."""
+    comparable = {key: value for key, value in report.items() if key != "trading"}
+    comparable["trading"] = {
+        key: value
+        for key, value in (report.get("trading") or {}).items()
+        if key not in NON_REPRODUCIBLE_TRADING_METRICS
+    }
+    return comparable
+
+
 def _prediction_report(
     part: pd.DataFrame, artifact: Mapping[str, Any], threshold: float
 ) -> dict:
     """Recompute the MTST report from persisted rows to bind parquet to JSON content."""
     target_raw = (artifact.get("dataset") or {}).get("target_spec")
-    timeframe = (artifact.get("dataset") or {}).get("timeframe") or "1h"
     if not isinstance(target_raw, Mapping):
         raise RegimeDataError("walkforward artifact has no dataset.target_spec")
     target_spec = TargetSpec.from_dict(target_raw)
-    candles_per_year = 365 * 24 * 60 / timeframe_to_minutes(str(timeframe))
 
     ordered = part.sort_values("row_index")
     proba = ordered[["p_short", "p_hold", "p_long"]].to_numpy(dtype=np.float64)
@@ -444,13 +472,18 @@ def _prediction_report(
         )
 
     targets = _integral_column(ordered, "true_target", Path("outer_predictions.parquet"))
+    # No market context: the candle-level statistics need the price path through
+    # the last trade's exit candle, which lies past the last *scored* row and so
+    # is not in a per-sample predictions file. They are excluded from the
+    # comparison by name rather than recomputed from something they are not —
+    # see NON_REPRODUCIBLE_TRADING_METRICS.
     return ev.evaluate(
         proba,
         targets,
         ordered["future_return"].to_numpy(dtype=np.float64),
         target_spec,
         threshold,
-        candles_per_year=candles_per_year,
+        market=None,
         row_index=ordered["row_index"].to_numpy(dtype=np.int64),
     )
 
@@ -545,7 +578,7 @@ def _validate_predictions_against_artifact(
             raise RegimeDataError(
                 f"{path} fold {fold_id} cannot be recomputed against its artifact: {exc}"
             ) from exc
-        if recomputed_report != dict(recorded_report):
+        if _comparable_report(recomputed_report) != _comparable_report(recorded_report):
             raise RegimeDataError(
                 f"{path} fold {fold_id} does not reproduce the artifact's MTST report; "
                 "the parquet is stale, unrelated, or was produced under different "

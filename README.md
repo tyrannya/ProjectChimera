@@ -213,6 +213,18 @@ raw candles join on exact timestamps rather than position, and the best and
 worst folds are chosen from the data. Differences are reported as coincidences,
 never causes.
 
+Reports separate two questions that are easy to run together. **Statistical /
+rule baselines** — majority-class and momentum — answer whether the model learned
+more than a trivial rule. **Economic references** — CASH (never trade) and
+buy-and-hold over the same window — answer whether it made money. A model can
+beat both baselines in every fold and still lose to CASH, and the verdict says so
+in one sentence rather than leaving the reader to notice.
+
+Which artifact generation is authoritative is recorded in
+[`artifacts/README.md`](artifacts/README.md), not inferred from directory names.
+The current BTC baseline is `artifacts/diagnostics/btc_regimes_v3/`, and its
+evidence is negative.
+
 ### 5. Serve the model
 
 ```bash

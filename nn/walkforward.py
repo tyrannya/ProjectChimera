@@ -102,8 +102,18 @@ MODELS = ("majority_baseline", "momentum_baseline", "mtst")
 #: sealed-test prediction is never written, asserted before the file is created.
 PREDICTIONS_NAME = "outer_predictions.parquet"
 
+#: Where the fold-level economic references are stored, beside the models.
+#:
+#: Not a model and not a baseline, so not in :data:`MODELS`: nothing predicts
+#: anything here. It sits inside ``outer_validation`` because it describes that
+#: block and must travel with it.
+REFERENCES_KEY = "economic_references"
+
 #: Metrics aggregated across folds: where to find each in an evaluation report.
 #: Every one of them is read from the fold's **outer** validation report.
+#:
+#: ``exposure`` is aggregated because "how often was capital actually deployed"
+#: is not a footnote to the risk-adjusted numbers, it is how to read them.
 SUMMARY_METRICS = {
     "macro_f1": ("classification", "macro_f1"),
     "directional_accuracy": ("classification", "directional_accuracy"),
@@ -111,9 +121,19 @@ SUMMARY_METRICS = {
     "calibration_error": ("classification", "calibration_error"),
     "n_trades": ("trading", "n_trades"),
     "net_return": ("trading", "net_return"),
-    "sharpe": ("trading", "sharpe"),
+    "annualised_sharpe": ("trading", "annualised_sharpe"),
+    "per_trade_sharpe": ("trading", "per_trade_sharpe"),
+    "exposure": ("trading", "exposure"),
     "max_drawdown": ("trading", "max_drawdown"),
 }
+
+#: Metrics that may legitimately be ``None`` in a fold report.
+#:
+#: A risk-adjusted statistic is undefined when the portfolio never moved — no
+#: trades, or no variance. That is a real state, reported as ``None`` rather
+#: than ``0.0`` so it cannot be read as a measurement, and the aggregation below
+#: has to carry it through instead of averaging a fabricated zero.
+NULLABLE_METRICS = ("annualised_sharpe", "per_trade_sharpe")
 
 
 @dataclass(frozen=True)
@@ -251,7 +271,11 @@ def run_fold(
         threshold=selection.threshold,
         device=device,
     )
-    outer_reports, idx_outer = scored.reports, scored.idx
+    outer_reports, idx_outer = dict(scored.reports), scored.idx
+    # Beside the models, not among them: these make no predictions. Kept inside
+    # the outer block's reports because they describe that block's window and
+    # must not drift away from the numbers they qualify.
+    outer_reports[REFERENCES_KEY] = scored.economic_references
     predictions = outer_predictions(fold, run.seed + fold, data, scored, selection.threshold)
 
     return {
@@ -330,6 +354,24 @@ def write_predictions(out_dir: Path, frames: list[pd.DataFrame], boundary: int) 
     return path
 
 
+def spread(values: list[float | None]) -> dict[str, Any]:
+    """Mean and standard deviation across folds, carrying undefined entries.
+
+    A ``None`` is a metric that does not exist for that fold — a portfolio that
+    never moved has no Sharpe — not a zero. Averaging it as zero would invent a
+    measurement, so the mean is taken over the folds where it is defined and
+    ``defined_folds`` says how many those were. All-undefined stays undefined.
+    """
+    defined = [v for v in values if v is not None]
+    return {
+        "mean": round(statistics.fmean(defined), 6) if defined else None,
+        # Sample standard deviation needs two folds; one fold has none.
+        "std": round(statistics.stdev(defined), 6) if len(defined) > 1 else 0.0,
+        "values": [None if v is None else round(v, 6) for v in values],
+        "defined_folds": len(defined),
+    }
+
+
 def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
     """Mean and standard deviation of each metric across folds, per model.
 
@@ -346,13 +388,8 @@ def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
     for name in MODELS:
         stats: dict[str, Any] = {}
         for metric, (section, key) in SUMMARY_METRICS.items():
-            values = [float(r["outer_validation"][name][section][key]) for r in results]
-            stats[metric] = {
-                "mean": round(statistics.fmean(values), 6),
-                # Sample standard deviation needs two folds; one fold has none.
-                "std": round(statistics.stdev(values), 6) if len(values) > 1 else 0.0,
-                "values": [round(v, 6) for v in values],
-            }
+            raw = [r["outer_validation"][name][section][key] for r in results]
+            stats[metric] = spread([None if v is None else float(v) for v in raw])
         stats["positive_net_return_folds"] = sum(
             1 for v in stats["net_return"]["values"] if v > 0
         )
@@ -368,12 +405,95 @@ def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
         )
     )
     summary["mtst_beat_baselines_in_folds"] = beat
-    summary["verdict"] = (
-        "model beat both baselines in a majority of outer-validation folds"
-        if beat * 2 > len(results)
-        else "model did NOT consistently beat the baselines on outer validation"
-    )
+    summary["economic_comparison"] = economic_comparison(results)
+    summary["verdict"] = verdict(summary, len(results))
     return summary
+
+
+def economic_comparison(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Did the model make money, beat doing nothing, and beat owning the asset?
+
+    Three questions the baseline comparison cannot answer, computed from the
+    economic references each fold recorded. CASH is the zero line, so "beat
+    CASH" is exactly "net return above zero" — stated as a policy comparison
+    rather than a sign check, because that is what a reader is asking.
+    """
+    net_returns = [r["outer_validation"]["mtst"]["trading"]["net_return"] for r in results]
+    holds = [
+        (r["outer_validation"].get(REFERENCES_KEY) or {}).get("buy_and_hold") or {}
+        for r in results
+    ]
+    available = [h for h in holds if h.get("available")]
+    hold_returns = [h["net_return"] for h in available]
+
+    return {
+        "folds": len(results),
+        "references_available": len(available),
+        "mean_net_return": round(statistics.fmean(net_returns), 6) if net_returns else None,
+        "mean_buy_and_hold_net_return": (
+            round(statistics.fmean(hold_returns), 6) if hold_returns else None
+        ),
+        # CASH earns exactly zero and pays no costs, so this is the count of
+        # folds in which trading was better than not trading at all.
+        "beat_cash_folds": sum(1 for v in net_returns if v > 0),
+        "beat_buy_and_hold_folds": sum(
+            1
+            for r, h in zip(results, holds)
+            if h.get("available")
+            and r["outer_validation"]["mtst"]["trading"]["net_return"] > h["net_return"]
+        ),
+    }
+
+
+def verdict(summary: dict[str, Any], folds: int) -> str:
+    """One sentence that cannot be quoted into meaning something it does not.
+
+    The statistical clause and the economic clause are always both present. The
+    previous version emitted "model beat both baselines in a majority of
+    outer-validation folds" on its own — a true sentence that was read as
+    evidence of profitability while the model was losing money in every fold it
+    won. Beating majority-class and momentum is a floor test; whether anything
+    was earned is a separate question with a separate answer, and neither
+    sentence is allowed to stand without the other.
+    """
+    beat = summary["mtst_beat_baselines_in_folds"]
+    economic = summary["economic_comparison"]
+    mean_net = economic["mean_net_return"]
+
+    statistical = (
+        f"beat both statistical/rule baselines in {beat}/{folds} outer folds"
+        if beat * 2 > folds
+        else f"did NOT consistently beat the statistical/rule baselines "
+        f"({beat}/{folds} outer folds)"
+    )
+
+    cash = economic["beat_cash_folds"]
+    if mean_net is None:
+        money = "no net return was recorded"
+    elif mean_net > 0:
+        money = (
+            f"made money on outer validation (mean net return {mean_net:+.4f}), "
+            f"beating CASH in {cash}/{folds} folds"
+        )
+    else:
+        money = (
+            f"LOST money on outer validation (mean net return {mean_net:+.4f}), "
+            f"beating CASH — doing nothing — in only {cash}/{folds} folds"
+        )
+
+    hold = economic["mean_buy_and_hold_net_return"]
+    if hold is None:
+        holding = "buy-and-hold was not recorded for these folds"
+    else:
+        holding = (
+            f"buy-and-hold returned {hold:+.4f} on the same windows and was beaten in "
+            f"{economic['beat_buy_and_hold_folds']}/{folds} folds"
+        )
+
+    return (
+        f"Model {statistical}, and {money}; {holding}. Beating majority-class and "
+        "momentum is a floor test, not evidence of profitability."
+    )
 
 
 def to_markdown(
@@ -417,9 +537,21 @@ def to_markdown(
         "",
         "## Outer validation (the reported result)",
         "",
-        "| fold | outer period | model | trades | net return | Sharpe | max DD | "
-        "macro F1 | dir acc | coverage | calib err |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "### Statistical / rule baselines and the model",
+        "",
+        "What these answer: **did the model learn more than a trivial rule?** They are a",
+        "floor, not a business case. Beating them says nothing about whether money was",
+        "made — that is the next section.",
+        "",
+        f"`ann. Sharpe` is {ev.SHARPE_BASIS}. `n/a` means undefined, not zero: a",
+        "portfolio that never moved has no Sharpe. Annualising magnifies whatever",
+        "happened in a short block, so compare folds against each other and against",
+        "the references below — a single fold's figure is not an expected annual result.",
+        "",
+        "| fold | outer period | model | trades | net return | ann. Sharpe | "
+        "per-trade Sharpe | exposure | max DD | macro F1 | dir acc | coverage | "
+        "calib err |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for result in results:
         outer = result["periods"]["outer_validation"]
@@ -430,29 +562,42 @@ def to_markdown(
             lines.append(
                 f"| {result['fold']} | {window} | {name} | "
                 f"{trading['n_trades']} | {trading['net_return']:+.4f} | "
-                f"{trading['sharpe']:.2f} | {trading['max_drawdown']:.4f} | "
+                f"{ev.number(trading['annualised_sharpe'], '.2f')} | "
+                f"{ev.number(trading['per_trade_sharpe'], '.2f')} | "
+                f"{trading['exposure']:.4f} | {trading['max_drawdown']:.4f} | "
                 f"{classification['macro_f1']:.4f} | "
                 f"{classification['directional_accuracy']:.4f} | "
                 f"{classification['coverage']:.4f} | "
                 f"{classification['calibration_error']:.4f} |"
             )
 
+    lines += _references_markdown(results)
+
     lines += [
         "",
-        "## Across folds, outer validation only (mean ± std)",
+        "### Across folds, outer validation only (mean ± std)",
         "",
-        "| model | net return | Sharpe | max DD | macro F1 | dir acc | coverage | "
-        "calib err | trades | positive folds |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| model | net return | ann. Sharpe | per-trade Sharpe | exposure | max DD | "
+        "macro F1 | dir acc | coverage | calib err | trades | positive folds |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for name, stats in summary["per_model"].items():
 
         def cell(metric: str, places: int = 4) -> str:
             value = stats[metric]
-            return f"{value['mean']:.{places}f} ± {value['std']:.{places}f}"
+            if value["mean"] is None:
+                return f"n/a (0/{summary['folds']} folds)"
+            body = f"{value['mean']:.{places}f} ± {value['std']:.{places}f}"
+            missing = summary["folds"] - value["defined_folds"]
+            return (
+                body
+                if not missing
+                else f"{body} ({value['defined_folds']}/{summary['folds']})"
+            )
 
         lines.append(
-            f"| {name} | {cell('net_return')} | {cell('sharpe', 2)} | "
+            f"| {name} | {cell('net_return')} | {cell('annualised_sharpe', 2)} | "
+            f"{cell('per_trade_sharpe', 2)} | {cell('exposure')} | "
             f"{cell('max_drawdown')} | {cell('macro_f1')} | "
             f"{cell('directional_accuracy')} | {cell('coverage')} | "
             f"{cell('calibration_error')} | {cell('n_trades', 1)} | "
@@ -461,8 +606,7 @@ def to_markdown(
 
     lines += [
         "",
-        f"**Verdict:** {summary['verdict']} "
-        f"({summary['mtst_beat_baselines_in_folds']}/{summary['folds']} folds).",
+        f"**Verdict:** {summary['verdict']}",
         "",
         "These are outer-validation numbers from model development. Nothing was",
         "fitted on them, which is what makes them worth reading — but the folds were",
@@ -472,6 +616,64 @@ def to_markdown(
         "",
     ]
     return "\n".join(lines)
+
+
+def _references_markdown(results: list[dict[str, Any]]) -> list[str]:
+    """The economic references table: CASH and buy-and-hold, per fold.
+
+    Deliberately its own section with its own heading. Putting a no-trade policy
+    in the same table as the models invites reading it as one more contender
+    that happened to score badly, when it is the line every one of them has to
+    clear before any of the other columns mean anything.
+    """
+    lines = [
+        "",
+        "### Economic references (not models, not baselines)",
+        "",
+        "What these answer: **did the strategy make money, did it beat doing nothing,",
+        "and did it beat simply owning the asset?** CASH never trades and returns",
+        "exactly zero. Buy-and-hold buys at the first scored candle and sells at the",
+        "candle closing the last scored sample's horizon — the same window the model",
+        "traded in, as a *continuous market span* rather than the scored-sample set —",
+        "and pays **one** round trip for the whole hold, not one per horizon.",
+        "",
+        "Their `ann. Sharpe` is built the same way as the models' above, from the same",
+        "cost model, so the columns are comparable.",
+        "",
+        "| fold | policy | trades | gross return | net return | ann. Sharpe | "
+        "candle max DD | notes |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for result in results:
+        references = result["outer_validation"].get(REFERENCES_KEY) or {}
+        cash = references.get("cash") or {}
+        if cash:
+            lines.append(
+                f"| {result['fold']} | CASH | 0 | +0.0000 | +0.0000 | n/a | 0.0000 | "
+                "no position, no fees |"
+            )
+        hold = references.get("buy_and_hold") or {}
+        if not hold:
+            continue
+        if not hold.get("available"):
+            lines.append(
+                f"| {result['fold']} | buy-and-hold | — | — | — | n/a | — | "
+                f"{hold.get('reason', 'unavailable')} |"
+            )
+            continue
+        note = (
+            f"spans {hold['missing_candles']} missing candle(s); Sharpe withheld, "
+            "drawdown is a lower bound"
+            if hold["spans_market_data_gap"]
+            else f"{hold['candles_held']} candles held"
+        )
+        lines.append(
+            f"| {result['fold']} | buy-and-hold | 1 | {hold['gross_return']:+.4f} | "
+            f"{hold['net_return']:+.4f} | "
+            f"{ev.number(hold['annualised_sharpe'], '.2f')} | "
+            f"{hold['candle_max_drawdown']:.4f} | {note} |"
+        )
+    return lines
 
 
 def build_argparser() -> argparse.ArgumentParser:

@@ -67,7 +67,7 @@ from nn.regime import (
     load_research_frame,
     raw_block_statistics,
 )
-from nn.walkforward import MODELS, PREDICTIONS_NAME, SUMMARY_METRICS
+from nn.walkforward import MODELS, PREDICTIONS_NAME, REFERENCES_KEY, SUMMARY_METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,99 @@ _CLASS_LABELS = [c.value for c in CLASS_ORDER]
 #: model's own selected threshold.
 DETERMINISTIC_BASELINES = ("majority_baseline", "momentum_baseline")
 
+#: Metrics that only artifacts produced after the metric correction carry.
+#:
+#: Both are computed from a candle-level portfolio return series, which earlier
+#: runs did not build.
+CURRENT_ONLY_METRICS = ("annualised_sharpe", "per_trade_sharpe")
+
+#: The field the correction removed, and what it used to mean.
+#:
+#: ``sharpe`` annualised per-trade statistics by ``candles_per_year / horizon``
+#: — the number of trades the strategy *could* have taken back to back — so on
+#: a signal that trades rarely it was overstated several-fold, and it grew as
+#: the target horizon shrank. Its presence dates an artifact; its values are not
+#: comparable to anything this tool now reports.
+LEGACY_TRADING_KEY = "sharpe"
+
+#: Metric schemas this tool knows how to read.
+SCHEMA_CURRENT = "current"
+SCHEMA_LEGACY = "legacy_pre_metric_correction"
+
+
+def classify_schema(run: "RunArtifact") -> tuple[str, list[str]]:
+    """Which metric schema an artifact carries, or why it is not readable.
+
+    Returns ``(schema, problems)``. **Tolerance here is narrow on purpose.** The
+    obvious implementation — aggregate whichever metrics happen to be present
+    everywhere — would let a *current* artifact that lost a field silently pass
+    by dropping it, which is the failure this whole module exists to catch. So
+    only two shapes are readable:
+
+    * every required metric present and no ``sharpe`` — current, read in full;
+    * ``sharpe`` present, **both** :data:`CURRENT_ONLY_METRICS` absent, and every
+      other required metric present — a positively identified pre-correction
+      artifact, read with exactly those two metrics skipped and a warning.
+
+    Anything else — a missing metric with no legacy fingerprint, a mixture of
+    old and new fields, a partial rename — is a problem, not a degraded read.
+    """
+    required = set(SUMMARY_METRICS)
+    optional = set(CURRENT_ONLY_METRICS)
+    problems: list[str] = []
+    schemas: set[str] = set()
+
+    for position, fold in enumerate(run.folds):
+        label = fold.get("fold", position)
+        for model in MODELS:
+            report = (fold.get("outer_validation") or {}).get(model)
+            if not isinstance(report, dict):
+                problems.append(f"fold {label} has no {model} report")
+                continue
+            present = {
+                metric
+                for metric, (section, key) in SUMMARY_METRICS.items()
+                if isinstance(report.get(section), dict) and key in report[section]
+            }
+            legacy = LEGACY_TRADING_KEY in (report.get("trading") or {})
+            missing = required - present
+
+            if not missing and not legacy:
+                schemas.add(SCHEMA_CURRENT)
+            elif legacy and missing == optional:
+                schemas.add(SCHEMA_LEGACY)
+            elif legacy:
+                problems.append(
+                    f"fold {label} {model} carries the pre-correction "
+                    f"{LEGACY_TRADING_KEY!r} field alongside {sorted(present & optional)} "
+                    f"and is missing {sorted(missing - optional)}: this is neither the "
+                    "old schema nor the new one, so its metric semantics are unknown"
+                )
+            else:
+                problems.append(
+                    f"fold {label} {model} is missing {sorted(missing)} and carries no "
+                    f"{LEGACY_TRADING_KEY!r} field to date it as pre-correction. A "
+                    "current artifact must carry every reported metric; refusing to "
+                    "aggregate around the gap"
+                )
+
+    if len(schemas) > 1:
+        problems.append(
+            f"folds disagree about the metric schema ({sorted(schemas)}): some carry "
+            "the pre-correction fields and some the corrected ones, so no single set "
+            "of semantics describes this artifact"
+        )
+    if problems:
+        return "", problems
+    return (schemas.pop() if schemas else SCHEMA_CURRENT), []
+
+
+def readable_metrics(schema: str) -> tuple[str, ...]:
+    """The metrics that may be aggregated under a given schema."""
+    if schema == SCHEMA_LEGACY:
+        return tuple(m for m in SUMMARY_METRICS if m not in CURRENT_ONLY_METRICS)
+    return tuple(SUMMARY_METRICS)
+
 
 @dataclass(frozen=True)
 class RunArtifact:
@@ -139,9 +232,16 @@ class RunArtifact:
         start, end = fold["periods"][region]["row_range"]
         return int(start), int(end)
 
-    def metric(self, fold: dict[str, Any], model: str, metric: str) -> float:
+    def metric(self, fold: dict[str, Any], model: str, metric: str) -> float | None:
+        """One metric from one fold, or ``None`` where it is undefined.
+
+        Undefined is a real state for the risk-adjusted statistics — a portfolio
+        that never moved has no Sharpe — and it is carried through rather than
+        coerced, so no aggregate averages a zero that was never measured.
+        """
         section, key = SUMMARY_METRICS[metric]
-        return float(fold["outer_validation"][model][section][key])
+        value = fold["outer_validation"][model][section][key]
+        return None if value is None else float(value)
 
 
 def load_run(path: str | Path) -> RunArtifact:
@@ -283,6 +383,7 @@ def audit_run(run: RunArtifact) -> list[str]:
                 )
                 break
 
+    problems.extend(classify_schema(run)[1])
     problems.extend(_audit_summary_matches_folds(run))
     return problems
 
@@ -298,11 +399,17 @@ def _audit_summary_matches_folds(run: RunArtifact) -> list[str]:
     if not isinstance(per_model, dict):
         return problems
 
+    schema, unreadable = classify_schema(run)
+    if unreadable:
+        # The schema check has already reported why; re-deriving means from an
+        # artifact whose fields are not understood would add noise, not evidence.
+        return problems
+
     for model in MODELS:
         recorded_model = per_model.get(model)
         if not isinstance(recorded_model, dict):
             continue
-        for metric in SUMMARY_METRICS:
+        for metric in readable_metrics(schema):
             recorded = recorded_model.get(metric, {}).get("mean")
             if recorded is None:
                 continue
@@ -313,7 +420,13 @@ def _audit_summary_matches_folds(run: RunArtifact) -> list[str]:
                     f"summary reports {model}.{metric} but the folds do not carry it"
                 )
                 continue
-            recomputed = round(statistics.fmean(values), 6)
+            mean = _mean_defined(values)
+            if mean is None:
+                problems.append(
+                    f"summary {model}.{metric} mean is {recorded}, but no fold defines it"
+                )
+                continue
+            recomputed = round(mean, 6)
             if abs(recomputed - float(recorded)) > 1e-6:
                 problems.append(
                     f"summary {model}.{metric} mean is {recorded}, but the folds average "
@@ -331,7 +444,16 @@ def compare_runs(runs: list[RunArtifact]) -> list[str]:
     """
     problems: list[str] = []
     reference = runs[0]
+    reference_schema = classify_schema(reference)[0]
     for run in runs[1:]:
+        schema = classify_schema(run)[0]
+        if schema and reference_schema and schema != reference_schema:
+            problems.append(
+                f"{run.name} carries the {schema!r} metric schema but {reference.name} "
+                f"carries {reference_schema!r}. The two annualise risk-adjusted "
+                "statistics differently, so averaging them would compare unlike "
+                "definitions under one name"
+            )
         if run.sealed_test_start != reference.sealed_test_start:
             problems.append(
                 f"{run.name} has sealed_test_start {run.sealed_test_start}, "
@@ -363,39 +485,64 @@ def compare_runs(runs: list[RunArtifact]) -> list[str]:
     return problems
 
 
-def _spread(values: list[float]) -> dict[str, float]:
+def _spread(values: list[float | None]) -> dict[str, Any]:
+    """Spread over the observations where the metric is defined.
+
+    A risk-adjusted statistic is undefined when the portfolio never moved. That
+    is reported as ``None`` rather than ``0.0`` so it cannot be read as a
+    measurement, which means every aggregation has to carry it through instead
+    of averaging in a zero that was never observed.
+    """
+    defined = [v for v in values if v is not None]
+    if not defined:
+        return {"mean": None, "std": None, "min": None, "max": None, "defined": 0}
     return {
-        "mean": round(statistics.fmean(values), 6),
+        "mean": round(statistics.fmean(defined), 6),
         # Sample standard deviation needs two observations; one run has none.
-        "std": round(statistics.stdev(values), 6) if len(values) > 1 else 0.0,
-        "min": round(min(values), 6),
-        "max": round(max(values), 6),
+        "std": round(statistics.stdev(defined), 6) if len(defined) > 1 else 0.0,
+        "min": round(min(defined), 6),
+        "max": round(max(defined), 6),
+        "defined": len(defined),
     }
 
 
 def aggregate(runs: list[RunArtifact]) -> dict[str, Any]:
-    """Seed stability: how far each outer-validation number moves across runs."""
+    """Seed stability: how far each outer-validation number moves across runs.
+
+    ``compare_runs`` has already refused a mixed set by the time this is called,
+    so one schema describes every run. Under the pre-correction schema exactly
+    the two candle-level statistics are skipped and named in ``skipped_metrics``
+    — never dropped quietly, and never any other field.
+    """
     names = [run.name for run in runs]
     n_folds = runs[0].n_folds
+    schema = classify_schema(runs[0])[0]
+    readable = readable_metrics(schema)
 
     per_model: dict[str, Any] = {}
     for model in MODELS:
         metrics: dict[str, Any] = {}
-        for metric in SUMMARY_METRICS:
+        for metric in readable:
             per_run = {
                 run.name: [run.metric(fold, model, metric) for fold in run.folds]
                 for run in runs
             }
-            run_means = [statistics.fmean(per_run[name]) for name in names]
+            run_means = [_mean_defined(per_run[name]) for name in names]
             metrics[metric] = {
                 # Each run's across-fold mean, then the spread of those means.
-                "per_run_mean": {name: round(mean, 6) for name, mean in zip(names, run_means)},
+                "per_run_mean": {
+                    name: None if mean is None else round(mean, 6)
+                    for name, mean in zip(names, run_means)
+                },
                 "across_runs": _spread(run_means),
                 # And the same metric fold by fold, across runs.
                 "per_fold": [
                     {
                         "fold": fold,
-                        "values": {name: round(per_run[name][fold], 6) for name in names},
+                        "values": {
+                            name: None if (v := per_run[name][fold]) is None else round(v, 6)
+                            for name in names
+                        },
                         **_spread([per_run[name][fold] for name in names]),
                     }
                     for fold in range(n_folds)
@@ -406,10 +553,19 @@ def aggregate(runs: list[RunArtifact]) -> dict[str, Any]:
     return {
         "runs": names,
         "folds": n_folds,
+        "metric_schema": schema,
+        "skipped_metrics": sorted(set(SUMMARY_METRICS) - set(readable)),
         "per_model": per_model,
         "selection": _aggregate_selection(runs, names, n_folds),
         "baseline_comparison": _compare_to_baselines(runs, n_folds),
+        "economic_comparison": _compare_to_references(runs),
     }
+
+
+def _mean_defined(values: list[float | None]) -> float | None:
+    """Mean over the folds where the metric is defined; ``None`` when none are."""
+    defined = [v for v in values if v is not None]
+    return statistics.fmean(defined) if defined else None
 
 
 def _aggregate_selection(
@@ -462,6 +618,52 @@ def _compare_to_baselines(runs: list[RunArtifact], n_folds: int) -> dict[str, An
         "per_run": per_run,
         "runs_with_majority": majority,
         "runs": len(runs),
+    }
+
+
+def _compare_to_references(runs: list[RunArtifact]) -> dict[str, Any]:
+    """Did it make money, beat doing nothing, and beat owning the asset?
+
+    Counted over every run-fold, from the economic references each fold
+    recorded. Separate from :func:`_compare_to_baselines` because they answer
+    different questions and one has repeatedly been read as answering the other:
+    the model can beat majority-class and momentum in every fold while losing
+    money in every fold, and both facts belong in the report.
+
+    Pre-correction artifacts do not carry references. That is reported as
+    unavailable rather than inferred — a net return sign is not a substitute for
+    a buy-and-hold comparison.
+    """
+    run_folds = 0
+    beat_cash = 0
+    beat_hold = 0
+    with_references = 0
+    net_returns: list[float] = []
+    hold_returns: list[float] = []
+
+    for run in runs:
+        for fold in run.folds:
+            run_folds += 1
+            reports = fold["outer_validation"]
+            net = float(reports["mtst"]["trading"]["net_return"])
+            net_returns.append(net)
+            beat_cash += net > 0
+            hold = (reports.get(REFERENCES_KEY) or {}).get("buy_and_hold") or {}
+            if not hold.get("available"):
+                continue
+            with_references += 1
+            hold_returns.append(float(hold["net_return"]))
+            beat_hold += net > float(hold["net_return"])
+
+    return {
+        "run_folds": run_folds,
+        "run_folds_with_references": with_references,
+        "mean_net_return": round(statistics.fmean(net_returns), 6) if net_returns else None,
+        "mean_buy_and_hold_net_return": (
+            round(statistics.fmean(hold_returns), 6) if hold_returns else None
+        ),
+        "beat_cash_run_folds": beat_cash,
+        "beat_buy_and_hold_run_folds": beat_hold,
     }
 
 
@@ -1034,13 +1236,30 @@ def to_markdown(
             "",
         ]
 
+    if summary.get("metric_schema") == SCHEMA_LEGACY:
+        lines += [
+            "> **These artifacts predate the risk-metric correction.** They carry a "
+            f"`{LEGACY_TRADING_KEY}` field that annualised per-trade statistics by "
+            "`candles_per_year / horizon` — the number of trades the strategy *could* "
+            "have taken back to back, not the number it took. On a signal that trades "
+            "rarely that figure is overstated several-fold, and it grew as the target "
+            "horizon shrank. It is **not** reported here and **not** comparable to "
+            f"anything below; {', '.join(summary['skipped_metrics'])} are absent from "
+            "these runs and are skipped. Every other metric is unaffected. Re-run "
+            "`nn.walkforward` to produce an artifact with the corrected statistics.",
+            "",
+        ]
+
     lines += [
         "| model | metric | mean of run means | std | min | max |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for model in MODELS:
-        for metric in SUMMARY_METRICS:
+        for metric in summary["per_model"][model]:
             across = summary["per_model"][model][metric]["across_runs"]
+            if across["mean"] is None:
+                lines.append(f"| {model} | {metric} | n/a | n/a | n/a | n/a |")
+                continue
             lines.append(
                 f"| {model} | {metric} | {across['mean']:.6g} | {across['std']:.6g} | "
                 f"{across['min']:.6g} | {across['max']:.6g} |"
@@ -1053,8 +1272,11 @@ def to_markdown(
         "| fold | metric | mean | std | min | max |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
-    for metric in SUMMARY_METRICS:
+    for metric in summary["per_model"]["mtst"]:
         for entry in summary["per_model"]["mtst"][metric]["per_fold"]:
+            if entry["mean"] is None:
+                lines.append(f"| {entry['fold']} | {metric} | n/a | n/a | n/a | n/a |")
+                continue
             lines.append(
                 f"| {entry['fold']} | {metric} | {entry['mean']:.6g} | "
                 f"{entry['std']:.6g} | {entry['min']:.6g} | {entry['max']:.6g} |"
@@ -1079,7 +1301,11 @@ def to_markdown(
     comparison = summary["baseline_comparison"]
     lines += [
         "",
-        "## Against the baselines",
+        "## Against the statistical / rule baselines",
+        "",
+        "A floor test: did the model learn more than always predicting the majority "
+        "class, or than following the trend? **Passing it is not evidence of "
+        "profitability** — see the next section, which is the one that answers that.",
         "",
         f"MTST beat both baselines on net return in "
         f"{comparison['mtst_beat_both_baselines']}/{comparison['run_folds']} run-folds, "
@@ -1091,6 +1317,8 @@ def to_markdown(
     ]
     for name, wins in comparison["per_run"].items():
         lines.append(f"| {name} | {wins}/{summary['folds']} |")
+
+    lines += _economic_markdown(summary)
 
     if analysis:
         lines += _analysis_markdown(analysis, reference)
@@ -1114,6 +1342,54 @@ def to_markdown(
         "",
     ]
     return "\n".join(lines)
+
+
+def _economic_markdown(summary: dict[str, Any]) -> list[str]:
+    """Against doing nothing, and against owning the asset.
+
+    The section the baseline comparison above cannot stand in for. A model can
+    beat majority-class and momentum in every run-fold while losing money in
+    every one of them — that has happened in this repository's own artifacts —
+    so the two questions get two sections and the losing answer is not allowed
+    to hide behind the winning one.
+    """
+    economic = summary.get("economic_comparison") or {}
+    run_folds = economic.get("run_folds") or 0
+    lines = ["", "## Against doing nothing", ""]
+
+    mean_net = economic.get("mean_net_return")
+    if mean_net is None:
+        return lines + ["No net return was recorded for these runs.", ""]
+
+    made_money = mean_net > 0
+    lines += [
+        f"**CASH** — never trade, no fees — returns exactly 0. MTST's mean outer net "
+        f"return across all run-folds is **{mean_net:+.6f}**, so it "
+        f"{'made money' if made_money else '**lost money**'} and beat doing nothing in "
+        f"{economic['beat_cash_run_folds']}/{run_folds} run-folds.",
+        "",
+    ]
+
+    with_references = economic.get("run_folds_with_references") or 0
+    if not with_references:
+        lines += [
+            "**Buy-and-hold** is not available for these runs: they were produced "
+            "before economic references were recorded, and it cannot be reconstructed "
+            "from the aggregates. Nothing is inferred in its place — a net return sign "
+            "says whether the strategy beat cash, not whether it beat owning the asset.",
+            "",
+        ]
+        return lines
+
+    hold = economic["mean_buy_and_hold_net_return"]
+    lines += [
+        f"**Buy-and-hold** over the same windows, one round trip charged once, returned "
+        f"a mean **{hold:+.6f}**. MTST beat it in "
+        f"{economic['beat_buy_and_hold_run_folds']}/{with_references} run-folds where "
+        "the reference was recorded.",
+        "",
+    ]
+    return lines
 
 
 def _analysis_markdown(analysis: dict[str, Any], reference: RunArtifact) -> list[str]:
@@ -1490,6 +1766,8 @@ def main(argv: list[str] | None = None) -> int:
                         for run in runs
                     ],
                     "comparability_problems": mismatches,
+                    "metric_schema": (summary or {}).get("metric_schema"),
+                    "skipped_metrics": (summary or {}).get("skipped_metrics", []),
                     "sealed_test_evaluated": False,
                     "aggregated_from": "outer_validation",
                     "legacy_baseline_scoring": (

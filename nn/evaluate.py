@@ -10,8 +10,34 @@ dominates, so "accuracy" mostly measures the class prior.
 
 *Would acting on it have made money?* — :func:`trading_metrics` turns a signal
 series into non-overlapping trades, charges fees and slippage on both sides,
-and reports net return, Sharpe, max drawdown, win rate, profit factor, trade
-count, exposure, average trade and turnover.
+and reports net return, risk-adjusted statistics, max drawdown, win rate, profit
+factor, trade count, exposure, average trade and turnover.
+
+*Would it have beaten doing nothing?* — that is a different question again, and
+neither of the above answers it. :func:`economic_references` answers it, with
+two policies that are not models and make no predictions: :func:`cash_reference`
+(never trade) and :func:`buy_and_hold_reference` (buy once, hold the whole
+evaluation window, sell once). Beating a statistical floor is not the same as
+making money, and the report keeps the two groups apart so a reader cannot
+mistake one for the other.
+
+**Two risk-adjusted statistics, named for what they are.** Neither is called
+plain "Sharpe", because that name was doing two jobs and neither honestly:
+
+* ``per_trade_sharpe`` — mean net trade return over its standard deviation
+  *across trades*. A per-trade quality ratio. **Not annualised**, and not
+  comparable to a published Sharpe.
+* ``annualised_sharpe`` — computed from an actual candle-by-candle portfolio
+  return series (:func:`portfolio_equity`): equity is unchanged while flat and
+  marked to market while a position is open. A strategy that holds cash 96% of
+  the time gets the Sharpe of a portfolio that holds cash 96% of the time.
+
+The version this replaced annualised per-trade statistics by
+``candles_per_year / horizon`` — the number of trades the strategy *could* have
+taken back to back, regardless of how many it actually took. On a signal with 3%
+coverage that overstated the figure several-fold, and it grew as the target
+horizon shrank, so shortening the horizon "improved" it without trading any more
+often. Reports produced before that change are flagged rather than compared.
 
 :func:`trading_metrics` is a *signal evaluation*, not a backtest. It assumes
 entry and exit at the close of their respective candles and applies a flat cost.
@@ -21,7 +47,8 @@ model selection can be made against a cost-aware objective instead of accuracy.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -224,29 +251,338 @@ def realised_trades(
     )
 
 
+#: What ``annualised_sharpe`` means, wherever it appears.
+#:
+#: Recorded in every report that carries the number, so two rows in one table
+#: can be *checked* to be comparable rather than assumed to be. A policy that
+#: cannot produce this exact series does not report the metric at all — it
+#: reports ``None`` and a reason. Publishing a differently-defined number under
+#: a shared name is the failure this string exists to make impossible.
+SHARPE_BASIS = (
+    "candle-level portfolio returns (equity unchanged while flat, marked to market "
+    "while a position is open, both cost sides charged when they are paid), "
+    "annualised by sqrt(candles_per_year) over elapsed calendar intervals"
+)
+
+#: Why a risk-adjusted statistic is absent, when it is.
+SHARPE_UNDEFINED_NO_VARIANCE = "undefined: the return series has no variance"
+SHARPE_UNDEFINED_NO_TRADES = "undefined: no trades, so the portfolio never moved"
+SHARPE_UNDEFINED_NO_MARKET = "unavailable: no market context (close/date series) supplied"
+SHARPE_UNDEFINED_ONE_TRADE = "undefined: a single trade has no dispersion to measure"
+
+
+@dataclass(frozen=True)
+class MarketContext:
+    """Prices and timestamps for the candles an evaluation spans.
+
+    ``close`` and ``dates`` are indexed by *dataset row*, matching the
+    ``row_index`` arrays the evaluators pass around, so nothing has to agree
+    about a second coordinate system. They come from the processed dataset the
+    run was scored on and are never rebuilt or resampled here.
+
+    ``candles_per_year`` is a property of the timeframe, not of the strategy.
+    It is the only annualisation input, which is the point: no term in it
+    depends on how often anything trades.
+    """
+
+    close: np.ndarray
+    dates: np.ndarray
+    candles_per_year: float
+
+    @property
+    def timeframe_minutes(self) -> float:
+        """Minutes per candle — the exact inverse of ``candles_per_year``."""
+        return 365 * 24 * 60 / self.candles_per_year
+
+    def elapsed_intervals(self, start_row: int, end_row: int) -> int:
+        """Candle intervals of *wall-clock time* the span covers, inclusive.
+
+        Not ``end_row - start_row + 1``. The processed dataset drops candles the
+        exchange never published, so consecutive rows can be hours apart, and
+        counting rows would treat a six-hour outage as one ordinary hour —
+        inflating any statistic annualised from the count. With no gaps the two
+        numbers agree, and a test asserts that.
+
+        Raises rather than rounding away a disagreement: an elapsed span that is
+        not a near-integer multiple of the timeframe means the dates and the
+        declared timeframe describe different things.
+        """
+        minutes = float((self.dates[end_row] - self.dates[start_row]) / np.timedelta64(1, "m"))
+        exact = minutes / self.timeframe_minutes
+        intervals = round(exact)
+        if abs(exact - intervals) > 1e-6:
+            raise ValueError(
+                f"rows {start_row}-{end_row} span {minutes:g} minutes, which is not a "
+                f"whole number of {self.timeframe_minutes:g}-minute candles "
+                f"({exact:.6f}). The dates and candles_per_year disagree."
+            )
+        if intervals < end_row - start_row:
+            raise ValueError(
+                f"rows {start_row}-{end_row} are {end_row - start_row} apart but span "
+                f"only {intervals} candle intervals: the dates are not increasing at "
+                "least one timeframe per row."
+            )
+        return intervals + 1
+
+    def missing_candles(self, start_row: int, end_row: int) -> int:
+        """Candles the exchange never published inside the span."""
+        return self.elapsed_intervals(start_row, end_row) - (end_row - start_row + 1)
+
+
+def portfolio_equity(
+    market: MarketContext,
+    positions: Sequence[tuple[int, int, float]],
+    cost_per_side: float,
+    start_row: int,
+    end_row: int,
+) -> np.ndarray:
+    """Equity after every candle in ``[start_row, end_row]``, starting from 1.0.
+
+    ``positions`` is ``(entry_row, exit_row, direction)`` per trade, in time
+    order and non-overlapping — exactly what :func:`realised_trades` produces.
+
+    The construction is the existing trade semantics, refined to candle
+    resolution rather than replaced::
+
+        E(t) = E0 · (1 + direction·(close[t] − close[entry])/close[entry] − paid)
+        paid = cost_per_side          while the position is open
+             = 2·cost_per_side        on the exit candle
+        E(t) = E(t−1)                 while flat
+
+    where ``E0`` is equity immediately before the trade opened. The whole
+    portfolio backs each trade and is not re-levered inside it.
+
+    **Two invariants follow, and both are asserted by tests.** Telescoping the
+    marked-to-market term gives ``close[exit]/close[entry] − 1 =
+    future_return(entry)``, so a trade multiplies equity by exactly
+    ``1 + direction·future_return − cost_threshold`` — its net return from
+    :func:`realised_trades`. Flat candles multiply by one. So at every completed
+    trade boundary this curve equals ``cumprod(1 + trade_returns)``, the equity
+    curve :func:`trading_metrics` already reports ``net_return`` and
+    ``max_drawdown`` from. This is one curve at candle resolution, not a second
+    return model — which is what makes a Sharpe taken from it comparable to the
+    numbers beside it.
+
+    Marking against the position's own fixed entry price is what keeps a SHORT
+    exact. Compounding candle returns at ``-1`` would silently re-lever it and
+    stop reconciling with the trade return being reported.
+    """
+    if end_row < start_row:
+        raise ValueError(f"empty span [{start_row}, {end_row}]")
+    if end_row >= len(market.close):
+        raise ValueError(
+            f"the close series has {len(market.close)} rows but the evaluation span "
+            f"ends at row {end_row}. It must extend to the last trade's exit candle; "
+            "truncating it would price an exit at the wrong candle."
+        )
+
+    opens = {
+        int(entry): (int(exit_row), float(direction))
+        for entry, exit_row, direction in positions
+    }
+    equity = np.empty(end_row - start_row + 1, dtype=np.float64)
+    current = 1.0
+    live: tuple[int, int, float, float] | None = None
+
+    for offset in range(len(equity)):
+        row = start_row + offset
+        # Mark and close first, so a trade may open on the candle another exits.
+        if live is not None:
+            entry, exit_row, direction, opening = live
+            current = _marked(
+                market.close, entry, exit_row, direction, opening, row, cost_per_side
+            )
+            if row == exit_row:
+                live = None
+        if live is None and row in opens:
+            exit_row, direction = opens[row]
+            live = (row, exit_row, direction, current)
+            current = _marked(
+                market.close, row, exit_row, direction, current, row, cost_per_side
+            )
+        equity[offset] = current
+
+    return equity
+
+
+def _marked(
+    close: np.ndarray,
+    entry: int,
+    exit_row: int,
+    direction: float,
+    opening: float,
+    row: int,
+    cost_per_side: float,
+) -> float:
+    """Equity while one position is open, at ``row``. See :func:`portfolio_equity`."""
+    move = direction * (close[row] - close[entry]) / close[entry]
+    paid = cost_per_side * (2.0 if row == exit_row else 1.0)
+    return opening * (1.0 + move - paid)
+
+
+def portfolio_returns(equity: np.ndarray) -> np.ndarray:
+    """Per-candle returns of an equity curve that started at 1.0."""
+    previous = np.concatenate(([1.0], equity[:-1]))
+    if (previous <= 0).any() or (equity <= 0).any():
+        raise ValueError("portfolio equity reached zero or below; returns are undefined")
+    return equity / previous - 1.0
+
+
+def annualised_sharpe(
+    returns: np.ndarray,
+    elapsed_intervals: int,
+    candles_per_year: float,
+) -> tuple[float | None, str]:
+    """Annualised Sharpe of a candle-level return series, and its basis.
+
+    ``returns`` holds one observation per candle *present in the dataset*;
+    ``elapsed_intervals`` is how many candle intervals of wall-clock time the
+    span actually covered. The series is zero-padded to that length before the
+    mean and variance are taken, because the missing candles are ones the
+    exchange never published — and the portfolios this is called for are
+    provably flat across them, so a zero is the true return rather than an
+    assumption. (Buy-and-hold is *not* flat across a gap; it does not call this,
+    see :func:`buy_and_hold_reference`.)
+
+    Padding is applied through the sums rather than by materialising the zeros;
+    a test asserts the two agree. Returns ``(None, reason)`` when there is no
+    dispersion to divide by, never ``0.0`` — a flat portfolio has an undefined
+    Sharpe, and reporting zero would read as a measured result. The same rule
+    applies to the model, to the baselines and to CASH alike.
+    """
+    if elapsed_intervals < len(returns):
+        raise ValueError(
+            f"cannot pad {len(returns)} observations into {elapsed_intervals} intervals"
+        )
+    if elapsed_intervals < 2:
+        return None, SHARPE_UNDEFINED_NO_VARIANCE
+
+    total = float(returns.sum())
+    total_squares = float((returns**2).sum())
+    mean = total / elapsed_intervals
+    # Sample variance over the padded series: the zeros contribute nothing to
+    # either sum, only to the count.
+    variance = (total_squares - elapsed_intervals * mean**2) / (elapsed_intervals - 1)
+    if variance <= 0:
+        return None, SHARPE_UNDEFINED_NO_VARIANCE
+    return float(mean / np.sqrt(variance) * np.sqrt(candles_per_year)), SHARPE_BASIS
+
+
+def max_drawdown_of(equity: np.ndarray) -> float:
+    """Deepest peak-to-trough fall of an equity curve."""
+    if len(equity) == 0:
+        return 0.0
+    peak = np.maximum.accumulate(equity)
+    return float((1.0 - equity / peak).max())
+
+
+def _risk_adjusted(
+    trade_returns: np.ndarray,
+    market: MarketContext | None,
+    positions: Sequence[tuple[int, int, float]],
+    cost_per_side: float,
+    start_row: int,
+    end_row: int,
+) -> dict[str, Any]:
+    """The risk-adjusted half of a trading report: both Sharpes and the curve.
+
+    One implementation, used by the model, by both baselines and by
+    buy-and-hold, so a change to the definition cannot land in one and not the
+    others.
+    """
+    n_trades = len(trade_returns)
+    if n_trades < 2:
+        per_trade: float | None = None
+        per_trade_reason = (
+            SHARPE_UNDEFINED_NO_TRADES if not n_trades else SHARPE_UNDEFINED_ONE_TRADE
+        )
+    else:
+        spread = float(trade_returns.std(ddof=1))
+        per_trade = float(trade_returns.mean() / spread) if spread > 0 else None
+        per_trade_reason = "" if per_trade is not None else SHARPE_UNDEFINED_NO_VARIANCE
+
+    report: dict[str, Any] = {
+        "per_trade_sharpe": None if per_trade is None else round(per_trade, 4),
+        "per_trade_sharpe_reason": per_trade_reason,
+    }
+
+    if market is None:
+        report.update(
+            annualised_sharpe=None,
+            annualised_sharpe_reason=SHARPE_UNDEFINED_NO_MARKET,
+            sharpe_basis=SHARPE_UNDEFINED_NO_MARKET,
+            candle_max_drawdown=None,
+            elapsed_intervals=None,
+        )
+        return report
+
+    equity = portfolio_equity(market, positions, cost_per_side, start_row, end_row)
+    intervals = market.elapsed_intervals(start_row, end_row)
+    try:
+        returns = portfolio_returns(equity)
+    except ValueError as exc:
+        report.update(
+            annualised_sharpe=None,
+            annualised_sharpe_reason=f"undefined: {exc}",
+            sharpe_basis=SHARPE_BASIS,
+            candle_max_drawdown=round(max_drawdown_of(equity), 6),
+            elapsed_intervals=intervals,
+        )
+        return report
+
+    value, basis = annualised_sharpe(returns, intervals, market.candles_per_year)
+    report.update(
+        annualised_sharpe=None if value is None else round(value, 4),
+        annualised_sharpe_reason="" if value is not None else basis,
+        sharpe_basis=SHARPE_BASIS if value is not None else basis,
+        candle_max_drawdown=round(max_drawdown_of(equity), 6),
+        elapsed_intervals=intervals,
+    )
+    return report
+
+
 def trading_metrics(
     signals: np.ndarray,
     future_return: np.ndarray,
     target_spec: TargetSpec,
     *,
-    candles_per_year: float = 24 * 365,
+    market: MarketContext | None = None,
     row_index: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Score a signal series as a sequence of non-overlapping trades.
 
     The trades themselves come from :func:`realised_trades`; everything here is
-    aggregation over them. ``row_index`` keeps both trade spacing and exposure
-    in candle-row coordinates when the scored array is discontinuous around
-    gaps. Without explicit indices, the historic contiguous-array semantics are
-    preserved exactly.
+    aggregation over them. ``row_index`` keeps trade spacing, exposure and the
+    portfolio span in candle-row coordinates when the scored array is
+    discontinuous around gaps. Without explicit indices, the historic
+    contiguous-array semantics are preserved exactly.
+
+    ``market`` unlocks the candle-level statistics — ``annualised_sharpe`` and
+    ``candle_max_drawdown`` — which need prices and timestamps rather than
+    trade returns alone. Without it those fields are ``None`` with a stated
+    reason; every other number is unaffected, which is why
+    :func:`select_threshold` can go on scoring ``net_return`` without one and
+    cannot have its choice moved by anything added here.
     """
     horizon = target_spec.horizon
     cost = target_spec.cost_threshold
     n = len(signals)
     rows = _trade_rows(n, row_index)
-    _, _, returns = realised_trades(signals, future_return, target_spec, row_index=rows)
+    entries, directions, returns = realised_trades(
+        signals, future_return, target_spec, row_index=rows
+    )
 
     n_trades = len(returns)
+    # (entry_row, exit_row, direction) in dataset-row coordinates: `entries`
+    # indexes the signal array, `rows` maps that to the candle it happened on.
+    positions = [
+        (int(rows[position]), int(rows[position]) + horizon, float(direction))
+        for position, direction in zip(entries, directions)
+    ]
+    span_start = int(rows[0]) if n else 0
+    span_end = (int(rows[-1]) + horizon) if n else 0
+    risk = _risk_adjusted(returns, market, positions, cost / 2.0, span_start, span_end)
+
     if n_trades == 0:
         return {
             "n_trades": 0,
@@ -256,11 +592,11 @@ def trading_metrics(
             "avg_trade": 0.0,
             "win_rate": 0.0,
             "profit_factor": 0.0,
-            "sharpe": 0.0,
             "max_drawdown": 0.0,
             "exposure": 0.0,
             "turnover": 0.0,
             "cost_per_trade": round(cost, 6),
+            **risk,
         }
 
     trade_returns = returns
@@ -272,10 +608,6 @@ def trading_metrics(
     losses = trade_returns[trade_returns < 0]
     gross_profit = float(wins.sum())
     gross_loss = float(-losses.sum())
-
-    std = float(trade_returns.std(ddof=1)) if n_trades > 1 else 0.0
-    trades_per_year = candles_per_year / horizon
-    sharpe = float(trade_returns.mean() / std * np.sqrt(trades_per_year)) if std > 0 else 0.0
     covered_rows = int(rows[-1] - rows[0] + 1)
 
     return {
@@ -288,11 +620,15 @@ def trading_metrics(
         "profit_factor": (
             round(gross_profit / gross_loss, 4) if gross_loss > 0 else float("inf")
         ),
-        "sharpe": round(sharpe, 4),
+        # Drawdown of the same portfolio equity curve as `candle_max_drawdown`,
+        # sampled at trade boundaries instead of every candle. The candle-level
+        # figure is therefore always the larger of the two: it also sees the
+        # drawdown suffered *inside* an open position.
         "max_drawdown": round(max_drawdown, 4),
         "exposure": round(min(1.0, n_trades * horizon / covered_rows), 4),
         "turnover": round(2.0 * n_trades, 1),
         "cost_per_trade": round(cost, 6),
+        **risk,
     }
 
 
@@ -303,7 +639,7 @@ def evaluate(
     target_spec: TargetSpec,
     threshold: float,
     *,
-    candles_per_year: float = 24 * 365,
+    market: MarketContext | None = None,
     row_index: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Full report for one model on one split."""
@@ -314,9 +650,182 @@ def evaluate(
             signals,
             future_return,
             target_spec,
-            candles_per_year=candles_per_year,
+            market=market,
             row_index=row_index,
         ),
+    }
+
+
+# --- economic references ------------------------------------------------------
+#
+# Not baselines, and deliberately not in `nn.baselines`. That module's contract
+# is "emit a probability matrix in the model's shape", which these cannot
+# honour: buy-and-hold is not a per-sample decision rule, and encoding it as one
+# would make it re-enter and pay the round-trip cost every `horizon` candles —
+# turning "hold the asset" into "churn the asset", which is a different policy
+# with a different answer.
+#
+# Beating majority-class and momentum says the model learned more than a
+# statistical floor. It says nothing about whether acting on it made money.
+# These two answer that, and the reports keep the groups apart.
+
+
+def cash_reference(target_spec: TargetSpec) -> dict[str, Any]:
+    """Never trade. The zero every strategy has to clear before anything else.
+
+    A constant, stated rather than computed: no position at any time means no
+    trades, no fees, no slippage, no drawdown and no return. ``target_spec`` is
+    taken only to record that its cost model was *not* applied — CASH does not
+    pay the strategy's costs, and a test pins that at a non-zero cost threshold.
+
+    Both risk-adjusted statistics are ``None``, not ``0.0``: a flat portfolio
+    has no variance, so its Sharpe is undefined, and a zero would read as a
+    measured result. Any strategy with no trades reports the same thing, for the
+    same reason — the rule does not change with the name on the row.
+    """
+    return {
+        "policy": "cash",
+        "description": "no position at any time; no trades, no fees, no slippage",
+        "n_trades": 0,
+        "gross_return": 0.0,
+        "total_costs": 0.0,
+        "net_return": 0.0,
+        "max_drawdown": 0.0,
+        "candle_max_drawdown": 0.0,
+        "exposure": 0.0,
+        "per_trade_sharpe": None,
+        "per_trade_sharpe_reason": SHARPE_UNDEFINED_NO_TRADES,
+        "annualised_sharpe": None,
+        "annualised_sharpe_reason": SHARPE_UNDEFINED_NO_VARIANCE,
+        "sharpe_basis": SHARPE_UNDEFINED_NO_VARIANCE,
+        "cost_model_applied": False,
+        "cost_per_trade": round(target_spec.cost_threshold, 6),
+    }
+
+
+def buy_and_hold_reference(
+    market: MarketContext | None,
+    target_spec: TargetSpec,
+    row_index: np.ndarray,
+) -> dict[str, Any]:
+    """Buy at the start of the evaluation window, hold, sell at the end.
+
+    **Alignment.** The window is ``[row_index[0], row_index[-1] + horizon]``:
+    the candle the first scored sample could have entered on, through the candle
+    that closes the last scored sample's label. That is exactly the stretch in
+    which the model was able to open and close trades, so the two are answering
+    the same question about the same hours. It is a *continuous market span*
+    while the model-facing metrics are over *scored samples* — the two counts
+    differ, and both are reported rather than quietly equated.
+
+    **Cost.** One round trip, charged once: one entry, one exit, for the whole
+    hold. Not once per horizon — that would be a different policy. ``gross_return``
+    is reported beside it so the charge is visible rather than baked in.
+
+    **Risk-adjusted metrics.** Same construction as the strategy's, through the
+    same :func:`portfolio_equity`, so ``annualised_sharpe`` is net of the same
+    cost model on the same candle grid and carries the same ``sharpe_basis``.
+
+    **Except across a market-data gap.** No model trade ever spans one — the
+    windowing refuses it — so the strategy's portfolio is provably flat through a
+    gap and padding it with zeros invents nothing. A *hold* is not flat through a
+    gap: it is exposed to a price path nobody recorded. Rather than treat a
+    six-hour outage as one ordinary candle and publish the result under a name
+    that promises comparability, the Sharpe is withheld with a reason. Return is
+    still exact — a hold's start-to-end return is well defined even when its path
+    is not — and the drawdown is flagged as a lower bound, since an unobserved
+    intra-gap low can only deepen it.
+    """
+    if market is None:
+        return {
+            "policy": "buy_and_hold",
+            "available": False,
+            "reason": SHARPE_UNDEFINED_NO_MARKET,
+        }
+
+    horizon = target_spec.horizon
+    cost = target_spec.cost_threshold
+    entry_row = int(row_index[0])
+    exit_row = int(row_index[-1]) + horizon
+    gross = float(market.close[exit_row] / market.close[entry_row] - 1.0)
+
+    equity = portfolio_equity(
+        market, [(entry_row, exit_row, 1.0)], cost / 2.0, entry_row, exit_row
+    )
+    missing = market.missing_candles(entry_row, exit_row)
+    report: dict[str, Any] = {
+        "policy": "buy_and_hold",
+        "available": True,
+        "description": (
+            "buy at the close of the first scored candle, hold, sell at the close of "
+            "the candle that closes the last scored sample's label horizon"
+        ),
+        "window": "continuous market span (not the scored-sample set)",
+        "entry_row": entry_row,
+        "exit_row": exit_row,
+        "entry_timestamp": str(market.dates[entry_row]),
+        "exit_timestamp": str(market.dates[exit_row]),
+        "entry_price": round(float(market.close[entry_row]), 8),
+        "exit_price": round(float(market.close[exit_row]), 8),
+        "candles_held": exit_row - entry_row,
+        "elapsed_intervals": market.elapsed_intervals(entry_row, exit_row),
+        "missing_candles": missing,
+        "spans_market_data_gap": bool(missing),
+        "n_trades": 1,
+        "gross_return": round(gross, 6),
+        "total_costs": round(cost, 6),
+        "net_return": round(gross - cost, 6),
+        "cost_model": "one round trip charged once over the whole hold",
+        "candle_max_drawdown": round(max_drawdown_of(equity), 6),
+        "drawdown_is_lower_bound": bool(missing),
+        "exposure": 1.0,
+        "per_trade_sharpe": None,
+        "per_trade_sharpe_reason": SHARPE_UNDEFINED_ONE_TRADE,
+    }
+
+    if missing:
+        reason = (
+            f"unavailable: the hold spans {missing} candle(s) the exchange never "
+            "published. Its intra-gap price path is unknown, so a candle-level series "
+            "comparable to the strategy's cannot be built without inventing one"
+        )
+        report.update(
+            annualised_sharpe=None, annualised_sharpe_reason=reason, sharpe_basis=reason
+        )
+        return report
+
+    value, basis = annualised_sharpe(
+        portfolio_returns(equity),
+        market.elapsed_intervals(entry_row, exit_row),
+        market.candles_per_year,
+    )
+    report.update(
+        annualised_sharpe=None if value is None else round(value, 4),
+        annualised_sharpe_reason="" if value is not None else basis,
+        sharpe_basis=SHARPE_BASIS if value is not None else basis,
+    )
+    return report
+
+
+def economic_references(
+    market: MarketContext | None,
+    target_spec: TargetSpec,
+    row_index: np.ndarray,
+) -> dict[str, Any]:
+    """CASH and buy-and-hold over one evaluation window.
+
+    The economic question — did this make money, and did it beat doing nothing
+    or simply owning the asset — kept in one place so no report module answers
+    it a second way.
+    """
+    return {
+        "note": (
+            "Economic reference policies, not models and not statistical baselines. "
+            "A strategy that beats majority-class and momentum but loses to CASH lost "
+            "money."
+        ),
+        "cash": cash_reference(target_spec),
+        "buy_and_hold": buy_and_hold_reference(market, target_spec, row_index),
     }
 
 
@@ -373,12 +882,27 @@ def select_threshold(
     return best_threshold, best_report
 
 
+def number(value: Any, spec: str = ".4f") -> str:
+    """Format a metric, or ``n/a`` when it is undefined.
+
+    Undefined is a real state here — a portfolio that never moved has no Sharpe
+    — and it prints as ``n/a`` rather than ``0.000`` so a reader is not shown a
+    measurement that was never made.
+    """
+    return "n/a" if value is None else format(value, spec)
+
+
 def compare(reports: Mapping[str, Mapping[str, Any]]) -> str:
-    """Render a Markdown table of model-vs-baseline results."""
+    """Render a Markdown table of model-vs-baseline results.
+
+    Statistical/rule floors only. What these say is whether the model learned
+    more than a trivial rule — never whether it made money; see
+    :func:`economic_references` for that.
+    """
     header = (
         "| model | macro F1 | directional acc | coverage | trades | "
-        "net return | Sharpe | max DD |\n"
-        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "net return | ann. Sharpe | per-trade Sharpe | exposure | max DD |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
     )
     rows = []
     for name, report in reports.items():
@@ -387,6 +911,8 @@ def compare(reports: Mapping[str, Mapping[str, Any]]) -> str:
         rows.append(
             f"| {name} | {cls['macro_f1']:.4f} | {cls['directional_accuracy']:.4f} | "
             f"{cls['coverage']:.4f} | {trade['n_trades']} | {trade['net_return']:+.4f} | "
-            f"{trade['sharpe']:.3f} | {trade['max_drawdown']:.4f} |"
+            f"{number(trade['annualised_sharpe'], '.3f')} | "
+            f"{number(trade['per_trade_sharpe'], '.3f')} | "
+            f"{trade['exposure']:.4f} | {trade['max_drawdown']:.4f} |"
         )
     return header + "\n".join(rows)

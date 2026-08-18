@@ -18,6 +18,7 @@ No test here needs a committed dataset, a committed artifact, or a checkpoint.
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -77,8 +78,27 @@ def period(split) -> dict[str, Any]:
     }
 
 
-def report(net_return: float, macro_f1: float = 0.4) -> dict[str, Any]:
-    """One model's evaluation report, carrying every aggregated metric."""
+def report(
+    net_return: float, macro_f1: float = 0.4, *, schema: str = "current"
+) -> dict[str, Any]:
+    """One model's evaluation report, carrying every aggregated metric.
+
+    ``schema="legacy"`` produces the pre-correction shape instead: the removed
+    ``sharpe`` field and neither of the two that replaced it. That is the exact
+    fingerprint :func:`nn.wf_diagnostics.classify_schema` keys on, and the only
+    shape it is allowed to read with fields skipped.
+    """
+    trading: dict[str, Any] = {
+        "n_trades": 20,
+        "net_return": net_return,
+        "exposure": 0.25,
+        "max_drawdown": 0.05,
+    }
+    if schema == "legacy":
+        trading["sharpe"] = net_return * 10
+    else:
+        trading["annualised_sharpe"] = net_return * 2
+        trading["per_trade_sharpe"] = net_return
     return {
         "classification": {
             "n_samples": 83,
@@ -88,13 +108,35 @@ def report(net_return: float, macro_f1: float = 0.4) -> dict[str, Any]:
             "coverage": 0.75,
             "calibration_error": 0.1,
         },
-        "trading": {
-            "n_trades": 20,
-            "net_return": net_return,
-            "sharpe": net_return * 10,
-            "max_drawdown": 0.05,
-        },
+        "trading": trading,
     }
+
+
+def _summarise(fold_payloads: list[dict[str, Any]], schema: str) -> dict[str, Any]:
+    """The summary a run of this generation would actually have recorded.
+
+    A pre-correction run's aggregator did not know the two candle-level metrics,
+    so its summary does not carry them. Producing one that does would make the
+    fixture a shape no real artifact has ever had, and the legacy path would
+    then be tested against fiction.
+    """
+    if schema != "legacy":
+        return walkforward.summarise(fold_payloads)
+
+    # `summarise` reads the current metric set, so aggregate a current-shaped
+    # copy and then strip what a pre-correction run would not have recorded.
+    shaped = copy.deepcopy(fold_payloads)
+    for fold in shaped:
+        for model in walkforward.MODELS:
+            trading = fold["outer_validation"][model]["trading"]
+            for metric in wf_diagnostics.CURRENT_ONLY_METRICS:
+                trading.setdefault(metric, 0.0)
+    summary = walkforward.summarise(shaped)
+    for stats in summary["per_model"].values():
+        for metric in wf_diagnostics.CURRENT_ONLY_METRICS:
+            stats.pop(metric, None)
+        stats["sharpe"] = {"mean": 0.0, "std": 0.0, "values": [], "defined_folds": 0}
+    return summary
 
 
 def write_run(
@@ -108,6 +150,7 @@ def write_run(
     epochs: list[int] | None = None,
     dataset: dict[str, Any] | None = None,
     outer_samples: list[int] | None = None,
+    schema: str = "current",
 ) -> Path:
     """Write a well-formed artifact, then let a caller break one thing.
 
@@ -146,7 +189,8 @@ def write_run(
                     "inner_validation_loss": 1.0,
                 },
                 "outer_validation": {
-                    model: report(values[index]) for model, values in returns.items()
+                    model: report(values[index], schema=schema)
+                    for model, values in returns.items()
                 },
             }
         )
@@ -168,7 +212,7 @@ def write_run(
                 "folds": fold_payloads,
                 # The production aggregator, so the fixture's summary is exactly
                 # what a real run would have recorded for these folds.
-                "summary": walkforward.summarise(fold_payloads),
+                "summary": _summarise(fold_payloads, schema),
             },
             indent=2,
         )
@@ -1965,3 +2009,144 @@ def test_real_runs_written_after_the_fix_have_constant_baselines(real_regime_run
     runs = [wf_diagnostics.load_run(d) for d in real_regime_runs["runs"]]
     summary = wf_diagnostics.aggregate(runs)
     assert wf_diagnostics.deterministic_baseline_drift(summary) == []
+
+
+# --- metric schema: narrow legacy tolerance, everything else fails closed -------
+#
+# The tempting implementation is "aggregate whichever metrics are present in
+# every fold". It would read the committed pre-correction artifacts, and it
+# would also let a *current* artifact that lost a field pass by quietly dropping
+# it — which is the failure this module exists to catch. So the tolerance is
+# keyed on a positive legacy fingerprint and nothing else.
+def test_a_pre_correction_artifact_is_read_with_only_the_new_metrics_skipped(tmp_path):
+    write_run(tmp_path / "legacy", schema="legacy")
+    run = wf_diagnostics.load_run(tmp_path / "legacy")
+
+    assert wf_diagnostics.audit_run(run) == []
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == wf_diagnostics.SCHEMA_LEGACY
+    assert problems == []
+
+    summary = wf_diagnostics.aggregate([run])
+    assert summary["skipped_metrics"] == sorted(wf_diagnostics.CURRENT_ONLY_METRICS)
+    # Exactly those two, and every other metric still aggregated.
+    aggregated = set(summary["per_model"]["mtst"])
+    assert aggregated == set(walkforward.SUMMARY_METRICS) - set(
+        wf_diagnostics.CURRENT_ONLY_METRICS
+    )
+    assert "net_return" in aggregated and "exposure" in aggregated
+
+
+def test_the_pre_correction_warning_reaches_the_report(tmp_path):
+    write_run(tmp_path / "legacy", schema="legacy")
+    run = wf_diagnostics.load_run(tmp_path / "legacy")
+    markdown = wf_diagnostics.to_markdown(
+        [run], {run.name: []}, [], wf_diagnostics.aggregate([run])
+    )
+    assert "predate the risk-metric correction" in markdown
+    assert "candles_per_year / horizon" in markdown
+    assert "**not** comparable" in markdown
+    for metric in wf_diagnostics.CURRENT_ONLY_METRICS:
+        assert metric in markdown, "the warning must name what it skipped"
+
+
+def test_a_current_artifact_missing_a_metric_fails_rather_than_dropping_it(tmp_path):
+    """The corruption case. A gap with no legacy fingerprint is a problem."""
+    directory = tmp_path / "corrupt"
+    write_run(directory)
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    del payload["folds"][1]["outer_validation"]["mtst"]["trading"]["annualised_sharpe"]
+    artifact.write_text(json.dumps(payload))
+
+    run = wf_diagnostics.load_run(directory)
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any("refusing to aggregate around the gap" in p for p in problems)
+    assert wf_diagnostics.audit_run(run), "a missing metric must be an integrity problem"
+
+
+def test_a_half_renamed_schema_fails_rather_than_being_treated_as_legacy(tmp_path):
+    """Both field generations at once: semantics unknown, so no aggregate."""
+    directory = tmp_path / "mixed"
+    write_run(directory)
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    trading = payload["folds"][0]["outer_validation"]["mtst"]["trading"]
+    trading["sharpe"] = 12.0  # the removed field, alongside the ones that replaced it
+    artifact.write_text(json.dumps(payload))
+
+    run = wf_diagnostics.load_run(directory)
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any("neither the old schema nor the new one" in p for p in problems)
+
+
+def test_a_legacy_artifact_missing_an_unrelated_metric_still_fails(tmp_path):
+    """The legacy fingerprint excuses exactly two absences, not a third."""
+    directory = tmp_path / "legacy_gap"
+    write_run(directory, schema="legacy")
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    del payload["folds"][0]["outer_validation"]["mtst"]["trading"]["exposure"]
+    artifact.write_text(json.dumps(payload))
+
+    run = wf_diagnostics.load_run(directory)
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert problems
+
+
+def test_a_legacy_run_and_a_current_run_are_not_comparable(tmp_path):
+    """Averaging them would put two definitions under one column heading."""
+    write_run(tmp_path / "legacy", schema="legacy")
+    write_run(tmp_path / "current")
+    runs = [
+        wf_diagnostics.load_run(tmp_path / "legacy"),
+        wf_diagnostics.load_run(tmp_path / "current"),
+    ]
+    problems = wf_diagnostics.compare_runs(runs)
+    assert any("metric schema" in p for p in problems)
+
+
+def test_the_economic_section_says_buy_and_hold_is_unavailable_for_old_runs(tmp_path):
+    """Never inferred from a net-return sign."""
+    write_run(tmp_path / "legacy", schema="legacy")
+    run = wf_diagnostics.load_run(tmp_path / "legacy")
+    markdown = wf_diagnostics.to_markdown(
+        [run], {run.name: []}, [], wf_diagnostics.aggregate([run])
+    )
+    assert "## Against doing nothing" in markdown
+    assert "CASH" in markdown
+    assert "not available for these runs" in markdown
+    assert markdown.index("Against the statistical / rule baselines") < markdown.index(
+        "Against doing nothing"
+    )
+
+
+def test_the_baseline_section_disclaims_profitability(tmp_path):
+    write_run(tmp_path / "current")
+    run = wf_diagnostics.load_run(tmp_path / "current")
+    markdown = wf_diagnostics.to_markdown(
+        [run], {run.name: []}, [], wf_diagnostics.aggregate([run])
+    )
+    assert "not evidence of profitability" in markdown
+
+
+def test_an_undefined_sharpe_survives_aggregation_as_undefined(tmp_path):
+    """`None` must not be averaged in as a zero anywhere in the chain."""
+    directory = tmp_path / "undefined"
+    write_run(directory)
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    for fold in payload["folds"]:
+        fold["outer_validation"]["mtst"]["trading"]["annualised_sharpe"] = None
+    artifact.write_text(json.dumps(payload))
+
+    run = wf_diagnostics.load_run(directory)
+    assert wf_diagnostics.classify_schema(run)[0] == wf_diagnostics.SCHEMA_CURRENT
+    summary = wf_diagnostics.aggregate([run])
+    across = summary["per_model"]["mtst"]["annualised_sharpe"]["across_runs"]
+    assert across["mean"] is None and across["defined"] == 0
+    markdown = wf_diagnostics.to_markdown([run], {run.name: []}, [], summary)
+    assert "| mtst | annualised_sharpe | n/a | n/a | n/a | n/a |" in markdown

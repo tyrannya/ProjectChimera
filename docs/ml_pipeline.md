@@ -153,7 +153,35 @@ probability cut: an overconfident model trades far more than its stated threshol
 implies.
 
 **Trading:** net return, gross return, total costs, average trade, win rate,
-profit factor, Sharpe, max drawdown, number of trades, exposure, turnover.
+profit factor, two risk-adjusted statistics, max drawdown, number of trades,
+exposure, turnover.
+
+**The two risk-adjusted statistics are named for what they are**, because one
+name was doing both jobs and neither honestly:
+
+- `per_trade_sharpe` — mean net trade return over its standard deviation *across
+  trades*. A per-trade quality ratio. **Not annualised**, and not comparable to a
+  published Sharpe.
+- `annualised_sharpe` — computed from an actual candle-by-candle portfolio return
+  series: equity is unchanged while flat, and marked to market while a position
+  is open, with each cost side charged when it is paid. That curve equals
+  `cumprod(1 + trade_returns)` at every completed trade boundary, so it is the
+  equity curve already being reported at candle resolution rather than a second
+  return model. It is annualised by `sqrt(candles_per_year)` over **elapsed
+  calendar intervals**, so a missing exchange candle is not counted as an hour
+  that happened.
+
+Both are `None` — rendered `n/a` — when undefined, never `0.0`: a portfolio that
+never moved has no Sharpe, and a zero would read as a measurement. That rule
+applies to the model, to the baselines and to CASH alike.
+
+The version this replaced annualised per-trade statistics by
+`candles_per_year / horizon`: the number of trades the strategy *could* have taken
+back to back, regardless of how many it took. On a signal with ~3% coverage that
+overstated the figure several-fold, and it grew as the target horizon shrank, so
+shortening the horizon "improved" it without trading any more often. Artifacts
+produced before the change are detected and flagged rather than compared — see
+[`artifacts/README.md`](../artifacts/README.md).
 
 `trading_metrics` is a *signal evaluation*, not a backtest. It takes
 non-overlapping trades in time order, holds each for `horizon` candles, and
@@ -162,6 +190,36 @@ several times. Freqtrade's backtester remains the authority on execution; this
 exists so model selection can optimise a cost-aware objective instead of accuracy.
 
 Baselines are always reported next to the model, on both validation and test.
+
+**Baselines are not economic references, and the reports keep them apart.**
+Majority-class and momentum are statistical/rule floors: beating them says the
+model learned more than a trivial rule, and nothing else. Whether acting on it
+made money is a different question, answered by two reference policies that make
+no predictions at all:
+
+- **CASH** — never trade. Zero return, zero costs, zero drawdown. The line every
+  strategy clears before any other column means anything.
+- **buy-and-hold** — buy at the close of the first scored candle, hold, sell at
+  the candle that closes the last scored sample's label horizon. That is exactly
+  the window the model could trade in, taken as a *continuous market span* rather
+  than the scored-sample set, and both counts are reported rather than equated.
+  It pays **one** round trip for the whole hold, not one per horizon — charging
+  per horizon would make it a different policy.
+
+Buy-and-hold's `annualised_sharpe` is built from the same portfolio construction
+and the same cost model as the model's, so the columns are comparable. The one
+exception is stated in the report: no model trade ever spans a market-data gap,
+so the strategy's portfolio is provably flat across one and padding it with zeros
+invents nothing — but a *hold* is exposed to a price path nobody recorded, so
+across a gap its Sharpe is withheld with a reason rather than published under a
+name that promises comparability. Its return stays exact and its drawdown is
+flagged as a lower bound.
+
+These live in `nn/evaluate.py`, not `nn/baselines.py`: that module's contract is
+"emit a probability matrix in the model's shape", and buy-and-hold is not a
+per-sample decision rule. Encoding it as one would make it re-enter and pay the
+round-trip cost every `horizon` candles, turning "hold the asset" into "churn the
+asset".
 
 ## Threshold selection
 
@@ -360,7 +418,8 @@ command line, over seven dimensions: `seed`, `lr`, `seq_len`, `d_model`,
 out before any training starts, so what was searched is on the record.
 
 Configurations are ranked by a stated validation objective — `net_return`
-(default, net of the configured round-trip costs), `sharpe` or `macro_f1` —
+(default, net of the configured round-trip costs), `annualised_sharpe` or
+`macro_f1` —
 with macro F1 as the tie-break. Both baselines are refitted for every run and
 reported next to it, because a ranking of models against each other says nothing
 about whether any of them beat a rule.
@@ -452,10 +511,17 @@ Per fold, and asserted rather than intended:
 
 Reported per fold on the **outer** block, and aggregated as mean ± standard
 deviation across folds: macro F1, directional accuracy, coverage, calibration
-error, trade count, net return after costs, Sharpe, max drawdown — for the model
-and both baselines. The summary counts how many folds the model beat both
-baselines in, because beating them in one fold out of four is not evidence of
-anything, and it aggregates outer validation only.
+error, trade count, net return after costs, both risk-adjusted statistics,
+exposure, max drawdown — for the model and both baselines, with the CASH and
+buy-and-hold references for the same window reported in their own section.
+
+The summary counts how many folds the model beat both baselines in, because
+beating them in one fold out of four is not evidence of anything, and it
+aggregates outer validation only. It also counts how many folds it beat CASH and
+buy-and-hold in, and the verdict states both results in one sentence. The earlier
+version emitted "model beat both baselines in a majority of outer-validation
+folds" on its own — a true sentence that read as evidence of profitability while
+the model lost money in every fold it won.
 
 **These are model-development numbers.** Nothing was fitted on the outer blocks,
 which is what makes them worth reading — but the folds get re-run while the
