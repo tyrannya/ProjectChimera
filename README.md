@@ -186,6 +186,18 @@ overlap, so no row is reported as the result of two folds.
 Neither one scores the test split. Only the plain `nn.train` run in step 3 does,
 and only that run's artifact can be promoted.
 
+Once several walk-forward runs exist — the same geometry with different
+`--seed` values — `nn.wf_diagnostics` audits and compares them:
+
+```bash
+python -m nn.wf_diagnostics artifacts/walkforward/run_a artifacts/walkforward/run_b
+```
+
+It re-checks each artifact's leakage invariants on its own row indices, refuses
+to aggregate runs that do not measure the same blocks, and reports how far the
+outer-validation numbers move when only the seed changes. It reads artifact
+directories given on the command line; nothing needs to be committed.
+
 ### 5. Serve the model
 
 ```bash

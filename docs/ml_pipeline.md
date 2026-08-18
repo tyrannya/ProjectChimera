@@ -490,6 +490,63 @@ Output: `artifacts/walkforward/walkforward.json` (which records
 "outer_validation"`, and per fold a `periods` object with all three regions, a
 `selection` object and an `outer_validation` object) and `walkforward.md`.
 
+### Diagnostics across several walk-forward runs
+
+`nn.wf_diagnostics` reads `walkforward.json` artifacts that already exist and
+reports on them. It takes paths on the command line — artifact directories or
+the JSON files themselves — so nothing has to be committed, and it never opens a
+dataset or a checkpoint:
+
+```bash
+python -m nn.wf_diagnostics \
+    artifacts/walkforward/run_a \
+    artifacts/walkforward/run_b \
+    --out artifacts/walkforward/diagnostics
+```
+
+It answers two questions a single run cannot answer about itself.
+
+**Is each artifact sound?** The invariants walk-forward asserts while running are
+re-checked against what landed on disk, on row indices rather than region names:
+
+- the three regions of every fold in order, `train.end <= inner.start` and
+  `inner.end <= outer.start`;
+- outer blocks disjoint within the run — no row reported by two folds;
+- no region ending at or beyond `sealed_test.start_row`;
+- `test_evaluated` and `sealed_test.evaluated` both false, failing closed when
+  either is absent rather than absent-means-fine;
+- `reported_block` and `summary.aggregated_from` both `outer_validation`;
+- **the recorded across-fold summary reproduced from the per-fold reports beside
+  it**, so the headline is provably the folds' average and not an edit.
+
+A pre-nested artifact — one `validation` block per fold, selected on and
+reported — is refused by name rather than read as if it were an evaluation.
+
+**How much of the result is the seed?** Runs that differ only in `--seed` give a
+distribution, and the width is the useful number. The report shows each run's
+across-fold mean and the spread of those means, the same metrics fold by fold
+across runs, and the stability of the *selected* threshold and early-stopping
+epoch — a fold whose threshold swings between seeds is a fold whose inner block
+did not have a strong preference. It also counts how many run-folds MTST beat
+both baselines in, because winning a majority in one run and losing it in the
+next is not a result.
+
+Runs whose geometry, sealed boundary, dataset or fold count differ are reported
+as **not comparable** and no aggregate is produced: averaging metrics from
+different blocks of market is a category error, not a seed study. The same
+applies when any run fails its audit — the problems are printed and the headline
+is withheld. The command exits non-zero in both cases, so it can gate a
+pipeline.
+
+Output: the Markdown report on stdout, plus `wf_diagnostics.json` and
+`wf_diagnostics.md` when `--out` is given.
+
+**What it is not.** Seed spread measures the stability of the research
+procedure. It is not an out-of-sample estimate and not a claim of
+profitability — the outer blocks are still research blocks, re-run while the
+method was being built. The sealed test block stays unopened, and the tool
+refuses an artifact that says otherwise.
+
 ### Spending the test split
 
 When the research decisions are frozen — architecture, hyperparameters, feature

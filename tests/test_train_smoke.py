@@ -185,6 +185,7 @@ def test_training_fails_loudly_on_too_short_a_dataset(dataset, tmp_path):
         "tools.make_sample_data",
         "nn.train",
         "nn.walkforward",
+        "nn.wf_diagnostics",
     ],
 )
 def test_cli_help_works(module):

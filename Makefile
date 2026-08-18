@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup lint format test smoke sample backfill features train \
-	research experiment walkforward \
+	research experiment walkforward wf-diagnostics \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
@@ -79,6 +79,9 @@ experiment:  ## Grid search scored on validation only. Args: DATASET EPOCHS SEQ_
 walkforward:  ## Nested walk-forward validation (train -> inner val -> outer val)
 	$(PYTHON) -m nn.walkforward --dataset $(DATASET) --folds 4 --epochs $(EPOCHS) \
 		--seq-len $(SEQ_LEN) --out artifacts/walkforward
+
+wf-diagnostics:  ## Audit and compare walk-forward runs. Args: RUNS="dir1 dir2 ..."
+	$(PYTHON) -m nn.wf_diagnostics $(RUNS)
 
 infer:  ## Serve the promoted model on port 3000
 	CHIMERA_MODELS_DIR=$(MODELS) uvicorn nn.infer_service:app --host 127.0.0.1 --port 3000
