@@ -1,0 +1,3044 @@
+{
+  "runs": [
+    {
+      "name": "btc_nested_v2_seed_42",
+      "path": "artifacts/walkforward/btc_nested_v2_seed_42/walkforward.json",
+      "seed": 42,
+      "folds": 4,
+      "sealed_test_start": 48217,
+      "integrity_problems": []
+    },
+    {
+      "name": "btc_nested_v2_seed_142",
+      "path": "artifacts/walkforward/btc_nested_v2_seed_142/walkforward.json",
+      "seed": 142,
+      "folds": 4,
+      "sealed_test_start": 48217,
+      "integrity_problems": []
+    },
+    {
+      "name": "btc_nested_v2_seed_242",
+      "path": "artifacts/walkforward/btc_nested_v2_seed_242/walkforward.json",
+      "seed": 242,
+      "folds": 4,
+      "sealed_test_start": 48217,
+      "integrity_problems": []
+    },
+    {
+      "name": "btc_nested_v2_seed_342",
+      "path": "artifacts/walkforward/btc_nested_v2_seed_342/walkforward.json",
+      "seed": 342,
+      "folds": 4,
+      "sealed_test_start": 48217,
+      "integrity_problems": []
+    },
+    {
+      "name": "btc_nested_v2_seed_442",
+      "path": "artifacts/walkforward/btc_nested_v2_seed_442/walkforward.json",
+      "seed": 442,
+      "folds": 4,
+      "sealed_test_start": 48217,
+      "integrity_problems": []
+    }
+  ],
+  "comparability_problems": [],
+  "sealed_test_evaluated": false,
+  "aggregated_from": "outer_validation",
+  "legacy_baseline_scoring": [],
+  "summary": {
+    "runs": [
+      "btc_nested_v2_seed_42",
+      "btc_nested_v2_seed_142",
+      "btc_nested_v2_seed_242",
+      "btc_nested_v2_seed_342",
+      "btc_nested_v2_seed_442"
+    ],
+    "folds": 4,
+    "per_model": {
+      "majority_baseline": {
+        "macro_f1": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.18885,
+            "btc_nested_v2_seed_142": 0.18885,
+            "btc_nested_v2_seed_242": 0.18885,
+            "btc_nested_v2_seed_342": 0.18885,
+            "btc_nested_v2_seed_442": 0.18885
+          },
+          "across_runs": {
+            "mean": 0.18885,
+            "std": 0.0,
+            "min": 0.18885,
+            "max": 0.18885
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1633,
+                "btc_nested_v2_seed_142": 0.1633,
+                "btc_nested_v2_seed_242": 0.1633,
+                "btc_nested_v2_seed_342": 0.1633,
+                "btc_nested_v2_seed_442": 0.1633
+              },
+              "mean": 0.1633,
+              "std": 0.0,
+              "min": 0.1633,
+              "max": 0.1633
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1995,
+                "btc_nested_v2_seed_142": 0.1995,
+                "btc_nested_v2_seed_242": 0.1995,
+                "btc_nested_v2_seed_342": 0.1995,
+                "btc_nested_v2_seed_442": 0.1995
+              },
+              "mean": 0.1995,
+              "std": 0.0,
+              "min": 0.1995,
+              "max": 0.1995
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1937,
+                "btc_nested_v2_seed_142": 0.1937,
+                "btc_nested_v2_seed_242": 0.1937,
+                "btc_nested_v2_seed_342": 0.1937,
+                "btc_nested_v2_seed_442": 0.1937
+              },
+              "mean": 0.1937,
+              "std": 0.0,
+              "min": 0.1937,
+              "max": 0.1937
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1989,
+                "btc_nested_v2_seed_142": 0.1989,
+                "btc_nested_v2_seed_242": 0.1989,
+                "btc_nested_v2_seed_342": 0.1989,
+                "btc_nested_v2_seed_442": 0.1989
+              },
+              "mean": 0.1989,
+              "std": 0.0,
+              "min": 0.1989,
+              "max": 0.1989
+            }
+          ]
+        },
+        "directional_accuracy": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.39655,
+            "btc_nested_v2_seed_142": 0.39655,
+            "btc_nested_v2_seed_242": 0.39655,
+            "btc_nested_v2_seed_342": 0.39655,
+            "btc_nested_v2_seed_442": 0.39655
+          },
+          "across_runs": {
+            "mean": 0.39655,
+            "std": 0.0,
+            "min": 0.39655,
+            "max": 0.39655
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.3244,
+                "btc_nested_v2_seed_142": 0.3244,
+                "btc_nested_v2_seed_242": 0.3244,
+                "btc_nested_v2_seed_342": 0.3244,
+                "btc_nested_v2_seed_442": 0.3244
+              },
+              "mean": 0.3244,
+              "std": 0.0,
+              "min": 0.3244,
+              "max": 0.3244
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.427,
+                "btc_nested_v2_seed_142": 0.427,
+                "btc_nested_v2_seed_242": 0.427,
+                "btc_nested_v2_seed_342": 0.427,
+                "btc_nested_v2_seed_442": 0.427
+              },
+              "mean": 0.427,
+              "std": 0.0,
+              "min": 0.427,
+              "max": 0.427
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.4095,
+                "btc_nested_v2_seed_142": 0.4095,
+                "btc_nested_v2_seed_242": 0.4095,
+                "btc_nested_v2_seed_342": 0.4095,
+                "btc_nested_v2_seed_442": 0.4095
+              },
+              "mean": 0.4095,
+              "std": 0.0,
+              "min": 0.4095,
+              "max": 0.4095
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.4253,
+                "btc_nested_v2_seed_142": 0.4253,
+                "btc_nested_v2_seed_242": 0.4253,
+                "btc_nested_v2_seed_342": 0.4253,
+                "btc_nested_v2_seed_442": 0.4253
+              },
+              "mean": 0.4253,
+              "std": 0.0,
+              "min": 0.4253,
+              "max": 0.4253
+            }
+          ]
+        },
+        "coverage": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 1.0,
+            "btc_nested_v2_seed_142": 1.0,
+            "btc_nested_v2_seed_242": 1.0,
+            "btc_nested_v2_seed_342": 1.0,
+            "btc_nested_v2_seed_442": 1.0
+          },
+          "across_runs": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 1.0,
+                "btc_nested_v2_seed_142": 1.0,
+                "btc_nested_v2_seed_242": 1.0,
+                "btc_nested_v2_seed_342": 1.0,
+                "btc_nested_v2_seed_442": 1.0
+              },
+              "mean": 1.0,
+              "std": 0.0,
+              "min": 1.0,
+              "max": 1.0
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 1.0,
+                "btc_nested_v2_seed_142": 1.0,
+                "btc_nested_v2_seed_242": 1.0,
+                "btc_nested_v2_seed_342": 1.0,
+                "btc_nested_v2_seed_442": 1.0
+              },
+              "mean": 1.0,
+              "std": 0.0,
+              "min": 1.0,
+              "max": 1.0
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 1.0,
+                "btc_nested_v2_seed_142": 1.0,
+                "btc_nested_v2_seed_242": 1.0,
+                "btc_nested_v2_seed_342": 1.0,
+                "btc_nested_v2_seed_442": 1.0
+              },
+              "mean": 1.0,
+              "std": 0.0,
+              "min": 1.0,
+              "max": 1.0
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 1.0,
+                "btc_nested_v2_seed_142": 1.0,
+                "btc_nested_v2_seed_242": 1.0,
+                "btc_nested_v2_seed_342": 1.0,
+                "btc_nested_v2_seed_442": 1.0
+              },
+              "mean": 1.0,
+              "std": 0.0,
+              "min": 1.0,
+              "max": 1.0
+            }
+          ]
+        },
+        "calibration_error": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.60345,
+            "btc_nested_v2_seed_142": 0.60345,
+            "btc_nested_v2_seed_242": 0.60345,
+            "btc_nested_v2_seed_342": 0.60345,
+            "btc_nested_v2_seed_442": 0.60345
+          },
+          "across_runs": {
+            "mean": 0.60345,
+            "std": 0.0,
+            "min": 0.60345,
+            "max": 0.60345
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.6756,
+                "btc_nested_v2_seed_142": 0.6756,
+                "btc_nested_v2_seed_242": 0.6756,
+                "btc_nested_v2_seed_342": 0.6756,
+                "btc_nested_v2_seed_442": 0.6756
+              },
+              "mean": 0.6756,
+              "std": 0.0,
+              "min": 0.6756,
+              "max": 0.6756
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.573,
+                "btc_nested_v2_seed_142": 0.573,
+                "btc_nested_v2_seed_242": 0.573,
+                "btc_nested_v2_seed_342": 0.573,
+                "btc_nested_v2_seed_442": 0.573
+              },
+              "mean": 0.573,
+              "std": 0.0,
+              "min": 0.573,
+              "max": 0.573
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.5905,
+                "btc_nested_v2_seed_142": 0.5905,
+                "btc_nested_v2_seed_242": 0.5905,
+                "btc_nested_v2_seed_342": 0.5905,
+                "btc_nested_v2_seed_442": 0.5905
+              },
+              "mean": 0.5905,
+              "std": 0.0,
+              "min": 0.5905,
+              "max": 0.5905
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.5747,
+                "btc_nested_v2_seed_142": 0.5747,
+                "btc_nested_v2_seed_242": 0.5747,
+                "btc_nested_v2_seed_342": 0.5747,
+                "btc_nested_v2_seed_442": 0.5747
+              },
+              "mean": 0.5747,
+              "std": 0.0,
+              "min": 0.5747,
+              "max": 0.5747
+            }
+          ]
+        },
+        "n_trades": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 789.25,
+            "btc_nested_v2_seed_142": 789.25,
+            "btc_nested_v2_seed_242": 789.25,
+            "btc_nested_v2_seed_342": 789.25,
+            "btc_nested_v2_seed_442": 789.25
+          },
+          "across_runs": {
+            "mean": 789.25,
+            "std": 0.0,
+            "min": 789.25,
+            "max": 789.25
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 781.0,
+                "btc_nested_v2_seed_142": 781.0,
+                "btc_nested_v2_seed_242": 781.0,
+                "btc_nested_v2_seed_342": 781.0,
+                "btc_nested_v2_seed_442": 781.0
+              },
+              "mean": 781.0,
+              "std": 0.0,
+              "min": 781.0,
+              "max": 781.0
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 792.0,
+                "btc_nested_v2_seed_142": 792.0,
+                "btc_nested_v2_seed_242": 792.0,
+                "btc_nested_v2_seed_342": 792.0,
+                "btc_nested_v2_seed_442": 792.0
+              },
+              "mean": 792.0,
+              "std": 0.0,
+              "min": 792.0,
+              "max": 792.0
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 792.0,
+                "btc_nested_v2_seed_142": 792.0,
+                "btc_nested_v2_seed_242": 792.0,
+                "btc_nested_v2_seed_342": 792.0,
+                "btc_nested_v2_seed_442": 792.0
+              },
+              "mean": 792.0,
+              "std": 0.0,
+              "min": 792.0,
+              "max": 792.0
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 792.0,
+                "btc_nested_v2_seed_142": 792.0,
+                "btc_nested_v2_seed_242": 792.0,
+                "btc_nested_v2_seed_342": 792.0,
+                "btc_nested_v2_seed_442": 792.0
+              },
+              "mean": 792.0,
+              "std": 0.0,
+              "min": 792.0,
+              "max": 792.0
+            }
+          ]
+        },
+        "net_return": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": -0.666674,
+            "btc_nested_v2_seed_142": -0.666674,
+            "btc_nested_v2_seed_242": -0.666674,
+            "btc_nested_v2_seed_342": -0.666674,
+            "btc_nested_v2_seed_442": -0.666674
+          },
+          "across_runs": {
+            "mean": -0.666674,
+            "std": 0.0,
+            "min": -0.666674,
+            "max": -0.666674
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": -0.754383,
+                "btc_nested_v2_seed_142": -0.754383,
+                "btc_nested_v2_seed_242": -0.754383,
+                "btc_nested_v2_seed_342": -0.754383,
+                "btc_nested_v2_seed_442": -0.754383
+              },
+              "mean": -0.754383,
+              "std": 0.0,
+              "min": -0.754383,
+              "max": -0.754383
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": -0.447049,
+                "btc_nested_v2_seed_142": -0.447049,
+                "btc_nested_v2_seed_242": -0.447049,
+                "btc_nested_v2_seed_342": -0.447049,
+                "btc_nested_v2_seed_442": -0.447049
+              },
+              "mean": -0.447049,
+              "std": 0.0,
+              "min": -0.447049,
+              "max": -0.447049
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": -0.773156,
+                "btc_nested_v2_seed_142": -0.773156,
+                "btc_nested_v2_seed_242": -0.773156,
+                "btc_nested_v2_seed_342": -0.773156,
+                "btc_nested_v2_seed_442": -0.773156
+              },
+              "mean": -0.773156,
+              "std": 0.0,
+              "min": -0.773156,
+              "max": -0.773156
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": -0.692106,
+                "btc_nested_v2_seed_142": -0.692106,
+                "btc_nested_v2_seed_242": -0.692106,
+                "btc_nested_v2_seed_342": -0.692106,
+                "btc_nested_v2_seed_442": -0.692106
+              },
+              "mean": -0.692106,
+              "std": 0.0,
+              "min": -0.692106,
+              "max": -0.692106
+            }
+          ]
+        },
+        "sharpe": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": -4.25775,
+            "btc_nested_v2_seed_142": -4.25775,
+            "btc_nested_v2_seed_242": -4.25775,
+            "btc_nested_v2_seed_342": -4.25775,
+            "btc_nested_v2_seed_442": -4.25775
+          },
+          "across_runs": {
+            "mean": -4.25775,
+            "std": 0.0,
+            "min": -4.25775,
+            "max": -4.25775
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": -5.8227,
+                "btc_nested_v2_seed_142": -5.8227,
+                "btc_nested_v2_seed_242": -5.8227,
+                "btc_nested_v2_seed_342": -5.8227,
+                "btc_nested_v2_seed_442": -5.8227
+              },
+              "mean": -5.8227,
+              "std": 0.0,
+              "min": -5.8227,
+              "max": -5.8227
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": -1.9083,
+                "btc_nested_v2_seed_142": -1.9083,
+                "btc_nested_v2_seed_242": -1.9083,
+                "btc_nested_v2_seed_342": -1.9083,
+                "btc_nested_v2_seed_442": -1.9083
+              },
+              "mean": -1.9083,
+              "std": 0.0,
+              "min": -1.9083,
+              "max": -1.9083
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": -5.4415,
+                "btc_nested_v2_seed_142": -5.4415,
+                "btc_nested_v2_seed_242": -5.4415,
+                "btc_nested_v2_seed_342": -5.4415,
+                "btc_nested_v2_seed_442": -5.4415
+              },
+              "mean": -5.4415,
+              "std": 0.0,
+              "min": -5.4415,
+              "max": -5.4415
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": -3.8585,
+                "btc_nested_v2_seed_142": -3.8585,
+                "btc_nested_v2_seed_242": -3.8585,
+                "btc_nested_v2_seed_342": -3.8585,
+                "btc_nested_v2_seed_442": -3.8585
+              },
+              "mean": -3.8585,
+              "std": 0.0,
+              "min": -3.8585,
+              "max": -3.8585
+            }
+          ]
+        },
+        "max_drawdown": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.700775,
+            "btc_nested_v2_seed_142": 0.700775,
+            "btc_nested_v2_seed_242": 0.700775,
+            "btc_nested_v2_seed_342": 0.700775,
+            "btc_nested_v2_seed_442": 0.700775
+          },
+          "across_runs": {
+            "mean": 0.700775,
+            "std": 0.0,
+            "min": 0.700775,
+            "max": 0.700775
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.7826,
+                "btc_nested_v2_seed_142": 0.7826,
+                "btc_nested_v2_seed_242": 0.7826,
+                "btc_nested_v2_seed_342": 0.7826,
+                "btc_nested_v2_seed_442": 0.7826
+              },
+              "mean": 0.7826,
+              "std": 0.0,
+              "min": 0.7826,
+              "max": 0.7826
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.4879,
+                "btc_nested_v2_seed_142": 0.4879,
+                "btc_nested_v2_seed_242": 0.4879,
+                "btc_nested_v2_seed_342": 0.4879,
+                "btc_nested_v2_seed_442": 0.4879
+              },
+              "mean": 0.4879,
+              "std": 0.0,
+              "min": 0.4879,
+              "max": 0.4879
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.7862,
+                "btc_nested_v2_seed_142": 0.7862,
+                "btc_nested_v2_seed_242": 0.7862,
+                "btc_nested_v2_seed_342": 0.7862,
+                "btc_nested_v2_seed_442": 0.7862
+              },
+              "mean": 0.7862,
+              "std": 0.0,
+              "min": 0.7862,
+              "max": 0.7862
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.7464,
+                "btc_nested_v2_seed_142": 0.7464,
+                "btc_nested_v2_seed_242": 0.7464,
+                "btc_nested_v2_seed_342": 0.7464,
+                "btc_nested_v2_seed_442": 0.7464
+              },
+              "mean": 0.7464,
+              "std": 0.0,
+              "min": 0.7464,
+              "max": 0.7464
+            }
+          ]
+        }
+      },
+      "momentum_baseline": {
+        "macro_f1": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.270275,
+            "btc_nested_v2_seed_142": 0.270275,
+            "btc_nested_v2_seed_242": 0.270275,
+            "btc_nested_v2_seed_342": 0.270275,
+            "btc_nested_v2_seed_442": 0.270275
+          },
+          "across_runs": {
+            "mean": 0.270275,
+            "std": 0.0,
+            "min": 0.270275,
+            "max": 0.270275
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.2432,
+                "btc_nested_v2_seed_142": 0.2432,
+                "btc_nested_v2_seed_242": 0.2432,
+                "btc_nested_v2_seed_342": 0.2432,
+                "btc_nested_v2_seed_442": 0.2432
+              },
+              "mean": 0.2432,
+              "std": 0.0,
+              "min": 0.2432,
+              "max": 0.2432
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.2726,
+                "btc_nested_v2_seed_142": 0.2726,
+                "btc_nested_v2_seed_242": 0.2726,
+                "btc_nested_v2_seed_342": 0.2726,
+                "btc_nested_v2_seed_442": 0.2726
+              },
+              "mean": 0.2726,
+              "std": 0.0,
+              "min": 0.2726,
+              "max": 0.2726
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.2809,
+                "btc_nested_v2_seed_142": 0.2809,
+                "btc_nested_v2_seed_242": 0.2809,
+                "btc_nested_v2_seed_342": 0.2809,
+                "btc_nested_v2_seed_442": 0.2809
+              },
+              "mean": 0.2809,
+              "std": 0.0,
+              "min": 0.2809,
+              "max": 0.2809
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.2844,
+                "btc_nested_v2_seed_142": 0.2844,
+                "btc_nested_v2_seed_242": 0.2844,
+                "btc_nested_v2_seed_342": 0.2844,
+                "btc_nested_v2_seed_442": 0.2844
+              },
+              "mean": 0.2844,
+              "std": 0.0,
+              "min": 0.2844,
+              "max": 0.2844
+            }
+          ]
+        },
+        "directional_accuracy": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.358175,
+            "btc_nested_v2_seed_142": 0.358175,
+            "btc_nested_v2_seed_242": 0.358175,
+            "btc_nested_v2_seed_342": 0.358175,
+            "btc_nested_v2_seed_442": 0.358175
+          },
+          "across_runs": {
+            "mean": 0.358175,
+            "std": 0.0,
+            "min": 0.358175,
+            "max": 0.358175
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.3018,
+                "btc_nested_v2_seed_142": 0.3018,
+                "btc_nested_v2_seed_242": 0.3018,
+                "btc_nested_v2_seed_342": 0.3018,
+                "btc_nested_v2_seed_442": 0.3018
+              },
+              "mean": 0.3018,
+              "std": 0.0,
+              "min": 0.3018,
+              "max": 0.3018
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.3702,
+                "btc_nested_v2_seed_142": 0.3702,
+                "btc_nested_v2_seed_242": 0.3702,
+                "btc_nested_v2_seed_342": 0.3702,
+                "btc_nested_v2_seed_442": 0.3702
+              },
+              "mean": 0.3702,
+              "std": 0.0,
+              "min": 0.3702,
+              "max": 0.3702
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.3748,
+                "btc_nested_v2_seed_142": 0.3748,
+                "btc_nested_v2_seed_242": 0.3748,
+                "btc_nested_v2_seed_342": 0.3748,
+                "btc_nested_v2_seed_442": 0.3748
+              },
+              "mean": 0.3748,
+              "std": 0.0,
+              "min": 0.3748,
+              "max": 0.3748
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.3859,
+                "btc_nested_v2_seed_142": 0.3859,
+                "btc_nested_v2_seed_242": 0.3859,
+                "btc_nested_v2_seed_342": 0.3859,
+                "btc_nested_v2_seed_442": 0.3859
+              },
+              "mean": 0.3859,
+              "std": 0.0,
+              "min": 0.3859,
+              "max": 0.3859
+            }
+          ]
+        },
+        "coverage": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.998025,
+            "btc_nested_v2_seed_142": 0.998025,
+            "btc_nested_v2_seed_242": 0.998025,
+            "btc_nested_v2_seed_342": 0.998025,
+            "btc_nested_v2_seed_442": 0.998025
+          },
+          "across_runs": {
+            "mean": 0.998025,
+            "std": 0.0,
+            "min": 0.998025,
+            "max": 0.998025
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.9968,
+                "btc_nested_v2_seed_142": 0.9968,
+                "btc_nested_v2_seed_242": 0.9968,
+                "btc_nested_v2_seed_342": 0.9968,
+                "btc_nested_v2_seed_442": 0.9968
+              },
+              "mean": 0.9968,
+              "std": 0.0,
+              "min": 0.9968,
+              "max": 0.9968
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.9981,
+                "btc_nested_v2_seed_142": 0.9981,
+                "btc_nested_v2_seed_242": 0.9981,
+                "btc_nested_v2_seed_342": 0.9981,
+                "btc_nested_v2_seed_442": 0.9981
+              },
+              "mean": 0.9981,
+              "std": 0.0,
+              "min": 0.9981,
+              "max": 0.9981
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.9983,
+                "btc_nested_v2_seed_142": 0.9983,
+                "btc_nested_v2_seed_242": 0.9983,
+                "btc_nested_v2_seed_342": 0.9983,
+                "btc_nested_v2_seed_442": 0.9983
+              },
+              "mean": 0.9983,
+              "std": 0.0,
+              "min": 0.9983,
+              "max": 0.9983
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.9989,
+                "btc_nested_v2_seed_142": 0.9989,
+                "btc_nested_v2_seed_242": 0.9989,
+                "btc_nested_v2_seed_342": 0.9989,
+                "btc_nested_v2_seed_442": 0.9989
+              },
+              "mean": 0.9989,
+              "std": 0.0,
+              "min": 0.9989,
+              "max": 0.9989
+            }
+          ]
+        },
+        "calibration_error": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.642025,
+            "btc_nested_v2_seed_142": 0.642025,
+            "btc_nested_v2_seed_242": 0.642025,
+            "btc_nested_v2_seed_342": 0.642025,
+            "btc_nested_v2_seed_442": 0.642025
+          },
+          "across_runs": {
+            "mean": 0.642025,
+            "std": 0.0,
+            "min": 0.642025,
+            "max": 0.642025
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.6985,
+                "btc_nested_v2_seed_142": 0.6985,
+                "btc_nested_v2_seed_242": 0.6985,
+                "btc_nested_v2_seed_342": 0.6985,
+                "btc_nested_v2_seed_442": 0.6985
+              },
+              "mean": 0.6985,
+              "std": 0.0,
+              "min": 0.6985,
+              "max": 0.6985
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.6301,
+                "btc_nested_v2_seed_142": 0.6301,
+                "btc_nested_v2_seed_242": 0.6301,
+                "btc_nested_v2_seed_342": 0.6301,
+                "btc_nested_v2_seed_442": 0.6301
+              },
+              "mean": 0.6301,
+              "std": 0.0,
+              "min": 0.6301,
+              "max": 0.6301
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.6252,
+                "btc_nested_v2_seed_142": 0.6252,
+                "btc_nested_v2_seed_242": 0.6252,
+                "btc_nested_v2_seed_342": 0.6252,
+                "btc_nested_v2_seed_442": 0.6252
+              },
+              "mean": 0.6252,
+              "std": 0.0,
+              "min": 0.6252,
+              "max": 0.6252
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.6143,
+                "btc_nested_v2_seed_142": 0.6143,
+                "btc_nested_v2_seed_242": 0.6143,
+                "btc_nested_v2_seed_342": 0.6143,
+                "btc_nested_v2_seed_442": 0.6143
+              },
+              "mean": 0.6143,
+              "std": 0.0,
+              "min": 0.6143,
+              "max": 0.6143
+            }
+          ]
+        },
+        "n_trades": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 789.0,
+            "btc_nested_v2_seed_142": 789.0,
+            "btc_nested_v2_seed_242": 789.0,
+            "btc_nested_v2_seed_342": 789.0,
+            "btc_nested_v2_seed_442": 789.0
+          },
+          "across_runs": {
+            "mean": 789.0,
+            "std": 0.0,
+            "min": 789.0,
+            "max": 789.0
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 780.0,
+                "btc_nested_v2_seed_142": 780.0,
+                "btc_nested_v2_seed_242": 780.0,
+                "btc_nested_v2_seed_342": 780.0,
+                "btc_nested_v2_seed_442": 780.0
+              },
+              "mean": 780.0,
+              "std": 0.0,
+              "min": 780.0,
+              "max": 780.0
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 792.0,
+                "btc_nested_v2_seed_142": 792.0,
+                "btc_nested_v2_seed_242": 792.0,
+                "btc_nested_v2_seed_342": 792.0,
+                "btc_nested_v2_seed_442": 792.0
+              },
+              "mean": 792.0,
+              "std": 0.0,
+              "min": 792.0,
+              "max": 792.0
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 792.0,
+                "btc_nested_v2_seed_142": 792.0,
+                "btc_nested_v2_seed_242": 792.0,
+                "btc_nested_v2_seed_342": 792.0,
+                "btc_nested_v2_seed_442": 792.0
+              },
+              "mean": 792.0,
+              "std": 0.0,
+              "min": 792.0,
+              "max": 792.0
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 792.0,
+                "btc_nested_v2_seed_142": 792.0,
+                "btc_nested_v2_seed_242": 792.0,
+                "btc_nested_v2_seed_342": 792.0,
+                "btc_nested_v2_seed_442": 792.0
+              },
+              "mean": 792.0,
+              "std": 0.0,
+              "min": 792.0,
+              "max": 792.0
+            }
+          ]
+        },
+        "net_return": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": -0.803651,
+            "btc_nested_v2_seed_142": -0.803651,
+            "btc_nested_v2_seed_242": -0.803651,
+            "btc_nested_v2_seed_342": -0.803651,
+            "btc_nested_v2_seed_442": -0.803651
+          },
+          "across_runs": {
+            "mean": -0.803651,
+            "std": 0.0,
+            "min": -0.803651,
+            "max": -0.803651
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": -0.819857,
+                "btc_nested_v2_seed_142": -0.819857,
+                "btc_nested_v2_seed_242": -0.819857,
+                "btc_nested_v2_seed_342": -0.819857,
+                "btc_nested_v2_seed_442": -0.819857
+              },
+              "mean": -0.819857,
+              "std": 0.0,
+              "min": -0.819857,
+              "max": -0.819857
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": -0.77157,
+                "btc_nested_v2_seed_142": -0.77157,
+                "btc_nested_v2_seed_242": -0.77157,
+                "btc_nested_v2_seed_342": -0.77157,
+                "btc_nested_v2_seed_442": -0.77157
+              },
+              "mean": -0.77157,
+              "std": 0.0,
+              "min": -0.77157,
+              "max": -0.77157
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": -0.779238,
+                "btc_nested_v2_seed_142": -0.779238,
+                "btc_nested_v2_seed_242": -0.779238,
+                "btc_nested_v2_seed_342": -0.779238,
+                "btc_nested_v2_seed_442": -0.779238
+              },
+              "mean": -0.779238,
+              "std": 0.0,
+              "min": -0.779238,
+              "max": -0.779238
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": -0.843939,
+                "btc_nested_v2_seed_142": -0.843939,
+                "btc_nested_v2_seed_242": -0.843939,
+                "btc_nested_v2_seed_342": -0.843939,
+                "btc_nested_v2_seed_442": -0.843939
+              },
+              "mean": -0.843939,
+              "std": 0.0,
+              "min": -0.843939,
+              "max": -0.843939
+            }
+          ]
+        },
+        "sharpe": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": -6.020525,
+            "btc_nested_v2_seed_142": -6.020525,
+            "btc_nested_v2_seed_242": -6.020525,
+            "btc_nested_v2_seed_342": -6.020525,
+            "btc_nested_v2_seed_442": -6.020525
+          },
+          "across_runs": {
+            "mean": -6.020525,
+            "std": 0.0,
+            "min": -6.020525,
+            "max": -6.020525
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": -7.2091,
+                "btc_nested_v2_seed_142": -7.2091,
+                "btc_nested_v2_seed_242": -7.2091,
+                "btc_nested_v2_seed_342": -7.2091,
+                "btc_nested_v2_seed_442": -7.2091
+              },
+              "mean": -7.2091,
+              "std": 0.0,
+              "min": -7.2091,
+              "max": -7.2091
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": -5.1008,
+                "btc_nested_v2_seed_142": -5.1008,
+                "btc_nested_v2_seed_242": -5.1008,
+                "btc_nested_v2_seed_342": -5.1008,
+                "btc_nested_v2_seed_442": -5.1008
+              },
+              "mean": -5.1008,
+              "std": 0.0,
+              "min": -5.1008,
+              "max": -5.1008
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": -5.547,
+                "btc_nested_v2_seed_142": -5.547,
+                "btc_nested_v2_seed_242": -5.547,
+                "btc_nested_v2_seed_342": -5.547,
+                "btc_nested_v2_seed_442": -5.547
+              },
+              "mean": -5.547,
+              "std": 0.0,
+              "min": -5.547,
+              "max": -5.547
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": -6.2252,
+                "btc_nested_v2_seed_142": -6.2252,
+                "btc_nested_v2_seed_242": -6.2252,
+                "btc_nested_v2_seed_342": -6.2252,
+                "btc_nested_v2_seed_442": -6.2252
+              },
+              "mean": -6.2252,
+              "std": 0.0,
+              "min": -6.2252,
+              "max": -6.2252
+            }
+          ]
+        },
+        "max_drawdown": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.825475,
+            "btc_nested_v2_seed_142": 0.825475,
+            "btc_nested_v2_seed_242": 0.825475,
+            "btc_nested_v2_seed_342": 0.825475,
+            "btc_nested_v2_seed_442": 0.825475
+          },
+          "across_runs": {
+            "mean": 0.825475,
+            "std": 0.0,
+            "min": 0.825475,
+            "max": 0.825475
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.8621,
+                "btc_nested_v2_seed_142": 0.8621,
+                "btc_nested_v2_seed_242": 0.8621,
+                "btc_nested_v2_seed_342": 0.8621,
+                "btc_nested_v2_seed_442": 0.8621
+              },
+              "mean": 0.8621,
+              "std": 0.0,
+              "min": 0.8621,
+              "max": 0.8621
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.7827,
+                "btc_nested_v2_seed_142": 0.7827,
+                "btc_nested_v2_seed_242": 0.7827,
+                "btc_nested_v2_seed_342": 0.7827,
+                "btc_nested_v2_seed_442": 0.7827
+              },
+              "mean": 0.7827,
+              "std": 0.0,
+              "min": 0.7827,
+              "max": 0.7827
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.7907,
+                "btc_nested_v2_seed_142": 0.7907,
+                "btc_nested_v2_seed_242": 0.7907,
+                "btc_nested_v2_seed_342": 0.7907,
+                "btc_nested_v2_seed_442": 0.7907
+              },
+              "mean": 0.7907,
+              "std": 0.0,
+              "min": 0.7907,
+              "max": 0.7907
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.8664,
+                "btc_nested_v2_seed_142": 0.8664,
+                "btc_nested_v2_seed_242": 0.8664,
+                "btc_nested_v2_seed_342": 0.8664,
+                "btc_nested_v2_seed_442": 0.8664
+              },
+              "mean": 0.8664,
+              "std": 0.0,
+              "min": 0.8664,
+              "max": 0.8664
+            }
+          ]
+        }
+      },
+      "mtst": {
+        "macro_f1": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.1583,
+            "btc_nested_v2_seed_142": 0.15265,
+            "btc_nested_v2_seed_242": 0.15645,
+            "btc_nested_v2_seed_342": 0.168575,
+            "btc_nested_v2_seed_442": 0.15635
+          },
+          "across_runs": {
+            "mean": 0.158465,
+            "std": 0.006012,
+            "min": 0.15265,
+            "max": 0.168575
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1978,
+                "btc_nested_v2_seed_142": 0.173,
+                "btc_nested_v2_seed_242": 0.1801,
+                "btc_nested_v2_seed_342": 0.2218,
+                "btc_nested_v2_seed_442": 0.1778
+              },
+              "mean": 0.1901,
+              "std": 0.020049,
+              "min": 0.173,
+              "max": 0.2218
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1645,
+                "btc_nested_v2_seed_142": 0.1587,
+                "btc_nested_v2_seed_242": 0.1399,
+                "btc_nested_v2_seed_342": 0.1768,
+                "btc_nested_v2_seed_442": 0.1399
+              },
+              "mean": 0.15596,
+              "std": 0.016051,
+              "min": 0.1399,
+              "max": 0.1768
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.133,
+                "btc_nested_v2_seed_142": 0.1595,
+                "btc_nested_v2_seed_242": 0.1641,
+                "btc_nested_v2_seed_342": 0.1661,
+                "btc_nested_v2_seed_442": 0.1476
+              },
+              "mean": 0.15406,
+              "std": 0.01379,
+              "min": 0.133,
+              "max": 0.1661
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1379,
+                "btc_nested_v2_seed_142": 0.1194,
+                "btc_nested_v2_seed_242": 0.1417,
+                "btc_nested_v2_seed_342": 0.1096,
+                "btc_nested_v2_seed_442": 0.1601
+              },
+              "mean": 0.13374,
+              "std": 0.019773,
+              "min": 0.1096,
+              "max": 0.1601
+            }
+          ]
+        },
+        "directional_accuracy": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.495025,
+            "btc_nested_v2_seed_142": 0.576525,
+            "btc_nested_v2_seed_242": 0.52795,
+            "btc_nested_v2_seed_342": 0.5068,
+            "btc_nested_v2_seed_442": 0.5409
+          },
+          "across_runs": {
+            "mean": 0.52944,
+            "std": 0.03181,
+            "min": 0.495025,
+            "max": 0.576525
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.4855,
+                "btc_nested_v2_seed_142": 0.7857,
+                "btc_nested_v2_seed_242": 0.6047,
+                "btc_nested_v2_seed_342": 0.4854,
+                "btc_nested_v2_seed_442": 0.5833
+              },
+              "mean": 0.58892,
+              "std": 0.122897,
+              "min": 0.4854,
+              "max": 0.7857
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.5959,
+                "btc_nested_v2_seed_142": 0.5528,
+                "btc_nested_v2_seed_242": 0.5,
+                "btc_nested_v2_seed_342": 0.5771,
+                "btc_nested_v2_seed_442": 0.5493
+              },
+              "mean": 0.55502,
+              "std": 0.036137,
+              "min": 0.5,
+              "max": 0.5959
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.4537,
+                "btc_nested_v2_seed_142": 0.4881,
+                "btc_nested_v2_seed_242": 0.4728,
+                "btc_nested_v2_seed_342": 0.4647,
+                "btc_nested_v2_seed_442": 0.4874
+              },
+              "mean": 0.47334,
+              "std": 0.0148,
+              "min": 0.4537,
+              "max": 0.4881
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.445,
+                "btc_nested_v2_seed_142": 0.4795,
+                "btc_nested_v2_seed_242": 0.5343,
+                "btc_nested_v2_seed_342": 0.5,
+                "btc_nested_v2_seed_442": 0.5436
+              },
+              "mean": 0.50048,
+              "std": 0.040378,
+              "min": 0.445,
+              "max": 0.5436
+            }
+          ]
+        },
+        "coverage": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.0342,
+            "btc_nested_v2_seed_142": 0.026325,
+            "btc_nested_v2_seed_242": 0.0323,
+            "btc_nested_v2_seed_342": 0.045075,
+            "btc_nested_v2_seed_442": 0.0318
+          },
+          "across_runs": {
+            "mean": 0.03394,
+            "std": 0.00688,
+            "min": 0.026325,
+            "max": 0.045075
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.0295,
+                "btc_nested_v2_seed_142": 0.003,
+                "btc_nested_v2_seed_242": 0.0092,
+                "btc_nested_v2_seed_342": 0.0585,
+                "btc_nested_v2_seed_442": 0.0077
+              },
+              "mean": 0.02158,
+              "std": 0.023005,
+              "min": 0.003,
+              "max": 0.0585
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.0406,
+                "btc_nested_v2_seed_142": 0.0339,
+                "btc_nested_v2_seed_242": 0.0152,
+                "btc_nested_v2_seed_342": 0.0532,
+                "btc_nested_v2_seed_442": 0.0149
+              },
+              "mean": 0.03156,
+              "std": 0.016588,
+              "min": 0.0149,
+              "max": 0.0532
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.0227,
+                "btc_nested_v2_seed_142": 0.053,
+                "btc_nested_v2_seed_242": 0.0619,
+                "btc_nested_v2_seed_342": 0.0657,
+                "btc_nested_v2_seed_442": 0.0419
+              },
+              "mean": 0.04904,
+              "std": 0.017345,
+              "min": 0.0227,
+              "max": 0.0657
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.044,
+                "btc_nested_v2_seed_142": 0.0154,
+                "btc_nested_v2_seed_242": 0.0429,
+                "btc_nested_v2_seed_342": 0.0029,
+                "btc_nested_v2_seed_442": 0.0627
+              },
+              "mean": 0.03358,
+              "std": 0.024058,
+              "min": 0.0029,
+              "max": 0.0627
+            }
+          ]
+        },
+        "calibration_error": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.11065,
+            "btc_nested_v2_seed_142": 0.0848,
+            "btc_nested_v2_seed_242": 0.082325,
+            "btc_nested_v2_seed_342": 0.112,
+            "btc_nested_v2_seed_442": 0.11715
+          },
+          "across_runs": {
+            "mean": 0.101385,
+            "std": 0.016473,
+            "min": 0.082325,
+            "max": 0.11715
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.2275,
+                "btc_nested_v2_seed_142": 0.0975,
+                "btc_nested_v2_seed_242": 0.1633,
+                "btc_nested_v2_seed_342": 0.2353,
+                "btc_nested_v2_seed_442": 0.1886
+              },
+              "mean": 0.18244,
+              "std": 0.055776,
+              "min": 0.0975,
+              "max": 0.2353
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1161,
+                "btc_nested_v2_seed_142": 0.0967,
+                "btc_nested_v2_seed_242": 0.0919,
+                "btc_nested_v2_seed_342": 0.1007,
+                "btc_nested_v2_seed_442": 0.0908
+              },
+              "mean": 0.09924,
+              "std": 0.010222,
+              "min": 0.0908,
+              "max": 0.1161
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.0682,
+                "btc_nested_v2_seed_142": 0.1058,
+                "btc_nested_v2_seed_242": 0.0572,
+                "btc_nested_v2_seed_342": 0.075,
+                "btc_nested_v2_seed_442": 0.1096
+              },
+              "mean": 0.08316,
+              "std": 0.023324,
+              "min": 0.0572,
+              "max": 0.1096
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.0308,
+                "btc_nested_v2_seed_142": 0.0392,
+                "btc_nested_v2_seed_242": 0.0169,
+                "btc_nested_v2_seed_342": 0.037,
+                "btc_nested_v2_seed_442": 0.0796
+              },
+              "mean": 0.0407,
+              "std": 0.023418,
+              "min": 0.0169,
+              "max": 0.0796
+            }
+          ]
+        },
+        "n_trades": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 68.75,
+            "btc_nested_v2_seed_142": 58.75,
+            "btc_nested_v2_seed_242": 69.5,
+            "btc_nested_v2_seed_342": 75.5,
+            "btc_nested_v2_seed_442": 74.5
+          },
+          "across_runs": {
+            "mean": 69.4,
+            "std": 6.653477,
+            "min": 58.75,
+            "max": 75.5
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 56.0,
+                "btc_nested_v2_seed_142": 7.0,
+                "btc_nested_v2_seed_242": 23.0,
+                "btc_nested_v2_seed_342": 76.0,
+                "btc_nested_v2_seed_442": 26.0
+              },
+              "mean": 37.6,
+              "std": 27.826247,
+              "min": 7.0,
+              "max": 76.0
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 86.0,
+                "btc_nested_v2_seed_142": 68.0,
+                "btc_nested_v2_seed_242": 35.0,
+                "btc_nested_v2_seed_342": 91.0,
+                "btc_nested_v2_seed_442": 34.0
+              },
+              "mean": 62.8,
+              "std": 27.215804,
+              "min": 34.0,
+              "max": 91.0
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 50.0,
+                "btc_nested_v2_seed_142": 117.0,
+                "btc_nested_v2_seed_242": 119.0,
+                "btc_nested_v2_seed_342": 123.0,
+                "btc_nested_v2_seed_442": 105.0
+              },
+              "mean": 102.8,
+              "std": 30.268796,
+              "min": 50.0,
+              "max": 123.0
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 83.0,
+                "btc_nested_v2_seed_142": 43.0,
+                "btc_nested_v2_seed_242": 101.0,
+                "btc_nested_v2_seed_342": 12.0,
+                "btc_nested_v2_seed_442": 133.0
+              },
+              "mean": 74.4,
+              "std": 47.684379,
+              "min": 12.0,
+              "max": 133.0
+            }
+          ]
+        },
+        "net_return": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": -0.01861,
+            "btc_nested_v2_seed_142": 0.018121,
+            "btc_nested_v2_seed_242": -0.044776,
+            "btc_nested_v2_seed_342": -0.0418,
+            "btc_nested_v2_seed_442": -0.009296
+          },
+          "across_runs": {
+            "mean": -0.019272,
+            "std": 0.025769,
+            "min": -0.044776,
+            "max": 0.018121
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": -0.071335,
+                "btc_nested_v2_seed_142": 0.046481,
+                "btc_nested_v2_seed_242": 0.073657,
+                "btc_nested_v2_seed_342": -0.22219,
+                "btc_nested_v2_seed_442": -0.01337
+              },
+              "mean": -0.037351,
+              "std": 0.117522,
+              "min": -0.22219,
+              "max": 0.073657
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.362491,
+                "btc_nested_v2_seed_142": 0.387633,
+                "btc_nested_v2_seed_242": -0.012402,
+                "btc_nested_v2_seed_342": 0.172551,
+                "btc_nested_v2_seed_442": 0.061587
+              },
+              "mean": 0.194372,
+              "std": 0.177818,
+              "min": -0.012402,
+              "max": 0.387633
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": -0.170316,
+                "btc_nested_v2_seed_142": -0.20613,
+                "btc_nested_v2_seed_242": -0.249143,
+                "btc_nested_v2_seed_342": -0.124785,
+                "btc_nested_v2_seed_442": -0.150167
+              },
+              "mean": -0.180108,
+              "std": 0.048724,
+              "min": -0.249143,
+              "max": -0.124785
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": -0.19528,
+                "btc_nested_v2_seed_142": -0.155501,
+                "btc_nested_v2_seed_242": 0.008783,
+                "btc_nested_v2_seed_342": 0.007225,
+                "btc_nested_v2_seed_442": 0.064764
+              },
+              "mean": -0.054002,
+              "std": 0.114081,
+              "min": -0.19528,
+              "max": 0.064764
+            }
+          ]
+        },
+        "sharpe": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": -2.02045,
+            "btc_nested_v2_seed_142": 4.186325,
+            "btc_nested_v2_seed_242": 0.87325,
+            "btc_nested_v2_seed_342": -0.359225,
+            "btc_nested_v2_seed_442": 0.2382
+          },
+          "across_runs": {
+            "mean": 0.58362,
+            "std": 2.283244,
+            "min": -2.02045,
+            "max": 4.186325
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": -3.1127,
+                "btc_nested_v2_seed_142": 18.2226,
+                "btc_nested_v2_seed_242": 8.075,
+                "btc_nested_v2_seed_342": -5.3848,
+                "btc_nested_v2_seed_442": -0.8271
+              },
+              "mean": 3.3946,
+              "std": 9.734235,
+              "min": -5.3848,
+              "max": 18.2226
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 7.9735,
+                "btc_nested_v2_seed_142": 10.6563,
+                "btc_nested_v2_seed_242": -0.1324,
+                "btc_nested_v2_seed_342": 4.4434,
+                "btc_nested_v2_seed_442": 3.4719
+              },
+              "mean": 5.28254,
+              "std": 4.166015,
+              "min": -0.1324,
+              "max": 10.6563
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": -6.3561,
+                "btc_nested_v2_seed_142": -4.3061,
+                "btc_nested_v2_seed_242": -4.9767,
+                "btc_nested_v2_seed_342": -1.8055,
+                "btc_nested_v2_seed_442": -3.0253
+              },
+              "mean": -4.09394,
+              "std": 1.755035,
+              "min": -6.3561,
+              "max": -1.8055
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": -6.5865,
+                "btc_nested_v2_seed_142": -7.8275,
+                "btc_nested_v2_seed_242": 0.5271,
+                "btc_nested_v2_seed_342": 1.31,
+                "btc_nested_v2_seed_442": 1.3333
+              },
+              "mean": -2.24872,
+              "std": 4.559047,
+              "min": -7.8275,
+              "max": 1.3333
+            }
+          ]
+        },
+        "max_drawdown": {
+          "per_run_mean": {
+            "btc_nested_v2_seed_42": 0.178225,
+            "btc_nested_v2_seed_142": 0.133775,
+            "btc_nested_v2_seed_242": 0.18785,
+            "btc_nested_v2_seed_342": 0.1899,
+            "btc_nested_v2_seed_442": 0.14125
+          },
+          "across_runs": {
+            "mean": 0.1662,
+            "std": 0.026688,
+            "min": 0.133775,
+            "max": 0.1899
+          },
+          "per_fold": [
+            {
+              "fold": 0,
+              "values": {
+                "btc_nested_v2_seed_42": 0.1626,
+                "btc_nested_v2_seed_142": 0.0253,
+                "btc_nested_v2_seed_242": 0.0791,
+                "btc_nested_v2_seed_342": 0.311,
+                "btc_nested_v2_seed_442": 0.0757
+              },
+              "mean": 0.13074,
+              "std": 0.112163,
+              "min": 0.0253,
+              "max": 0.311
+            },
+            {
+              "fold": 1,
+              "values": {
+                "btc_nested_v2_seed_42": 0.0769,
+                "btc_nested_v2_seed_142": 0.052,
+                "btc_nested_v2_seed_242": 0.1236,
+                "btc_nested_v2_seed_342": 0.0845,
+                "btc_nested_v2_seed_442": 0.0988
+              },
+              "mean": 0.08716,
+              "std": 0.026514,
+              "min": 0.052,
+              "max": 0.1236
+            },
+            {
+              "fold": 2,
+              "values": {
+                "btc_nested_v2_seed_42": 0.2304,
+                "btc_nested_v2_seed_142": 0.2978,
+                "btc_nested_v2_seed_242": 0.3494,
+                "btc_nested_v2_seed_342": 0.2772,
+                "btc_nested_v2_seed_442": 0.2513
+              },
+              "mean": 0.28122,
+              "std": 0.045873,
+              "min": 0.2304,
+              "max": 0.3494
+            },
+            {
+              "fold": 3,
+              "values": {
+                "btc_nested_v2_seed_42": 0.243,
+                "btc_nested_v2_seed_142": 0.16,
+                "btc_nested_v2_seed_242": 0.1993,
+                "btc_nested_v2_seed_342": 0.0869,
+                "btc_nested_v2_seed_442": 0.1392
+              },
+              "mean": 0.16568,
+              "std": 0.059263,
+              "min": 0.0869,
+              "max": 0.243
+            }
+          ]
+        }
+      }
+    },
+    "selection": [
+      {
+        "fold": 0,
+        "threshold": {
+          "values": {
+            "btc_nested_v2_seed_42": 0.4,
+            "btc_nested_v2_seed_142": 0.46,
+            "btc_nested_v2_seed_242": 0.42,
+            "btc_nested_v2_seed_342": 0.36,
+            "btc_nested_v2_seed_442": 0.42
+          },
+          "mean": 0.412,
+          "std": 0.036332,
+          "min": 0.36,
+          "max": 0.46
+        },
+        "best_epoch": {
+          "values": {
+            "btc_nested_v2_seed_42": 3.0,
+            "btc_nested_v2_seed_142": 2.0,
+            "btc_nested_v2_seed_242": 2.0,
+            "btc_nested_v2_seed_342": 5.0,
+            "btc_nested_v2_seed_442": 2.0
+          },
+          "mean": 2.8,
+          "std": 1.30384,
+          "min": 2.0,
+          "max": 5.0
+        }
+      },
+      {
+        "fold": 1,
+        "threshold": {
+          "values": {
+            "btc_nested_v2_seed_42": 0.44,
+            "btc_nested_v2_seed_142": 0.5,
+            "btc_nested_v2_seed_242": 0.46,
+            "btc_nested_v2_seed_342": 0.44,
+            "btc_nested_v2_seed_442": 0.46
+          },
+          "mean": 0.46,
+          "std": 0.024495,
+          "min": 0.44,
+          "max": 0.5
+        },
+        "best_epoch": {
+          "values": {
+            "btc_nested_v2_seed_42": 4.0,
+            "btc_nested_v2_seed_142": 8.0,
+            "btc_nested_v2_seed_242": 2.0,
+            "btc_nested_v2_seed_342": 6.0,
+            "btc_nested_v2_seed_442": 3.0
+          },
+          "mean": 4.6,
+          "std": 2.408319,
+          "min": 2.0,
+          "max": 8.0
+        }
+      },
+      {
+        "fold": 2,
+        "threshold": {
+          "values": {
+            "btc_nested_v2_seed_42": 0.46,
+            "btc_nested_v2_seed_142": 0.46,
+            "btc_nested_v2_seed_242": 0.42,
+            "btc_nested_v2_seed_342": 0.42,
+            "btc_nested_v2_seed_442": 0.46
+          },
+          "mean": 0.444,
+          "std": 0.021909,
+          "min": 0.42,
+          "max": 0.46
+        },
+        "best_epoch": {
+          "values": {
+            "btc_nested_v2_seed_42": 4.0,
+            "btc_nested_v2_seed_142": 4.0,
+            "btc_nested_v2_seed_242": 3.0,
+            "btc_nested_v2_seed_342": 3.0,
+            "btc_nested_v2_seed_442": 3.0
+          },
+          "mean": 3.4,
+          "std": 0.547723,
+          "min": 3.0,
+          "max": 4.0
+        }
+      },
+      {
+        "fold": 3,
+        "threshold": {
+          "values": {
+            "btc_nested_v2_seed_42": 0.52,
+            "btc_nested_v2_seed_142": 0.48,
+            "btc_nested_v2_seed_242": 0.48,
+            "btc_nested_v2_seed_342": 0.56,
+            "btc_nested_v2_seed_442": 0.44
+          },
+          "mean": 0.496,
+          "std": 0.045607,
+          "min": 0.44,
+          "max": 0.56
+        },
+        "best_epoch": {
+          "values": {
+            "btc_nested_v2_seed_42": 6.0,
+            "btc_nested_v2_seed_142": 3.0,
+            "btc_nested_v2_seed_242": 2.0,
+            "btc_nested_v2_seed_342": 5.0,
+            "btc_nested_v2_seed_442": 4.0
+          },
+          "mean": 4.0,
+          "std": 1.581139,
+          "min": 2.0,
+          "max": 6.0
+        }
+      }
+    ],
+    "baseline_comparison": {
+      "run_folds": 20,
+      "mtst_beat_both_baselines": 20,
+      "per_run": {
+        "btc_nested_v2_seed_42": 4,
+        "btc_nested_v2_seed_142": 4,
+        "btc_nested_v2_seed_242": 4,
+        "btc_nested_v2_seed_342": 4,
+        "btc_nested_v2_seed_442": 4
+      },
+      "runs_with_majority": 5,
+      "runs": 5
+    }
+  },
+  "analysis": {
+    "dataset": "data/datasets/binance_BTC_USDT_1h.parquet",
+    "raw": "data/raw/binance/BTC_USDT_1h.parquet",
+    "seq_len": 64,
+    "horizon": 6,
+    "sealed_test_start": 48217,
+    "sealed_test_evaluated": false,
+    "highest_outer_row": 45801,
+    "fold_stability": [
+      {
+        "fold": 0,
+        "net_return": {
+          "mean": -0.037351,
+          "std": 0.117522,
+          "min": -0.22219,
+          "max": 0.073657,
+          "median": -0.01337,
+          "positive_seeds": 2,
+          "seeds": 5,
+          "values": {
+            "btc_nested_v2_seed_42": -0.071335,
+            "btc_nested_v2_seed_142": 0.046481,
+            "btc_nested_v2_seed_242": 0.073657,
+            "btc_nested_v2_seed_342": -0.22219,
+            "btc_nested_v2_seed_442": -0.01337
+          }
+        },
+        "directional_accuracy": {
+          "mean": 0.58892,
+          "std": 0.122897,
+          "min": 0.4854,
+          "max": 0.7857
+        },
+        "coverage": {
+          "mean": 0.02158,
+          "std": 0.023005,
+          "min": 0.003,
+          "max": 0.0585
+        },
+        "n_trades": {
+          "mean": 37.6,
+          "std": 27.826247,
+          "min": 7.0,
+          "max": 76.0
+        },
+        "threshold": {
+          "mean": 0.412,
+          "std": 0.036332,
+          "min": 0.36,
+          "max": 0.46
+        },
+        "best_epoch": {
+          "mean": 2.8,
+          "std": 1.30384,
+          "min": 2.0,
+          "max": 5.0
+        }
+      },
+      {
+        "fold": 1,
+        "net_return": {
+          "mean": 0.194372,
+          "std": 0.177818,
+          "min": -0.012402,
+          "max": 0.387633,
+          "median": 0.172551,
+          "positive_seeds": 4,
+          "seeds": 5,
+          "values": {
+            "btc_nested_v2_seed_42": 0.362491,
+            "btc_nested_v2_seed_142": 0.387633,
+            "btc_nested_v2_seed_242": -0.012402,
+            "btc_nested_v2_seed_342": 0.172551,
+            "btc_nested_v2_seed_442": 0.061587
+          }
+        },
+        "directional_accuracy": {
+          "mean": 0.55502,
+          "std": 0.036137,
+          "min": 0.5,
+          "max": 0.5959
+        },
+        "coverage": {
+          "mean": 0.03156,
+          "std": 0.016588,
+          "min": 0.0149,
+          "max": 0.0532
+        },
+        "n_trades": {
+          "mean": 62.8,
+          "std": 27.215804,
+          "min": 34.0,
+          "max": 91.0
+        },
+        "threshold": {
+          "mean": 0.46,
+          "std": 0.024495,
+          "min": 0.44,
+          "max": 0.5
+        },
+        "best_epoch": {
+          "mean": 4.6,
+          "std": 2.408319,
+          "min": 2.0,
+          "max": 8.0
+        }
+      },
+      {
+        "fold": 2,
+        "net_return": {
+          "mean": -0.180108,
+          "std": 0.048724,
+          "min": -0.249143,
+          "max": -0.124785,
+          "median": -0.170316,
+          "positive_seeds": 0,
+          "seeds": 5,
+          "values": {
+            "btc_nested_v2_seed_42": -0.170316,
+            "btc_nested_v2_seed_142": -0.20613,
+            "btc_nested_v2_seed_242": -0.249143,
+            "btc_nested_v2_seed_342": -0.124785,
+            "btc_nested_v2_seed_442": -0.150167
+          }
+        },
+        "directional_accuracy": {
+          "mean": 0.47334,
+          "std": 0.0148,
+          "min": 0.4537,
+          "max": 0.4881
+        },
+        "coverage": {
+          "mean": 0.04904,
+          "std": 0.017345,
+          "min": 0.0227,
+          "max": 0.0657
+        },
+        "n_trades": {
+          "mean": 102.8,
+          "std": 30.268796,
+          "min": 50.0,
+          "max": 123.0
+        },
+        "threshold": {
+          "mean": 0.444,
+          "std": 0.021909,
+          "min": 0.42,
+          "max": 0.46
+        },
+        "best_epoch": {
+          "mean": 3.4,
+          "std": 0.547723,
+          "min": 3.0,
+          "max": 4.0
+        }
+      },
+      {
+        "fold": 3,
+        "net_return": {
+          "mean": -0.054002,
+          "std": 0.114081,
+          "min": -0.19528,
+          "max": 0.064764,
+          "median": 0.007225,
+          "positive_seeds": 3,
+          "seeds": 5,
+          "values": {
+            "btc_nested_v2_seed_42": -0.19528,
+            "btc_nested_v2_seed_142": -0.155501,
+            "btc_nested_v2_seed_242": 0.008783,
+            "btc_nested_v2_seed_342": 0.007225,
+            "btc_nested_v2_seed_442": 0.064764
+          }
+        },
+        "directional_accuracy": {
+          "mean": 0.50048,
+          "std": 0.040378,
+          "min": 0.445,
+          "max": 0.5436
+        },
+        "coverage": {
+          "mean": 0.03358,
+          "std": 0.024058,
+          "min": 0.0029,
+          "max": 0.0627
+        },
+        "n_trades": {
+          "mean": 74.4,
+          "std": 47.684379,
+          "min": 12.0,
+          "max": 133.0
+        },
+        "threshold": {
+          "mean": 0.496,
+          "std": 0.045607,
+          "min": 0.44,
+          "max": 0.56
+        },
+        "best_epoch": {
+          "mean": 4.0,
+          "std": 1.581139,
+          "min": 2.0,
+          "max": 6.0
+        }
+      }
+    ],
+    "best_fold": 1,
+    "worst_fold": 2,
+    "regime": [
+      {
+        "row_range": [
+          26518,
+          31339
+        ],
+        "block_rows": 4821,
+        "scored_rows": 4683,
+        "scored_row_range": [
+          26581,
+          31333
+        ],
+        "seq_len": 64,
+        "horizon": 6,
+        "period": {
+          "start": "2023-03-06 22:00:00+00:00",
+          "end": "2023-09-24 10:00:00+00:00"
+        },
+        "future_return": {
+          "mean": 0.00026799,
+          "median": -6.394e-05,
+          "std": 0.01118511,
+          "mean_abs": 0.00656951,
+          "fraction_positive": 0.49306,
+          "fraction_negative": 0.50694
+        },
+        "features": {
+          "ema_cross": {
+            "mean": 0.00021013,
+            "median": -0.00010183,
+            "std": 0.00542068,
+            "fraction_positive": 0.47982063,
+            "fraction_negative": 0.52017937
+          },
+          "ema_fast_ratio": {
+            "mean": 0.00017679,
+            "median": -0.00015863
+          },
+          "ema_slow_ratio": {
+            "mean": 0.00041172,
+            "median": -0.0002318
+          },
+          "atr_norm": {
+            "mean": 0.00557638,
+            "median": 0.00518998,
+            "p90": 0.00891371
+          },
+          "realized_vol": {
+            "mean": 0.00376395,
+            "median": 0.00317884,
+            "p90": 0.00664338
+          },
+          "hl_range": {
+            "mean": 0.00558412,
+            "median": 0.00401977
+          },
+          "volume_change": {
+            "mean": 0.17165867,
+            "median": -0.03978196
+          },
+          "volume_z": {
+            "mean": -0.01032664,
+            "median": -0.34401866,
+            "p90_abs": 1.43743096
+          }
+        },
+        "target_distribution": {
+          "SHORT": {
+            "count": 1587,
+            "fraction": 0.33888533,
+            "mean_future_return": -0.00881726,
+            "median_future_return": -0.0057716
+          },
+          "HOLD": {
+            "count": 1577,
+            "fraction": 0.33674995,
+            "mean_future_return": -1.657e-05,
+            "median_future_return": 2.04e-06
+          },
+          "LONG": {
+            "count": 1519,
+            "fraction": 0.32436472,
+            "mean_future_return": 0.01005537,
+            "median_future_return": 0.00592374
+          }
+        },
+        "fold": 0,
+        "market": {
+          "candles": 4821,
+          "start_close": 22359.09,
+          "end_close": 26573.1,
+          "market_return": 0.18846966,
+          "mean_candle_return": 5.522e-05,
+          "median_candle_return": 1.855e-05,
+          "candle_return_std": 0.00452175,
+          "annualised_volatility": 0.4232124,
+          "mean_abs_candle_return": 0.00258204,
+          "positive_candle_fraction": 0.50528936,
+          "negative_candle_fraction": 0.49450322,
+          "max_drawdown": 0.20835752,
+          "gap_pairs_skipped": 1
+        }
+      },
+      {
+        "row_range": [
+          31339,
+          36160
+        ],
+        "block_rows": 4821,
+        "scored_rows": 4752,
+        "scored_row_range": [
+          31402,
+          36154
+        ],
+        "seq_len": 64,
+        "horizon": 6,
+        "period": {
+          "start": "2023-09-27 08:00:00+00:00",
+          "end": "2024-04-12 07:00:00+00:00"
+        },
+        "future_return": {
+          "mean": 0.00131394,
+          "median": 0.00069614,
+          "std": 0.01249859,
+          "mean_abs": 0.00824543,
+          "fraction_positive": 0.53998316,
+          "fraction_negative": 0.46001684
+        },
+        "features": {
+          "ema_cross": {
+            "mean": 0.00142135,
+            "median": 0.00086743,
+            "std": 0.00576335,
+            "fraction_positive": 0.62521044,
+            "fraction_negative": 0.37478956
+          },
+          "ema_fast_ratio": {
+            "mean": 0.00114014,
+            "median": 0.00073499
+          },
+          "ema_slow_ratio": {
+            "mean": 0.00259147,
+            "median": 0.00162946
+          },
+          "atr_norm": {
+            "mean": 0.00714286,
+            "median": 0.00642793,
+            "p90": 0.01104753
+          },
+          "realized_vol": {
+            "mean": 0.00462179,
+            "median": 0.00419406,
+            "p90": 0.00732109
+          },
+          "hl_range": {
+            "mean": 0.00717291,
+            "median": 0.00556085
+          },
+          "volume_change": {
+            "mean": 0.15128239,
+            "median": -0.04389659
+          },
+          "volume_z": {
+            "mean": 0.00153649,
+            "median": -0.32939248,
+            "p90_abs": 1.52843096
+          }
+        },
+        "target_distribution": {
+          "SHORT": {
+            "count": 1613,
+            "fraction": 0.33943603,
+            "mean_future_return": -0.00987095,
+            "median_future_return": -0.00690674
+          },
+          "HOLD": {
+            "count": 1110,
+            "fraction": 0.23358586,
+            "mean_future_return": -2.441e-05,
+            "median_future_return": -6.135e-05
+          },
+          "LONG": {
+            "count": 2029,
+            "fraction": 0.42697811,
+            "mean_future_return": 0.01093778,
+            "median_future_return": 0.00760555
+          }
+        },
+        "fold": 1,
+        "market": {
+          "candles": 4821,
+          "start_close": 26673.07,
+          "end_close": 69888.0,
+          "market_return": 1.62017083,
+          "mean_candle_return": 0.00021308,
+          "median_candle_return": 0.00015835,
+          "candle_return_std": 0.00514317,
+          "annualised_volatility": 0.48137418,
+          "mean_abs_candle_return": 0.00336091,
+          "positive_candle_fraction": 0.52043145,
+          "negative_candle_fraction": 0.47936113,
+          "max_drawdown": 0.20183722,
+          "gap_pairs_skipped": 0
+        }
+      },
+      {
+        "row_range": [
+          36160,
+          40981
+        ],
+        "block_rows": 4821,
+        "scored_rows": 4752,
+        "scored_row_range": [
+          36223,
+          40975
+        ],
+        "seq_len": 64,
+        "horizon": 6,
+        "period": {
+          "start": "2024-04-15 05:00:00+00:00",
+          "end": "2024-10-30 04:00:00+00:00"
+        },
+        "future_return": {
+          "mean": 0.00019062,
+          "median": 0.000247,
+          "std": 0.01255791,
+          "mean_abs": 0.00859157,
+          "fraction_positive": 0.51409933,
+          "fraction_negative": 0.48590067
+        },
+        "features": {
+          "ema_cross": {
+            "mean": 0.00011408,
+            "median": 0.00018535,
+            "std": 0.00578853,
+            "fraction_positive": 0.52209596,
+            "fraction_negative": 0.47790404
+          },
+          "ema_fast_ratio": {
+            "mean": 0.00011948,
+            "median": 0.00032362
+          },
+          "ema_slow_ratio": {
+            "mean": 0.00026207,
+            "median": 0.00049217
+          },
+          "atr_norm": {
+            "mean": 0.00712967,
+            "median": 0.00674993,
+            "p90": 0.01031527
+          },
+          "realized_vol": {
+            "mean": 0.00476181,
+            "median": 0.00435955,
+            "p90": 0.00742348
+          },
+          "hl_range": {
+            "mean": 0.00712031,
+            "median": 0.00564592
+          },
+          "volume_change": {
+            "mean": 0.18797449,
+            "median": -0.03074518
+          },
+          "volume_z": {
+            "mean": 0.01485838,
+            "median": -0.31353378,
+            "p90_abs": 1.52113033
+          }
+        },
+        "target_distribution": {
+          "SHORT": {
+            "count": 1804,
+            "fraction": 0.37962963,
+            "mean_future_return": -0.01078891,
+            "median_future_return": -0.00758527
+          },
+          "HOLD": {
+            "count": 1002,
+            "fraction": 0.21085859,
+            "mean_future_return": 1.051e-05,
+            "median_future_return": -2.027e-05
+          },
+          "LONG": {
+            "count": 1946,
+            "fraction": 0.40951178,
+            "mean_future_return": 0.0104617,
+            "median_future_return": 0.00758756
+          }
+        },
+        "fold": 2,
+        "market": {
+          "candles": 4821,
+          "start_close": 69270.01,
+          "end_close": 72378.02,
+          "market_return": 0.04486805,
+          "mean_candle_return": 2.37e-05,
+          "median_candle_return": 2.902e-05,
+          "candle_return_std": 0.00540221,
+          "annualised_volatility": 0.50561887,
+          "mean_abs_candle_return": 0.00346278,
+          "positive_candle_fraction": 0.50383738,
+          "negative_candle_fraction": 0.4959552,
+          "max_drawdown": 0.30538345,
+          "gap_pairs_skipped": 0
+        }
+      },
+      {
+        "row_range": [
+          40981,
+          45802
+        ],
+        "block_rows": 4821,
+        "scored_rows": 4752,
+        "scored_row_range": [
+          41044,
+          45796
+        ],
+        "seq_len": 64,
+        "horizon": 6,
+        "period": {
+          "start": "2024-11-02 02:00:00+00:00",
+          "end": "2025-05-19 01:00:00+00:00"
+        },
+        "future_return": {
+          "mean": 0.00059149,
+          "median": 0.00043592,
+          "std": 0.01378042,
+          "mean_abs": 0.00925051,
+          "fraction_positive": 0.52209596,
+          "fraction_negative": 0.47790404
+        },
+        "features": {
+          "ema_cross": {
+            "mean": 0.00055311,
+            "median": 0.00059052,
+            "std": 0.00592838,
+            "fraction_positive": 0.55892256,
+            "fraction_negative": 0.44107744
+          },
+          "ema_fast_ratio": {
+            "mean": 0.00046828,
+            "median": 0.00049608
+          },
+          "ema_slow_ratio": {
+            "mean": 0.00105188,
+            "median": 0.00113753
+          },
+          "atr_norm": {
+            "mean": 0.00761295,
+            "median": 0.00691797,
+            "p90": 0.0124018
+          },
+          "realized_vol": {
+            "mean": 0.00511963,
+            "median": 0.00460117,
+            "p90": 0.00840818
+          },
+          "hl_range": {
+            "mean": 0.00762588,
+            "median": 0.0059292
+          },
+          "volume_change": {
+            "mean": 0.16187505,
+            "median": -0.02336046
+          },
+          "volume_z": {
+            "mean": 0.01116091,
+            "median": -0.33150929,
+            "p90_abs": 1.52845547
+          }
+        },
+        "target_distribution": {
+          "SHORT": {
+            "count": 1820,
+            "fraction": 0.38299663,
+            "mean_future_return": -0.01105449,
+            "median_future_return": -0.00769889
+          },
+          "HOLD": {
+            "count": 911,
+            "fraction": 0.19170875,
+            "mean_future_return": -2.247e-05,
+            "median_future_return": 2.213e-05
+          },
+          "LONG": {
+            "count": 2021,
+            "fraction": 0.42529461,
+            "mean_future_return": 0.01135596,
+            "median_future_return": 0.00793042
+          }
+        },
+        "fold": 3,
+        "market": {
+          "candles": 4821,
+          "start_close": 71983.99,
+          "end_close": 103226.29,
+          "market_return": 0.43401734,
+          "mean_candle_return": 9.115e-05,
+          "median_candle_return": 7.672e-05,
+          "candle_return_std": 0.00571931,
+          "annualised_volatility": 0.53529807,
+          "mean_abs_candle_return": 0.00377007,
+          "positive_candle_fraction": 0.50860817,
+          "negative_candle_fraction": 0.49139183,
+          "max_drawdown": 0.30936112,
+          "gap_pairs_skipped": 0
+        }
+      }
+    ],
+    "best_vs_worst": [
+      {
+        "group": "model",
+        "metric": "mtst net return",
+        "best_fold": 0.194372,
+        "worst_fold": -0.180108,
+        "absolute_difference": 0.37448,
+        "relative_difference": 1.926615
+      },
+      {
+        "group": "market",
+        "metric": "BTC market return",
+        "best_fold": 1.62017083,
+        "worst_fold": 0.04486805,
+        "absolute_difference": 1.57530278,
+        "relative_difference": 0.972307
+      },
+      {
+        "group": "trend",
+        "metric": "ema_cross mean",
+        "best_fold": 0.00142135,
+        "worst_fold": 0.00011408,
+        "absolute_difference": 0.00130727,
+        "relative_difference": 0.919738
+      },
+      {
+        "group": "volume",
+        "metric": "volume_z mean",
+        "best_fold": 0.00153649,
+        "worst_fold": 0.01485838,
+        "absolute_difference": -0.01332189,
+        "relative_difference": -0.896591
+      },
+      {
+        "group": "target",
+        "metric": "future_return mean",
+        "best_fold": 0.00131394,
+        "worst_fold": 0.00019062,
+        "absolute_difference": 0.00112332,
+        "relative_difference": 0.854925
+      },
+      {
+        "group": "model",
+        "metric": "trades",
+        "best_fold": 62.8,
+        "worst_fold": 102.8,
+        "absolute_difference": -40.0,
+        "relative_difference": -0.389105
+      },
+      {
+        "group": "model",
+        "metric": "coverage",
+        "best_fold": 0.03156,
+        "worst_fold": 0.04904,
+        "absolute_difference": -0.01748,
+        "relative_difference": -0.356444
+      },
+      {
+        "group": "market",
+        "metric": "market max drawdown",
+        "best_fold": 0.20183722,
+        "worst_fold": 0.30538345,
+        "absolute_difference": -0.10354623,
+        "relative_difference": -0.33907
+      },
+      {
+        "group": "volume",
+        "metric": "volume_change mean",
+        "best_fold": 0.15128239,
+        "worst_fold": 0.18797449,
+        "absolute_difference": -0.0366921,
+        "relative_difference": -0.195197
+      },
+      {
+        "group": "trend",
+        "metric": "ema_cross fraction positive",
+        "best_fold": 0.62521044,
+        "worst_fold": 0.52209596,
+        "absolute_difference": 0.10311448,
+        "relative_difference": 0.164928
+      },
+      {
+        "group": "model",
+        "metric": "directional accuracy",
+        "best_fold": 0.55502,
+        "worst_fold": 0.47334,
+        "absolute_difference": 0.08168,
+        "relative_difference": 0.147166
+      },
+      {
+        "group": "target",
+        "metric": "SHORT fraction",
+        "best_fold": 0.33943603,
+        "worst_fold": 0.37962963,
+        "absolute_difference": -0.0401936,
+        "relative_difference": -0.105876
+      },
+      {
+        "group": "target",
+        "metric": "HOLD fraction",
+        "best_fold": 0.23358586,
+        "worst_fold": 0.21085859,
+        "absolute_difference": 0.02272727,
+        "relative_difference": 0.097297
+      },
+      {
+        "group": "volatility",
+        "metric": "atr_norm p90",
+        "best_fold": 0.01104753,
+        "worst_fold": 0.01031527,
+        "absolute_difference": 0.00073226,
+        "relative_difference": 0.066283
+      },
+      {
+        "group": "market",
+        "metric": "annualised volatility",
+        "best_fold": 0.48137418,
+        "worst_fold": 0.50561887,
+        "absolute_difference": -0.02424469,
+        "relative_difference": -0.047951
+      },
+      {
+        "group": "target",
+        "metric": "positive future_return fraction",
+        "best_fold": 0.53998316,
+        "worst_fold": 0.51409933,
+        "absolute_difference": 0.02588383,
+        "relative_difference": 0.047935
+      },
+      {
+        "group": "target",
+        "metric": "LONG fraction",
+        "best_fold": 0.42697811,
+        "worst_fold": 0.40951178,
+        "absolute_difference": 0.01746633,
+        "relative_difference": 0.040907
+      },
+      {
+        "group": "target",
+        "metric": "future_return mean abs",
+        "best_fold": 0.00824543,
+        "worst_fold": 0.00859157,
+        "absolute_difference": -0.00034614,
+        "relative_difference": -0.040288
+      },
+      {
+        "group": "model",
+        "metric": "selected threshold",
+        "best_fold": 0.46,
+        "worst_fold": 0.444,
+        "absolute_difference": 0.016,
+        "relative_difference": 0.034783
+      },
+      {
+        "group": "market",
+        "metric": "positive candle fraction",
+        "best_fold": 0.52043145,
+        "worst_fold": 0.50383738,
+        "absolute_difference": 0.01659407,
+        "relative_difference": 0.031885
+      },
+      {
+        "group": "market",
+        "metric": "mean abs hourly return",
+        "best_fold": 0.00336091,
+        "worst_fold": 0.00346278,
+        "absolute_difference": -0.00010187,
+        "relative_difference": -0.029419
+      },
+      {
+        "group": "volatility",
+        "metric": "realized_vol mean",
+        "best_fold": 0.00462179,
+        "worst_fold": 0.00476181,
+        "absolute_difference": -0.00014002,
+        "relative_difference": -0.029405
+      },
+      {
+        "group": "volatility",
+        "metric": "realized_vol p90",
+        "best_fold": 0.00732109,
+        "worst_fold": 0.00742348,
+        "absolute_difference": -0.00010239,
+        "relative_difference": -0.013793
+      },
+      {
+        "group": "volatility",
+        "metric": "hl_range mean",
+        "best_fold": 0.00717291,
+        "worst_fold": 0.00712031,
+        "absolute_difference": 5.26e-05,
+        "relative_difference": 0.007333
+      },
+      {
+        "group": "volume",
+        "metric": "volume_z p90 abs",
+        "best_fold": 1.52843096,
+        "worst_fold": 1.52113033,
+        "absolute_difference": 0.00730063,
+        "relative_difference": 0.004777
+      },
+      {
+        "group": "target",
+        "metric": "future_return std",
+        "best_fold": 0.01249859,
+        "worst_fold": 0.01255791,
+        "absolute_difference": -5.932e-05,
+        "relative_difference": -0.004724
+      },
+      {
+        "group": "trend",
+        "metric": "ema_cross std",
+        "best_fold": 0.00576335,
+        "worst_fold": 0.00578853,
+        "absolute_difference": -2.518e-05,
+        "relative_difference": -0.00435
+      },
+      {
+        "group": "volatility",
+        "metric": "atr_norm mean",
+        "best_fold": 0.00714286,
+        "worst_fold": 0.00712967,
+        "absolute_difference": 1.319e-05,
+        "relative_difference": 0.001847
+      }
+    ],
+    "attribution": {
+      "available": true,
+      "runs_with_predictions": [
+        "btc_nested_v2_seed_142",
+        "btc_nested_v2_seed_242",
+        "btc_nested_v2_seed_342",
+        "btc_nested_v2_seed_42",
+        "btc_nested_v2_seed_442"
+      ],
+      "runs_without_predictions": [],
+      "overall": {
+        "samples": 94695,
+        "long": {
+          "trades": 943,
+          "hit_rate": 0.534464,
+          "mean_net_return": 0.00040497,
+          "median_net_return": 0.00089624,
+          "additive_trade_return_sum": 0.3818865
+        },
+        "short": {
+          "trades": 445,
+          "hit_rate": 0.438202,
+          "mean_net_return": -0.00188438,
+          "median_net_return": -0.001615,
+          "additive_trade_return_sum": -0.83855055
+        },
+        "hold_samples": 91477,
+        "long_coverage": 0.020751,
+        "short_coverage": 0.013232
+      },
+      "per_run": {
+        "btc_nested_v2_seed_42": {
+          "samples": 18939,
+          "long": {
+            "trades": 184,
+            "hit_rate": 0.559783,
+            "mean_net_return": 0.0009174,
+            "median_net_return": 0.00201219,
+            "additive_trade_return_sum": 0.16880077
+          },
+          "short": {
+            "trades": 91,
+            "hit_rate": 0.340659,
+            "mean_net_return": -0.00326081,
+            "median_net_return": -0.00480991,
+            "additive_trade_return_sum": -0.29673396
+          },
+          "hold_samples": 18291,
+          "long_coverage": 0.018797,
+          "short_coverage": 0.015418
+        },
+        "btc_nested_v2_seed_142": {
+          "samples": 18939,
+          "long": {
+            "trades": 156,
+            "hit_rate": 0.532051,
+            "mean_net_return": -0.00032391,
+            "median_net_return": 0.0008697,
+            "additive_trade_return_sum": -0.05052922
+          },
+          "short": {
+            "trades": 79,
+            "hit_rate": 0.493671,
+            "mean_net_return": 0.00074522,
+            "median_net_return": -0.00039588,
+            "additive_trade_return_sum": 0.05887242
+          },
+          "hold_samples": 18439,
+          "long_coverage": 0.015576,
+          "short_coverage": 0.010824
+        },
+        "btc_nested_v2_seed_242": {
+          "samples": 18939,
+          "long": {
+            "trades": 204,
+            "hit_rate": 0.509804,
+            "mean_net_return": -0.00032753,
+            "median_net_return": 0.00060842,
+            "additive_trade_return_sum": -0.06681534
+          },
+          "short": {
+            "trades": 74,
+            "hit_rate": 0.459459,
+            "mean_net_return": -0.00142509,
+            "median_net_return": -0.00047431,
+            "additive_trade_return_sum": -0.10545661
+          },
+          "hold_samples": 18326,
+          "long_coverage": 0.023972,
+          "short_coverage": 0.008395
+        },
+        "btc_nested_v2_seed_342": {
+          "samples": 18939,
+          "long": {
+            "trades": 156,
+            "hit_rate": 0.544872,
+            "mean_net_return": 0.00108799,
+            "median_net_return": 0.00163345,
+            "additive_trade_return_sum": 0.16972677
+          },
+          "short": {
+            "trades": 146,
+            "hit_rate": 0.452055,
+            "mean_net_return": -0.00226725,
+            "median_net_return": -0.00065941,
+            "additive_trade_return_sum": -0.33101871
+          },
+          "hold_samples": 18086,
+          "long_coverage": 0.020276,
+          "short_coverage": 0.024764
+        },
+        "btc_nested_v2_seed_442": {
+          "samples": 18939,
+          "long": {
+            "trades": 243,
+            "hit_rate": 0.530864,
+            "mean_net_return": 0.00066133,
+            "median_net_return": 0.00084317,
+            "additive_trade_return_sum": 0.16070352
+          },
+          "short": {
+            "trades": 55,
+            "hit_rate": 0.454545,
+            "mean_net_return": -0.0029857,
+            "median_net_return": -0.00158531,
+            "additive_trade_return_sum": -0.16421369
+          },
+          "hold_samples": 18335,
+          "long_coverage": 0.025133,
+          "short_coverage": 0.006759
+        }
+      },
+      "per_fold": {
+        "0": {
+          "samples": 23415,
+          "long": {
+            "trades": 76,
+            "hit_rate": 0.75,
+            "mean_net_return": 0.00365569,
+            "median_net_return": 0.00348794,
+            "additive_trade_return_sum": 0.27783248
+          },
+          "short": {
+            "trades": 112,
+            "hit_rate": 0.410714,
+            "mean_net_return": -0.00418055,
+            "median_net_return": -0.00448084,
+            "additive_trade_return_sum": -0.46822105
+          },
+          "hold_samples": 22910,
+          "long_coverage": 0.005296,
+          "short_coverage": 0.016272
+        },
+        "1": {
+          "samples": 23760,
+          "long": {
+            "trades": 248,
+            "hit_rate": 0.625,
+            "mean_net_return": 0.00287794,
+            "median_net_return": 0.00491202,
+            "additive_trade_return_sum": 0.71372815
+          },
+          "short": {
+            "trades": 66,
+            "hit_rate": 0.515152,
+            "mean_net_return": 0.00279626,
+            "median_net_return": 0.00065298,
+            "additive_trade_return_sum": 0.18455328
+          },
+          "hold_samples": 23010,
+          "long_coverage": 0.023527,
+          "short_coverage": 0.008039
+        },
+        "2": {
+          "samples": 23760,
+          "long": {
+            "trades": 360,
+            "hit_rate": 0.438889,
+            "mean_net_return": -0.00175108,
+            "median_net_return": -0.00188276,
+            "additive_trade_return_sum": -0.63038973
+          },
+          "short": {
+            "trades": 154,
+            "hit_rate": 0.448052,
+            "mean_net_return": -0.00185476,
+            "median_net_return": -0.00072902,
+            "additive_trade_return_sum": -0.28563354
+          },
+          "hold_samples": 22595,
+          "long_coverage": 0.033375,
+          "short_coverage": 0.015657
+        },
+        "3": {
+          "samples": 23760,
+          "long": {
+            "trades": 259,
+            "hit_rate": 0.517375,
+            "mean_net_return": 7.998e-05,
+            "median_net_return": 0.00075934,
+            "additive_trade_return_sum": 0.02071559
+          },
+          "short": {
+            "trades": 113,
+            "hit_rate": 0.40708,
+            "mean_net_return": -0.00238274,
+            "median_net_return": -0.00191462,
+            "additive_trade_return_sum": -0.26924924
+          },
+          "hold_samples": 22962,
+          "long_coverage": 0.020581,
+          "short_coverage": 0.013005
+        }
+      }
+    },
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis": "Fold 2 behaves consistently worse than fold 1 across every seed observed, so it is worth characterising as a regime rather than dismissed as noise \u2014 then replicated on independent periods and assets before the characterisation is generalised.",
+        "evidence": "across 5 seed(s) fold 1 spans [-0.012402, +0.387633] and fold 2 spans [-0.249143, -0.124785] with no overlap, and fold 2 is negative in all 5 observed seeds. Consistent within these seeds; one fold per regime is still a sample of one, and seed count is not a substitute for independent periods",
+        "strength": 1.926615,
+        "observed": {
+          "best_fold": 1,
+          "worst_fold": 2,
+          "seeds": 5,
+          "best_range": [
+            -0.012402,
+            0.387633
+          ],
+          "worst_range": [
+            -0.249143,
+            -0.124785
+          ],
+          "ranges_overlap": false,
+          "worst_positive_seeds": 0
+        }
+      },
+      {
+        "rank": 2,
+        "hypothesis": "The feature set may lack regime context: nothing in it states which regime the window belongs to, only what just happened within it.",
+        "evidence": "trend orientation and volume behaviour differ between the folds while the feature contract is identical across every run.",
+        "strength": 0.919738
+      },
+      {
+        "rank": 3,
+        "hypothesis": "LONG and SHORT may need separate decision thresholds rather than one symmetric cut.",
+        "evidence": "per-direction attribution is available and can be read directly; the selected threshold varies by up to 0.046 across seeds on a single fold.",
+        "strength": 0.356444
+      }
+    ]
+  }
+}
