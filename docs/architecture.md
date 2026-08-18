@@ -119,7 +119,7 @@ inputs computed differently than the ones it learned from.
 | `train.py` | The training entrypoint. |
 | `evaluate.py` | Classification and trading metrics; threshold selection. |
 | `experiment.py` | Predeclared config grids, scored on validation only. |
-| `walkforward.py` | Expanding-window walk-forward *validation*. |
+| `walkforward.py` | Nested walk-forward *validation*: train -> inner validation (selection) -> outer validation (reported). |
 | `registry.py` | Artifact save/load, promotion gates, `current.json`. |
 | `infer_service.py` | The FastAPI service. |
 

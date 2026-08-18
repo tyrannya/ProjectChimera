@@ -29,7 +29,7 @@ market data → validated dataset → features → leakage-safe training
 | Data download and validation | Working | UTC, deduplicated, gap-detected, OHLC-checked |
 | Feature engineering | Working | 14 causal, scale-free features; shared by training and strategy |
 | Cost-aware labelling | Working | SHORT/HOLD/LONG against a fee + slippage threshold |
-| Chronological splits, walk-forward | Working | Leakage prevented by index arithmetic, asserted in tests |
+| Chronological splits, nested walk-forward | Working | Leakage prevented by index arithmetic, asserted in tests |
 | Training (`nn.train`) | Working | CPU-first, reproducible, baselines reported alongside |
 | Model artifacts and gated promotion | Working | On-disk artifact is the source of truth |
 | Inference service (`nn.infer_service`) | Working | FastAPI, schema-validated, `/livez` + `/readyz` |
@@ -175,9 +175,13 @@ make walkforward DATASET=data/datasets/binance_BTC_USDT_1h.parquet
 length and model size, ranks the configurations by a stated validation
 objective, and writes `artifacts/experiments/{experiments.json,experiments.csv}`.
 
-`nn.walkforward` retrains from scratch on each expanding fold and validates on
-the block that follows it, reporting mean +/- std across folds to
-`artifacts/walkforward/{walkforward.json,walkforward.md}`.
+`nn.walkforward` retrains from scratch on each expanding fold. Every fold has
+three chronological regions — train, inner validation, outer validation. Early
+stopping and the decision threshold are chosen on the inner block; the frozen
+model is measured once on the outer block, and only outer results are reported
+and aggregated as mean +/- std to
+`artifacts/walkforward/{walkforward.json,walkforward.md}`. Outer blocks do not
+overlap, so no row is reported as the result of two folds.
 
 Neither one scores the test split. Only the plain `nn.train` run in step 3 does,
 and only that run's artifact can be promoted.

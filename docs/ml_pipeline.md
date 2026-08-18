@@ -298,7 +298,7 @@ so the question never arises.
 **Development, repeated as often as you like:**
 
 ```
-train  ->  validation  /  walk-forward validation  ->  choose a candidate
+train  ->  validation  /  nested walk-forward  ->  choose a candidate
 ```
 
 **Once, and only after the research decisions are frozen:**
@@ -326,7 +326,7 @@ python -m nn.train --dataset DATASET --validation-only --epochs 30
 # a predeclared grid
 python -m nn.experiment --dataset DATASET --seed 1 2 3 --lr 1e-4 3e-4 1e-3 --epochs 20
 
-# expanding-window walk-forward
+# nested walk-forward (train -> inner validation -> outer validation)
 python -m nn.walkforward --dataset DATASET --folds 4 --epochs 20
 ```
 
@@ -343,10 +343,13 @@ directly, so reaching past the CLI does not help.
 `nn.experiment` and `nn.walkforward` have no research mode to forget to switch
 on: neither one has any code path that windows test. All three entrypoints share
 one core in `nn/train.py` — `prepare_research_windows` and `fit_and_validate` —
-whose signatures take a training split and a validation split and nothing else.
-The guarantee is a property of those signatures, and
-`tests/test_research_workflow.py` asserts it by spying on `build_windows` and
-checking the test split never appears.
+whose signatures take a training split and a validation split and nothing else,
+so nothing fitted can come from anywhere but those two. Evaluation of a frozen
+model goes through `score_frozen_split`, which fits nothing at all; `nn.train`
+points it at the sealed test split exactly once, and `nn.walkforward` points it
+at each fold's outer validation block. The guarantee is a property of those
+signatures, and `tests/test_research_workflow.py` asserts it by spying on
+`build_windows` and checking the test split never appears.
 
 ### The experiment runner
 
@@ -378,17 +381,39 @@ plan is refused rather than allowed to overwrite the record.
 Output: `artifacts/experiments/experiment_plan.json` (written first),
 `experiments.json` and `experiments.csv`.
 
-### Walk-forward validation
+### Nested walk-forward validation
 
 `nn.walkforward` asks the harder question — does the *procedure* keep working as
-the market moves? The training window expands, and each fold is validated on the
-block immediately after it:
+the market moves? The training window expands, and each fold has **three**
+chronological regions:
 
 ```
-fold 0: [--- train ---][ val ]
-fold 1: [------ train ------][ val ]
-fold 2: [--------- train --------][ val ]
+fold 0: [--- train ---][ inner ][ outer ]
+fold 1: [------ train ------][ inner ][ outer ]
+fold 2: [--------- train --------][ inner ][ outer ]
 ```
+
+| region | what happens there |
+| --- | --- |
+| **train** | the scaler is fitted here; the model weights are fitted here |
+| **inner validation** | early stopping, decision-threshold selection, any other model-selection quantity — never reported as fold performance |
+| **outer validation** | the frozen model at the frozen threshold, measured once — the only block reported as the fold's result |
+
+The third region is the point. An earlier version had two and used the second
+one twice: it chose the early-stopping epoch and the decision threshold on the
+validation block and then reported that same block as the fold's performance.
+Both quantities were fitted on the data they were scored on, so the reported
+numbers were optimistic by construction — a selection score presented as a
+result. Nothing at all is fitted on the outer block: it reaches exactly one
+function, `nn.train.score_frozen_split`, which takes an already-fitted scaler,
+model, threshold and baselines and only transforms, windows and measures.
+
+**Outer blocks never overlap.** They advance by `--step`, which defaults to the
+outer block size, so consecutive outer blocks are back to back and no row is
+reported as the result of two folds; a step smaller than the outer block is
+refused rather than allowed to double-count. A fold's *inner* block may be a
+previous fold's outer block, and a later fold may train on it — by then those
+rows are history, which is exactly what walk-forward is meant to simulate.
 
 **Folds are planned over the research region only** — rows `[0,
 sealed_test_start)`, where the boundary comes from
@@ -396,35 +421,51 @@ sealed_test_start)`, where the boundary comes from
 `--train-frac` and `--val-frac` locate that boundary and do nothing else.
 
 Fold geometry is configurable as fractions *of the research region*: `--folds`,
-`--min-train-frac` (or `--min-train-size`), `--fold-val-frac` (or
-`--fold-val-size`) and `--step`, which defaults to spreading the folds evenly
-over the research region after the first training window. Asking for more rows
-than the research region holds is an error — the sealed rows are never borrowed
-to make up the difference.
+`--min-train-frac` (or `--min-train-size`), `--inner-val-frac` (or
+`--inner-val-size`), `--outer-val-frac` (or `--outer-val-size`) and `--step`.
+Asking for more rows than the research region holds is an error — the number of
+folds is never silently reduced, and the sealed rows are never borrowed to make
+up the difference.
+
+The defaults (45% / 10% / 10%, step = outer size) give four folds on the
+56,726-row BTC 1h dataset, whose research region is rows `[0, 48217)`:
+
+| fold | train | inner validation | outer validation |
+| --- | --- | --- | --- |
+| 0 | 0–21697 | 21697–26518 | 26518–31339 |
+| 1 | 0–26518 | 26518–31339 | 31339–36160 |
+| 2 | 0–31339 | 31339–36160 | 36160–40981 |
+| 3 | 0–36160 | 36160–40981 | 40981–45802 |
 
 Per fold, and asserted rather than intended:
 
-- no planned row, training or validation, reaches the sealed boundary;
+- no planned row — train, inner or outer — reaches the sealed boundary at
+  48,217;
 - the scaler is fitted on that fold's training rows only;
-- early stopping and threshold selection use that fold's validation rows only;
-- no input window or label horizon crosses a fold boundary, and none crosses a
-  market-data gap — folds go through the same `build_windows` segment check as
-  `nn.train`;
-- validation begins at or after the row where training ends, so no fold can be
-  influenced by rows a later fold validates on.
+- early stopping and threshold selection use that fold's **inner** rows only,
+  and `select_threshold` is never called on outer rows;
+- the baselines that have state are fitted on training rows only;
+- no input window or label horizon crosses a region boundary, and none crosses a
+  market-data gap — every region goes through the same `build_windows` segment
+  check as `nn.train`;
+- outer blocks are disjoint, checked on the row indices actually evaluated.
 
-Reported per fold and aggregated as mean ± standard deviation across folds:
-macro F1, directional accuracy, coverage, trade count, net return after costs,
-Sharpe, max drawdown — for the model and both baselines. The summary also counts
-how many folds the model beat both baselines in, because beating them in one
-fold out of four is not evidence of anything.
+Reported per fold on the **outer** block, and aggregated as mean ± standard
+deviation across folds: macro F1, directional accuracy, coverage, calibration
+error, trade count, net return after costs, Sharpe, max drawdown — for the model
+and both baselines. The summary counts how many folds the model beat both
+baselines in, because beating them in one fold out of four is not evidence of
+anything, and it aggregates outer validation only.
 
-**These are validation numbers.** Walk-forward is what makes it affordable to
-iterate without spending the sealed estimate; it is not itself an out-of-sample
-result.
+**These are model-development numbers.** Nothing was fitted on the outer blocks,
+which is what makes them worth reading — but the folds get re-run while the
+method is being built, so they are research evidence, not an out-of-sample
+result and not a claim of profitability. Walk-forward is what makes it
+affordable to iterate without spending the sealed estimate; the sealed test
+block remains unopened.
 
-Two earlier versions got this wrong, in ways worth recording because the second
-looked fine:
+Three earlier versions got some part of this wrong, in ways worth recording
+because the later two looked fine:
 
 1. The first scored an explicit per-fold **test** block, so every research
    iteration consumed the estimate outright.
@@ -433,14 +474,21 @@ looked fine:
    landed inside the sealed block — on a 56,726-row dataset, 1,890 and 8,508
    rows past the boundary. The output read `test_evaluated: false` and was
    wrong: those were sealed rows labelled "validation".
+3. The third kept every row below the boundary but reported the block it had
+   selected the threshold and the early-stopping epoch on, and its validation
+   ranges overlapped between folds — so the same rows were counted more than
+   once in the across-fold mean.
 
-Renaming a split does not unseal its rows. That is why the boundary is a row
-index both modules compute the same way, and why the regression tests compare
-row indices instead of split names — a name-based check is exactly what let the
-second bug through.
+Renaming a split does not unseal its rows, and calling a block "validation" does
+not make it an evaluation. That is why the boundary is a row index both modules
+compute the same way, and why the regression tests compare row indices instead
+of split names — a name-based check is exactly what let the second bug through
+and would have passed against the third.
 
 Output: `artifacts/walkforward/walkforward.json` (which records
-`sealed_test.start_row` and the sealed period) and `walkforward.md`.
+`sealed_test.start_row`, the sealed period, `reported_block:
+"outer_validation"`, and per fold a `periods` object with all three regions, a
+`selection` object and an `outer_validation` object) and `walkforward.md`.
 
 ### Spending the test split
 

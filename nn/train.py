@@ -21,8 +21,14 @@ Steps 4 to 8 are the *research core* — :class:`ResearchData`,
 :func:`prepare_research_windows` and :func:`fit_and_validate` — which
 ``nn.experiment`` and ``nn.walkforward`` import rather than reimplement. Those
 functions take a training and a validation split and nothing else, so no amount
-of misuse can make them touch test rows: step 9 is the only code in the
-repository that windows the test block, and ``--validation-only`` skips it.
+of misuse can make them fit anything on test rows.
+
+Step 9 goes through :func:`score_frozen_split`, which fits nothing: it takes an
+already-frozen scaler, model, threshold and baselines and only transforms,
+windows and measures. That is why ``nn.walkforward`` can point it at its outer
+validation block — a block that must not influence model selection — and reuse
+the evaluation path rather than a copy of it. ``main`` is the only caller that
+ever hands it the test split, and ``--validation-only`` skips that call.
 
 CPU is the default and fully supported path. GPU and mixed precision are used
 only when CUDA is actually present. Ray Tune is optional and off by default:
@@ -214,8 +220,8 @@ class PreparedWindows:
 
     Note what is *absent*: there is no test field, and
     :func:`prepare_research_windows` takes no test split. Test windows are built
-    in exactly one place, :func:`main`, and only when ``--validation-only`` is
-    off.
+    in exactly one place — :func:`main`, through :func:`score_frozen_split`, and
+    only when ``--validation-only`` is off.
     """
 
     scaler: StandardScaler
@@ -373,6 +379,66 @@ def fit_and_validate(
         train_info=train_info,
         baselines=baselines,
     )
+
+
+def score_frozen_split(
+    data: ResearchData,
+    scaler: StandardScaler,
+    split: Split,
+    seq_len: int,
+    *,
+    model: MTST,
+    baselines: dict[str, Any],
+    threshold: float,
+    device: torch.device,
+) -> tuple[dict[str, dict[str, Any]], np.ndarray]:
+    """Score an already-frozen model, threshold and baselines on one split.
+
+    Nothing here is fitted. The scaler, the weights, the decision threshold and
+    the baselines all arrive fitted from somewhere else, and this function only
+    transforms, windows and measures — which is what makes it safe to point at a
+    block that must not influence model selection: ``nn.train``'s sealed test
+    block, and ``nn.walkforward``'s outer validation block.
+
+    Rows are read up to ``split.end`` and no further, so a split that ends
+    before the sealed boundary cannot reach a sealed row even by accident.
+    Returns the reports and the row indices actually scored, so a caller — or a
+    test — can check where the samples came from instead of trusting the name.
+
+    Raises ``ValueError`` when the split is too short to hold one window plus
+    its label horizon, rather than reporting metrics over zero samples.
+    """
+    visible = split.end
+    scaled = scaler.transform(data.features[:visible])
+    X, y, idx = build_windows(
+        scaled,
+        data.targets[:visible],
+        split,
+        seq_len,
+        data.target_spec.horizon,
+        segment_ids=None if data.segment_ids is None else data.segment_ids[:visible],
+    )
+    if len(X) == 0:
+        raise ValueError(
+            f"the {split.name} split produced no samples. Use a longer dataset, a "
+            f"shorter seq_len ({seq_len}), or different split sizes."
+        )
+
+    future_return = data.future_return[idx]
+
+    def score(proba: np.ndarray) -> dict[str, Any]:
+        return ev.evaluate(
+            proba,
+            y,
+            future_return,
+            data.target_spec,
+            threshold,
+            candles_per_year=data.candles_per_year,
+        )
+
+    reports = {name: score(baseline.predict_proba(X)) for name, baseline in baselines.items()}
+    reports["mtst"] = score(predict_proba(model, X, device))
+    return reports, idx
 
 
 def train_model(
@@ -610,37 +676,20 @@ def main(argv: list[str] | None = None) -> int:
     # early-stopping epoch) is frozen, and not at all in research mode.
     test_reports: dict[str, Any] | None = None
     if not args.validation_only:
-        scaled = prepared.scaler.transform(data.features)
-        X_test, y_test, idx_test = build_windows(
-            scaled,
-            data.targets,
-            plan.test,
-            args.seq_len,
-            data.target_spec.horizon,
-            segment_ids=data.segment_ids,
-        )
-        if len(X_test) == 0:
-            raise SystemExit(
-                f"the test split produced no samples. Use a longer dataset, a "
-                f"shorter --seq-len ({args.seq_len}), or different split fractions."
+        try:
+            test_reports, idx_test = score_frozen_split(
+                data,
+                prepared.scaler,
+                plan.test,
+                args.seq_len,
+                model=model,
+                baselines=result.baselines,
+                threshold=threshold,
+                device=device,
             )
-        logger.info("test: %d samples", len(X_test))
-
-        def test_score(proba: np.ndarray) -> dict[str, Any]:
-            return ev.evaluate(
-                proba,
-                y_test,
-                data.future_return[idx_test],
-                data.target_spec,
-                threshold,
-                candles_per_year=data.candles_per_year,
-            )
-
-        test_reports = {
-            name: test_score(baseline.predict_proba(X_test))
-            for name, baseline in result.baselines.items()
-        }
-        test_reports["mtst"] = test_score(predict_proba(model, X_test, device))
+        except ValueError as exc:
+            raise SystemExit(f"{exc} (--seq-len is currently {args.seq_len})") from exc
+        logger.info("test: %d samples", len(idx_test))
 
     print("\nValidation (used for model selection):")
     print(ev.compare(validation_reports))
