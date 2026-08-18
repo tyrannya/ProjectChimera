@@ -1,0 +1,1541 @@
+{
+  "dataset": {
+    "exchange": "binance",
+    "pair": "BTC/USDT",
+    "timeframe": "1h",
+    "rows": 56726,
+    "start": "2020-01-04T06:00:00+00:00",
+    "end": "2026-08-17T11:00:00+00:00",
+    "feature_names": [
+      "ret_1",
+      "log_ret_1",
+      "ret_close_open",
+      "hl_range",
+      "ema_fast_ratio",
+      "ema_slow_ratio",
+      "ema_cross",
+      "rsi_centered",
+      "macd_norm",
+      "macd_hist_norm",
+      "atr_norm",
+      "realized_vol",
+      "volume_change",
+      "volume_z"
+    ],
+    "feature_spec": {
+      "ema_fast": 12,
+      "ema_slow": 26,
+      "rsi_period": 14,
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "atr_period": 14,
+      "vol_window": 24,
+      "volume_window": 24
+    },
+    "target_spec": {
+      "horizon": 6,
+      "fee_rate": 0.0005,
+      "slippage_rate": 0.0005,
+      "cost_threshold": 0.002
+    },
+    "class_balance": {
+      "SHORT": 21677,
+      "HOLD": 11989,
+      "LONG": 23060
+    },
+    "validation": {
+      "rows_in": 58066,
+      "rows_out": 58066,
+      "duplicates_removed": 0,
+      "reordered": false,
+      "missing_candles": 32,
+      "gap_count": 15,
+      "zero_volume_rows": 2,
+      "nan_rows_dropped": 0
+    },
+    "created_at": "2026-08-17T17:16:20.071686+00:00"
+  },
+  "config": {
+    "dataset": "data/datasets/binance_BTC_USDT_1h.parquet",
+    "out": "artifacts/walkforward/btc_nested_seed_342",
+    "folds": 4,
+    "train_frac": 0.7,
+    "val_frac": 0.15,
+    "min_train_frac": 0.45,
+    "min_train_size": null,
+    "inner_val_frac": 0.1,
+    "inner_val_size": null,
+    "outer_val_frac": 0.1,
+    "outer_val_size": null,
+    "step": null,
+    "epochs": 10,
+    "batch_size": 64,
+    "lr": 0.0003,
+    "seq_len": 64,
+    "seed": 342,
+    "patience": 3,
+    "d_model": 64,
+    "n_heads": 4,
+    "num_layers": 2,
+    "dropout": 0.1,
+    "device": "cpu"
+  },
+  "sizes": {
+    "min_train": 21697,
+    "inner_val_size": 4821,
+    "outer_val_size": 4821,
+    "step": 4821
+  },
+  "sealed_test": {
+    "start_row": 48217,
+    "period": {
+      "start": "2025-08-27 23:00:00+00:00",
+      "end": "2026-08-17 11:00:00+00:00",
+      "rows": 8509,
+      "row_range": [
+        48217,
+        56726
+      ]
+    },
+    "evaluated": false
+  },
+  "research_rows": 48217,
+  "test_evaluated": false,
+  "reported_block": "outer_validation",
+  "folds": [
+    {
+      "fold": 0,
+      "seed": 342,
+      "samples": {
+        "train": 20763,
+        "inner_validation": 4752,
+        "outer_validation": 4683
+      },
+      "periods": {
+        "train": {
+          "start": "2020-01-04 06:00:00+00:00",
+          "end": "2022-08-15 09:00:00+00:00",
+          "rows": 21697,
+          "row_range": [
+            0,
+            21697
+          ]
+        },
+        "inner_validation": {
+          "start": "2022-08-15 10:00:00+00:00",
+          "end": "2023-03-04 06:00:00+00:00",
+          "rows": 4821,
+          "row_range": [
+            21697,
+            26518
+          ]
+        },
+        "outer_validation": {
+          "start": "2023-03-04 07:00:00+00:00",
+          "end": "2023-09-24 16:00:00+00:00",
+          "rows": 4821,
+          "row_range": [
+            26518,
+            31339
+          ]
+        }
+      },
+      "selection": {
+        "best_epoch": 5,
+        "threshold": 0.36,
+        "inner_validation_loss": 1.004215293661111
+      },
+      "outer_validation": {
+        "majority_baseline": {
+          "classification": {
+            "n_samples": 4683,
+            "threshold": 0.36,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 0,
+              "HOLD": 0,
+              "LONG": 4683
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 1587,
+                "predicted": 0
+              },
+              "HOLD": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 1577,
+                "predicted": 0
+              },
+              "LONG": {
+                "precision": 0.3244,
+                "recall": 1.0,
+                "f1": 0.4898,
+                "support": 1519,
+                "predicted": 4683
+              }
+            },
+            "macro_f1": 0.1633,
+            "accuracy": 0.3244,
+            "directional_accuracy": 0.3244,
+            "coverage": 1.0,
+            "calibration_error": 0.1157,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  0,
+                  1587
+                ],
+                [
+                  0,
+                  0,
+                  1577
+                ],
+                [
+                  0,
+                  0,
+                  1519
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 781,
+            "net_return": -0.754383,
+            "gross_return": 0.209511,
+            "total_costs": 1.562,
+            "avg_trade": -0.001732,
+            "win_rate": 0.3355,
+            "profit_factor": 0.6094,
+            "sharpe": -5.8227,
+            "max_drawdown": 0.7826,
+            "exposure": 1.0,
+            "turnover": 1562.0,
+            "cost_per_trade": 0.002
+          }
+        },
+        "momentum_baseline": {
+          "classification": {
+            "n_samples": 4683,
+            "threshold": 0.36,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 2561,
+              "HOLD": 15,
+              "LONG": 2107
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.2886,
+                "recall": 0.4657,
+                "f1": 0.3563,
+                "support": 1587,
+                "predicted": 2561
+              },
+              "HOLD": {
+                "precision": 0.2,
+                "recall": 0.0019,
+                "f1": 0.0038,
+                "support": 1577,
+                "predicted": 15
+              },
+              "LONG": {
+                "precision": 0.318,
+                "recall": 0.4411,
+                "f1": 0.3696,
+                "support": 1519,
+                "predicted": 2107
+              }
+            },
+            "macro_f1": 0.2432,
+            "accuracy": 0.3015,
+            "directional_accuracy": 0.3018,
+            "coverage": 0.9968,
+            "calibration_error": 0.2985,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  739,
+                  6,
+                  842
+                ],
+                [
+                  979,
+                  3,
+                  595
+                ],
+                [
+                  843,
+                  6,
+                  670
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 780,
+            "net_return": -0.819857,
+            "gross_return": -0.102523,
+            "total_costs": 1.56,
+            "avg_trade": -0.002131,
+            "win_rate": 0.3026,
+            "profit_factor": 0.5449,
+            "sharpe": -7.2091,
+            "max_drawdown": 0.8621,
+            "exposure": 0.9994,
+            "turnover": 1560.0,
+            "cost_per_trade": 0.002
+          }
+        },
+        "mtst": {
+          "classification": {
+            "n_samples": 4683,
+            "threshold": 0.36,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 242,
+              "HOLD": 4409,
+              "LONG": 32
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.4421,
+                "recall": 0.0674,
+                "f1": 0.117,
+                "support": 1587,
+                "predicted": 242
+              },
+              "HOLD": {
+                "precision": 0.3495,
+                "recall": 0.9772,
+                "f1": 0.5149,
+                "support": 1577,
+                "predicted": 4409
+              },
+              "LONG": {
+                "precision": 0.8125,
+                "recall": 0.0171,
+                "f1": 0.0335,
+                "support": 1519,
+                "predicted": 32
+              }
+            },
+            "macro_f1": 0.2218,
+            "accuracy": 0.3575,
+            "directional_accuracy": 0.4854,
+            "coverage": 0.0585,
+            "calibration_error": 0.2353,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  107,
+                  1475,
+                  5
+                ],
+                [
+                  35,
+                  1541,
+                  1
+                ],
+                [
+                  100,
+                  1393,
+                  26
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 76,
+            "net_return": -0.22219,
+            "gross_return": -0.080696,
+            "total_costs": 0.152,
+            "avg_trade": -0.003062,
+            "win_rate": 0.5132,
+            "profit_factor": 0.63,
+            "sharpe": -5.3848,
+            "max_drawdown": 0.311,
+            "exposure": 0.0974,
+            "turnover": 152.0,
+            "cost_per_trade": 0.002
+          }
+        }
+      }
+    },
+    {
+      "fold": 1,
+      "seed": 343,
+      "samples": {
+        "train": 25584,
+        "inner_validation": 4683,
+        "outer_validation": 4752
+      },
+      "periods": {
+        "train": {
+          "start": "2020-01-04 06:00:00+00:00",
+          "end": "2023-03-04 06:00:00+00:00",
+          "rows": 26518,
+          "row_range": [
+            0,
+            26518
+          ]
+        },
+        "inner_validation": {
+          "start": "2023-03-04 07:00:00+00:00",
+          "end": "2023-09-24 16:00:00+00:00",
+          "rows": 4821,
+          "row_range": [
+            26518,
+            31339
+          ]
+        },
+        "outer_validation": {
+          "start": "2023-09-24 17:00:00+00:00",
+          "end": "2024-04-12 13:00:00+00:00",
+          "rows": 4821,
+          "row_range": [
+            31339,
+            36160
+          ]
+        }
+      },
+      "selection": {
+        "best_epoch": 6,
+        "threshold": 0.44,
+        "inner_validation_loss": 0.9818976601741265
+      },
+      "outer_validation": {
+        "majority_baseline": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.44,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 0,
+              "HOLD": 4752,
+              "LONG": 0
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 1613,
+                "predicted": 0
+              },
+              "HOLD": {
+                "precision": 0.2336,
+                "recall": 1.0,
+                "f1": 0.3787,
+                "support": 1110,
+                "predicted": 4752
+              },
+              "LONG": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 2029,
+                "predicted": 0
+              }
+            },
+            "macro_f1": 0.1262,
+            "accuracy": 0.2336,
+            "directional_accuracy": 0.0,
+            "coverage": 0.0,
+            "calibration_error": 0.0029,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  1613,
+                  0
+                ],
+                [
+                  0,
+                  1110,
+                  0
+                ],
+                [
+                  0,
+                  2029,
+                  0
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 0,
+            "net_return": 0.0,
+            "gross_return": 0.0,
+            "total_costs": 0.0,
+            "avg_trade": 0.0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "sharpe": 0.0,
+            "max_drawdown": 0.0,
+            "exposure": 0.0,
+            "turnover": 0.0,
+            "cost_per_trade": 0.002
+          }
+        },
+        "momentum_baseline": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.44,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 1833,
+              "HOLD": 9,
+              "LONG": 2910
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.3208,
+                "recall": 0.3645,
+                "f1": 0.3413,
+                "support": 1613,
+                "predicted": 1833
+              },
+              "HOLD": {
+                "precision": 0.2222,
+                "recall": 0.0018,
+                "f1": 0.0036,
+                "support": 1110,
+                "predicted": 9
+              },
+              "LONG": {
+                "precision": 0.4014,
+                "recall": 0.5757,
+                "f1": 0.473,
+                "support": 2029,
+                "predicted": 2910
+              }
+            },
+            "macro_f1": 0.2726,
+            "accuracy": 0.3699,
+            "directional_accuracy": 0.3702,
+            "coverage": 0.9981,
+            "calibration_error": 0.2301,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  588,
+                  1,
+                  1024
+                ],
+                [
+                  390,
+                  2,
+                  718
+                ],
+                [
+                  855,
+                  6,
+                  1168
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 792,
+            "net_return": -0.77157,
+            "gross_return": 0.17897,
+            "total_costs": 1.584,
+            "avg_trade": -0.001774,
+            "win_rate": 0.3687,
+            "profit_factor": 0.6647,
+            "sharpe": -5.1008,
+            "max_drawdown": 0.7827,
+            "exposure": 1.0,
+            "turnover": 1584.0,
+            "cost_per_trade": 0.002
+          }
+        },
+        "mtst": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.44,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 73,
+              "HOLD": 4499,
+              "LONG": 180
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.4658,
+                "recall": 0.0211,
+                "f1": 0.0403,
+                "support": 1613,
+                "predicted": 73
+              },
+              "HOLD": {
+                "precision": 0.2423,
+                "recall": 0.982,
+                "f1": 0.3887,
+                "support": 1110,
+                "predicted": 4499
+              },
+              "LONG": {
+                "precision": 0.6222,
+                "recall": 0.0552,
+                "f1": 0.1014,
+                "support": 2029,
+                "predicted": 180
+              }
+            },
+            "macro_f1": 0.1768,
+            "accuracy": 0.2601,
+            "directional_accuracy": 0.5771,
+            "coverage": 0.0532,
+            "calibration_error": 0.1007,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  34,
+                  1519,
+                  60
+                ],
+                [
+                  12,
+                  1090,
+                  8
+                ],
+                [
+                  27,
+                  1890,
+                  112
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 91,
+            "net_return": 0.172551,
+            "gross_return": 0.35303,
+            "total_costs": 0.182,
+            "avg_trade": 0.001879,
+            "win_rate": 0.5714,
+            "profit_factor": 1.3661,
+            "sharpe": 4.4434,
+            "max_drawdown": 0.0845,
+            "exposure": 0.1149,
+            "turnover": 182.0,
+            "cost_per_trade": 0.002
+          }
+        }
+      }
+    },
+    {
+      "fold": 2,
+      "seed": 344,
+      "samples": {
+        "train": 30336,
+        "inner_validation": 4752,
+        "outer_validation": 4752
+      },
+      "periods": {
+        "train": {
+          "start": "2020-01-04 06:00:00+00:00",
+          "end": "2023-09-24 16:00:00+00:00",
+          "rows": 31339,
+          "row_range": [
+            0,
+            31339
+          ]
+        },
+        "inner_validation": {
+          "start": "2023-09-24 17:00:00+00:00",
+          "end": "2024-04-12 13:00:00+00:00",
+          "rows": 4821,
+          "row_range": [
+            31339,
+            36160
+          ]
+        },
+        "outer_validation": {
+          "start": "2024-04-12 14:00:00+00:00",
+          "end": "2024-10-30 10:00:00+00:00",
+          "rows": 4821,
+          "row_range": [
+            36160,
+            40981
+          ]
+        }
+      },
+      "selection": {
+        "best_epoch": 3,
+        "threshold": 0.42,
+        "inner_validation_loss": 1.066499478086478
+      },
+      "outer_validation": {
+        "majority_baseline": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.42,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 0,
+              "HOLD": 4752,
+              "LONG": 0
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 1804,
+                "predicted": 0
+              },
+              "HOLD": {
+                "precision": 0.2109,
+                "recall": 1.0,
+                "f1": 0.3483,
+                "support": 1002,
+                "predicted": 4752
+              },
+              "LONG": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 1946,
+                "predicted": 0
+              }
+            },
+            "macro_f1": 0.1161,
+            "accuracy": 0.2109,
+            "directional_accuracy": 0.0,
+            "coverage": 0.0,
+            "calibration_error": 0.0012,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  1804,
+                  0
+                ],
+                [
+                  0,
+                  1002,
+                  0
+                ],
+                [
+                  0,
+                  1946,
+                  0
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 0,
+            "net_return": 0.0,
+            "gross_return": 0.0,
+            "total_costs": 0.0,
+            "avg_trade": 0.0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "sharpe": 0.0,
+            "max_drawdown": 0.0,
+            "exposure": 0.0,
+            "turnover": 0.0,
+            "cost_per_trade": 0.002
+          }
+        },
+        "momentum_baseline": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.42,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 2343,
+              "HOLD": 8,
+              "LONG": 2401
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.3611,
+                "recall": 0.469,
+                "f1": 0.408,
+                "support": 1804,
+                "predicted": 2343
+              },
+              "HOLD": {
+                "precision": 0.375,
+                "recall": 0.003,
+                "f1": 0.0059,
+                "support": 1002,
+                "predicted": 8
+              },
+              "LONG": {
+                "precision": 0.3882,
+                "recall": 0.4789,
+                "f1": 0.4288,
+                "support": 1946,
+                "predicted": 2401
+              }
+            },
+            "macro_f1": 0.2809,
+            "accuracy": 0.3748,
+            "directional_accuracy": 0.3748,
+            "coverage": 0.9983,
+            "calibration_error": 0.2252,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  846,
+                  1,
+                  957
+                ],
+                [
+                  487,
+                  3,
+                  512
+                ],
+                [
+                  1010,
+                  4,
+                  932
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 792,
+            "net_return": -0.779238,
+            "gross_return": 0.137262,
+            "total_costs": 1.584,
+            "avg_trade": -0.001827,
+            "win_rate": 0.375,
+            "profit_factor": 0.658,
+            "sharpe": -5.547,
+            "max_drawdown": 0.7907,
+            "exposure": 1.0,
+            "turnover": 1584.0,
+            "cost_per_trade": 0.002
+          }
+        },
+        "mtst": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.42,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 151,
+              "HOLD": 4440,
+              "LONG": 161
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.4636,
+                "recall": 0.0388,
+                "f1": 0.0716,
+                "support": 1804,
+                "predicted": 151
+              },
+              "HOLD": {
+                "precision": 0.2178,
+                "recall": 0.9651,
+                "f1": 0.3554,
+                "support": 1002,
+                "predicted": 4440
+              },
+              "LONG": {
+                "precision": 0.4658,
+                "recall": 0.0385,
+                "f1": 0.0712,
+                "support": 1946,
+                "predicted": 161
+              }
+            },
+            "macro_f1": 0.1661,
+            "accuracy": 0.234,
+            "directional_accuracy": 0.4647,
+            "coverage": 0.0657,
+            "calibration_error": 0.075,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  70,
+                  1669,
+                  65
+                ],
+                [
+                  14,
+                  967,
+                  21
+                ],
+                [
+                  67,
+                  1804,
+                  75
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 123,
+            "net_return": -0.124785,
+            "gross_return": 0.135083,
+            "total_costs": 0.246,
+            "avg_trade": -0.000902,
+            "win_rate": 0.4472,
+            "profit_factor": 0.8694,
+            "sharpe": -1.8055,
+            "max_drawdown": 0.2772,
+            "exposure": 0.1553,
+            "turnover": 246.0,
+            "cost_per_trade": 0.002
+          }
+        }
+      }
+    },
+    {
+      "fold": 3,
+      "seed": 345,
+      "samples": {
+        "train": 35157,
+        "inner_validation": 4752,
+        "outer_validation": 4752
+      },
+      "periods": {
+        "train": {
+          "start": "2020-01-04 06:00:00+00:00",
+          "end": "2024-04-12 13:00:00+00:00",
+          "rows": 36160,
+          "row_range": [
+            0,
+            36160
+          ]
+        },
+        "inner_validation": {
+          "start": "2024-04-12 14:00:00+00:00",
+          "end": "2024-10-30 10:00:00+00:00",
+          "rows": 4821,
+          "row_range": [
+            36160,
+            40981
+          ]
+        },
+        "outer_validation": {
+          "start": "2024-10-30 11:00:00+00:00",
+          "end": "2025-05-19 07:00:00+00:00",
+          "rows": 4821,
+          "row_range": [
+            40981,
+            45802
+          ]
+        }
+      },
+      "selection": {
+        "best_epoch": 5,
+        "threshold": 0.56,
+        "inner_validation_loss": 1.077816048856536
+      },
+      "outer_validation": {
+        "majority_baseline": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.56,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 0,
+              "HOLD": 4752,
+              "LONG": 0
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 1820,
+                "predicted": 0
+              },
+              "HOLD": {
+                "precision": 0.1917,
+                "recall": 1.0,
+                "f1": 0.3217,
+                "support": 911,
+                "predicted": 4752
+              },
+              "LONG": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 2021,
+                "predicted": 0
+              }
+            },
+            "macro_f1": 0.1072,
+            "accuracy": 0.1917,
+            "directional_accuracy": 0.0,
+            "coverage": 0.0,
+            "calibration_error": 0.0147,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  1820,
+                  0
+                ],
+                [
+                  0,
+                  911,
+                  0
+                ],
+                [
+                  0,
+                  2021,
+                  0
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 0,
+            "net_return": 0.0,
+            "gross_return": 0.0,
+            "total_costs": 0.0,
+            "avg_trade": 0.0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "sharpe": 0.0,
+            "max_drawdown": 0.0,
+            "exposure": 0.0,
+            "turnover": 0.0,
+            "cost_per_trade": 0.002
+          }
+        },
+        "momentum_baseline": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.56,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 2237,
+              "HOLD": 5,
+              "LONG": 2510
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.3684,
+                "recall": 0.4527,
+                "f1": 0.4062,
+                "support": 1820,
+                "predicted": 2237
+              },
+              "HOLD": {
+                "precision": 0.2,
+                "recall": 0.0011,
+                "f1": 0.0022,
+                "support": 911,
+                "predicted": 5
+              },
+              "LONG": {
+                "precision": 0.4016,
+                "recall": 0.4988,
+                "f1": 0.4449,
+                "support": 2021,
+                "predicted": 2510
+              }
+            },
+            "macro_f1": 0.2844,
+            "accuracy": 0.3857,
+            "directional_accuracy": 0.3859,
+            "coverage": 0.9989,
+            "calibration_error": 0.2143,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  824,
+                  1,
+                  995
+                ],
+                [
+                  403,
+                  1,
+                  507
+                ],
+                [
+                  1010,
+                  3,
+                  1008
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 792,
+            "net_return": -0.843939,
+            "gross_return": -0.196088,
+            "total_costs": 1.584,
+            "avg_trade": -0.002248,
+            "win_rate": 0.3813,
+            "profit_factor": 0.6227,
+            "sharpe": -6.2252,
+            "max_drawdown": 0.8664,
+            "exposure": 1.0,
+            "turnover": 1584.0,
+            "cost_per_trade": 0.002
+          }
+        },
+        "mtst": {
+          "classification": {
+            "n_samples": 4752,
+            "threshold": 0.56,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 3,
+              "HOLD": 4738,
+              "LONG": 11
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.6667,
+                "recall": 0.0011,
+                "f1": 0.0022,
+                "support": 1820,
+                "predicted": 3
+              },
+              "HOLD": {
+                "precision": 0.1919,
+                "recall": 0.9978,
+                "f1": 0.3218,
+                "support": 911,
+                "predicted": 4738
+              },
+              "LONG": {
+                "precision": 0.4545,
+                "recall": 0.0025,
+                "f1": 0.0049,
+                "support": 2021,
+                "predicted": 11
+              }
+            },
+            "macro_f1": 0.1096,
+            "accuracy": 0.1928,
+            "directional_accuracy": 0.5,
+            "coverage": 0.0029,
+            "calibration_error": 0.037,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  2,
+                  1813,
+                  5
+                ],
+                [
+                  1,
+                  909,
+                  1
+                ],
+                [
+                  0,
+                  2016,
+                  5
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 12,
+            "net_return": 0.007225,
+            "gross_return": 0.035291,
+            "total_costs": 0.024,
+            "avg_trade": 0.000941,
+            "win_rate": 0.4167,
+            "profit_factor": 1.1019,
+            "sharpe": 1.31,
+            "max_drawdown": 0.0869,
+            "exposure": 0.0152,
+            "turnover": 24.0,
+            "cost_per_trade": 0.002
+          }
+        }
+      }
+    }
+  ],
+  "summary": {
+    "folds": 4,
+    "aggregated_from": "outer_validation",
+    "per_model": {
+      "majority_baseline": {
+        "macro_f1": {
+          "mean": 0.1282,
+          "std": 0.024654,
+          "values": [
+            0.1633,
+            0.1262,
+            0.1161,
+            0.1072
+          ]
+        },
+        "directional_accuracy": {
+          "mean": 0.0811,
+          "std": 0.1622,
+          "values": [
+            0.3244,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "coverage": {
+          "mean": 0.25,
+          "std": 0.5,
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "calibration_error": {
+          "mean": 0.033625,
+          "std": 0.055045,
+          "values": [
+            0.1157,
+            0.0029,
+            0.0012,
+            0.0147
+          ]
+        },
+        "n_trades": {
+          "mean": 195.25,
+          "std": 390.5,
+          "values": [
+            781.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "net_return": {
+          "mean": -0.188596,
+          "std": 0.377192,
+          "values": [
+            -0.754383,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "sharpe": {
+          "mean": -1.455675,
+          "std": 2.91135,
+          "values": [
+            -5.8227,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "max_drawdown": {
+          "mean": 0.19565,
+          "std": 0.3913,
+          "values": [
+            0.7826,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "positive_net_return_folds": 0
+      },
+      "momentum_baseline": {
+        "macro_f1": {
+          "mean": 0.270275,
+          "std": 0.018716,
+          "values": [
+            0.2432,
+            0.2726,
+            0.2809,
+            0.2844
+          ]
+        },
+        "directional_accuracy": {
+          "mean": 0.358175,
+          "std": 0.038157,
+          "values": [
+            0.3018,
+            0.3702,
+            0.3748,
+            0.3859
+          ]
+        },
+        "coverage": {
+          "mean": 0.998025,
+          "std": 0.000885,
+          "values": [
+            0.9968,
+            0.9981,
+            0.9983,
+            0.9989
+          ]
+        },
+        "calibration_error": {
+          "mean": 0.242025,
+          "std": 0.038225,
+          "values": [
+            0.2985,
+            0.2301,
+            0.2252,
+            0.2143
+          ]
+        },
+        "n_trades": {
+          "mean": 789.0,
+          "std": 6.0,
+          "values": [
+            780.0,
+            792.0,
+            792.0,
+            792.0
+          ]
+        },
+        "net_return": {
+          "mean": -0.803651,
+          "std": 0.03421,
+          "values": [
+            -0.819857,
+            -0.77157,
+            -0.779238,
+            -0.843939
+          ]
+        },
+        "sharpe": {
+          "mean": -6.020525,
+          "std": 0.917373,
+          "values": [
+            -7.2091,
+            -5.1008,
+            -5.547,
+            -6.2252
+          ]
+        },
+        "max_drawdown": {
+          "mean": 0.825475,
+          "std": 0.044927,
+          "values": [
+            0.8621,
+            0.7827,
+            0.7907,
+            0.8664
+          ]
+        },
+        "positive_net_return_folds": 0
+      },
+      "mtst": {
+        "macro_f1": {
+          "mean": 0.168575,
+          "std": 0.046133,
+          "values": [
+            0.2218,
+            0.1768,
+            0.1661,
+            0.1096
+          ]
+        },
+        "directional_accuracy": {
+          "mean": 0.5068,
+          "std": 0.049053,
+          "values": [
+            0.4854,
+            0.5771,
+            0.4647,
+            0.5
+          ]
+        },
+        "coverage": {
+          "mean": 0.045075,
+          "std": 0.02858,
+          "values": [
+            0.0585,
+            0.0532,
+            0.0657,
+            0.0029
+          ]
+        },
+        "calibration_error": {
+          "mean": 0.112,
+          "std": 0.086264,
+          "values": [
+            0.2353,
+            0.1007,
+            0.075,
+            0.037
+          ]
+        },
+        "n_trades": {
+          "mean": 75.5,
+          "std": 46.651188,
+          "values": [
+            76.0,
+            91.0,
+            123.0,
+            12.0
+          ]
+        },
+        "net_return": {
+          "mean": -0.0418,
+          "std": 0.171052,
+          "values": [
+            -0.22219,
+            0.172551,
+            -0.124785,
+            0.007225
+          ]
+        },
+        "sharpe": {
+          "mean": -0.359225,
+          "std": 4.211082,
+          "values": [
+            -5.3848,
+            4.4434,
+            -1.8055,
+            1.31
+          ]
+        },
+        "max_drawdown": {
+          "mean": 0.1899,
+          "std": 0.121112,
+          "values": [
+            0.311,
+            0.0845,
+            0.2772,
+            0.0869
+          ]
+        },
+        "positive_net_return_folds": 2
+      }
+    },
+    "mtst_beat_baselines_in_folds": 3,
+    "verdict": "model beat both baselines in a majority of outer-validation folds"
+  }
+}
