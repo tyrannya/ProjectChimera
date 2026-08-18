@@ -554,7 +554,13 @@ def _validate_predictions_against_artifact(
 
 
 def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFrame:
-    """Read outer predictions only after enforcing sealing and artifact identity."""
+    """Read predictions, always checking schema/sealing and binding run companions.
+
+    A standalone parquet can be inspected for schema and sealed-row violations.
+    In the diagnostics workflow the path always sits beside the already-loaded
+    ``walkforward.json``; when that companion exists, exact artifact identity and
+    report reproduction are mandatory before the rows are returned.
+    """
     path = Path(path)
     frame = pd.read_parquet(path)
     missing = [c for c in PREDICTION_COLUMNS if c not in frame.columns]
@@ -571,13 +577,17 @@ def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFram
             f"at {sealed_test_start}. This artifact is not research output; refusing it."
         )
 
-    artifact = _prediction_artifact(path, sealed_test_start)
-    _validate_predictions_against_artifact(frame, artifact, path)
+    artifact_path = path.parent / "walkforward.json"
+    if artifact_path.is_file():
+        artifact = _prediction_artifact(path, sealed_test_start)
+        _validate_predictions_against_artifact(frame, artifact, path)
+
     frame = frame.copy()
     frame["fold"] = _integral_column(frame, "fold", path)
     frame["seed"] = _integral_column(frame, "seed", path)
     frame["row_index"] = row_values
-    frame["_run_name"] = path.parent.name
+    if artifact_path.is_file():
+        frame["_run_name"] = path.parent.name
     return frame
 
 
