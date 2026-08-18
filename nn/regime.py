@@ -42,6 +42,7 @@ caused anything is not a question this data can answer.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -437,8 +438,118 @@ PREDICTION_COLUMNS = (
 )
 
 
+def _prediction_artifact(path: Path, sealed_test_start: int) -> dict[str, Any]:
+    """Load the adjacent walk-forward artifact that explicitly declares ``path``."""
+    artifact_path = path.parent / "walkforward.json"
+    if not artifact_path.is_file():
+        raise RegimeDataError(
+            f"{path} has no adjacent walkforward.json; prediction identity cannot be verified"
+        )
+    try:
+        artifact = json.loads(artifact_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise RegimeDataError(f"{artifact_path} is not readable JSON: {exc}") from exc
+    if not isinstance(artifact, dict):
+        raise RegimeDataError(f"{artifact_path} is not a JSON object")
+
+    declared = artifact.get("outer_predictions")
+    if declared != path.name:
+        raise RegimeDataError(
+            f"{path} exists but {artifact_path} declares outer_predictions={declared!r}; "
+            "refusing a stale or unrelated prediction file"
+        )
+    recorded_boundary = (artifact.get("sealed_test") or {}).get("start_row")
+    if recorded_boundary is None or int(recorded_boundary) != sealed_test_start:
+        raise RegimeDataError(
+            f"{artifact_path} sealed boundary is {recorded_boundary!r}, but diagnostics "
+            f"expects {sealed_test_start}"
+        )
+    return artifact
+
+
+def _validate_predictions_against_artifact(
+    frame: pd.DataFrame, artifact: Mapping[str, Any], path: Path
+) -> None:
+    """Prove the parquet is the sample-level companion of its JSON artifact."""
+    folds = artifact.get("folds")
+    base_seed = (artifact.get("config") or {}).get("seed")
+    if not isinstance(folds, list) or not folds:
+        raise RegimeDataError(f"{path.parent / 'walkforward.json'} has no folds to validate")
+    if not isinstance(base_seed, int):
+        raise RegimeDataError(
+            f"{path.parent / 'walkforward.json'} has no integer config.seed to validate"
+        )
+
+    try:
+        actual_folds = set(frame["fold"].astype(int).tolist())
+    except (TypeError, ValueError) as exc:
+        raise RegimeDataError(f"{path} has non-integer fold values") from exc
+    expected_folds = {int(fold.get("fold", position)) for position, fold in enumerate(folds)}
+    if actual_folds != expected_folds:
+        raise RegimeDataError(
+            f"{path} fold ids are {sorted(actual_folds)}, artifact records "
+            f"{sorted(expected_folds)}"
+        )
+
+    for position, fold in enumerate(folds):
+        fold_id = int(fold.get("fold", position))
+        part = frame[frame["fold"].astype(int) == fold_id]
+        samples = (fold.get("samples") or {}).get("outer_validation")
+        if samples is None:
+            raise RegimeDataError(
+                f"artifact fold {fold_id} has no samples.outer_validation to validate {path}"
+            )
+        if len(part) != int(samples):
+            raise RegimeDataError(
+                f"{path} fold {fold_id} has {len(part)} rows, artifact scored {samples}"
+            )
+
+        periods = fold.get("periods") or {}
+        outer = (periods.get("outer_validation") or {}).get("row_range")
+        if not isinstance(outer, list) or len(outer) != 2:
+            raise RegimeDataError(
+                f"artifact fold {fold_id} has no outer_validation row_range to validate {path}"
+            )
+        start, end = int(outer[0]), int(outer[1])
+        rows = part["row_index"].to_numpy(dtype=np.int64)
+        if len(np.unique(rows)) != len(rows):
+            raise RegimeDataError(f"{path} fold {fold_id} contains duplicate row_index values")
+        if np.any(rows < start) or np.any(rows >= end):
+            bad = rows[(rows < start) | (rows >= end)][0]
+            raise RegimeDataError(
+                f"{path} fold {fold_id} contains row {int(bad)} outside artifact outer "
+                f"range [{start}, {end})"
+            )
+
+        seeds = set(part["seed"].astype(int).tolist())
+        expected_seed = base_seed + fold_id
+        if seeds != {expected_seed}:
+            raise RegimeDataError(
+                f"{path} fold {fold_id} seed values are {sorted(seeds)}, expected "
+                f"only {expected_seed} from artifact config.seed={base_seed}"
+            )
+
+        expected_threshold = float((fold.get("selection") or {}).get("threshold"))
+        thresholds = part["threshold"].to_numpy(dtype=np.float64)
+        if not np.allclose(thresholds, expected_threshold, rtol=0.0, atol=1e-12):
+            raise RegimeDataError(
+                f"{path} fold {fold_id} threshold does not match artifact selection "
+                f"threshold {expected_threshold}"
+            )
+
+
 def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFrame:
-    """Read persisted outer predictions, refusing anything sealed or malformed."""
+    """Read outer predictions only after proving they belong to their artifact.
+
+    The conventional filename is not identity. A reused output directory can
+    contain a parquet from an interrupted or older run, so the adjacent JSON
+    must explicitly declare the file and its folds, seeds, row ranges, sample
+    counts and selected thresholds must match before attribution is allowed.
+    The source directory is retained as an internal run identity so two
+    independent runs with the same seed never become one trade stream.
+    """
+    path = Path(path)
+    artifact = _prediction_artifact(path, sealed_test_start)
     frame = pd.read_parquet(path)
     missing = [c for c in PREDICTION_COLUMNS if c not in frame.columns]
     if missing:
@@ -452,6 +563,10 @@ def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFram
             f"{path} contains row {highest}, at or beyond the sealed test block starting "
             f"at {sealed_test_start}. This artifact is not research output; refusing it."
         )
+
+    _validate_predictions_against_artifact(frame, artifact, path)
+    frame = frame.copy()
+    frame["_run_name"] = path.parent.name
     return frame
 
 
@@ -462,28 +577,34 @@ def direction_attribution(
 
     The trades come from :func:`nn.evaluate.realised_trades` — the function
     ``trading_metrics`` itself uses — so the two sides partition exactly the
-    trades the fold reports, and no second transaction-cost implementation
-    exists to drift from the first.
+    trades produced under the same gap-aware row-index semantics, and no second
+    transaction-cost implementation exists to drift from the first.
 
     What it does **not** give you is a decomposition of the fold's net return.
     That figure compounds; ``additive_trade_return_sum`` adds. The two sides'
     sums therefore do not add up to the reported net return, and the field is
     named for what it is rather than for what it would be convenient to call it.
 
-    Trades are generated per ``(fold, seed)`` group: the non-overlap rule is
-    about one model walking one block in time order, and pooling the groups
-    first would let one run's trade suppress another's.
+    Trades are generated per source run, fold and training seed. Source-run
+    identity matters even when two independent runs intentionally reused the
+    same ``--seed``. Non-overlap is enforced against persisted ``row_index``, not
+    compressed-array position, so a market-data gap cannot let a pre-gap trade
+    suppress valid post-gap signals.
     """
     short_idx, hold_idx, long_idx = range(len(CLASS_ORDER))
     directions: list[np.ndarray] = []
     returns: list[np.ndarray] = []
 
-    ordered = predictions.sort_values(["fold", "seed", "row_index"])
-    for _, group in ordered.groupby(["fold", "seed"], sort=True):
+    group_keys = ["fold", "seed"]
+    if "_run_name" in predictions.columns:
+        group_keys.insert(0, "_run_name")
+    ordered = predictions.sort_values([*group_keys, "row_index"])
+    for _, group in ordered.groupby(group_keys, sort=True):
         _, group_directions, group_returns = ev.realised_trades(
             group["selected_action"].to_numpy(dtype=np.int64),
             group["future_return"].to_numpy(dtype=np.float64),
             target_spec,
+            row_index=group["row_index"].to_numpy(dtype=np.int64),
         )
         directions.append(group_directions)
         returns.append(group_returns)
