@@ -76,7 +76,7 @@ experiment:  ## Grid search scored on validation only. Args: DATASET EPOCHS SEQ_
 		--seq-len $(SEQ_LEN) --seed 1 2 3 --lr 1e-4 3e-4 1e-3 \
 		--out artifacts/experiments
 
-walkforward:  ## Walk-forward validation across expanding folds
+walkforward:  ## Nested walk-forward validation (train -> inner val -> outer val)
 	$(PYTHON) -m nn.walkforward --dataset $(DATASET) --folds 4 --epochs $(EPOCHS) \
 		--seq-len $(SEQ_LEN) --out artifacts/walkforward
 

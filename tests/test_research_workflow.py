@@ -1,14 +1,24 @@
 """Safeguards for the research workflow.
 
-The workflow is only worth anything if the sealed test split stays sealed, so
-these tests assert that property directly rather than trusting the entrypoints
-to be well behaved. The technique throughout is a spy on ``nn.train`` internals:
-if ``build_windows`` is never called with the test split, no test row can have
-reached a metric, because windowing is the only way to get one there.
+Two properties this suite exists to hold, both asserted directly rather than
+trusted to well-behaved entrypoints:
+
+1. **The sealed test split stays sealed.** The technique is a spy on
+   ``nn.train`` internals: if ``build_windows`` is never called with the test
+   split, no test row can have reached a metric, because windowing is the only
+   way to get one there.
+2. **Walk-forward reports a block it never fitted anything on.** Every fold has
+   three chronological regions — train, inner validation, outer validation. The
+   scaler and weights come from train; early stopping and the decision threshold
+   come from inner; only outer is reported. Section 4b spies on every fitting
+   step of a real run and checks which rows each one saw.
 
 A guard test that cannot fail is worse than none, so the "test was not
 windowed" assertions are paired with a control that runs the same entrypoint
-*without* research mode and checks the test split IS windowed there.
+*without* research mode and checks the test split IS windowed there. For the
+same reason the assertions about fold geometry are on row indices: a check that
+a block is *named* ``outer_validation`` would have passed against the two-region
+design this suite was written to rule out.
 """
 
 from __future__ import annotations
@@ -19,12 +29,13 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 
 from chimera.contracts import ModelMetadata, TargetSpec
 from chimera.features import FeatureSpec
 from nn import experiment, train, walkforward
 from nn.data_pipeline import build_dataset, save_dataset
-from nn.dataset import Split, chronological_split, sealed_test_start
+from nn.dataset import Split, chronological_split, sealed_test_start, window_indices
 from nn.model_def import MTST, MTSTConfig
 from nn.registry import promote, resolve_current, save_model
 from tools.make_sample_data import generate_candles
@@ -345,38 +356,104 @@ def test_every_grid_dimension_the_docs_promise_is_wired_up(dataset, tmp_path):
     }
 
 
-# --- 4. walk-forward ----------------------------------------------------------
-def test_expanding_folds_are_chronological_and_grow_forward():
-    folds = walkforward.plan_expanding_folds(
-        boundary=1000, folds=4, min_train=400, val_size=100, step=125
+# --- 4. walk-forward: three chronological regions per fold --------------------
+#
+# TRAIN -> INNER VALIDATION -> OUTER VALIDATION. The scaler and the weights are
+# fitted on train; early stopping and the decision threshold are chosen on
+# inner; the frozen model is measured once on outer, and only outer becomes the
+# fold's reported result.
+#
+# The previous design had two regions and used the second one twice — it chose
+# the threshold and the early-stopping epoch on the validation block and then
+# reported that same block as the fold's performance. The tests below assert the
+# separation on row indices, because "the split is called outer_validation" is
+# exactly the kind of claim that was true of the old leaky geometry too.
+
+#: Rows in the BTC 1h dataset the default geometry is sized against.
+BTC_ROWS = 56726
+
+
+def plan_defaults(boundary, folds=4):
+    """The plan the CLI defaults produce for a research region of ``boundary`` rows."""
+    args = walkforward.build_argparser().parse_args(["--dataset", "x", "--folds", str(folds)])
+    sizes = walkforward.resolve_sizes(args, boundary)
+    return walkforward.plan_nested_folds(boundary, args.folds, *sizes)
+
+
+def test_nested_folds_are_chronological_and_grow_forward():
+    folds = walkforward.plan_nested_folds(
+        boundary=1000, folds=4, min_train=400, inner_size=100, outer_size=100, step=100
     )
     assert len(folds) == 4
 
     previous_train_end = 0
-    for train_split, val_split in folds:
-        # Validation is strictly after training, always.
-        assert val_split.start >= train_split.end
-        assert val_split.end > val_split.start
+    for plan in folds:
         # Expanding: training always starts at the beginning and only grows.
-        assert train_split.start == 0
-        assert train_split.end > previous_train_end
-        previous_train_end = train_split.end
-
-    # The forbidden direction: no fold may train on rows a later fold validates,
-    # and no fold's validation rows may appear in an earlier fold's training.
-    for i, (_, val_split) in enumerate(folds):
-        for j, (train_split, _) in enumerate(folds):
-            if j <= i:
-                assert train_split.end <= val_split.start
+        assert plan.train.start == 0
+        assert plan.train.end > previous_train_end
+        previous_train_end = plan.train.end
+        # train -> inner -> outer, in that order, with no inversion.
+        assert plan.train.end <= plan.inner.start
+        assert plan.inner.end <= plan.outer.start
+        assert len(plan.train) > 0 and len(plan.inner) > 0 and len(plan.outer) > 0
 
 
-def test_expanding_folds_refuse_a_research_region_that_is_too_short():
-    with pytest.raises(
-        ValueError, match=r"need 999 rows .*only 500 rows lie before the sealed"
-    ):
-        walkforward.plan_expanding_folds(
-            boundary=500, folds=4, min_train=400, val_size=200, step=133
+def test_outer_validation_blocks_never_overlap():
+    """No row may be reported as the result of two folds."""
+    for step in (100, 137, 250):
+        folds = walkforward.plan_nested_folds(
+            boundary=2000, folds=4, min_train=800, inner_size=100, outer_size=100, step=step
         )
+        scored: set[int] = set()
+        for plan in folds:
+            rows = set(range(plan.outer.start, plan.outer.end))
+            assert not (rows & scored), f"an outer row is reported twice at step={step}"
+            scored |= rows
+
+
+def test_the_default_step_makes_outer_blocks_contiguous():
+    """Back to back, so the reported blocks tile one stretch without overlapping."""
+    folds = plan_defaults(sealed_test_start(BTC_ROWS, 0.70, 0.15))
+    for previous, plan in zip(folds, folds[1:]):
+        assert plan.outer.start == previous.outer.end
+
+
+def test_a_step_below_the_outer_block_is_refused():
+    """Overlapping outer blocks are an error, not a silently double-counted row."""
+    with pytest.raises(ValueError, match="consecutive outer blocks would overlap"):
+        walkforward.plan_nested_folds(
+            boundary=2000, folds=3, min_train=800, inner_size=100, outer_size=200, step=150
+        )
+
+
+def test_no_fold_fits_on_a_row_that_it_or_a_later_fold_reports():
+    """The direction that matters: nothing fitted may see a row still to be scored.
+
+    The opposite direction is allowed on purpose — a later fold may *train* on an
+    earlier fold's outer block, because by then those rows are history.
+    """
+    folds = plan_defaults(sealed_test_start(BTC_ROWS, 0.70, 0.15))
+    for k, plan in enumerate(folds):
+        for later in folds[k:]:
+            assert plan.train.end <= later.outer.start
+            assert plan.inner.end <= later.outer.start
+
+
+def test_nested_folds_refuse_a_research_region_that_is_too_short():
+    with pytest.raises(
+        ValueError, match=r"need 1300 rows .*only 500 rows lie before the sealed"
+    ):
+        walkforward.plan_nested_folds(
+            boundary=500, folds=4, min_train=400, inner_size=100, outer_size=200, step=200
+        )
+
+
+def test_the_planner_does_not_quietly_return_fewer_folds_than_asked_for():
+    """Failing loudly beats a summary that says four folds and aggregates two."""
+    boundary = sealed_test_start(BTC_ROWS, 0.70, 0.15)
+    assert len(plan_defaults(boundary, folds=4)) == 4
+    with pytest.raises(ValueError, match="lie before the sealed test block"):
+        plan_defaults(boundary, folds=40)
 
 
 def test_default_fold_sizes_fit_the_research_region(dataset):
@@ -388,65 +465,390 @@ def test_default_fold_sizes_fit_the_research_region(dataset):
     data = train.load_research_data(dataset)
     args = walkforward.build_argparser().parse_args(["--dataset", str(dataset)])
     boundary = sealed_test_start(data.n_rows, args.train_frac, args.val_frac)
-    min_train, val_size, step = walkforward.resolve_sizes(args, boundary)
-    folds = walkforward.plan_expanding_folds(boundary, args.folds, min_train, val_size, step)
+    folds = walkforward.plan_nested_folds(
+        boundary, args.folds, *walkforward.resolve_sizes(args, boundary)
+    )
 
     assert len(folds) == args.folds
-    assert folds[-1][1].end <= boundary < data.n_rows
+    assert folds[-1].outer.end <= boundary < data.n_rows
 
 
-def test_walkforward_never_scores_test(dataset, tmp_path, windowed_splits):
-    out = tmp_path / "wf"
-    assert (
-        walkforward.main(
-            [
-                "--dataset",
-                str(dataset),
-                "--out",
-                str(out),
-                "--folds",
-                "2",
-                *TINY,
-            ]
+def test_the_default_geometry_for_the_btc_research_region():
+    """The exact 4-fold plan for the 56,726-row BTC dataset, pinned row by row.
+
+    The sealed block starts at row 48,217; every number below is under it, and
+    the four outer blocks are disjoint.
+    """
+    boundary = sealed_test_start(BTC_ROWS, 0.70, 0.15)
+    assert boundary == 48217
+
+    args = walkforward.build_argparser().parse_args(["--dataset", "x"])
+    assert args.folds == 4
+    min_train, inner_size, outer_size, step = walkforward.resolve_sizes(args, boundary)
+    assert (min_train, inner_size, outer_size, step) == (21697, 4821, 4821, 4821)
+
+    folds = walkforward.plan_nested_folds(boundary, 4, min_train, inner_size, outer_size, step)
+    assert [
+        (p.train.start, p.train.end, p.inner.start, p.inner.end, p.outer.start, p.outer.end)
+        for p in folds
+    ] == [
+        (0, 21697, 21697, 26518, 26518, 31339),
+        (0, 26518, 26518, 31339, 31339, 36160),
+        (0, 31339, 31339, 36160, 36160, 40981),
+        (0, 36160, 36160, 40981, 40981, 45802),
+    ]
+    assert folds[-1].outer.end <= boundary < BTC_ROWS
+
+
+# --- 4b. what each block is allowed to touch, spied on a real run -------------
+#
+# One walk-forward run, every fitting step instrumented, asserted from several
+# angles. The record is built once because the assertions are about a single
+# run's behaviour, not about six independent runs.
+
+WF_FOLDS = 2
+
+
+@pytest.fixture(scope="module")
+def spied_run(dataset, tmp_path_factory):
+    """Run walk-forward once, recording every fit and every windowed split."""
+    out = tmp_path_factory.mktemp("wf_spied")
+    record: dict[str, Any] = {
+        "scaler_fits": [],
+        "threshold_returns": [],
+        "windowed": [],
+        "early_stopping": [],
+        "frozen_splits": [],
+        "majority_fits": [],
+        "prepared": [],
+    }
+
+    with pytest.MonkeyPatch.context() as mp:
+        originals = {
+            "scaler": train.StandardScaler.fit,
+            "threshold": train.ev.select_threshold,
+            "windows": train.build_windows,
+            "train_model": train.train_model,
+            "frozen": train.score_frozen_split,
+            "majority": train.MajorityClassBaseline.fit,
+            "prepare": train.prepare_research_windows,
+        }
+
+        def scaler_spy(self, X):
+            record["scaler_fits"].append(np.asarray(X).copy())
+            return originals["scaler"](self, X)
+
+        def threshold_spy(proba, future_return, target_spec, **kwargs):
+            record["threshold_returns"].append(np.asarray(future_return).copy())
+            return originals["threshold"](proba, future_return, target_spec, **kwargs)
+
+        def windows_spy(features, targets, split, seq_len, horizon, **kwargs):
+            record["windowed"].append((split.name, split.start, split.end, len(features)))
+            return originals["windows"](features, targets, split, seq_len, horizon, **kwargs)
+
+        def train_model_spy(config, X_train, y_train, X_val, y_val, **kwargs):
+            record["early_stopping"].append((X_train, y_train, X_val, y_val))
+            return originals["train_model"](config, X_train, y_train, X_val, y_val, **kwargs)
+
+        def frozen_spy(data_arg, scaler, split, seq_len, **kwargs):
+            reports, idx = originals["frozen"](data_arg, scaler, split, seq_len, **kwargs)
+            record["frozen_splits"].append((split.name, split.start, split.end, idx))
+            return reports, idx
+
+        def majority_spy(self, y):
+            record["majority_fits"].append(np.asarray(y).copy())
+            return originals["majority"](self, y)
+
+        def prepare_spy(data_arg, train_split, val_split, seq_len):
+            prepared = originals["prepare"](data_arg, train_split, val_split, seq_len)
+            record["prepared"].append(prepared)
+            return prepared
+
+        mp.setattr(train.StandardScaler, "fit", scaler_spy)
+        mp.setattr(train.ev, "select_threshold", threshold_spy)
+        mp.setattr(train, "build_windows", windows_spy)
+        mp.setattr(train, "train_model", train_model_spy)
+        mp.setattr(train, "score_frozen_split", frozen_spy)
+        mp.setattr(walkforward, "score_frozen_split", frozen_spy)
+        mp.setattr(train.MajorityClassBaseline, "fit", majority_spy)
+        mp.setattr(train, "prepare_research_windows", prepare_spy)
+        mp.setattr(walkforward, "prepare_research_windows", prepare_spy)
+
+        assert (
+            walkforward.main(
+                ["--dataset", str(dataset), "--out", str(out), "--folds", str(WF_FOLDS), *TINY]
+            )
+            == 0
         )
-        == 0
+
+    record["out"] = out
+    record["data"] = train.load_research_data(dataset)
+    record["results"] = json.loads((out / "walkforward.json").read_text())
+    record["boundary"] = sealed_test_start(record["data"].n_rows, 0.70, 0.15)
+    record["plan"] = plan_defaults(record["boundary"], folds=WF_FOLDS)
+    return record
+
+
+def test_the_scaler_is_fitted_on_train_rows_only_in_every_fold(spied_run):
+    features = spied_run["data"].features
+    fits = spied_run["scaler_fits"]
+
+    assert len(fits) == WF_FOLDS, "one scaler per fold, fitted once"
+    for fitted, plan in zip(fits, spied_run["plan"]):
+        np.testing.assert_allclose(fitted, features[plan.train.start : plan.train.end])
+        assert len(fitted) == len(plan.train)
+
+
+def test_early_stopping_sees_train_and_inner_validation_only(spied_run):
+    """The arrays handed to the training loop are the fold's own train/inner windows."""
+    assert len(spied_run["early_stopping"]) == WF_FOLDS
+    for (X_train, y_train, X_val, y_val), prepared in zip(
+        spied_run["early_stopping"], spied_run["prepared"]
+    ):
+        assert X_train is prepared.X_train and y_train is prepared.y_train
+        assert X_val is prepared.X_val and y_val is prepared.y_val
+        # prepared.validation is the INNER block, by construction in run_fold.
+        assert prepared.validation.name == "inner_validation"
+
+
+def test_the_threshold_is_selected_on_inner_validation_only(spied_run):
+    """One selection per fold, over exactly the inner block's rows."""
+    data, seen = spied_run["data"], spied_run["threshold_returns"]
+    assert len(seen) == WF_FOLDS, "the threshold must be selected once per fold"
+
+    for returns, prepared, plan in zip(seen, spied_run["prepared"], spied_run["plan"]):
+        idx = prepared.idx_val
+        np.testing.assert_allclose(returns, data.future_return[idx])
+        assert idx.min() >= plan.inner.start
+        assert idx.max() + data.target_spec.horizon < plan.inner.end
+        # And never the block the fold is reported on.
+        assert idx.max() < plan.outer.start
+
+
+def test_no_fold_reports_a_row_it_selected_its_own_threshold_on(spied_run):
+    """The negative of the test above, stated as disjoint sets of rows.
+
+    The threshold is a fitted parameter. Choosing it on the block that is then
+    reported is the exact optimism this design removes, so the check is that
+    within a fold, the rows the selection call saw and the rows scored as that
+    fold's result do not intersect — not merely that the call count looks right.
+
+    The check is deliberately per fold. Across folds the sets *do* meet: with the
+    default step, fold k's inner block is fold k-1's outer block. That is the
+    intended geometry — by the time fold k runs, those rows are history, and
+    choosing a threshold on history is what walk-forward is for. What must never
+    happen is a fold using its own reported rows, or any fold using rows a
+    *later* fold will report; the latter is asserted in
+    ``test_no_fold_fits_on_a_row_that_it_or_a_later_fold_reports``.
+    """
+    assert len(spied_run["threshold_returns"]) == WF_FOLDS
+    assert len(spied_run["prepared"]) == len(spied_run["frozen_splits"]) == WF_FOLDS
+
+    for prepared, (_, _, _, idx_outer) in zip(
+        spied_run["prepared"], spied_run["frozen_splits"]
+    ):
+        selected = {int(i) for i in prepared.idx_val}
+        scored = {int(i) for i in idx_outer}
+        assert selected and scored
+        assert not (selected & scored), "a fold reported a row it tuned its threshold on"
+        assert max(selected) < min(scored), "selection must precede the reported block"
+
+
+def test_no_window_or_label_crosses_a_region_boundary(spied_run):
+    """Requirement stated as index arithmetic, for all three regions of each fold.
+
+    A window that starts before its block would read rows the block does not own;
+    a label that ends after it would read a price from the next block. Both bounds
+    come from ``window_indices``, so they are checked there rather than inferred
+    from a sample count.
+    """
+    seq_len, horizon = 16, spied_run["data"].target_spec.horizon
+    for plan in spied_run["plan"]:
+        for split in (plan.train, plan.inner, plan.outer):
+            idx = window_indices(split, seq_len, horizon)
+            assert idx.size > 0, f"{split.name} is too short to hold a sample"
+            assert idx.min() - (seq_len - 1) >= split.start, "window leaves its block"
+            assert idx.max() + horizon <= split.end - 1, "label leaves its block"
+        assert plan.train.end <= plan.inner.start
+        assert plan.inner.end <= plan.outer.start
+        assert plan.outer.end <= spied_run["boundary"]
+
+
+def test_frozen_scoring_respects_market_data_gaps():
+    """The outer block goes through the same segment check as train and inner.
+
+    ``score_frozen_split`` is the only path the outer block takes, so the gap
+    safety ``nn.train`` enforces has to hold there too: a window may not bridge a
+    missing exchange candle just because it is being scored rather than trained
+    on.
+    """
+    rng = np.random.default_rng(5)
+    n = 400
+    segments = np.array([0] * 200 + [1] * 200, dtype=np.int64)
+    data = train.ResearchData(
+        ds_meta=train.DatasetMetadata(timeframe="1h"),
+        feature_names=["ema_cross", "b"],
+        feature_spec=FeatureSpec(),
+        target_spec=TargetSpec(horizon=4),
+        features=rng.normal(size=(n, 2)),
+        targets=rng.integers(0, 3, size=n),
+        future_return=rng.normal(size=n) * 0.01,
+        segment_ids=segments,
+        dates=np.arange(n),
+        candles_per_year=24 * 365,
     )
-    assert set(windowed_splits) == {"train", "validation"}, "the spy must have fired"
+    outer = Split("outer_validation", 150, 400)
+    scaler = train.StandardScaler().fit(data.features[:150])
+    model = MTST(MTSTConfig(input_dim=2, seq_len=8, d_model=8, n_heads=2, num_layers=1))
 
-    results = json.loads((out / "walkforward.json").read_text())
+    reports, idx = train.score_frozen_split(
+        data,
+        scaler,
+        outer,
+        8,
+        model=model,
+        baselines={},
+        threshold=0.5,
+        device=torch.device("cpu"),
+    )
+
+    assert set(reports) == {"mtst"}
+    assert idx.min() - 7 >= outer.start and idx.max() + 4 <= outer.end - 1
+    for i in idx:
+        assert segments[i - 7] == segments[i], "window bridges a market-data gap"
+        assert segments[i + 4] == segments[i], "label bridges a market-data gap"
+    # The filter must actually have dropped the candidates that straddle row 200.
+    assert len(idx) < len(window_indices(outer, 8, 4))
+
+
+def test_the_baselines_are_fitted_on_train_rows_only(spied_run):
+    """The majority baseline has state; it learns the prior from train windows."""
+    fits = spied_run["majority_fits"]
+    assert len(fits) == WF_FOLDS
+    for y, prepared in zip(fits, spied_run["prepared"]):
+        np.testing.assert_array_equal(y, prepared.y_train)
+
+
+def test_outer_validation_reaches_only_the_frozen_evaluation(spied_run):
+    """It is windowed exactly once per fold, and only by score_frozen_split."""
+    frozen = spied_run["frozen_splits"]
+    assert len(frozen) == WF_FOLDS
+    for (name, start, end, _), plan in zip(frozen, spied_run["plan"]):
+        assert (name, start, end) == ("outer_validation", plan.outer.start, plan.outer.end)
+
+    outer_windowings = [w for w in spied_run["windowed"] if w[0] == "outer_validation"]
+    assert len(outer_windowings) == WF_FOLDS
+
+
+def test_walkforward_windows_three_regions_and_never_the_sealed_block(spied_run):
+    windowed = spied_run["windowed"]
+    assert {name for name, *_ in windowed} == {
+        "train",
+        "inner_validation",
+        "outer_validation",
+    }
+    assert "test" not in {name for name, *_ in windowed}
+    # Asserted on rows, not names: nothing windowed reaches the sealed boundary,
+    # and the array a window is cut from does not even contain a sealed row.
+    for _, _, end, n_features_rows in windowed:
+        assert end <= spied_run["boundary"]
+        assert n_features_rows <= spied_run["boundary"]
+
+
+def test_outer_validation_samples_stay_inside_their_own_block(spied_run):
+    """Window and label horizon alike, asserted on the indices actually scored."""
+    horizon = spied_run["data"].target_spec.horizon
+    seq_len = 16  # TINY
+    for (_, start, end, idx), plan in zip(spied_run["frozen_splits"], spied_run["plan"]):
+        assert (start, end) == (plan.outer.start, plan.outer.end)
+        assert idx.min() - (seq_len - 1) >= plan.outer.start, "window reaches into inner"
+        assert idx.max() + horizon < plan.outer.end, "label reaches past the fold"
+        assert idx.max() + horizon < spied_run["boundary"], "label reaches sealed rows"
+
+
+def test_no_row_is_scored_as_outer_validation_in_two_folds(spied_run):
+    """End to end on the rows actually evaluated, not on the plan."""
+    scored: set[int] = set()
+    horizon = spied_run["data"].target_spec.horizon
+    for _, _, _, idx in spied_run["frozen_splits"]:
+        rows = set(int(i) for i in idx)
+        assert not (rows & scored), "a row was evaluated as outer validation twice"
+        scored |= rows
+        assert max(rows) + horizon < spied_run["boundary"]
+
+
+def test_the_output_schema_names_all_three_regions(spied_run):
+    results = spied_run["results"]
+
     assert results["test_evaluated"] is False
-    for fold in results["folds"]:
+    assert results["reported_block"] == "outer_validation"
+    assert results["sealed_test"]["evaluated"] is False
+    assert results["sealed_test"]["start_row"] == spied_run["boundary"]
+
+    for fold, plan in zip(results["folds"], spied_run["plan"]):
+        assert set(fold["periods"]) == {"train", "inner_validation", "outer_validation"}
+        assert set(fold["selection"]) == {
+            "best_epoch",
+            "threshold",
+            "inner_validation_loss",
+        }
+        assert set(fold["outer_validation"]) == set(walkforward.MODELS)
+        # The ambiguous single "validation" key is gone: a reader cannot mistake
+        # the selection block for the reported one.
+        assert "validation" not in fold
         assert "test" not in fold
-        assert set(fold["validation"]) == {"majority_baseline", "momentum_baseline", "mtst"}
 
-
-def test_walkforward_records_the_time_boundaries_of_every_fold(dataset, tmp_path):
-    out = tmp_path / "wf"
-    walkforward.main(["--dataset", str(dataset), "--out", str(out), "--folds", "2", *TINY])
-    folds = json.loads((out / "walkforward.json").read_text())["folds"]
-
-    for fold in folds:
-        train_period, val_period = fold["periods"]["train"], fold["periods"]["validation"]
-        for period in (train_period, val_period):
+        assert fold["periods"]["train"]["row_range"] == [plan.train.start, plan.train.end]
+        assert fold["periods"]["inner_validation"]["row_range"] == [
+            plan.inner.start,
+            plan.inner.end,
+        ]
+        assert fold["periods"]["outer_validation"]["row_range"] == [
+            plan.outer.start,
+            plan.outer.end,
+        ]
+        for period in fold["periods"].values():
             assert period["start"] and period["end"] and period["rows"] > 0
-        assert train_period["end"] <= val_period["start"], "validation precedes training"
-    assert folds[1]["periods"]["train"]["rows"] > folds[0]["periods"]["train"]["rows"]
+            assert period["row_range"][1] <= spied_run["boundary"]
+
+    train_rows = [f["periods"]["train"]["rows"] for f in results["folds"]]
+    assert train_rows == sorted(train_rows) and train_rows[-1] > train_rows[0]
 
 
-def test_walkforward_aggregates_mean_and_std_across_folds(dataset, tmp_path):
-    out = tmp_path / "wf"
-    walkforward.main(["--dataset", str(dataset), "--out", str(out), "--folds", "2", *TINY])
-    results = json.loads((out / "walkforward.json").read_text())
-    summary = results["summary"]
+def test_the_json_regions_are_ordered_train_inner_outer(spied_run):
+    for fold in spied_run["results"]["folds"]:
+        periods = fold["periods"]
+        assert periods["train"]["row_range"][1] <= periods["inner_validation"]["row_range"][0]
+        assert (
+            periods["inner_validation"]["row_range"][1]
+            <= periods["outer_validation"]["row_range"][0]
+        )
 
-    assert summary["folds"] == 2
+
+def test_the_summary_aggregates_outer_validation_only(spied_run):
+    summary = spied_run["results"]["summary"]
+
+    assert summary["folds"] == WF_FOLDS
+    assert summary["aggregated_from"] == "outer_validation"
     for name in walkforward.MODELS:
         stats = summary["per_model"][name]
         assert set(walkforward.SUMMARY_METRICS) <= set(stats)
-        for metric in walkforward.SUMMARY_METRICS:
+        for metric, (section, key) in walkforward.SUMMARY_METRICS.items():
             assert {"mean", "std", "values"} == set(stats[metric])
-            assert len(stats[metric]["values"]) == 2
-    assert "macro F1" in (out / "walkforward.md").read_text()
+            assert stats[metric]["values"] == [
+                round(float(f["outer_validation"][name][section][key]), 6)
+                for f in spied_run["results"]["folds"]
+            ]
+    assert "outer validation" in (spied_run["out"] / "walkforward.md").read_text().lower()
+
+
+def test_the_markdown_reports_outer_validation_and_claims_nothing_more(spied_run):
+    markdown = (spied_run["out"] / "walkforward.md").read_text()
+
+    assert "Outer validation (the reported result)" in markdown
+    assert "calib err" in markdown
+    assert "sealed test block remains unopened" in markdown
+    assert "not an out-of-sample result" in markdown
 
 
 # --- 5. the whole chain -------------------------------------------------------
@@ -479,17 +881,23 @@ def test_the_research_chain_runs_end_to_end(dataset, tmp_path, windowed_splits):
         == 0
     )
 
-    assert set(windowed_splits) == {"train", "validation"}, "the spy must have fired"
+    assert set(windowed_splits) == {
+        "train",
+        "validation",
+        "inner_validation",
+        "outer_validation",
+    }, "the spy must have fired"
+    assert "test" not in windowed_splits
     assert (tmp_path / "exp" / "experiments.csv").exists()
     assert (tmp_path / "wf" / "walkforward.md").exists()
 
 
 # --- 6. the sealed boundary, asserted on row indices ---------------------------
 #
-# The tests in section 4 assert on split *names*, and that is exactly why they
-# missed a real leak: walk-forward planned folds over the whole dataset, so its
-# last validation windows sat inside the sealed test block. The rows were test
-# rows wearing the label "validation", and every name-based check passed.
+# A name-based check is exactly what let a real leak through: walk-forward
+# planned folds over the whole dataset, so its last validation windows sat
+# inside the sealed test block. The rows were test rows wearing the label
+# "validation", and every name-based check passed.
 #
 # Everything below therefore compares row indices against
 # nn.dataset.sealed_test_start and never looks at a split's name.
@@ -503,68 +911,81 @@ def test_sealed_test_start_agrees_with_the_chronological_split():
         )
 
 
-def test_expanding_folds_never_plan_a_row_at_or_beyond_the_boundary():
+def test_nested_folds_never_plan_a_row_at_or_beyond_the_boundary():
     """The regression for the leak, in the geometry that produced it.
 
     56,726 rows with the default fold settings used to put fold 2's validation
     1,890 rows into the sealed block and fold 3's almost exactly on top of it.
     Planning over the boundary instead of the dataset length is the fix, so the
-    assertion is on row indices.
+    assertion is on row indices — for all three regions, not just the reported
+    one.
     """
-    n_rows = 56726
-    boundary = sealed_test_start(n_rows, 0.70, 0.15)
-    args = walkforward.build_argparser().parse_args(["--dataset", "x"])
-    min_train, val_size, step = walkforward.resolve_sizes(args, boundary)
-    folds = walkforward.plan_expanding_folds(boundary, args.folds, min_train, val_size, step)
+    boundary = sealed_test_start(BTC_ROWS, 0.70, 0.15)
+    folds = plan_defaults(boundary)
 
-    assert len(folds) == args.folds
-    for train_split, val_split in folds:
-        assert train_split.end <= boundary
-        assert val_split.end <= boundary
-        assert val_split.start < boundary
+    assert len(folds) == 4
+    for plan in folds:
+        assert plan.train.end <= boundary
+        assert plan.inner.end <= boundary
+        assert plan.outer.end <= boundary
+        assert plan.outer.start < boundary
 
 
 def test_planning_over_the_dataset_length_would_cross_the_boundary():
     """Proves the test above can fail: the old geometry really did leak.
 
-    This reproduces what the previous implementation computed — sizes and a
-    plan derived from ``n_rows`` — and asserts it crosses the boundary. If a
-    future change reintroduced it, the test above turns red rather than both
-    quietly agreeing.
+    This reproduces what the previous implementation computed — sizes derived
+    from ``n_rows`` rather than from the research region — and asserts the plan
+    crosses the boundary. If a future change reintroduced it, the test above
+    turns red rather than both quietly agreeing.
     """
-    n_rows = 56726
-    boundary = sealed_test_start(n_rows, 0.70, 0.15)
-    min_train, val_size = int(n_rows * 0.5), int(n_rows * 0.15)
-    step = max(1, (n_rows - min_train - val_size) // 3)
+    boundary = sealed_test_start(BTC_ROWS, 0.70, 0.15)
+    min_train = int(BTC_ROWS * 0.45)
+    inner_size = outer_size = int(BTC_ROWS * 0.10)
 
-    leaky = walkforward.plan_expanding_folds(n_rows, 4, min_train, val_size, step)
-    assert any(val_split.end > boundary for _, val_split in leaky)
+    leaky = walkforward.plan_nested_folds(
+        BTC_ROWS, 4, min_train, inner_size, outer_size, outer_size
+    )
+    assert any(plan.outer.end > boundary for plan in leaky)
 
 
 def test_the_planner_refuses_to_borrow_from_the_sealed_block():
     boundary = sealed_test_start(1000, 0.70, 0.15)  # 850
     with pytest.raises(ValueError, match="lie before the sealed test block"):
-        walkforward.plan_expanding_folds(boundary, 4, min_train=500, val_size=200, step=100)
+        walkforward.plan_nested_folds(
+            boundary, 4, min_train=500, inner_size=100, outer_size=100, step=100
+        )
 
 
-def test_walkforward_validation_indices_stay_below_the_boundary(
-    dataset, tmp_path, monkeypatch
-):
-    """End to end: no window a fold actually trains or scores on is sealed."""
+def test_walkforward_row_indices_stay_below_the_boundary(dataset, tmp_path, monkeypatch):
+    """End to end: no row a fold trains on, selects on or reports is sealed.
+
+    The label horizon is included on both validation blocks, because a sample
+    whose window sits below the boundary can still read its label from above it.
+    """
     data = train.load_research_data(dataset)
     boundary = sealed_test_start(data.n_rows, 0.70, 0.15)
+    horizon = data.target_spec.horizon
 
     seen: list[int] = []
-    original = train.prepare_research_windows
+    original_prepare = train.prepare_research_windows
+    original_frozen = train.score_frozen_split
 
-    def spy(data_arg, train_split, val_split, seq_len):
-        prepared = original(data_arg, train_split, val_split, seq_len)
-        seen.append(int(prepared.idx_val.max()) + data_arg.target_spec.horizon)
-        seen.append(int(train_split.end))
+    def prepare_spy(data_arg, train_split, val_split, seq_len):
+        prepared = original_prepare(data_arg, train_split, val_split, seq_len)
+        seen.append(int(prepared.idx_val.max()) + horizon)
+        seen.append(int(train_split.end) - 1)
         return prepared
 
-    monkeypatch.setattr(train, "prepare_research_windows", spy)
-    monkeypatch.setattr(walkforward, "prepare_research_windows", spy)
+    def frozen_spy(data_arg, scaler, split, seq_len, **kwargs):
+        reports, idx = original_frozen(data_arg, scaler, split, seq_len, **kwargs)
+        seen.append(int(idx.max()) + horizon)
+        return reports, idx
+
+    monkeypatch.setattr(train, "prepare_research_windows", prepare_spy)
+    monkeypatch.setattr(walkforward, "prepare_research_windows", prepare_spy)
+    monkeypatch.setattr(train, "score_frozen_split", frozen_spy)
+    monkeypatch.setattr(walkforward, "score_frozen_split", frozen_spy)
     walkforward.main(
         ["--dataset", str(dataset), "--out", str(tmp_path / "wf"), "--folds", "3", *TINY]
     )
@@ -577,8 +998,8 @@ def test_walkforward_validation_indices_stay_below_the_boundary(
     assert results["sealed_test"]["evaluated"] is False
     assert results["sealed_test"]["period"]["rows"] == data.n_rows - boundary
     for fold in results["folds"]:
-        assert fold["periods"]["train"]["row_range"][1] <= boundary
-        assert fold["periods"]["validation"]["row_range"][1] <= boundary
+        for region in ("train", "inner_validation", "outer_validation"):
+            assert fold["periods"][region]["row_range"][1] <= boundary
 
 
 def test_experiment_validation_indices_stay_below_the_boundary(dataset, tmp_path):
