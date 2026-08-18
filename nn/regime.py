@@ -554,9 +554,8 @@ def _validate_predictions_against_artifact(
 
 
 def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFrame:
-    """Read outer predictions only after proving they belong to their artifact."""
+    """Read outer predictions only after enforcing sealing and artifact identity."""
     path = Path(path)
-    artifact = _prediction_artifact(path, sealed_test_start)
     frame = pd.read_parquet(path)
     missing = [c for c in PREDICTION_COLUMNS if c not in frame.columns]
     if missing:
@@ -572,6 +571,7 @@ def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFram
             f"at {sealed_test_start}. This artifact is not research output; refusing it."
         )
 
+    artifact = _prediction_artifact(path, sealed_test_start)
     _validate_predictions_against_artifact(frame, artifact, path)
     frame = frame.copy()
     frame["fold"] = _integral_column(frame, "fold", path)
