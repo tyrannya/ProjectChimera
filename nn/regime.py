@@ -587,7 +587,9 @@ def load_predictions(path: str | Path, *, sealed_test_start: int) -> pd.DataFram
     frame["seed"] = _integral_column(frame, "seed", path)
     frame["row_index"] = row_values
     if artifact_path.is_file():
-        frame["_run_name"] = path.parent.name
+        # Absolute resolved path is an internal grouping key only. Basenames can
+        # collide across experiments; a resolved artifact directory cannot.
+        frame["_run_name"] = str(path.parent.resolve())
     return frame
 
 
