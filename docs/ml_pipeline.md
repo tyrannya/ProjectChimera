@@ -572,9 +572,28 @@ fractions; `ema_fast_ratio` and `ema_slow_ratio` mean and median; `atr_norm` and
 counts and fractions with mean and median `future_return` per class. Columns are
 addressed by the feature names the artifact recorded, never by position.
 
+**Computed over the rows the model was scored on, not the rows the block
+spans.** An outer block of 4,821 rows does not yield 4,821 samples: the first
+`seq_len - 1` cannot open a window, the last `horizon` cannot close a label, and
+any candidate straddling a market-data gap is dropped. On the BTC artifacts that
+is 4,683 scored rows in fold 0 against 4,821 block rows. Summarising the block
+would describe a slightly different stretch of market than the metric being
+explained, so rows are selected through `nn.dataset.sample_indices` — the same
+function `build_windows` uses — with the artifact's own `config.seq_len` and
+target horizon. Both counts appear in the report.
+
+The reconstruction is **checked, not asserted**: each fold's artifact records how
+many outer samples the run scored, and a reconstruction that does not reproduce
+that number exactly stops the report. An artifact with no recorded `seq_len`
+cannot be regime-analysed at all — guessing one would summarise rows the model
+never saw.
+
 **Per outer block, from raw OHLCV:** start and end close, market return, mean /
 median / std candle return, annualised realised volatility, mean absolute candle
-return, positive and negative candle fractions, and max drawdown.
+return, positive and negative candle fractions, and max drawdown. These are taken
+over the **whole block span** — a view of the market independent of which rows
+were scorable — and labelled as such, so they are not read as row-for-row
+comparable with the model-facing statistics above.
 
 Three rules make those numbers trustworthy rather than merely available:
 
@@ -583,8 +602,12 @@ Three rules make those numbers trustworthy rather than merely available:
   in the frame at all and no off-by-one can reach one. Block ranges are checked
   against the boundary again on the way in.
 - **Row indices only mean a candle against the dataset they were recorded on.**
-  A dataset whose row count, feature contract or target spec differs from the
-  artifact's is refused rather than silently reindexed.
+  Every identity field the artifact and `DatasetMetadata` both carry is checked —
+  rows, exchange, pair, timeframe, first and last timestamp, feature names,
+  feature spec, target spec — and the metadata's span is cross-checked against
+  the frame's own first and last timestamps, because a sidecar can be stale. A
+  wrong file with a coincidentally matching row count is refused rather than
+  silently reindexed.
 - **Raw candles join on timestamps, never on position.** The processed dataset
   dropped warm-up and label rows, so processed row *i* is not raw row *i*. A
   missing timestamp, a duplicate, or a timeframe that disagrees is an error.
@@ -603,10 +626,17 @@ the shorts lose the money?", and it is not approximated from them. Runs write
 `p_short`/`p_hold`/`p_long`, `selected_action` and `threshold`, outer rows only,
 with a sealed row refused before the file is created. When present, the
 diagnostics report exact per-direction trade counts, hit rates, mean/median net
-return, cumulative contribution, HOLD count and per-side coverage. The trades
+return, `additive_trade_return_sum`, HOLD count and per-side coverage. The trades
 come from `nn.evaluate.realised_trades`, the same generator `trading_metrics`
-aggregates, so there is no second cost model to drift. When absent, the report
-says so and offers nothing in its place.
+aggregates, so the two sides partition exactly the trades the fold reports and
+there is no second cost model to drift. When absent, the report says so and
+offers nothing in its place.
+
+`additive_trade_return_sum` is named for what it is: the arithmetic total of one
+side's per-trade returns. The reported `net_return` **compounds**
+(`prod(1 + r) - 1`), so the two sides' sums do not add up to it and this is not a
+decomposition of the fold's return — it compares the sides against each other and
+nothing more.
 
 **Candidate hypotheses.** Three research questions, generated from the
 diagnostics and ranked by the size of the difference behind them. None is

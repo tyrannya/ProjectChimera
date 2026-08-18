@@ -19,6 +19,7 @@ No test here needs a committed dataset, a committed artifact, or a checkpoint.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from chimera.features import FeatureSpec
 from nn import evaluate as ev
 from nn import regime, walkforward, wf_diagnostics
 from nn.data_pipeline import build_dataset, save_dataset
+from nn.dataset import Split, build_windows, sample_indices
 from nn.dataset import sealed_test_start
 from tools.make_sample_data import generate_candles
 
@@ -51,6 +53,9 @@ TINY = [
 
 N_ROWS = 1200
 FOLDS = 3
+
+#: Sequence length the synthetic artifacts are treated as having been run with.
+SEQ_LEN = 16
 
 
 # --- synthetic artifacts ------------------------------------------------------
@@ -102,6 +107,7 @@ def write_run(
     thresholds: list[float] | None = None,
     epochs: list[int] | None = None,
     dataset: dict[str, Any] | None = None,
+    outer_samples: list[int] | None = None,
 ) -> Path:
     """Write a well-formed artifact, then let a caller break one thing.
 
@@ -124,7 +130,11 @@ def write_run(
             {
                 "fold": index,
                 "seed": seed + index,
-                "samples": {"train": 400, "inner_validation": 83, "outer_validation": 83},
+                "samples": {
+                    "train": 400,
+                    "inner_validation": 83,
+                    "outer_validation": (outer_samples[index] if outer_samples else 83),
+                },
                 "periods": {
                     "train": period(plan.train),
                     "inner_validation": period(plan.inner),
@@ -146,7 +156,7 @@ def write_run(
         json.dumps(
             {
                 "dataset": dataset or {"rows": n_rows, "pair": "BTC/USDT", "timeframe": "1h"},
-                "config": {"seed": seed, "folds": folds},
+                "config": {"seed": seed, "folds": folds, "seq_len": SEQ_LEN},
                 "sealed_test": {
                     "start_row": boundary,
                     "period": {"row_range": [boundary, n_rows], "rows": n_rows - boundary},
@@ -709,12 +719,27 @@ def dataset_pair(tmp_path_factory):
 
 
 def artifact_for(directory: Path, frame, meta, *, seed: int = 42, folds: int = 3) -> Path:
-    """A run whose geometry is planned over the real processed dataset's rows."""
+    """A run whose geometry — and scored-sample counts — match the real dataset.
+
+    The sample counts are computed with the production index logic, so the
+    artifact is self-consistent in the way a real run's is: the diagnostics
+    cross-check the two, and a hand-picked number would fail that check.
+    """
+    _, plans = plan_for(len(frame), folds)
+    segment_ids = (
+        frame["segment_id"].to_numpy(dtype=np.int64) if "segment_id" in frame.columns else None
+    )
+    horizon = dict(meta.target_spec)["horizon"]
+    outer_samples = [
+        len(sample_indices(plan.outer, SEQ_LEN, horizon, segment_ids=segment_ids))
+        for plan in plans
+    ]
     return write_run(
         directory,
         seed=seed,
         n_rows=len(frame),
         folds=folds,
+        outer_samples=outer_samples,
         dataset={
             "rows": len(frame),
             "pair": meta.pair,
@@ -768,12 +793,16 @@ def test_block_statistics_use_only_the_rows_of_that_block(dataset_pair):
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 400, 520
-    stats = regime.block_statistics(research, start, end)
-    block = frame.iloc[start:end]
+    stats = regime.block_statistics(research, start, end, SEQ_LEN)
+    scored = research.scored_rows(start, end, SEQ_LEN)
+    block = frame.iloc[scored]
     future = block["future_return"].to_numpy(dtype=float)
 
     assert stats["row_range"] == [start, end]
-    assert stats["rows"] == end - start
+    assert stats["block_rows"] == end - start
+    assert stats["scored_rows"] == len(scored)
+    # The scored set is a strict subset: warm-up and label embargo cost rows.
+    assert 0 < len(scored) < end - start
     assert stats["future_return"]["mean"] == pytest.approx(float(future.mean()), abs=1e-8)
     assert stats["future_return"]["median"] == pytest.approx(
         float(np.median(future)), abs=1e-8
@@ -796,8 +825,8 @@ def test_feature_statistics_are_exact_including_the_percentiles(dataset_pair):
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 300, 480
-    stats = regime.block_statistics(research, start, end)["features"]
-    block = frame.iloc[start:end]
+    stats = regime.block_statistics(research, start, end, SEQ_LEN)["features"]
+    block = frame.iloc[research.scored_rows(start, end, SEQ_LEN)]
 
     for name, wanted in regime.FEATURE_STATS.items():
         values = block[name].to_numpy(dtype=float)
@@ -828,18 +857,21 @@ def test_the_target_distribution_is_exact(dataset_pair):
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 250, 500
-    distribution = regime.block_statistics(research, start, end)["target_distribution"]
-    block = frame.iloc[start:end]
+    distribution = regime.block_statistics(research, start, end, SEQ_LEN)[
+        "target_distribution"
+    ]
+    scored = research.scored_rows(start, end, SEQ_LEN)
+    block = frame.iloc[scored]
 
     assert set(distribution) == {c.value for c in CLASS_ORDER}
-    assert sum(entry["count"] for entry in distribution.values()) == end - start
+    assert sum(entry["count"] for entry in distribution.values()) == len(scored)
     assert sum(entry["fraction"] for entry in distribution.values()) == pytest.approx(1.0)
 
     for index, klass in enumerate(CLASS_ORDER):
         selected = block[block["target"] == index]
         entry = distribution[klass.value]
         assert entry["count"] == len(selected)
-        assert entry["fraction"] == pytest.approx(len(selected) / (end - start), abs=1e-8)
+        assert entry["fraction"] == pytest.approx(len(selected) / len(scored), abs=1e-8)
         if len(selected):
             returns = selected["future_return"].to_numpy(dtype=float)
             assert entry["mean_future_return"] == pytest.approx(
@@ -850,35 +882,83 @@ def test_the_target_distribution_is_exact(dataset_pair):
             )
 
 
-def test_a_dataset_that_does_not_match_the_artifact_is_refused(dataset_pair, tmp_path):
-    """Row indices only mean a candle against the dataset they were recorded on."""
-    processed, _, frame, meta = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+def identity_of(frame, meta) -> dict[str, Any]:
+    """The artifact's `dataset` block for a dataset built in this suite."""
+    return {
+        "rows": len(frame),
+        "exchange": meta.exchange,
+        "pair": meta.pair,
+        "timeframe": meta.timeframe,
+        "start": meta.start,
+        "end": meta.end,
+        "feature_names": list(meta.feature_names),
+        "feature_spec": dict(meta.feature_spec),
+        "target_spec": dict(meta.target_spec),
+    }
 
-    with pytest.raises(regime.RegimeDataError, match="[Rr]ow indices would address"):
-        regime.load_research_frame(
-            processed, sealed_test_start=boundary, expected_rows=len(frame) + 1
-        )
-    with pytest.raises(regime.RegimeDataError, match="feature contract differs"):
-        regime.load_research_frame(
-            processed,
-            sealed_test_start=boundary,
-            expected_features=["not", "these", "columns"],
-        )
-    with pytest.raises(regime.RegimeDataError, match="target spec differs"):
-        regime.load_research_frame(
-            processed,
-            sealed_test_start=boundary,
-            expected_target_spec={**dict(meta.target_spec), "horizon": 99},
-        )
-    # The matching contract is accepted, so the test above can fail.
-    regime.load_research_frame(
+
+def test_the_matching_dataset_identity_is_accepted(dataset_pair):
+    """The control: the right dataset loads, so the refusals below mean something."""
+    processed, _, frame, meta = dataset_pair
+    research = regime.load_research_frame(
         processed,
-        sealed_test_start=boundary,
-        expected_rows=len(frame),
-        expected_features=list(meta.feature_names),
-        expected_target_spec=dict(meta.target_spec),
+        sealed_test_start=sealed_test_start(len(frame), 0.70, 0.15),
+        identity=identity_of(frame, meta),
     )
+    assert research.timeframe == meta.timeframe
+    assert research.feature_names == list(meta.feature_names)
+
+
+@pytest.mark.parametrize(
+    "field, wrong_value",
+    [
+        pytest.param("rows", 999_999, id="rows"),
+        pytest.param("exchange", "kraken", id="exchange"),
+        pytest.param("pair", "ETH/USDT", id="pair"),
+        pytest.param("timeframe", "4h", id="timeframe"),
+        pytest.param("start", "2019-01-01T00:00:00+00:00", id="start"),
+        pytest.param("end", "2030-01-01T00:00:00+00:00", id="end"),
+        pytest.param("feature_names", ["not", "these"], id="feature_names"),
+        pytest.param("feature_spec", {"ema_fast": 999}, id="feature_spec"),
+        pytest.param("target_spec", {"horizon": 99}, id="target_spec"),
+    ],
+)
+def test_every_identity_dimension_fails_closed(dataset_pair, field, wrong_value):
+    """A dataset that disagrees on any recorded field is refused, not reindexed.
+
+    Row count alone is not enough: a different pair, exchange, timeframe, span,
+    feature contract or target definition is a different experiment, and its row
+    indices point at different candles however well the shapes line up.
+    """
+    processed, _, frame, meta = dataset_pair
+    identity = {**identity_of(frame, meta), field: wrong_value}
+
+    with pytest.raises(regime.RegimeDataError) as raised:
+        regime.load_research_frame(
+            processed,
+            sealed_test_start=sealed_test_start(len(frame), 0.70, 0.15),
+            identity=identity,
+        )
+    assert field in str(raised.value)
+    assert "row indices would address different candles" in str(raised.value)
+
+
+def test_metadata_is_cross_checked_against_the_frames_own_timestamps(dataset_pair, tmp_path):
+    """A stale or edited sidecar must not be taken at its word."""
+    processed, _, frame, meta = dataset_pair
+    copied = tmp_path / "copy.parquet"
+    copied.write_bytes(Path(processed).read_bytes())
+    sidecar = Path(str(copied) + ".meta.json")
+    payload = json.loads(Path(str(processed) + ".meta.json").read_text())
+    payload["start"] = "2019-06-01T00:00:00+00:00"
+    sidecar.write_text(json.dumps(payload))
+
+    with pytest.raises(regime.RegimeDataError, match="metadata says the data starts"):
+        regime.load_research_frame(
+            copied,
+            sealed_test_start=sealed_test_start(len(frame), 0.70, 0.15),
+            identity={**identity_of(frame, meta), "start": payload["start"]},
+        )
 
 
 # --- 8. raw OHLCV alignment ---------------------------------------------------
@@ -1134,9 +1214,9 @@ def test_attribution_is_exact_and_uses_the_shared_cost_model():
     assert result["hold_samples"] == 2
     assert result["long"]["mean_net_return"] == pytest.approx(np.mean(long_returns))
     assert result["long"]["median_net_return"] == pytest.approx(np.median(long_returns))
-    assert result["long"]["cumulative_contribution"] == pytest.approx(sum(long_returns))
+    assert result["long"]["additive_trade_return_sum"] == pytest.approx(sum(long_returns))
     assert result["long"]["hit_rate"] == pytest.approx(2 / 3, abs=1e-6)
-    assert result["short"]["cumulative_contribution"] == pytest.approx(sum(short_returns))
+    assert result["short"]["additive_trade_return_sum"] == pytest.approx(sum(short_returns))
     assert result["short"]["hit_rate"] == pytest.approx(1.0)
     assert result["long_coverage"] == pytest.approx(3 / 6, abs=1e-6)
     assert result["short_coverage"] == pytest.approx(1 / 6, abs=1e-6)
@@ -1154,8 +1234,8 @@ def test_attribution_totals_match_the_shared_trade_generator():
         spec,
     )
     assert result["long"]["trades"] + result["short"]["trades"] == len(returns)
-    assert result["long"]["cumulative_contribution"] + result["short"][
-        "cumulative_contribution"
+    assert result["long"]["additive_trade_return_sum"] + result["short"][
+        "additive_trade_return_sum"
     ] == pytest.approx(float(returns.sum()), abs=1e-8)
     assert result["long"]["trades"] == int((directions > 0).sum())
 
@@ -1368,11 +1448,18 @@ def test_the_regime_statistics_match_a_direct_computation(real_regime_runs, tmp_
     analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["analysis"]
 
     frame = pd.read_parquet(real_regime_runs["dataset"])
+    research = regime.load_research_frame(
+        real_regime_runs["dataset"], sealed_test_start=real_regime_runs["boundary"]
+    )
     for block in analysis["regime"]:
         start, end = block["row_range"]
         assert end <= real_regime_runs["boundary"]
-        rows = frame.iloc[start:end]
-        assert block["rows"] == len(rows)
+        # The rows the run actually scored, reconstructed independently.
+        scored = research.scored_rows(start, end, analysis["seq_len"])
+        rows = frame.iloc[scored]
+
+        assert block["scored_rows"] == len(scored)
+        assert block["block_rows"] == end - start
         assert block["future_return"]["mean"] == pytest.approx(
             float(rows["future_return"].mean()), abs=1e-8
         )
@@ -1440,3 +1527,184 @@ def test_without_a_dataset_the_report_still_audits_and_says_what_is_missing(
     assert "## Best vs worst regime" in printed
     assert "no regime statistics below" in printed
     assert "## Market regime statistics" not in printed
+
+
+# --- 12. scored rows, not block rows ------------------------------------------
+#
+# The model is evaluated on the samples a block can produce, not on every row it
+# spans: the first seq_len-1 rows cannot open a window, the last `horizon` rows
+# cannot close a label, and a candidate straddling a market-data gap is dropped.
+# Statistics used to interpret that evaluation have to be taken over the same
+# rows, or they describe a slightly different stretch of market than the number
+# they are explaining.
+
+
+def gapped_research_frame(tmp_path, *, rows=900, gap_at=300, gap_len=5, horizon=4):
+    """A processed dataset with a real market-data gap in the middle of a block."""
+    candles = generate_candles(rows=rows, seed=21)
+    # Delete candles so build_features records two segments, exactly as a real
+    # exchange outage would.
+    kept = pd.concat([candles.iloc[:gap_at], candles.iloc[gap_at + gap_len :]])
+    frame, meta = build_dataset(
+        kept.reset_index(drop=True),
+        FeatureSpec(),
+        TargetSpec(horizon=horizon),
+        exchange="synthetic",
+        pair="SYNTH/USDT",
+        timeframe="1h",
+    )
+    processed = tmp_path / "gapped.parquet"
+    save_dataset(processed, frame, meta)
+    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    research = regime.load_research_frame(processed, sealed_test_start=boundary)
+    return research, frame, boundary
+
+
+def test_the_scored_set_is_the_one_build_windows_produces(tmp_path):
+    """Same rows, from the same function the run used — not a second reading."""
+    research, frame, boundary = gapped_research_frame(tmp_path)
+    assert research.segment_ids is not None, "the fixture must carry segment ids"
+
+    seq_len, start, end = 16, 200, 400
+    scored = research.scored_rows(start, end, seq_len)
+
+    # The research frame stops at the boundary, so compare against the same rows.
+    research_rows = frame.iloc[:boundary]
+    features = research_rows[list(research.feature_names)].to_numpy(dtype=np.float64)
+    _, _, expected = build_windows(
+        features,
+        research_rows["target"].to_numpy(dtype=np.int64),
+        Split("outer_validation", start, end),
+        seq_len,
+        research.target_spec.horizon,
+        segment_ids=research.segment_ids,
+    )
+    np.testing.assert_array_equal(scored, expected)
+
+
+def test_gaps_and_warmup_make_the_scored_set_a_strict_subset(tmp_path):
+    """The regression this section exists for: the two row sets really differ."""
+    research, _, _ = gapped_research_frame(tmp_path)
+    seq_len, start, end = 16, 200, 400
+    scored = set(int(i) for i in research.scored_rows(start, end, seq_len))
+    block = set(range(start, end))
+
+    excluded = block - scored
+    assert scored < block, "the scored set must be a strict subset"
+    # Warm-up at the head, embargo at the tail, and the gap in between.
+    assert set(range(start, start + seq_len - 1)) <= excluded
+    assert set(range(end - research.target_spec.horizon, end)) <= excluded
+    gap_excluded = {
+        row
+        for row in excluded
+        if start + seq_len - 1 <= row < end - research.target_spec.horizon
+    }
+    assert gap_excluded, "the market-data gap must exclude rows in the interior too"
+
+
+def test_excluded_rows_cannot_affect_the_processed_statistics(tmp_path):
+    """Poison every row the model was not scored on; the statistics must not move.
+
+    This is the assertion that would have caught the original bug: statistics
+    taken over the whole block change when an unscored row changes, and
+    statistics taken over the scored rows do not.
+    """
+    research, frame, boundary = gapped_research_frame(tmp_path)
+    seq_len, start, end = 16, 200, 400
+    baseline = regime.block_statistics(research, start, end, seq_len)
+
+    scored = set(int(i) for i in research.scored_rows(start, end, seq_len))
+    excluded = sorted(set(range(start, end)) - scored)
+    assert excluded, "nothing would be proven if no row were excluded"
+
+    poisoned = research.frame.copy()
+    for column in ("future_return", *regime.FEATURE_STATS):
+        poisoned.loc[poisoned.index[excluded], column] = 999.0
+    poisoned.loc[poisoned.index[excluded], "target"] = 0
+    spoiled = replace(research, frame=poisoned)
+
+    assert regime.block_statistics(spoiled, start, end, seq_len) == baseline
+
+    # Control: poisoning a *scored* row does move the numbers, so the assertion
+    # above is not passing because the statistics are insensitive to everything.
+    control = research.frame.copy()
+    control.loc[control.index[sorted(scored)[0]], "future_return"] = 999.0
+    moved = regime.block_statistics(replace(research, frame=control), start, end, seq_len)
+    assert moved["future_return"]["mean"] != baseline["future_return"]["mean"]
+
+
+def test_block_statistics_report_both_counts(tmp_path):
+    """A reader must be able to see how many rows were dropped, not infer it."""
+    research, _, _ = gapped_research_frame(tmp_path)
+    seq_len, start, end = 16, 200, 400
+    stats = regime.block_statistics(research, start, end, seq_len)
+
+    assert stats["block_rows"] == end - start
+    assert stats["scored_rows"] < stats["block_rows"]
+    assert stats["seq_len"] == seq_len
+    assert stats["horizon"] == research.target_spec.horizon
+    first, last = stats["scored_row_range"]
+    assert start <= first and last <= end
+
+
+def test_a_block_too_short_to_score_is_refused(tmp_path):
+    """Zero samples is an error, not a report over an empty set."""
+    research, _, _ = gapped_research_frame(tmp_path)
+    with pytest.raises(regime.RegimeDataError, match="no scored samples"):
+        research.scored_rows(200, 210, seq_len=64)
+
+
+def test_an_artifact_without_seq_len_cannot_be_regime_analysed(dataset_pair, tmp_path):
+    """Guessing a sequence length would summarise rows the model never saw."""
+    processed, _, frame, meta = dataset_pair
+    directory = artifact_for(tmp_path / "no_seq_len", frame, meta)
+    edit(directory, lambda p: p["config"].pop("seq_len"))
+
+    with pytest.raises(SystemExit, match="does not record config.seq_len"):
+        wf_diagnostics.main([str(directory), "--dataset", str(processed)])
+
+    # Without --dataset the same artifact still audits and reports.
+    assert wf_diagnostics.main([str(directory)]) == 0
+
+
+def test_the_reconstruction_is_checked_against_the_recorded_sample_count(
+    real_regime_runs, tmp_path
+):
+    """The run recorded how many samples it scored; the reconstruction must match.
+
+    This turns "the same rows" from a claim into a checked invariant: if the
+    dataset and the artifact disagree about which rows were evaluated, the report
+    is refused rather than published with statistics over the wrong stretch.
+    """
+    out = tmp_path / "diag"
+    assert (
+        wf_diagnostics.main(
+            [str(d) for d in real_regime_runs["runs"]]
+            + ["--dataset", str(real_regime_runs["dataset"]), "--out", str(out)]
+        )
+        == 0
+    )
+    analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["analysis"]
+    artifact = json.loads(
+        (real_regime_runs["runs"][0] / wf_diagnostics.ARTIFACT_NAME).read_text()
+    )
+
+    recorded = [fold["samples"]["outer_validation"] for fold in artifact["folds"]]
+    assert [block["scored_rows"] for block in analysis["regime"]] == recorded
+    # And the reconstruction is genuinely fewer rows than the block spans.
+    assert all(block["scored_rows"] < block["block_rows"] for block in analysis["regime"])
+
+
+def test_a_disagreement_about_the_scored_rows_is_refused(real_regime_runs, tmp_path):
+    """A seq_len that does not reproduce the recorded count stops the report."""
+    workspace = tmp_path / "tampered"
+    workspace.mkdir()
+    source = real_regime_runs["runs"][0]
+    directory = workspace / source.name
+    directory.mkdir()
+    payload = json.loads((source / wf_diagnostics.ARTIFACT_NAME).read_text())
+    payload["config"]["seq_len"] = payload["config"]["seq_len"] + 8
+    (directory / wf_diagnostics.ARTIFACT_NAME).write_text(json.dumps(payload))
+
+    with pytest.raises(SystemExit, match="disagree about which rows were evaluated"):
+        wf_diagnostics.main([str(directory), "--dataset", str(real_regime_runs["dataset"])])

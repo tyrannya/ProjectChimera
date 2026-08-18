@@ -22,15 +22,27 @@ answers two questions the individual runs cannot answer about themselves:
    were — a fold whose threshold jumps around between seeds is a fold whose
    inner block is not deciding much.
 
+3. **What was different about the market?** Given ``--dataset`` (and optionally
+   ``--raw``), it opens the processed dataset the artifacts' row indices address
+   and summarises each outer block's regime — returns, volatility, trend
+   orientation, volume behaviour and target mix — then ranks what differs
+   between the best and worst fold. Everything model-facing is computed over the
+   rows the model was actually **scored** on, not the rows the block spans:
+   ``nn.regime`` selects them through the same index logic the run used.
+
 Everything is read from paths given on the command line. No artifact, dataset or
-model is expected to live in the repository, and nothing here loads a dataset or
-a checkpoint: the inputs are JSON reports, the output is a report about them.
+model is expected to live in the repository. Without ``--dataset`` nothing opens
+a dataset at all, so artifacts stay analysable on their own; with it, the
+dataset is truncated at the sealed boundary before a single statistic is taken,
+and a file that disagrees with the artifact's recorded identity is refused
+rather than reindexed. No checkpoint is ever loaded.
 
 **Reading the output.** These are outer-validation numbers — blocks nothing was
 fitted on, which is what makes them worth comparing. Seed spread measures the
 stability of the research procedure, not out-of-sample performance, and it is
-not a claim of profitability. The sealed test block stays unopened; this tool
-refuses to read an artifact that says otherwise.
+not a claim of profitability. Differences between folds are coincidences in the
+data, never causes. The sealed test block stays unopened; this tool refuses to
+read an artifact that says otherwise.
 """
 
 from __future__ import annotations
@@ -499,16 +511,49 @@ def regime_report(
     already refused them otherwise — so the unique outer blocks are the first
     run's, and the statistics belong to the fold rather than to any seed.
     """
-    blocks = []
+    seq_len = _seq_len(runs[0])
+    blocks: list[dict[str, Any]] = []
     for fold in runs[0].folds:
         start, end = RunArtifact.rows(fold, "outer_validation")
-        entry = block_statistics(research, start, end)
+        entry = block_statistics(research, start, end, seq_len)
         entry["fold"] = fold.get("fold")
+
+        # The run recorded how many samples it scored. The reconstruction above
+        # must reproduce that number exactly, or these statistics describe a
+        # different set of rows than the metrics they are being used to explain
+        # — which is the whole failure this reconstruction exists to avoid.
+        recorded = (fold.get("samples") or {}).get("outer_validation")
+        if recorded is not None and entry["scored_rows"] != recorded:
+            raise RegimeDataError(
+                f"fold {entry['fold']}: the run scored {recorded} outer samples but "
+                f"{entry['scored_rows']} rows reconstruct from seq_len={seq_len} and "
+                f"horizon={research.target_spec.horizon}. The dataset and the artifact "
+                "disagree about which rows were evaluated; refusing to report."
+            )
         if raw is not None:
+            # Deliberately the whole block, not the scored rows: this is a view
+            # of the market over the fold's span, independent of what the model
+            # could be scored on. Labelled as such wherever it is reported.
             timestamps = research.block(start, end)["date"]
             entry["market"] = raw_block_statistics(raw, timestamps, research.timeframe)
         blocks.append(entry)
     return blocks
+
+
+def _seq_len(run: RunArtifact) -> int:
+    """The sequence length the run was produced with.
+
+    Recorded in the artifact's config. Without it the scored rows cannot be
+    reconstructed, and guessing one would silently summarise a different set of
+    rows than the model saw — so its absence is an error, not a default.
+    """
+    seq_len = (run.raw.get("config") or {}).get("seq_len")
+    if not isinstance(seq_len, int) or seq_len < 1:
+        raise RegimeDataError(
+            f"{run.path} does not record config.seq_len, so the rows the model was "
+            "scored on cannot be reconstructed"
+        )
+    return seq_len
 
 
 def _relative(best: float, worst: float) -> float | None:
@@ -989,6 +1034,9 @@ def _analysis_markdown(analysis: dict[str, Any], reference: RunArtifact) -> list
             ),
             f"- Rows read: `[0, {reference.sealed_test_start})`. The frame is truncated at "
             "the sealed boundary on load, so no statistic below can have seen a sealed row.",
+            f"- Model-facing statistics use the scored rows only "
+            f"(seq_len {analysis['seq_len']}, horizon {analysis['horizon']}), selected "
+            "through the same index logic the run used.",
             f"- Highest outer row used: {analysis['highest_outer_row']} "
             f"(sealed test starts at {reference.sealed_test_start}).",
             "- Sealed test evaluated: **no**.",
@@ -1002,17 +1050,21 @@ def _analysis_markdown(analysis: dict[str, Any], reference: RunArtifact) -> list
             "Identical across seeds by construction — the market in a fold does not",
             "depend on which seed trained on it.",
             "",
-            "| fold | rows | period | fut ret mean | fut ret std | fut ret abs "
-            "| pos frac |",
-            "| --- | --- | --- | --- | --- | --- | --- |",
+            "Computed over the rows the model was **scored** on — window warm-up,",
+            "label embargo and market-gap filtering applied — not over every row the",
+            "block spans. Both counts are shown.",
+            "",
+            "| fold | block rows | scored rows | period | fut ret mean | fut ret std "
+            "| fut ret abs | pos frac |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for block in regime:
             returns = block["future_return"]
             lines.append(
-                f"| {block['fold']} | {block['rows']} | {block['period']['start'][:10]} to "
-                f"{block['period']['end'][:10]} | {returns['mean']:+.6f} | "
-                f"{returns['std']:.6f} | {returns['mean_abs']:.6f} | "
-                f"{returns['fraction_positive']:.4f} |"
+                f"| {block['fold']} | {block['block_rows']} | {block['scored_rows']} | "
+                f"{block['period']['start'][:10]} to {block['period']['end'][:10]} | "
+                f"{returns['mean']:+.6f} | {returns['std']:.6f} | "
+                f"{returns['mean_abs']:.6f} | {returns['fraction_positive']:.4f} |"
             )
 
         lines += [
@@ -1058,6 +1110,10 @@ def _analysis_markdown(analysis: dict[str, Any], reference: RunArtifact) -> list
             lines += [
                 "",
                 "### Raw market behaviour (timestamp-aligned OHLCV)",
+                "",
+                "A view of the market over the **whole block span**, independent of",
+                "which rows were scorable. Not directly comparable row-for-row with the",
+                "model-facing statistics above.",
                 "",
                 "| fold | start close | end close | market return | mean hourly | "
                 "std hourly | ann. vol | mean abs hourly | pos candles | max DD | gaps |",
@@ -1138,7 +1194,8 @@ def _analysis_markdown(analysis: dict[str, Any], reference: RunArtifact) -> list
             "Exact, from persisted outer predictions, using the same cost model as the",
             "fold reports.",
             "",
-            "| side | trades | hit rate | mean net | median net | cumulative | coverage |",
+            "| side | trades | hit rate | mean net | median net | additive sum | "
+            "coverage |",
             "| --- | --- | --- | --- | --- | --- | --- |",
         ]
         for side, coverage_key in (("long", "long_coverage"), ("short", "short_coverage")):
@@ -1146,7 +1203,7 @@ def _analysis_markdown(analysis: dict[str, Any], reference: RunArtifact) -> list
             lines.append(
                 f"| {side.upper()} | {entry['trades']} | {entry['hit_rate']:.4f} | "
                 f"{entry['mean_net_return']:+.6f} | {entry['median_net_return']:+.6f} | "
-                f"{entry['cumulative_contribution']:+.6f} | "
+                f"{entry['additive_trade_return_sum']:+.6f} | "
                 f"{overall[coverage_key]:.4f} |"
             )
         lines.append(
@@ -1238,13 +1295,13 @@ def analyse(
 
     research = None
     regime = None
+    seq_len = None
     if dataset:
+        seq_len = _seq_len(reference)
         research = load_research_frame(
             dataset,
             sealed_test_start=reference.sealed_test_start,
-            expected_rows=reference.dataset.get("rows"),
-            expected_features=reference.dataset.get("feature_names"),
-            expected_target_spec=reference.dataset.get("target_spec"),
+            identity=reference.dataset,
         )
         raw = load_raw_ohlcv(raw_path) if raw_path else None
         regime = regime_report(runs, research, raw)
@@ -1256,6 +1313,8 @@ def analyse(
     return {
         "dataset": dataset,
         "raw": raw_path,
+        "seq_len": seq_len,
+        "horizon": horizon,
         "sealed_test_start": reference.sealed_test_start,
         "sealed_test_evaluated": False,
         "highest_outer_row": highest_outer,

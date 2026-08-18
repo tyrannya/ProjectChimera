@@ -12,11 +12,23 @@ at all, and no off-by-one in a block range can reach one. The row range is
 checked against the boundary again on the way in, because a cheap assertion is
 worth more than a comment.
 
+**Model-facing statistics describe the rows the model was scored on, not the
+block they sit in.** An outer block of 4,821 rows does not yield 4,821 samples:
+the first ``seq_len - 1`` rows cannot open a window, the last ``horizon`` rows
+cannot close a label, and any candidate straddling a market-data gap is dropped.
+Summarising the block instead of the samples would describe a slightly different
+stretch of market than the number it is being used to explain, so
+:func:`block_statistics` selects rows through :func:`nn.dataset.sample_indices`
+— the same function ``build_windows`` uses — and reports both counts so the
+difference is visible rather than assumed away.
+
 **Row indices are only meaningful against the dataset they came from.** The
 indices in ``walkforward.json`` address one specific processed dataset. Point
 this at a rebuilt one and every index silently means a different candle, so the
-loader refuses a dataset whose row count, feature contract or target spec does
-not match what the artifact recorded.
+loader refuses a dataset that disagrees with the artifact on any recorded
+identity field — exchange, pair, timeframe, row count, first and last timestamp,
+feature contract or target spec — and cross-checks the metadata against the
+frame's own first and last timestamps.
 
 **Raw candles are joined on timestamps, never on position.** The processed
 dataset has lost warm-up and label rows, so processed row *i* is not raw row
@@ -41,6 +53,7 @@ import pandas as pd
 from chimera.contracts import CLASS_ORDER, TargetSpec
 from nn import evaluate as ev
 from nn.data_pipeline import OHLCV_COLUMNS, load_dataset, timeframe_to_minutes
+from nn.dataset import Split, sample_indices
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +101,8 @@ class ResearchFrame:
     feature_names: list[str]
     target_spec: TargetSpec
     timeframe: str
+    #: Contiguous market-data segments, or ``None`` when the dataset has none.
+    segment_ids: np.ndarray | None = None
 
     def block(self, start: int, end: int) -> pd.DataFrame:
         """Rows ``[start, end)``, refusing anything at or past the boundary."""
@@ -100,64 +115,132 @@ class ResearchFrame:
             )
         return self.frame.iloc[start:end]
 
+    def scored_rows(self, start: int, end: int, seq_len: int) -> np.ndarray:
+        """The rows in ``[start, end)`` the model was actually evaluated on.
+
+        Delegates to :func:`nn.dataset.sample_indices`, so this is the same set
+        ``build_windows`` produced during the run — window warm-up, label
+        embargo and market-gap filtering included — rather than a second reading
+        of the same rules.
+        """
+        self.block(start, end)  # boundary check, before any index arithmetic
+        idx = sample_indices(
+            Split("outer_validation", start, end),
+            seq_len,
+            self.target_spec.horizon,
+            segment_ids=self.segment_ids,
+        )
+        if idx.size == 0:
+            raise RegimeDataError(
+                f"block [{start}, {end}) yields no scored samples at seq_len={seq_len} "
+                f"and horizon={self.target_spec.horizon}"
+            )
+        return idx
+
+
+#: Dataset identity fields checked against the artifact before anything is read.
+#:
+#: `rows` first, because a row-count mismatch is the one that makes every index
+#: mean a different candle. The rest catch a dataset that happens to be the same
+#: length: a different pair, exchange, timeframe, span, feature contract or
+#: target definition is a different experiment however well the shapes line up.
+IDENTITY_FIELDS = (
+    "rows",
+    "exchange",
+    "pair",
+    "timeframe",
+    "start",
+    "end",
+    "feature_names",
+    "feature_spec",
+    "target_spec",
+)
+
+
+def _identity_mismatch(name: str, actual: Any, expected: Any) -> str | None:
+    """Compare one identity field, normalising the containers JSON round-trips."""
+    if expected is None:
+        return None
+    if isinstance(expected, Mapping):
+        actual, expected = dict(actual or {}), dict(expected)
+    elif isinstance(expected, (list, tuple)):
+        actual, expected = list(actual or []), list(expected)
+    if actual == expected:
+        return None
+    return f"{name} is {actual!r} but the artifact recorded {expected!r}"
+
 
 def load_research_frame(
     path: str | Path,
     *,
     sealed_test_start: int,
-    expected_rows: int | None = None,
-    expected_features: Sequence[str] | None = None,
-    expected_target_spec: Mapping[str, Any] | None = None,
+    identity: Mapping[str, Any] | None = None,
 ) -> ResearchFrame:
     """Read the processed dataset and cut it at the sealed boundary immediately.
 
-    The ``expected_*`` arguments come from the walk-forward artifact. They are
-    checked before anything is computed, because a row index is only a claim
-    about a candle if the dataset is the one the index was recorded against.
+    ``identity`` is the artifact's ``dataset`` block. Every field it carries that
+    :class:`~nn.data_pipeline.DatasetMetadata` also records is checked before
+    anything is computed, because a row index is only a claim about a candle if
+    the dataset is the one the index was recorded against — and a wrong file with
+    a coincidentally matching row count would otherwise be read as if it were the
+    right one.
     """
     frame, meta = load_dataset(path)
     n_rows = len(frame)
+    identity = dict(identity or {})
 
-    if expected_rows is not None and n_rows != expected_rows:
+    for column in ("date", "target", "future_return"):
+        if column not in frame.columns:
+            raise RegimeDataError(f"{path} has no {column!r} column")
+
+    actual = {**meta.to_dict(), "rows": n_rows}
+    problems = [
+        message
+        for name in IDENTITY_FIELDS
+        if (message := _identity_mismatch(name, actual.get(name), identity.get(name)))
+    ]
+    if problems:
         raise RegimeDataError(
-            f"{path} has {n_rows} rows but the walk-forward artifact was produced "
-            f"against a {expected_rows}-row dataset. Row indices would address "
-            "different candles; refusing to compute statistics."
+            f"{path} is not the dataset this artifact was produced against — row "
+            "indices would address different candles, so no statistics are computed. "
+            + "; ".join(problems)
         )
+
+    # The metadata is a sidecar and can be stale or hand-edited; the frame's own
+    # timestamps are the thing the row indices actually point into.
+    dates = pd.to_datetime(frame["date"], utc=True)
+    for label, recorded, observed in (
+        ("start", meta.start, dates.iloc[0]),
+        ("end", meta.end, dates.iloc[-1]),
+    ):
+        if recorded and pd.Timestamp(recorded, tz="UTC") != observed:
+            raise RegimeDataError(
+                f"{path} metadata says the data {label}s at {recorded} but the frame "
+                f"{label}s at {observed}"
+            )
+
     if sealed_test_start > n_rows:
         raise RegimeDataError(
             f"the artifact's sealed boundary is row {sealed_test_start} but {path} has "
             f"only {n_rows} rows"
         )
 
-    feature_names = list(meta.feature_names)
-    if expected_features is not None and feature_names != list(expected_features):
-        raise RegimeDataError(
-            "the dataset's feature contract differs from the one the artifact "
-            f"recorded: {feature_names} vs {list(expected_features)}"
-        )
-    if expected_target_spec is not None and dict(meta.target_spec) != dict(
-        expected_target_spec
-    ):
-        raise RegimeDataError(
-            "the dataset's target spec differs from the one the artifact recorded: "
-            f"{dict(meta.target_spec)} vs {dict(expected_target_spec)}"
-        )
-
-    for column in ("date", "target", "future_return"):
-        if column not in frame.columns:
-            raise RegimeDataError(f"{path} has no {column!r} column")
-
     # The slice is the safeguard: sealed rows leave the process here, once, and
     # nothing downstream has to remember not to look at them.
     research = frame.iloc[:sealed_test_start].copy()
-    research["date"] = pd.to_datetime(research["date"], utc=True)
+    research["date"] = dates.iloc[:sealed_test_start].to_numpy()
+    segment_ids = (
+        research["segment_id"].to_numpy(dtype=np.int64)
+        if "segment_id" in research.columns
+        else None
+    )
     return ResearchFrame(
         frame=research,
         sealed_test_start=sealed_test_start,
-        feature_names=feature_names,
+        feature_names=list(meta.feature_names),
         target_spec=TargetSpec.from_dict(meta.target_spec),
         timeframe=meta.timeframe or "1h",
+        segment_ids=segment_ids,
     )
 
 
@@ -165,9 +248,19 @@ def _summarise(values: np.ndarray, statistics: Sequence[str]) -> dict[str, float
     return {name: round(_STATISTICS[name](values), 8) for name in statistics}
 
 
-def block_statistics(research: ResearchFrame, start: int, end: int) -> dict[str, Any]:
-    """Everything the processed dataset knows about one outer block."""
-    block = research.block(start, end)
+def block_statistics(
+    research: ResearchFrame, start: int, end: int, seq_len: int
+) -> dict[str, Any]:
+    """What the processed dataset says about the rows the model was scored on.
+
+    Not the rows of the block. An outer block of ``n`` rows yields fewer than
+    ``n`` samples — the first ``seq_len - 1`` cannot open a window, the last
+    ``horizon`` cannot close a label, and gap-straddling candidates are dropped —
+    and these statistics exist to interpret a number computed over the samples.
+    Both counts are reported so the gap between them is visible.
+    """
+    scored = research.scored_rows(start, end, seq_len)
+    block = research.frame.iloc[scored]
     future_return = block["future_return"].to_numpy(dtype=np.float64)
     targets = block["target"].to_numpy(dtype=np.int64)
 
@@ -198,7 +291,12 @@ def block_statistics(research: ResearchFrame, start: int, end: int) -> dict[str,
 
     return {
         "row_range": [start, end],
-        "rows": len(block),
+        "block_rows": end - start,
+        # Every statistic below is over these rows, and only these rows.
+        "scored_rows": len(scored),
+        "scored_row_range": [int(scored[0]), int(scored[-1]) + 1],
+        "seq_len": seq_len,
+        "horizon": research.target_spec.horizon,
         "period": {
             "start": str(block["date"].iloc[0]),
             "end": str(block["date"].iloc[-1]),
@@ -363,9 +461,14 @@ def direction_attribution(
     """Split realised trades into LONG and SHORT, with the same cost model.
 
     The trades come from :func:`nn.evaluate.realised_trades` — the function
-    ``trading_metrics`` itself uses — so the per-direction returns sum to the
-    same trades the fold reports, and no second transaction-cost implementation
+    ``trading_metrics`` itself uses — so the two sides partition exactly the
+    trades the fold reports, and no second transaction-cost implementation
     exists to drift from the first.
+
+    What it does **not** give you is a decomposition of the fold's net return.
+    That figure compounds; ``additive_trade_return_sum`` adds. The two sides'
+    sums therefore do not add up to the reported net return, and the field is
+    named for what it is rather than for what it would be convenient to call it.
 
     Trades are generated per ``(fold, seed)`` group: the non-overlap rule is
     about one model walking one block in time order, and pooling the groups
@@ -397,8 +500,12 @@ def direction_attribution(
             "median_net_return": (
                 round(float(np.median(selected)), 8) if selected.size else 0.0
             ),
-            # Additive contribution: how much of the total came from this side.
-            "cumulative_contribution": round(float(selected.sum()), 8),
+            # Deliberately *not* called a contribution to net return: the
+            # reported net return compounds (prod(1+r) - 1), so this additive
+            # sum does not partition it. It is the arithmetic total of the
+            # side's per-trade returns, useful for comparing the two sides
+            # against each other and nothing more.
+            "additive_trade_return_sum": round(float(selected.sum()), 8),
         }
 
     actions = predictions["selected_action"].to_numpy(dtype=np.int64)

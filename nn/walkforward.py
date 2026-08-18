@@ -221,8 +221,11 @@ def run_fold(
     run: RunConfig,
     *,
     device: Any,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], pd.DataFrame]:
     """Train, select on inner validation, then measure once on outer validation.
+
+    Returns the fold's record for the JSON report and its per-sample outer
+    predictions, which the caller concatenates and persists.
 
     Every fitted quantity is local to this call and comes from ``plan.train`` and
     ``plan.inner`` only. ``plan.outer`` reaches exactly one function —
