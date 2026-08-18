@@ -63,7 +63,7 @@ def _artifact(*, declared: bool = True, frame: pd.DataFrame | None = None) -> di
 
 def _write_run(tmp_path, frame: pd.DataFrame, artifact: dict):
     run = tmp_path / "run_a"
-    run.mkdir()
+    run.mkdir(parents=True)
     path = run / "outer_predictions.parquet"
     frame.to_parquet(path, index=False)
     (run / "walkforward.json").write_text(json.dumps(artifact) + "\n")
@@ -105,13 +105,27 @@ def test_evaluate_forwards_row_index_to_trading_metrics():
         row_index=np.array([100, 101, 200]),
     )
     assert report["trading"]["n_trades"] == 2
+    # Two six-candle trades over the represented row span [100, 200]. The
+    # compressed three-sample array must not make this look 100% exposed.
+    assert report["trading"]["exposure"] == pytest.approx(0.1188)
 
 
 def test_load_predictions_requires_artifact_declaration_and_identity(tmp_path):
     frame = _prediction_frame()
     path = _write_run(tmp_path, frame, _artifact(frame=frame))
     loaded = load_predictions(path, sealed_test_start=100)
-    assert loaded["_run_name"].unique().tolist() == ["run_a"]
+    assert loaded["_run_name"].unique().tolist() == [str(path.parent.resolve())]
+
+
+def test_loaded_run_identity_is_unique_even_when_basenames_match(tmp_path):
+    frame = _prediction_frame()
+    first = _write_run(tmp_path / "experiment_a", frame, _artifact(frame=frame))
+    second = _write_run(tmp_path / "experiment_b", frame, _artifact(frame=frame))
+
+    first_id = load_predictions(first, sealed_test_start=100)["_run_name"].iloc[0]
+    second_id = load_predictions(second, sealed_test_start=100)["_run_name"].iloc[0]
+    assert first.parent.name == second.parent.name == "run_a"
+    assert first_id != second_id
 
 
 def test_load_predictions_refuses_undeclared_file(tmp_path):
@@ -150,8 +164,8 @@ def test_direction_attribution_keeps_same_seed_runs_independent():
     spec = TargetSpec(horizon=6, fee_rate=0.0, slippage_rate=0.0)
     first = _prediction_frame().iloc[[0]].copy()
     second = _prediction_frame().iloc[[0]].copy()
-    first["_run_name"] = "run_a"
-    second["_run_name"] = "run_b"
+    first["_run_name"] = "/tmp/experiment-a/output"
+    second["_run_name"] = "/tmp/experiment-b/output"
 
     report = direction_attribution(pd.concat([first, second], ignore_index=True), spec)
     assert report["long"]["trades"] == 2
