@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from chimera.contracts import LONG_IDX, TargetSpec
+from chimera.contracts import LONG_IDX, SHORT_IDX, TargetSpec
 from nn import evaluate as ev
 from nn.regime import RegimeDataError, direction_attribution, load_predictions
 
@@ -29,8 +29,20 @@ def _prediction_frame(*, seed: int = 42) -> pd.DataFrame:
     )
 
 
-def _artifact(*, declared: bool = True) -> dict:
+def _artifact(*, declared: bool = True, frame: pd.DataFrame | None = None) -> dict:
+    frame = _prediction_frame() if frame is None else frame
+    spec = TargetSpec()
+    ordered = frame.sort_values("row_index")
+    report = ev.evaluate(
+        ordered[["p_short", "p_hold", "p_long"]].to_numpy(dtype=np.float64),
+        ordered["true_target"].to_numpy(dtype=np.int64),
+        ordered["future_return"].to_numpy(dtype=np.float64),
+        spec,
+        0.50,
+        row_index=ordered["row_index"].to_numpy(dtype=np.int64),
+    )
     payload = {
+        "dataset": {"target_spec": spec.to_dict(), "timeframe": "1h"},
         "config": {"seed": 42},
         "sealed_test": {"start_row": 100, "evaluated": False},
         "test_evaluated": False,
@@ -40,6 +52,7 @@ def _artifact(*, declared: bool = True) -> dict:
                 "samples": {"outer_validation": 2},
                 "periods": {"outer_validation": {"row_range": [10, 20]}},
                 "selection": {"threshold": 0.50},
+                "outer_validation": {"mtst": report},
             }
         ],
     }
@@ -95,20 +108,41 @@ def test_evaluate_forwards_row_index_to_trading_metrics():
 
 
 def test_load_predictions_requires_artifact_declaration_and_identity(tmp_path):
-    path = _write_run(tmp_path, _prediction_frame(), _artifact())
+    frame = _prediction_frame()
+    path = _write_run(tmp_path, frame, _artifact(frame=frame))
     loaded = load_predictions(path, sealed_test_start=100)
     assert loaded["_run_name"].unique().tolist() == ["run_a"]
 
 
 def test_load_predictions_refuses_undeclared_file(tmp_path):
-    path = _write_run(tmp_path, _prediction_frame(), _artifact(declared=False))
+    frame = _prediction_frame()
+    path = _write_run(tmp_path, frame, _artifact(declared=False, frame=frame))
     with pytest.raises(RegimeDataError, match="declares outer_predictions"):
         load_predictions(path, sealed_test_start=100)
 
 
 def test_load_predictions_refuses_seed_mismatch(tmp_path):
-    path = _write_run(tmp_path, _prediction_frame(seed=99), _artifact())
+    frame = _prediction_frame(seed=99)
+    path = _write_run(tmp_path, frame, _artifact(frame=frame))
     with pytest.raises(RegimeDataError, match="seed values"):
+        load_predictions(path, sealed_test_start=100)
+
+
+def test_load_predictions_refuses_non_integral_fold_ids(tmp_path):
+    frame = _prediction_frame()
+    frame["fold"] = [0.1, 0.9]
+    path = _write_run(tmp_path, frame, _artifact())
+    with pytest.raises(RegimeDataError, match="non-integral fold"):
+        load_predictions(path, sealed_test_start=100)
+
+
+def test_load_predictions_refuses_content_that_does_not_reproduce_report(tmp_path):
+    original = _prediction_frame()
+    stale = original.copy()
+    stale[["p_short", "p_long"]] = stale[["p_long", "p_short"]].to_numpy()
+    stale["selected_action"] = SHORT_IDX
+    path = _write_run(tmp_path, stale, _artifact(frame=original))
+    with pytest.raises(RegimeDataError, match="does not reproduce"):
         load_predictions(path, sealed_test_start=100)
 
 
