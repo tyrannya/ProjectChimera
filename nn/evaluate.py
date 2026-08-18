@@ -235,13 +235,16 @@ def trading_metrics(
     """Score a signal series as a sequence of non-overlapping trades.
 
     The trades themselves come from :func:`realised_trades`; everything here is
-    aggregation over them. ``row_index`` keeps the non-overlap rule in candle
-    coordinates when the scored sample array is discontinuous around gaps.
+    aggregation over them. ``row_index`` keeps both trade spacing and exposure
+    in candle-row coordinates when the scored array is discontinuous around
+    gaps. Without explicit indices, the historic contiguous-array semantics are
+    preserved exactly.
     """
     horizon = target_spec.horizon
     cost = target_spec.cost_threshold
     n = len(signals)
-    _, _, returns = realised_trades(signals, future_return, target_spec, row_index=row_index)
+    rows = _trade_rows(n, row_index)
+    _, _, returns = realised_trades(signals, future_return, target_spec, row_index=rows)
 
     n_trades = len(returns)
     if n_trades == 0:
@@ -273,6 +276,7 @@ def trading_metrics(
     std = float(trade_returns.std(ddof=1)) if n_trades > 1 else 0.0
     trades_per_year = candles_per_year / horizon
     sharpe = float(trade_returns.mean() / std * np.sqrt(trades_per_year)) if std > 0 else 0.0
+    covered_rows = int(rows[-1] - rows[0] + 1)
 
     return {
         "n_trades": n_trades,
@@ -286,7 +290,7 @@ def trading_metrics(
         ),
         "sharpe": round(sharpe, 4),
         "max_drawdown": round(max_drawdown, 4),
-        "exposure": round(min(1.0, n_trades * horizon / n), 4),
+        "exposure": round(min(1.0, n_trades * horizon / covered_rows), 4),
         "turnover": round(2.0 * n_trades, 1),
         "cost_per_trade": round(cost, 6),
     }
