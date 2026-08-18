@@ -490,6 +490,184 @@ Output: `artifacts/walkforward/walkforward.json` (which records
 "outer_validation"`, and per fold a `periods` object with all three regions, a
 `selection` object and an `outer_validation` object) and `walkforward.md`.
 
+### Diagnostics across several walk-forward runs
+
+`nn.wf_diagnostics` reads `walkforward.json` artifacts that already exist and
+reports on them. It takes paths on the command line — artifact directories or
+the JSON files themselves — so nothing has to be committed, and it never opens a
+dataset or a checkpoint:
+
+```bash
+python -m nn.wf_diagnostics \
+    artifacts/walkforward/run_a \
+    artifacts/walkforward/run_b \
+    --out artifacts/walkforward/diagnostics
+```
+
+It answers two questions a single run cannot answer about itself.
+
+**Is each artifact sound?** The invariants walk-forward asserts while running are
+re-checked against what landed on disk, on row indices rather than region names:
+
+- the three regions of every fold in order, `train.end <= inner.start` and
+  `inner.end <= outer.start`;
+- outer blocks disjoint within the run — no row reported by two folds;
+- no region ending at or beyond `sealed_test.start_row`;
+- `test_evaluated` and `sealed_test.evaluated` both false, failing closed when
+  either is absent rather than absent-means-fine;
+- `reported_block` and `summary.aggregated_from` both `outer_validation`;
+- **the recorded across-fold summary reproduced from the per-fold reports beside
+  it**, so the headline is provably the folds' average and not an edit.
+
+A pre-nested artifact — one `validation` block per fold, selected on and
+reported — is refused by name rather than read as if it were an evaluation.
+
+**How much of the result is the seed?** Runs that differ only in `--seed` give a
+distribution, and the width is the useful number. The report shows each run's
+across-fold mean and the spread of those means, the same metrics fold by fold
+across runs, and the stability of the *selected* threshold and early-stopping
+epoch — a fold whose threshold swings between seeds is a fold whose inner block
+did not have a strong preference. It also counts how many run-folds MTST beat
+both baselines in, because winning a majority in one run and losing it in the
+next is not a result.
+
+Runs whose geometry, sealed boundary, dataset or fold count differ are reported
+as **not comparable** and no aggregate is produced: averaging metrics from
+different blocks of market is a category error, not a seed study. The same
+applies when any run fails its audit — the problems are printed and the headline
+is withheld. The command exits non-zero in both cases, so it can gate a
+pipeline.
+
+Output: the Markdown report on stdout, plus `wf_diagnostics.json` and
+`wf_diagnostics.md` when `--out` is given.
+
+**What it is not.** Seed spread measures the stability of the research
+procedure. It is not an out-of-sample estimate and not a claim of
+profitability — the outer blocks are still research blocks, re-run while the
+method was being built. The sealed test block stays unopened, and the tool
+refuses an artifact that says otherwise.
+
+### Regime diagnostics: what differed about the market
+
+`nn.wf_diagnostics` can say fold 2 earned more than fold 1. With `--dataset` it
+can say *what was different about the market* in those two stretches.
+
+```bash
+python -m nn.wf_diagnostics \
+    artifacts/walkforward/run_a artifacts/walkforward/run_b \
+    --dataset data/datasets/binance_BTC_USDT_1h.parquet \
+    --raw data/raw/binance/BTC_USDT_1h.parquet \
+    --out artifacts/diagnostics/btc_regimes_v1
+```
+
+Both data flags are optional. Without `--dataset` the audit, seed stability and
+per-fold model stability still run, so artifacts remain analysable with no
+dataset at hand. `--raw` requires `--dataset`.
+
+**Per outer block, from the processed dataset:** `future_return` mean, median,
+std, mean absolute and sign fractions; `ema_cross` mean/median/std and sign
+fractions; `ema_fast_ratio` and `ema_slow_ratio` mean and median; `atr_norm` and
+`realized_vol` mean/median/p90; `hl_range`, `volume_change` mean and median;
+`volume_z` mean, median and p90 of the absolute value; exact SHORT/HOLD/LONG
+counts and fractions with mean and median `future_return` per class. Columns are
+addressed by the feature names the artifact recorded, never by position.
+
+**Computed over the rows the model was scored on, not the rows the block
+spans.** An outer block of 4,821 rows does not yield 4,821 samples: the first
+`seq_len - 1` cannot open a window, the last `horizon` cannot close a label, and
+any candidate straddling a market-data gap is dropped. On the BTC artifacts that
+is 4,683 scored rows in fold 0 against 4,821 block rows. Summarising the block
+would describe a slightly different stretch of market than the metric being
+explained, so rows are selected through `nn.dataset.sample_indices` — the same
+function `build_windows` uses — with the artifact's own `config.seq_len` and
+target horizon. Both counts appear in the report.
+
+The reconstruction is **checked, not asserted**: each fold's artifact records how
+many outer samples the run scored, and a reconstruction that does not reproduce
+that number exactly stops the report. An artifact with no recorded `seq_len`
+cannot be regime-analysed at all — guessing one would summarise rows the model
+never saw.
+
+**Per outer block, from raw OHLCV:** start and end close, market return, mean /
+median / std candle return, annualised realised volatility, mean absolute candle
+return, positive and negative candle fractions, and max drawdown. These are taken
+over the **whole block span** — a view of the market independent of which rows
+were scorable — and labelled as such, so they are not read as row-for-row
+comparable with the model-facing statistics above.
+
+Three rules make those numbers trustworthy rather than merely available:
+
+- **The sealed boundary is enforced by slicing.** `load_research_frame`
+  truncates the dataset at `sealed_test_start` on load, so a sealed row is not
+  in the frame at all and no off-by-one can reach one. Block ranges are checked
+  against the boundary again on the way in.
+- **Row indices only mean a candle against the dataset they were recorded on.**
+  Every identity field the artifact and `DatasetMetadata` both carry is checked —
+  rows, exchange, pair, timeframe, first and last timestamp, feature names,
+  feature spec, target spec — and the metadata's span is cross-checked against
+  the frame's own first and last timestamps, because a sidecar can be stale. A
+  wrong file with a coincidentally matching row count is refused rather than
+  silently reindexed.
+- **Raw candles join on timestamps, never on position.** The processed dataset
+  dropped warm-up and label rows, so processed row *i* is not raw row *i*. A
+  missing timestamp, a duplicate, or a timeframe that disagrees is an error.
+  Candle-to-candle returns are taken only between timestamps exactly one
+  timeframe apart, and the count of skipped pairs is reported.
+
+**Best vs worst.** The folds with the highest and lowest mean MTST outer net
+return across seeds are chosen from the data — never named in the source — and
+compared row by row, ranked by difference relative to the larger magnitude.
+Every row is a coincidence, not a cause: one fold per regime is a sample of one.
+
+**LONG / SHORT attribution.** Aggregate reports cannot answer "did the longs or
+the shorts lose the money?", and it is not approximated from them. Runs write
+`outer_predictions.parquet` beside the artifact — one row per outer sample with
+`fold`, `seed`, `row_index`, `timestamp`, `true_target`, `future_return`,
+`p_short`/`p_hold`/`p_long`, `selected_action` and `threshold`, outer rows only,
+with a sealed row refused before the file is created. When present, the
+diagnostics report exact per-direction trade counts, hit rates, mean/median net
+return, `additive_trade_return_sum`, HOLD count and per-side coverage. The trades
+come from `nn.evaluate.realised_trades`, the same generator `trading_metrics`
+aggregates, so the two sides partition exactly the trades the fold reports and
+there is no second cost model to drift. When absent, the report says so and
+offers nothing in its place.
+
+`additive_trade_return_sum` is named for what it is: the arithmetic total of one
+side's per-trade returns. The reported `net_return` **compounds**
+(`prod(1 + r) - 1`), so the two sides' sums do not add up to it and this is not a
+decomposition of the fold's return — it compares the sides against each other and
+nothing more.
+
+**Candidate hypotheses.** Three research questions, generated from the
+diagnostics and ranked by the size of the difference behind them. None is
+implemented or tuned — a diagnostic that quietly starts fitting is how a
+research tool becomes a source of overfitting.
+
+Their wording follows the observed numbers rather than being fixed in the
+source. Whether the best and worst folds separate is a property of the data: if
+their per-seed ranges overlap, the report says the two cannot be told apart yet;
+if they do not, it says the worst fold behaves consistently worse across every
+seed observed — and in both cases it records the ranges, the seed count and the
+positive-seed count that chose the wording, so the sentence can be checked
+against the numbers. Neither branch generalises: one fold per regime is a sample
+of one, and seed count is not a substitute for independent periods.
+
+**Baselines are scored at their own declared threshold.** Every model used to be
+scored at the threshold selected for MTST, which made the "floor" move with the
+seed: `MajorityClassBaseline` emitted the empirical class prior, so a threshold
+above the prior's largest entry silently suppressed it to HOLD. Both baselines
+now emit one-hot actions — the vector *is* the decision, so no threshold can
+change it — and are scored at `nn.baselines.BASELINE_DECISION_THRESHOLD`, a
+declared constant fitted on nothing. On identical geometry and data their reports
+are byte-identical across seeds, which is asserted. A run set that shows
+deterministic-baseline spread predates this fix, and the report says so rather
+than presenting it as a finding.
+
+Output: `regime_diagnostics.json` and `regime_diagnostics.md` under `--out`,
+with sections for the integrity audit, dataset/sealed status, fold geometry,
+market regime statistics, seed stability, per-fold model stability, best vs
+worst, attribution, hypotheses and limitations.
+
 ### Spending the test split
 
 When the research decisions are frozen — architecture, hyperparameters, feature

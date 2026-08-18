@@ -186,6 +186,33 @@ overlap, so no row is reported as the result of two folds.
 Neither one scores the test split. Only the plain `nn.train` run in step 3 does,
 and only that run's artifact can be promoted.
 
+Once several walk-forward runs exist — the same geometry with different
+`--seed` values — `nn.wf_diagnostics` audits and compares them:
+
+```bash
+python -m nn.wf_diagnostics artifacts/walkforward/run_a artifacts/walkforward/run_b
+```
+
+It re-checks each artifact's leakage invariants on its own row indices, refuses
+to aggregate runs that do not measure the same blocks, and reports how far the
+outer-validation numbers move when only the seed changes.
+
+Pass a dataset and it also explains what differed about the *market* between the
+best and worst fold:
+
+```bash
+python -m nn.wf_diagnostics artifacts/walkforward/run_a artifacts/walkforward/run_b \
+    --dataset data/datasets/binance_BTC_USDT_1h.parquet \
+    --raw data/raw/binance/BTC_USDT_1h.parquet \
+    --out artifacts/diagnostics/btc_regimes_v1
+```
+
+Both data flags are optional and both read local paths given at runtime; nothing
+needs to be committed. The dataset is truncated at the sealed boundary on load,
+raw candles join on exact timestamps rather than position, and the best and
+worst folds are chosen from the data. Differences are reported as coincidences,
+never causes.
+
 ### 5. Serve the model
 
 ```bash

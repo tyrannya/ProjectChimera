@@ -120,6 +120,35 @@ def window_indices(split: Split, seq_len: int, horizon: int) -> np.ndarray:
     return np.arange(first, last + 1, dtype=np.int64)
 
 
+def sample_indices(
+    split: Split,
+    seq_len: int,
+    horizon: int,
+    *,
+    segment_ids: np.ndarray | None = None,
+) -> np.ndarray:
+    """The rows a split actually yields samples for.
+
+    :func:`window_indices` gives the candidates the block geometry allows; this
+    additionally drops any candidate whose input window or embargoed label would
+    straddle a market-data gap. The result is exactly the ``row_index`` array
+    :func:`build_windows` returns, which is what makes it usable as *the*
+    definition of "which rows were scored" — a later analysis can ask that
+    question without rebuilding the tensors, and cannot answer it differently.
+    """
+    idx = window_indices(split, seq_len, horizon)
+    if idx.size == 0 or segment_ids is None:
+        return idx
+
+    segments = np.asarray(segment_ids)
+    offsets = np.arange(-seq_len + 1, 1)
+    window_rows = idx[:, None] + offsets[None, :]
+    current_segment = segments[idx]
+    input_is_contiguous = (segments[window_rows] == current_segment[:, None]).all(axis=1)
+    label_is_contiguous = segments[idx + horizon] == current_segment
+    return idx[input_is_contiguous & label_is_contiguous]
+
+
 def build_windows(
     features: np.ndarray,
     targets: np.ndarray,
@@ -142,7 +171,7 @@ def build_windows(
     if segment_ids is not None and len(segment_ids) != len(features):
         raise ValueError("segment_ids must have the same length as features")
 
-    idx = window_indices(split, seq_len, horizon)
+    idx = sample_indices(split, seq_len, horizon, segment_ids=segment_ids)
     if idx.size == 0:
         return (
             np.empty((0, seq_len, features.shape[1]), dtype=np.float32),
@@ -153,16 +182,6 @@ def build_windows(
     # Gather windows without a Python loop over samples.
     offsets = np.arange(-seq_len + 1, 1)
     window_rows = idx[:, None] + offsets[None, :]
-
-    if segment_ids is not None:
-        segments = np.asarray(segment_ids)
-        current_segment = segments[idx]
-        input_is_contiguous = (segments[window_rows] == current_segment[:, None]).all(axis=1)
-        label_is_contiguous = segments[idx + horizon] == current_segment
-        keep = input_is_contiguous & label_is_contiguous
-        idx = idx[keep]
-        window_rows = window_rows[keep]
-
     X = features[window_rows].astype(np.float32)
     y = targets[idx].astype(np.int64)
     return X, y, idx

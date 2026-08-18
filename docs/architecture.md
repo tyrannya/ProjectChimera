@@ -120,6 +120,8 @@ inputs computed differently than the ones it learned from.
 | `evaluate.py` | Classification and trading metrics; threshold selection. |
 | `experiment.py` | Predeclared config grids, scored on validation only. |
 | `walkforward.py` | Nested walk-forward *validation*: train -> inner validation (selection) -> outer validation (reported). |
+| `wf_diagnostics.py` | Audits and compares completed walk-forward artifacts: integrity, comparability, seed stability. |
+| `regime.py` | Dataset-backed statistics over an outer block's *scored* rows, timestamp-aligned raw OHLCV, and LONG/SHORT attribution. |
 | `registry.py` | Artifact save/load, promotion gates, `current.json`. |
 | `infer_service.py` | The FastAPI service. |
 
