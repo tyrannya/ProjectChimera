@@ -349,7 +349,12 @@ def fit_and_validate(
 
     val_proba = predict_proba(model, prepared.X_val, device)
     val_return = data.future_return[prepared.idx_val]
-    threshold, threshold_report = ev.select_threshold(val_proba, val_return, data.target_spec)
+    threshold, threshold_report = ev.select_threshold(
+        val_proba,
+        val_return,
+        data.target_spec,
+        row_index=prepared.idx_val,
+    )
 
     baselines = {
         "majority_baseline": MajorityClassBaseline().fit(prepared.y_train),
@@ -366,6 +371,7 @@ def fit_and_validate(
             data.target_spec,
             decision_threshold,
             candles_per_year=data.candles_per_year,
+            row_index=prepared.idx_val,
         )
 
     # Baselines are scored at their own declared threshold, never the model's.
@@ -461,6 +467,7 @@ def score_frozen_split(
             data.target_spec,
             decision_threshold,
             candles_per_year=data.candles_per_year,
+            row_index=idx,
         )
 
     proba = predict_proba(model, X, device)
