@@ -568,6 +568,9 @@ def main(argv: list[str] | None = None) -> int:
             indent=2,
             default=str,
         )
+        # Trailing newline: these artifacts get committed, and a file without
+        # one fails the repository's end-of-file hook.
+        + "\n"
     )
     markdown = to_markdown(results, summary, sealed=data.period(sealed_split))
     (out_dir / "walkforward.md").write_text(markdown)

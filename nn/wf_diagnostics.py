@@ -620,6 +620,7 @@ def main(argv: list[str] | None = None) -> int:
                 indent=2,
                 default=str,
             )
+            + "\n"
         )
         (out_dir / "wf_diagnostics.md").write_text(markdown)
         logger.info("Wrote diagnostics to %s", out_dir)
