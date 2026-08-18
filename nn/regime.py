@@ -421,7 +421,9 @@ def _integral_column(frame: pd.DataFrame, column: str, path: Path) -> np.ndarray
     return integer
 
 
-def _prediction_report(part: pd.DataFrame, artifact: Mapping[str, Any], threshold: float) -> dict:
+def _prediction_report(
+    part: pd.DataFrame, artifact: Mapping[str, Any], threshold: float
+) -> dict:
     """Recompute the MTST report from persisted rows to bind parquet to JSON content."""
     target_raw = (artifact.get("dataset") or {}).get("target_spec")
     timeframe = (artifact.get("dataset") or {}).get("timeframe") or "1h"
@@ -534,7 +536,9 @@ def _validate_predictions_against_artifact(
 
         recorded_report = (fold.get("outer_validation") or {}).get("mtst")
         if not isinstance(recorded_report, Mapping):
-            raise RegimeDataError(f"artifact fold {fold_id} has no outer_validation.mtst report")
+            raise RegimeDataError(
+                f"artifact fold {fold_id} has no outer_validation.mtst report"
+            )
         try:
             recomputed_report = _prediction_report(part, artifact, expected_threshold)
         except (TypeError, ValueError) as exc:
