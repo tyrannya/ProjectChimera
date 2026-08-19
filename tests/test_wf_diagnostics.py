@@ -2177,9 +2177,7 @@ def test_a_current_artifact_missing_a_metric_fails_rather_than_dropping_it(tmp_p
         "per_trade_sharpe_reason",
     ],
 )
-def test_a_current_artifact_missing_any_required_risk_field_fails_closed(
-    tmp_path, field
-):
+def test_a_current_artifact_missing_any_required_risk_field_fails_closed(tmp_path, field):
     """Every current risk-report field is required, not just summary metrics."""
     directory = tmp_path / "missing_risk_field"
     write_run(directory)
@@ -2201,9 +2199,9 @@ def test_a_defined_current_sharpe_with_a_different_basis_is_refused(tmp_path):
     write_run(directory)
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
     payload = json.loads(artifact.read_text())
-    payload["folds"][0]["outer_validation"]["mtst"]["trading"]["sharpe_basis"] = (
-        "a different annualisation basis"
-    )
+    payload["folds"][0]["outer_validation"]["mtst"]["trading"][
+        "sharpe_basis"
+    ] = "a different annualisation basis"
     artifact.write_text(json.dumps(payload))
 
     run = wf_diagnostics.load_run(directory)
