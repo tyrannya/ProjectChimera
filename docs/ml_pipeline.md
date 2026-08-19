@@ -168,12 +168,29 @@ name was doing both jobs and neither honestly:
   `cumprod(1 + trade_returns)` at every completed trade boundary, so it is the
   equity curve already being reported at candle resolution rather than a second
   return model. It is annualised by `sqrt(candles_per_year)` over **elapsed
-  calendar intervals**, so a missing exchange candle is not counted as an hour
-  that happened.
+  wall-clock time**: each candle the exchange never published still counts as
+  time that passed, and carries a zero portfolio return. That zero is exact
+  rather than assumed — no model position may span a market-data gap, so the
+  portfolio is provably flat through one. Counting dataset rows instead would
+  treat a six-hour outage as a single hour and inflate the result.
 
 Both are `None` — rendered `n/a` — when undefined, never `0.0`: a portfolio that
 never moved has no Sharpe, and a zero would read as a measurement. That rule
 applies to the model, to the baselines and to CASH alike.
+
+**`max_drawdown` was corrected at the same time.** It took its running peak from
+the first completed trade rather than from starting capital, so a strategy under
+water from its first trade understated the fall it actually took — a single trade
+losing 10% reported a drawdown of zero, and two consecutive 10% losses reported
+10% instead of 19%. The peak now starts at 1.0. `candle_max_drawdown` is the same
+equity curve at candle resolution, so it also sees the drawdown suffered *inside*
+an open position and is always the larger of the two.
+
+The field keeps its name, because the old number was wrong rather than a
+different measurement worth preserving. But a pre-correction value is not
+comparable to a corrected one, so `nn.wf_diagnostics` skips it for legacy
+artifacts and reports it separately from the fields those artifacts simply never
+recorded — `skipped_because_redefined` versus `skipped_because_absent`.
 
 The version this replaced annualised per-trade statistics by
 `candles_per_year / horizon`: the number of trades the strategy *could* have taken

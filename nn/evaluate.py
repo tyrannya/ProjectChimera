@@ -261,7 +261,8 @@ def realised_trades(
 SHARPE_BASIS = (
     "candle-level portfolio returns (equity unchanged while flat, marked to market "
     "while a position is open, both cost sides charged when they are paid), "
-    "annualised by sqrt(candles_per_year) over elapsed calendar intervals"
+    "annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a "
+    "zero return for each candle the exchange never published"
 )
 
 #: Why a risk-adjusted statistic is absent, when it is.
@@ -298,10 +299,12 @@ class MarketContext:
         """Candle intervals of *wall-clock time* the span covers, inclusive.
 
         Not ``end_row - start_row + 1``. The processed dataset drops candles the
-        exchange never published, so consecutive rows can be hours apart, and
-        counting rows would treat a six-hour outage as one ordinary hour —
-        inflating any statistic annualised from the count. With no gaps the two
-        numbers agree, and a test asserts that.
+        exchange never published, so consecutive rows can be hours apart. Every
+        one of those missing candles is counted here as time that passed —
+        because it did — and the return series is padded with a zero for each.
+        Counting dataset rows instead would treat a six-hour outage as a single
+        hour and inflate any statistic annualised from the count. With no gaps
+        the two numbers agree, and a test asserts that.
 
         Raises rather than rounding away a disagreement: an elapsed span that is
         not a near-integer multiple of the timeframe means the dates and the
@@ -438,11 +441,12 @@ def annualised_sharpe(
     ``returns`` holds one observation per candle *present in the dataset*;
     ``elapsed_intervals`` is how many candle intervals of wall-clock time the
     span actually covered. The series is zero-padded to that length before the
-    mean and variance are taken, because the missing candles are ones the
-    exchange never published — and the portfolios this is called for are
-    provably flat across them, so a zero is the true return rather than an
-    assumption. (Buy-and-hold is *not* flat across a gap; it does not call this,
-    see :func:`buy_and_hold_reference`.)
+    mean and variance are taken: the candles the exchange never published are
+    still elapsed time, and the portfolios this is called for hold nothing
+    across them, so zero is the return they genuinely earned rather than a
+    stand-in for an unknown one. (Buy-and-hold is *not* flat across a gap — it
+    is holding the asset through it — so it does not call this; see
+    :func:`buy_and_hold_reference`.)
 
     Padding is applied through the sums rather than by materialising the zeros;
     a test asserts the two agree. Returns ``(None, reason)`` when there is no
@@ -469,11 +473,24 @@ def annualised_sharpe(
 
 
 def max_drawdown_of(equity: np.ndarray) -> float:
-    """Deepest peak-to-trough fall of an equity curve."""
+    """Deepest peak-to-trough fall of an equity curve, measured from 1.0.
+
+    **Starting capital is part of the curve.** ``equity`` holds the value *after*
+    each step, so its first entry is already the result of the first one; taking
+    the running peak from there measures the fall from wherever the strategy had
+    got to, not from what it started with. A single trade losing 10% then
+    reported a drawdown of zero — the curve had one point, so it was its own
+    peak — and two consecutive 10% losses reported 10% rather than 19%.
+
+    Prepending the opening 1.0 fixes it: the peak can never begin below starting
+    capital, so a strategy that is under water from its first step reports the
+    loss it actually took.
+    """
     if len(equity) == 0:
         return 0.0
-    peak = np.maximum.accumulate(equity)
-    return float((1.0 - equity / peak).max())
+    curve = np.concatenate(([1.0], np.asarray(equity, dtype=np.float64)))
+    peak = np.maximum.accumulate(curve)
+    return float((1.0 - curve / peak).max())
 
 
 def _risk_adjusted(
@@ -601,8 +618,10 @@ def trading_metrics(
 
     trade_returns = returns
     equity = np.cumprod(1.0 + trade_returns)
-    peak = np.maximum.accumulate(equity)
-    max_drawdown = float((1.0 - equity / peak).max())
+    # Same curve, same starting point: `max_drawdown_of` prepends the opening
+    # 1.0, so a strategy that loses from its first trade reports that loss
+    # rather than zero. One definition, used by both resolutions.
+    max_drawdown = max_drawdown_of(equity)
 
     wins = trade_returns[trade_returns > 0]
     losses = trade_returns[trade_returns < 0]

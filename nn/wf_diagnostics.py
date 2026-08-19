@@ -117,6 +117,17 @@ DETERMINISTIC_BASELINES = ("majority_baseline", "momentum_baseline")
 #: runs did not build.
 CURRENT_ONLY_METRICS = ("annualised_sharpe", "per_trade_sharpe")
 
+#: Metrics present in both generations but **computed differently**.
+#:
+#: ``max_drawdown`` used to take its running peak from the first completed
+#: trade rather than from starting capital, so a strategy that was under water
+#: from its first trade understated its drawdown — a single 10% loss reported
+#: zero. The field name is unchanged because the old number was simply wrong,
+#: not a different measurement worth keeping; but a pre-correction value is not
+#: comparable to a corrected one, so it is skipped for legacy artifacts exactly
+#: as the missing fields are, and the report says which kind of skip each was.
+REDEFINED_METRICS = ("max_drawdown",)
+
 #: The field the correction removed, and what it used to mean.
 #:
 #: ``sharpe`` annualised per-trade statistics by ``candles_per_year / horizon``
@@ -199,9 +210,16 @@ def classify_schema(run: "RunArtifact") -> tuple[str, list[str]]:
 
 
 def readable_metrics(schema: str) -> tuple[str, ...]:
-    """The metrics that may be aggregated under a given schema."""
+    """The metrics that may be aggregated under a given schema.
+
+    A pre-correction artifact loses two kinds of metric: the ones it never
+    recorded (:data:`CURRENT_ONLY_METRICS`) and the ones it recorded under
+    different semantics (:data:`REDEFINED_METRICS`). Both are unusable, for
+    different reasons, and the report distinguishes them.
+    """
     if schema == SCHEMA_LEGACY:
-        return tuple(m for m in SUMMARY_METRICS if m not in CURRENT_ONLY_METRICS)
+        skipped = set(CURRENT_ONLY_METRICS) | set(REDEFINED_METRICS)
+        return tuple(m for m in SUMMARY_METRICS if m not in skipped)
     return tuple(SUMMARY_METRICS)
 
 
@@ -555,6 +573,10 @@ def aggregate(runs: list[RunArtifact]) -> dict[str, Any]:
         "folds": n_folds,
         "metric_schema": schema,
         "skipped_metrics": sorted(set(SUMMARY_METRICS) - set(readable)),
+        # Why each was skipped, because "absent" and "recorded under different
+        # semantics" are different problems with different remedies.
+        "skipped_because_absent": sorted(set(CURRENT_ONLY_METRICS) - set(readable)),
+        "skipped_because_redefined": sorted(set(REDEFINED_METRICS) - set(readable)),
         "per_model": per_model,
         "selection": _aggregate_selection(runs, names, n_folds),
         "baseline_comparison": _compare_to_baselines(runs, n_folds),
@@ -1244,8 +1266,13 @@ def to_markdown(
             "have taken back to back, not the number it took. On a signal that trades "
             "rarely that figure is overstated several-fold, and it grew as the target "
             "horizon shrank. It is **not** reported here and **not** comparable to "
-            f"anything below; {', '.join(summary['skipped_metrics'])} are absent from "
-            "these runs and are skipped. Every other metric is unaffected. Re-run "
+            f"anything below; {', '.join(CURRENT_ONLY_METRICS)} are absent from these "
+            "runs and are skipped. **`max_drawdown` is skipped for a different "
+            "reason**: these runs recorded it, but measured the running peak from "
+            "the first completed trade instead of from starting capital, so a "
+            "strategy under water from its first trade understated it — a single "
+            "10% loss recorded zero. Its values here are not comparable to a "
+            "corrected run's. Every other metric is unaffected. Re-run "
             "`nn.walkforward` to produce an artifact with the corrected statistics.",
             "",
         ]

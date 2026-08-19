@@ -729,3 +729,95 @@ def test_baseline_reports_do_not_move_with_the_models_threshold():
         for threshold in (0.0, 0.34, 0.5, 0.7, 0.9, 1.0)
     ]
     assert all(report == reports[0] for report in reports)
+
+
+# --- drawdown is measured from starting capital -------------------------------
+#
+# The running peak used to start at the first completed trade rather than at
+# 1.0, so a strategy that was under water from its first step reported a fall
+# from wherever it had already got to. These are closed-form: each asserts the
+# arithmetic, not that the number looks reasonable.
+def test_a_single_losing_trade_reports_its_full_drawdown():
+    """The clearest form of the bug: one -10% trade used to report zero.
+
+    Its equity curve had a single point, so that point was its own peak.
+    """
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    report = trading_metrics(np.array([LONG_IDX]), np.array([-0.10]), spec)
+    assert report["net_return"] == pytest.approx(-0.10)
+    assert report["max_drawdown"] == pytest.approx(0.10, abs=1e-12)
+
+
+def test_consecutive_losses_compound_from_initial_capital():
+    """Two 10% losses is a 19% fall from 1.0, not 10% from the first trade."""
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    report = trading_metrics(np.full(2, LONG_IDX), np.array([-0.10, -0.10]), spec)
+    assert report["max_drawdown"] == pytest.approx(1.0 - 0.9 * 0.9, abs=1e-12)
+
+
+def test_a_gain_before_a_loss_still_measures_from_the_peak():
+    """The correction must not double-count: the peak is still the peak."""
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    report = trading_metrics(np.full(2, LONG_IDX), np.array([0.10, -0.10]), spec)
+    # Peak is 1.10, trough 0.99 -> 10%, unchanged by prepending 1.0.
+    assert report["max_drawdown"] == pytest.approx(0.10, abs=1e-12)
+
+
+def test_a_purely_winning_strategy_has_no_drawdown():
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    report = trading_metrics(np.full(3, LONG_IDX), np.full(3, 0.05), spec)
+    assert report["max_drawdown"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_max_drawdown_of_measures_from_one():
+    """The helper itself, against hand-computed values."""
+    assert ev.max_drawdown_of(np.array([0.9])) == pytest.approx(0.10, abs=1e-12)
+    assert ev.max_drawdown_of(np.array([0.9, 0.81])) == pytest.approx(0.19, abs=1e-12)
+    assert ev.max_drawdown_of(np.array([1.1, 0.99])) == pytest.approx(0.10, abs=1e-12)
+    assert ev.max_drawdown_of(np.array([])) == 0.0
+
+
+def test_an_open_position_under_water_is_measured_from_starting_equity():
+    """Candle-level: the fall is from 1.0, before the trade ever closed."""
+    close = np.array([100.0, 90.0, 85.0, 95.0, 95.0])
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(5) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    equity = ev.portfolio_equity(market, [(0, 3, 1.0)], 0.0, 0, 3)
+    # Marked from the entry price: 1.00, 0.90, 0.85, 0.95.
+    assert equity == pytest.approx([1.0, 0.90, 0.85, 0.95], abs=1e-12)
+    # Trough is 0.85 against a peak of 1.0, even though the trade ended at -5%.
+    assert ev.max_drawdown_of(equity) == pytest.approx(0.15, abs=1e-12)
+
+
+def test_buy_and_holds_entry_cost_is_visible_in_its_candle_drawdown():
+    """A flat market still costs the spread, and the drawdown must show it."""
+    spec = TargetSpec(horizon=2, fee_rate=0.01, slippage_rate=0.01)  # 4% round trip
+    close = np.full(20, 100.0)
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(20) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    hold = ev.buy_and_hold_reference(market, spec, np.arange(10))
+    assert hold["gross_return"] == pytest.approx(0.0, abs=1e-12)
+    assert hold["net_return"] == pytest.approx(-spec.cost_threshold, abs=1e-12)
+    # Entry side is paid at entry, so equity is below 1.0 from the first candle;
+    # the exit side deepens it to the full round trip by the last.
+    assert hold["candle_max_drawdown"] == pytest.approx(spec.cost_threshold, abs=1e-6)
+
+
+def test_candle_drawdown_is_at_least_the_trade_level_one():
+    """Same curve, finer resolution: it also sees inside an open position."""
+    spec = TargetSpec(horizon=4, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(300, seed=21)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(250, HOLD_IDX)
+    signals[np.arange(2, 250, 15)] = LONG_IDX
+
+    report = trading_metrics(signals, future_return[:250], spec, market=market)
+    assert report["candle_max_drawdown"] >= report["max_drawdown"] - 1e-9
+
+
+def test_cash_has_no_drawdown_because_it_never_leaves_starting_capital():
+    cash = ev.cash_reference(TargetSpec(horizon=6, fee_rate=0.01, slippage_rate=0.01))
+    assert cash["max_drawdown"] == 0.0
+    assert cash["candle_max_drawdown"] == 0.0

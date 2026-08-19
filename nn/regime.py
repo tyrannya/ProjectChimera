@@ -440,8 +440,82 @@ NON_REPRODUCIBLE_TRADING_METRICS = (
 )
 
 
+#: Types each non-reproducible field must have when a current artifact carries
+#: it. ``None`` is always allowed: a risk-adjusted statistic is genuinely
+#: undefined when the portfolio never moved.
+_FIELD_TYPES: dict[str, tuple[type, ...]] = {
+    "annualised_sharpe": (int, float),
+    "annualised_sharpe_reason": (str,),
+    "sharpe_basis": (str,),
+    "candle_max_drawdown": (int, float),
+    "elapsed_intervals": (int,),
+}
+
+#: The field the metric correction removed. Its presence dates an artifact.
+_LEGACY_TRADING_KEY = "sharpe"
+
+
+def validate_report_schema(report: Mapping[str, Any], where: str) -> str:
+    """Check a recorded report's metric schema before anything is excluded.
+
+    The *values* of :data:`NON_REPRODUCIBLE_TRADING_METRICS` cannot be rebuilt
+    from a per-sample predictions file, but their *presence and shape* still
+    can and must be checked. Dropping them unconditionally would let a current
+    artifact that had lost or malformed a candle-level field bind cleanly
+    against its parquet — exactly the silent degradation the binding check
+    exists to prevent.
+
+    So the schema is classified first, and only then are values excluded:
+
+    * **current** — every field present, correctly typed, and no ``sharpe``;
+    * **legacy** — ``sharpe`` present and *all* of the new fields absent, the
+      known pre-correction fingerprint;
+    * anything else — a partial rename, a missing field with no legacy
+      fingerprint, or a wrong type — raises.
+
+    Returns the schema name so the caller can record which one it read.
+    """
+    trading = report.get("trading")
+    if not isinstance(trading, Mapping):
+        raise RegimeDataError(f"{where} has no trading report to validate")
+
+    present = [field for field in NON_REPRODUCIBLE_TRADING_METRICS if field in trading]
+    missing = [field for field in NON_REPRODUCIBLE_TRADING_METRICS if field not in trading]
+    legacy = _LEGACY_TRADING_KEY in trading
+
+    if not missing and not legacy:
+        for field, allowed in _FIELD_TYPES.items():
+            value = trading[field]
+            if value is not None and not isinstance(value, allowed):
+                raise RegimeDataError(
+                    f"{where} trading.{field} is {type(value).__name__} "
+                    f"({value!r}), expected {' or '.join(t.__name__ for t in allowed)} "
+                    "or null"
+                )
+        return "current"
+
+    if legacy and not present:
+        return "legacy_pre_metric_correction"
+
+    if legacy:
+        raise RegimeDataError(
+            f"{where} carries the pre-correction {_LEGACY_TRADING_KEY!r} field alongside "
+            f"{sorted(present)}: this is neither the old metric schema nor the new one, "
+            "so what its numbers mean is unknown"
+        )
+    raise RegimeDataError(
+        f"{where} is missing {sorted(missing)} and carries no {_LEGACY_TRADING_KEY!r} "
+        "field to date it as pre-correction. A current artifact must carry every "
+        "reported metric; refusing to bind around the gap"
+    )
+
+
 def _comparable_report(report: Mapping[str, Any]) -> dict[str, Any]:
-    """A report with only the fields a predictions file can reproduce."""
+    """A report with only the fields a predictions file can reproduce.
+
+    Call :func:`validate_report_schema` on the *recorded* report first — this
+    drops values, it does not check for them.
+    """
     comparable = {key: value for key, value in report.items() if key != "trading"}
     comparable["trading"] = {
         key: value
@@ -578,6 +652,10 @@ def _validate_predictions_against_artifact(
             raise RegimeDataError(
                 f"{path} fold {fold_id} cannot be recomputed against its artifact: {exc}"
             ) from exc
+        # Presence and shape are checked before any value is excluded, so a
+        # current artifact missing a candle-level field fails here rather than
+        # binding cleanly because the field was dropped from both sides.
+        validate_report_schema(recorded_report, f"{path} fold {fold_id} recorded MTST report")
         if _comparable_report(recomputed_report) != _comparable_report(recorded_report):
             raise RegimeDataError(
                 f"{path} fold {fold_id} does not reproduce the artifact's MTST report; "

@@ -43,7 +43,14 @@ Read the `sharpe` column in any file below as **not comparable** to the
 prints a warning, and refuses to aggregate the affected metrics rather than averaging
 unlike definitions; it also refuses to mix a pre-correction run with a corrected one.
 
-Every other metric in these files — net return, trade counts, coverage, drawdown,
+`max_drawdown` in these files is also pre-correction, for a separate reason: it
+measured the running peak from the first completed trade rather than from
+starting capital, so a run that was under water from its first trade understated
+it (a single 10% loss recorded zero). `nn.wf_diagnostics` skips it for these
+artifacts too, reported as `skipped_because_redefined` rather than
+`skipped_because_absent`.
+
+Every other metric in these files — net return, trade counts, coverage,
 exposure, classification quality — is unaffected and still readable.
 
 None of these artifacts carries the CASH or buy-and-hold economic references, because

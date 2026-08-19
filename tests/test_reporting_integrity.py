@@ -16,6 +16,7 @@ the numbers were never the thing that misled anyone.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -222,13 +223,14 @@ def test_no_legacy_generation_is_labelled_current():
 def test_every_committed_artifact_directory_appears_in_the_index():
     """An artifact absent from the index has no stated status at all."""
     listed = {row["path"] for row in _index_rows()}
-    on_disk = {
-        str(path.relative_to(ARTIFACTS)) for path in ARTIFACTS.glob("*/*") if path.is_dir()
-    }
-    assert on_disk, "no artifact directories found"
+    # Committed directories, not whatever happens to be on this filesystem: a
+    # developer's untracked run directories are legitimate local state and are
+    # not part of what the repository contains.
+    committed = {str(Path(p).parent) for p in _tracked_paths() if "/" in p}
+    assert committed, "no committed artifact directories found"
     assert (
-        on_disk == listed
-    ), f"unlisted: {sorted(on_disk - listed)}; stale: {sorted(listed - on_disk)}"
+        committed == listed
+    ), f"unlisted: {sorted(committed - listed)}; stale: {sorted(listed - committed)}"
 
 
 def test_every_indexed_path_exists_and_carries_a_status_file():
@@ -268,17 +270,82 @@ def test_the_index_states_that_the_v3_source_runs_are_absent():
         assert missing in text
 
 
-def test_no_directory_named_as_a_v3_source_run_exists():
-    """Guards the other half: the index says absent, so they must be absent.
+def _tracked_paths() -> set[str]:
+    """Every path git has under `artifacts/`, relative to it.
 
-    If someone later creates one of these directories by copying a v1 run, this
-    fails rather than letting fabricated provenance pass review.
+    The index makes a claim about what this *repository* contains, so the guard
+    below has to ask git, not the filesystem.
     """
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "artifacts/"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return {
+        str(Path(entry).relative_to("artifacts"))
+        for entry in result.stdout.split("\0")
+        if entry
+    }
+
+
+def test_no_v2_or_v3_source_run_is_committed():
+    """The index says those runs are absent *from the repository*.
+
+    Deliberately a git question, not a filesystem one. On the machine that
+    produced them the genuine `btc_nested_v3_seed_*` directories still exist,
+    untracked and gitignored — that is the normal state of a developer checkout
+    and must not fail the suite. What must never happen is one of them being
+    *committed*, because the only way that can occur without the real run data
+    is by copying or relabelling a different generation, which would manufacture
+    provenance the index says does not exist.
+    """
+    committed = _tracked_paths()
     for seed in (42, 142, 242, 342, 442):
         for generation in ("v2", "v3"):
-            path = ARTIFACTS / "walkforward" / f"btc_nested_{generation}_seed_{seed}"
-            assert not path.exists(), (
-                f"{path} exists, but the index records it as absent. If it is a real "
-                "run, update artifacts/README.md; if it is a copy of another run, "
-                "delete it."
+            name = f"walkforward/btc_nested_{generation}_seed_{seed}"
+            offenders = sorted(p for p in committed if p.startswith(name + "/"))
+            assert not offenders, (
+                f"{name} is committed ({offenders}), but artifacts/README.md records it "
+                "as absent from this repository. If the real run data has been added, "
+                "update the index; if these are copies of another generation, remove "
+                "them — a relabelled run is fabricated provenance."
             )
+
+
+def test_a_genuine_untracked_source_run_does_not_fail_the_suite(tmp_path, monkeypatch):
+    """Regression for the guard above: local ignored artifacts are legitimate.
+
+    The first version of this check called `Path.exists()`, which would have
+    failed on the very machine that generated the v3 evidence — the runs are on
+    disk there, correctly gitignored. Creating one here proves the guard reads
+    committed state instead.
+    """
+    genuine = ARTIFACTS / "walkforward" / "btc_nested_v3_seed_42"
+    created = not genuine.exists()
+    if created:
+        genuine.mkdir(parents=True)
+        (genuine / "walkforward.json").write_text("{}")
+    try:
+        assert genuine.exists(), "the fixture must actually be on disk"
+        # Untracked, so git does not see it and the guard passes.
+        assert not any(
+            p.startswith("walkforward/btc_nested_v3_seed_42/") for p in _tracked_paths()
+        )
+        test_no_v2_or_v3_source_run_is_committed()
+        # And the index still describes the repository correctly.
+        test_the_index_states_that_the_v3_source_runs_are_absent()
+    finally:
+        if created:
+            (genuine / "walkforward.json").unlink()
+            genuine.rmdir()
+
+
+def test_the_index_lists_only_committed_artifact_directories():
+    """Every indexed directory is one git actually carries."""
+    committed_dirs = {str(Path(p).parent) for p in _tracked_paths() if "/" in p}
+    for row in _index_rows():
+        assert (
+            row["path"] in committed_dirs
+        ), f"{row['path']} is in the index but has no committed files"

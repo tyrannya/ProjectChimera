@@ -6,6 +6,7 @@ import pytest
 
 from chimera.contracts import LONG_IDX, SHORT_IDX, TargetSpec
 from nn import evaluate as ev
+from nn import regime
 from nn.regime import RegimeDataError, direction_attribution, load_predictions
 
 
@@ -170,3 +171,81 @@ def test_direction_attribution_keeps_same_seed_runs_independent():
     report = direction_attribution(pd.concat([first, second], ignore_index=True), spec)
     assert report["long"]["trades"] == 2
     assert report["short"]["trades"] == 0
+
+
+# --- prediction binding validates schema before excluding values ---------------
+#
+# The candle-level metrics cannot be *recomputed* from a per-sample predictions
+# file — they need prices past the last scored row. Their presence and shape
+# still can be checked, and must be: dropping them unconditionally would let a
+# current artifact that lost one bind cleanly against its parquet.
+def _current_report() -> dict:
+    return {
+        "classification": {"macro_f1": 0.2},
+        "trading": {
+            "n_trades": 3,
+            "net_return": -0.01,
+            "max_drawdown": 0.05,
+            "annualised_sharpe": -0.5,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns ...",
+            "candle_max_drawdown": 0.07,
+            "elapsed_intervals": 240,
+        },
+    }
+
+
+def test_a_current_report_validates_and_keeps_its_reproducible_fields():
+    report = _current_report()
+    assert regime.validate_report_schema(report, "test") == "current"
+    comparable = regime._comparable_report(report)
+    # Values that cannot be reproduced are dropped...
+    for field in regime.NON_REPRODUCIBLE_TRADING_METRICS:
+        assert field not in comparable["trading"]
+    # ...and everything else is still compared.
+    assert comparable["trading"]["net_return"] == -0.01
+    assert comparable["trading"]["max_drawdown"] == 0.05
+
+
+def test_an_undefined_sharpe_is_a_valid_current_report():
+    """`None` is a real state, not a malformed field."""
+    report = _current_report()
+    report["trading"]["annualised_sharpe"] = None
+    report["trading"]["candle_max_drawdown"] = None
+    assert regime.validate_report_schema(report, "test") == "current"
+
+
+def test_a_current_report_missing_a_candle_level_field_fails_closed():
+    """The regression: it must not bind by having the gap dropped."""
+    report = _current_report()
+    del report["trading"]["candle_max_drawdown"]
+    with pytest.raises(regime.RegimeDataError, match="refusing to bind around the gap"):
+        regime.validate_report_schema(report, "test")
+
+
+def test_a_malformed_candle_level_field_fails_closed():
+    report = _current_report()
+    report["trading"]["elapsed_intervals"] = "many"
+    with pytest.raises(regime.RegimeDataError, match="elapsed_intervals"):
+        regime.validate_report_schema(report, "test")
+
+
+def test_a_pre_correction_report_is_recognised_rather_than_refused():
+    report = _current_report()
+    for field in regime.NON_REPRODUCIBLE_TRADING_METRICS:
+        report["trading"].pop(field)
+    report["trading"]["sharpe"] = 18.22
+    assert regime.validate_report_schema(report, "test") == "legacy_pre_metric_correction"
+
+
+def test_a_half_renamed_report_fails_closed():
+    """Both field generations at once: semantics unknown."""
+    report = _current_report()
+    report["trading"]["sharpe"] = 18.22
+    with pytest.raises(regime.RegimeDataError, match="neither the old metric schema"):
+        regime.validate_report_schema(report, "test")
+
+
+def test_a_report_without_a_trading_section_fails_closed():
+    with pytest.raises(regime.RegimeDataError, match="no trading report"):
+        regime.validate_report_schema({"classification": {}}, "test")

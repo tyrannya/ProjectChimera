@@ -2028,12 +2028,13 @@ def test_a_pre_correction_artifact_is_read_with_only_the_new_metrics_skipped(tmp
     assert problems == []
 
     summary = wf_diagnostics.aggregate([run])
-    assert summary["skipped_metrics"] == sorted(wf_diagnostics.CURRENT_ONLY_METRICS)
-    # Exactly those two, and every other metric still aggregated.
+    # Two kinds of skip, for two different reasons: fields these runs never
+    # recorded, and one they recorded under different semantics.
+    skipped = set(wf_diagnostics.CURRENT_ONLY_METRICS) | set(wf_diagnostics.REDEFINED_METRICS)
+    assert summary["skipped_metrics"] == sorted(skipped)
+    # Exactly those, and every other metric still aggregated.
     aggregated = set(summary["per_model"]["mtst"])
-    assert aggregated == set(walkforward.SUMMARY_METRICS) - set(
-        wf_diagnostics.CURRENT_ONLY_METRICS
-    )
+    assert aggregated == set(walkforward.SUMMARY_METRICS) - skipped
     assert "net_return" in aggregated and "exposure" in aggregated
 
 
@@ -2150,3 +2151,37 @@ def test_an_undefined_sharpe_survives_aggregation_as_undefined(tmp_path):
     assert across["mean"] is None and across["defined"] == 0
     markdown = wf_diagnostics.to_markdown([run], {run.name: []}, [], summary)
     assert "| mtst | annualised_sharpe | n/a | n/a | n/a | n/a |" in markdown
+
+
+def test_legacy_max_drawdown_is_skipped_as_redefined_not_averaged(tmp_path):
+    """Present in both generations, computed differently in each.
+
+    Pre-correction runs measured the running peak from the first completed
+    trade instead of from starting capital, so their `max_drawdown` understates
+    a strategy that was under water from the start. Averaging those values
+    beside corrected ones would put two definitions under one heading, so the
+    metric is skipped — and the report distinguishes "absent" from "recorded
+    under different semantics", because the remedies differ.
+    """
+    write_run(tmp_path / "legacy", schema="legacy")
+    run = wf_diagnostics.load_run(tmp_path / "legacy")
+    summary = wf_diagnostics.aggregate([run])
+
+    assert "max_drawdown" not in summary["per_model"]["mtst"]
+    assert summary["skipped_because_redefined"] == ["max_drawdown"]
+    assert summary["skipped_because_absent"] == sorted(wf_diagnostics.CURRENT_ONLY_METRICS)
+    # Metrics whose definition did not change are still aggregated.
+    assert "net_return" in summary["per_model"]["mtst"]
+    assert "exposure" in summary["per_model"]["mtst"]
+
+    markdown = wf_diagnostics.to_markdown([run], {run.name: []}, [], summary)
+    assert "`max_drawdown` is skipped for a different" in markdown
+    assert "starting capital" in markdown
+
+
+def test_a_current_run_still_aggregates_max_drawdown(tmp_path):
+    write_run(tmp_path / "current")
+    run = wf_diagnostics.load_run(tmp_path / "current")
+    summary = wf_diagnostics.aggregate([run])
+    assert "max_drawdown" in summary["per_model"]["mtst"]
+    assert summary["skipped_metrics"] == []
