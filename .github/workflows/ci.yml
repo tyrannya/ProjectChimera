@@ -1,126 +1,153 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: read
+# CI never talks to an exchange and never trades. There is no live-capable
+# entrypoint in any job here, and no exchange secrets are passed to any step.
+env:
+  ENABLE_LIVE_TRADING: ""
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  patch_pr29_wf:
-    name: Restore narrow PR29 wf diff
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/report-schema-and-buyhold-sharpe'
+  lint:
+    name: Lint and static checks
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          ref: fix/report-schema-and-buyhold-sharpe
-          fetch-depth: 0
-      - name: Rebuild from main plus intended patch
-        shell: bash
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install lint tooling
+        run: pip install black flake8 mypy pre-commit
+
+      - name: Compile every module
+        # Catches the syntax and indentation errors that made two files in this
+        # repository unimportable for months.
+        run: python -m compileall -q .
+
+      - name: pre-commit
+        run: pre-commit run --all-files --show-diff-on-failure
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the project and its real dependencies
+        # The whole dependency graph, from pyproject.toml. The previous workflow
+        # installed only `pandas pytest`, so the suite errored at collection and
+        # nothing it claimed to test was ever exercised. The CPU torch index
+        # keeps the runner from downloading ~2GB of CUDA wheels.
         run: |
-          git checkout origin/main -- nn/wf_diagnostics.py
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -e ".[all]"
+
+      - name: Show resolved versions
+        run: pip list
+
+      - name: Run the test suite
+        run: pytest -q --maxfail=1
+
+      - name: End-to-end smoke (synthetic data, CPU, no network)
+        # This is the substitute for training on every commit: it walks
+        # candles -> features -> tiny training -> artifact -> service ->
+        # strategy -> risk in about a minute.
+        run: python -m tools.smoke
+
+  config:
+    name: Config validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install trading dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e ".[trade]"
+
+      - name: Validate every config against Freqtrade's own schema
+        run: |
           python - <<'PY'
-          from pathlib import Path
+          import json
+          from freqtrade.configuration.config_validation import validate_config_schema
+          from tools.run_bot import load_config, resolve_placeholders
 
-          path = Path("nn/wf_diagnostics.py")
-          text = path.read_text()
-
-          old = "from chimera.contracts import CLASS_ORDER\nfrom nn.regime import (\n"
-          new = "from chimera.contracts import CLASS_ORDER\nfrom nn.evaluate import SHARPE_BASIS\nfrom nn.regime import (\n"
-          if text.count(old) != 1:
-              raise SystemExit("unexpected import block")
-          text = text.replace(old, new, 1)
-
-          old = "    raw_block_statistics,\n)\nfrom nn.walkforward"
-          new = "    raw_block_statistics,\n    validate_report_schema,\n)\nfrom nn.walkforward"
-          if text.count(old) != 1:
-              raise SystemExit("unexpected regime import block")
-          text = text.replace(old, new, 1)
-
-          old = "    * every required metric present and no ``sharpe`` — current, read in full;\n"
-          new = (
-              "    * every required summary metric plus the complete current risk-report schema\n"
-              "      present, no ``sharpe``, and every defined annualised Sharpe carrying the\n"
-              "      current :data:`nn.evaluate.SHARPE_BASIS` — current, read in full;\n"
-          )
-          if text.count(old) != 1:
-              raise SystemExit("unexpected schema doc line")
-          text = text.replace(old, new, 1)
-
-          old = "    old and new fields, a partial rename — is a problem, not a degraded read.\n"
-          new = (
-              "    old and new fields, a partial rename, or an incompatible Sharpe basis — is a\n"
-              "    problem, not a degraded read.\n"
-          )
-          if text.count(old) != 1:
-              raise SystemExit("unexpected schema doc ending")
-          text = text.replace(old, new, 1)
-
-          old = (
-              '            legacy = LEGACY_TRADING_KEY in (report.get("trading") or {})\n'
-              '            missing = required - present\n'
-              '\n'
-              '            if not missing and not legacy:\n'
-              '                schemas.add(SCHEMA_CURRENT)\n'
-          )
-          new = (
-              '            trading = report.get("trading") or {}\n'
-              '            legacy = LEGACY_TRADING_KEY in trading\n'
-              '            missing = required - present\n'
-              '\n'
-              '            if not missing and not legacy:\n'
-              '                where = f"fold {label} {model}"\n'
-              '                try:\n'
-              '                    detected = validate_report_schema(report, where)\n'
-              '                except RegimeDataError as exc:\n'
-              '                    problems.append(str(exc))\n'
-              '                    continue\n'
-              '                if detected != SCHEMA_CURRENT:\n'
-              '                    problems.append(\n'
-              '                        f"{where} passed the summary-metric shape as current but the "\n'
-              '                        f"risk-report validator classified it as {detected!r}"\n'
-              '                    )\n'
-              '                    continue\n'
-              '                if "per_trade_sharpe_reason" not in trading:\n'
-              '                    problems.append(\n'
-              '                        f"{where} is missing trading.per_trade_sharpe_reason. A current "\n'
-              '                        "artifact must carry the reason field even when the statistic is "\n'
-              '                        "defined; refusing to aggregate around the gap"\n'
-              '                    )\n'
-              '                    continue\n'
-              '                if not isinstance(trading["per_trade_sharpe_reason"], str):\n'
-              '                    problems.append(\n'
-              '                        f"{where} trading.per_trade_sharpe_reason is "\n'
-              '                        f"{type(trading[\'per_trade_sharpe_reason\']).__name__} "\n'
-              '                        f"({trading[\'per_trade_sharpe_reason\']!r}), expected str"\n'
-              '                    )\n'
-              '                    continue\n'
-              '                if (\n'
-              '                    trading.get("annualised_sharpe") is not None\n'
-              '                    and trading.get("sharpe_basis") != SHARPE_BASIS\n'
-              '                ):\n'
-              '                    problems.append(\n'
-              '                        f"{where} annualised_sharpe is defined under sharpe_basis "\n'
-              '                        f"{trading.get(\'sharpe_basis\')!r}, but current runs must use "\n'
-              '                        f"{SHARPE_BASIS!r}. Refusing to aggregate unlike risk metrics"\n'
-              '                    )\n'
-              '                    continue\n'
-              '                schemas.add(SCHEMA_CURRENT)\n'
-          )
-          if text.count(old) != 1:
-              raise SystemExit("unexpected classify_schema code block")
-          text = text.replace(old, new, 1)
-
-          path.write_text(text)
+          for exchange in ("binance", "bybit", "okx"):
+              for mode in ("test", "live"):
+                  config = resolve_placeholders(load_config(exchange, mode), [])
+                  # StrategyResolver copies these off the strategy at load time.
+                  config.update(
+                      runmode="dry_run", stoploss=-0.05,
+                      minimal_roi={"0": 0.03}, timeframe="1h",
+                  )
+                  validate_config_schema(config)
+                  print(f"{exchange}.{mode}: valid (dry_run={config['dry_run']})")
           PY
 
-          git diff --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add nn/wf_diagnostics.py
-          git commit -m "Keep PR29 wf diagnostics diff narrow"
-          git push origin HEAD:fix/report-schema-and-buyhold-sharpe
+      - name: Assert live trading is unreachable without the acknowledgement
+        run: |
+          set +e
+          python -m tools.run_bot --exchange binance --mode live --dry-run-only-check
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "::error::A live config launched without ENABLE_LIVE_TRADING (exit $code)"
+            exit 1
+          fi
+          echo "Live trading correctly refused."
+
+      - name: docker compose config
+        run: docker compose config --quiet
+
+  docker:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Images are slow to build and rarely the thing that breaks, so this runs
+    # on main and on demand rather than on every pull request.
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the Freqtrade image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha,scope=freqtrade
+          cache-to: type=gha,mode=max,scope=freqtrade
+
+      - name: Build the inference image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: nn/Dockerfile.nn_infer
+          push: false
+          load: false
+          cache-from: type=gha,scope=nn-infer
+          cache-to: type=gha,mode=max,scope=nn-infer
