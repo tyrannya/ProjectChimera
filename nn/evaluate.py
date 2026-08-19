@@ -869,8 +869,18 @@ def buy_and_hold_reference(
         )
         return report
 
+    try:
+        returns = portfolio_returns(equity)
+    except ValueError as exc:
+        report.update(
+            annualised_sharpe=None,
+            annualised_sharpe_reason=f"undefined: {exc}",
+            sharpe_basis=SHARPE_BASIS,
+        )
+        return report
+
     value, basis = annualised_sharpe(
-        portfolio_returns(equity),
+        returns,
         market.elapsed_intervals(entry_row, exit_row),
         market.candles_per_year,
     )
