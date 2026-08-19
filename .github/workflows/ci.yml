@@ -39,33 +39,35 @@ jobs:
 
           path = Path("tests/test_wf_diagnostics.py")
           text = path.read_text()
-          old = '''    if schema == "legacy":
-              trading["sharpe"] = net_return * 10
-          else:
-              trading["annualised_sharpe"] = net_return * 2
-              trading["per_trade_sharpe"] = net_return
-          '''
+          old = (
+              '    if schema == "legacy":\n'
+              '        trading["sharpe"] = net_return * 10\n'
+              '    else:\n'
+              '        trading["annualised_sharpe"] = net_return * 2\n'
+              '        trading["per_trade_sharpe"] = net_return\n'
+          )
           if old not in text:
               print("fixture already patched; nothing to do")
               raise SystemExit(0)
-          new = '''    if schema == "legacy":
-              trading["sharpe"] = net_return * 10
-          else:
-              trading.update(
-                  annualised_sharpe=net_return * 2,
-                  annualised_sharpe_reason="",
-                  sharpe_basis=ev.SHARPE_BASIS,
-                  candle_max_drawdown=0.05,
-                  elapsed_intervals=83,
-                  per_trade_sharpe=net_return,
-                  per_trade_sharpe_reason="",
-              )
-          '''
+          new = (
+              '    if schema == "legacy":\n'
+              '        trading["sharpe"] = net_return * 10\n'
+              '    else:\n'
+              '        trading.update(\n'
+              '            annualised_sharpe=net_return * 2,\n'
+              '            annualised_sharpe_reason="",\n'
+              '            sharpe_basis=ev.SHARPE_BASIS,\n'
+              '            candle_max_drawdown=0.05,\n'
+              '            elapsed_intervals=83,\n'
+              '            per_trade_sharpe=net_return,\n'
+              '            per_trade_sharpe_reason="",\n'
+              '        )\n'
+          )
           if text.count(old) != 1:
               raise SystemExit(f"expected one fixture helper, found {text.count(old)}")
           text = text.replace(old, new, 1)
 
-          marker = '''\n\ndef test_a_half_renamed_schema_fails_rather_than_being_treated_as_legacy(tmp_path):\n'''
+          marker = "\n\ndef test_a_half_renamed_schema_fails_rather_than_being_treated_as_legacy(tmp_path):\n"
           tests = '''
 
           @pytest.mark.parametrize(
@@ -122,6 +124,9 @@ jobs:
           PY
 
           git diff --check
+          if git diff --quiet; then
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add tests/test_wf_diagnostics.py
