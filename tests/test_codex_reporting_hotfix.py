@@ -14,9 +14,7 @@ def test_wiped_out_buy_and_hold_withholds_sharpe_without_aborting():
     spec = TargetSpec(horizon=1)
     market = ev.MarketContext(
         close=np.array([100.0, 0.1], dtype=np.float64),
-        dates=np.array(
-            ["2026-01-01T00:00", "2026-01-01T01:00"], dtype="datetime64[m]"
-        ),
+        dates=np.array(["2026-01-01T00:00", "2026-01-01T01:00"], dtype="datetime64[m]"),
         candles_per_year=24 * 365,
     )
 
