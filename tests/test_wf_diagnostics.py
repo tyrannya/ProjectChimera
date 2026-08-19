@@ -97,8 +97,15 @@ def report(
     if schema == "legacy":
         trading["sharpe"] = net_return * 10
     else:
-        trading["annualised_sharpe"] = net_return * 2
-        trading["per_trade_sharpe"] = net_return
+        trading.update(
+            annualised_sharpe=net_return * 2,
+            annualised_sharpe_reason="",
+            sharpe_basis=ev.SHARPE_BASIS,
+            candle_max_drawdown=0.05,
+            elapsed_intervals=83,
+            per_trade_sharpe=net_return,
+            per_trade_sharpe_reason="",
+        )
     return {
         "classification": {
             "n_samples": 83,
@@ -2158,6 +2165,53 @@ def test_a_current_artifact_missing_a_metric_fails_rather_than_dropping_it(tmp_p
     assert schema == ""
     assert any("refusing to aggregate around the gap" in p for p in problems)
     assert wf_diagnostics.audit_run(run), "a missing metric must be an integrity problem"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "annualised_sharpe_reason",
+        "sharpe_basis",
+        "candle_max_drawdown",
+        "elapsed_intervals",
+        "per_trade_sharpe_reason",
+    ],
+)
+def test_a_current_artifact_missing_any_required_risk_field_fails_closed(
+    tmp_path, field
+):
+    """Every current risk-report field is required, not just summary metrics."""
+    directory = tmp_path / "missing_risk_field"
+    write_run(directory)
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    del payload["folds"][0]["outer_validation"]["mtst"]["trading"][field]
+    artifact.write_text(json.dumps(payload))
+
+    run = wf_diagnostics.load_run(directory)
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any(field in problem for problem in problems)
+    assert wf_diagnostics.audit_run(run)
+
+
+def test_a_defined_current_sharpe_with_a_different_basis_is_refused(tmp_path):
+    """Defined annualised Sharpes under unlike bases cannot be aggregated."""
+    directory = tmp_path / "wrong_basis"
+    write_run(directory)
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    payload["folds"][0]["outer_validation"]["mtst"]["trading"]["sharpe_basis"] = (
+        "a different annualisation basis"
+    )
+    artifact.write_text(json.dumps(payload))
+
+    run = wf_diagnostics.load_run(directory)
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any("sharpe_basis" in problem for problem in problems)
+    assert any("Refusing to aggregate unlike risk metrics" in problem for problem in problems)
+    assert wf_diagnostics.audit_run(run)
 
 
 def test_a_half_renamed_schema_fails_rather_than_being_treated_as_legacy(tmp_path):
