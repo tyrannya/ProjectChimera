@@ -58,6 +58,7 @@ from typing import Any
 import pandas as pd
 
 from chimera.contracts import CLASS_ORDER
+from nn.evaluate import SHARPE_BASIS
 from nn.regime import (
     RegimeDataError,
     block_statistics,
@@ -66,6 +67,7 @@ from nn.regime import (
     load_raw_ohlcv,
     load_research_frame,
     raw_block_statistics,
+    validate_report_schema,
 )
 from nn.walkforward import MODELS, PREDICTIONS_NAME, REFERENCES_KEY, SUMMARY_METRICS
 
@@ -151,13 +153,16 @@ def classify_schema(run: "RunArtifact") -> tuple[str, list[str]]:
     by dropping it, which is the failure this whole module exists to catch. So
     only two shapes are readable:
 
-    * every required metric present and no ``sharpe`` — current, read in full;
+    * every required summary metric plus the complete current risk-report schema
+      present, no ``sharpe``, and every defined annualised Sharpe carrying the
+      current :data:`nn.evaluate.SHARPE_BASIS` — current, read in full;
     * ``sharpe`` present, **both** :data:`CURRENT_ONLY_METRICS` absent, and every
       other required metric present — a positively identified pre-correction
       artifact, read with exactly those two metrics skipped and a warning.
 
     Anything else — a missing metric with no legacy fingerprint, a mixture of
-    old and new fields, a partial rename — is a problem, not a degraded read.
+    old and new fields, a partial rename, or an incompatible Sharpe basis — is a
+    problem, not a degraded read.
     """
     required = set(SUMMARY_METRICS)
     optional = set(CURRENT_ONLY_METRICS)
@@ -176,10 +181,47 @@ def classify_schema(run: "RunArtifact") -> tuple[str, list[str]]:
                 for metric, (section, key) in SUMMARY_METRICS.items()
                 if isinstance(report.get(section), dict) and key in report[section]
             }
-            legacy = LEGACY_TRADING_KEY in (report.get("trading") or {})
+            trading = report.get("trading") or {}
+            legacy = LEGACY_TRADING_KEY in trading
             missing = required - present
 
             if not missing and not legacy:
+                where = f"fold {label} {model}"
+                try:
+                    detected = validate_report_schema(report, where)
+                except RegimeDataError as exc:
+                    problems.append(str(exc))
+                    continue
+                if detected != SCHEMA_CURRENT:
+                    problems.append(
+                        f"{where} passed the summary-metric shape as current but the "
+                        f"risk-report validator classified it as {detected!r}"
+                    )
+                    continue
+                if "per_trade_sharpe_reason" not in trading:
+                    problems.append(
+                        f"{where} is missing trading.per_trade_sharpe_reason. A current "
+                        "artifact must carry the reason field even when the statistic is "
+                        "defined; refusing to aggregate around the gap"
+                    )
+                    continue
+                if not isinstance(trading["per_trade_sharpe_reason"], str):
+                    problems.append(
+                        f"{where} trading.per_trade_sharpe_reason is "
+                        f"{type(trading['per_trade_sharpe_reason']).__name__} "
+                        f"({trading['per_trade_sharpe_reason']!r}), expected str"
+                    )
+                    continue
+                if (
+                    trading.get("annualised_sharpe") is not None
+                    and trading.get("sharpe_basis") != SHARPE_BASIS
+                ):
+                    problems.append(
+                        f"{where} annualised_sharpe is defined under sharpe_basis "
+                        f"{trading.get('sharpe_basis')!r}, but current runs must use "
+                        f"{SHARPE_BASIS!r}. Refusing to aggregate unlike risk metrics"
+                    )
+                    continue
                 schemas.add(SCHEMA_CURRENT)
             elif legacy and missing == optional:
                 schemas.add(SCHEMA_LEGACY)
@@ -270,9 +312,6 @@ def load_run(path: str | Path) -> RunArtifact:
     whatever happened to parse, which is the failure mode it exists to catch.
     """
     given = Path(path)
-    # A path ending in .json is the artifact; anything else is the directory it
-    # lives in. Deciding by suffix rather than by is_dir() means a path that does
-    # not exist still reports the file it was looking for.
     points_at_file = given.suffix == ".json"
     artifact = given if points_at_file else given / ARTIFACT_NAME
     if not artifact.is_file():
@@ -342,7 +381,6 @@ def audit_run(run: RunArtifact) -> list[str]:
     problems: list[str] = []
     boundary = run.sealed_test_start
 
-    # Fail closed on the sealing flags: absent is not "false".
     if run.raw.get("test_evaluated") is not False:
         problems.append(f"test_evaluated is {run.raw.get('test_evaluated')!r}, expected false")
     if run.raw.get("sealed_test", {}).get("evaluated") is not False:
@@ -390,8 +428,6 @@ def audit_run(run: RunArtifact) -> list[str]:
                 f"starts at {outer[0]}: the reported block was selected on"
             )
 
-        # Identity is the fold's position, not its recorded label: two folds
-        # labelled the same would otherwise hide an overlap from this check.
         for row in range(*outer):
             earlier = reported_by.setdefault(row, (position, label))
             if earlier[0] != position:
@@ -419,8 +455,6 @@ def _audit_summary_matches_folds(run: RunArtifact) -> list[str]:
 
     schema, unreadable = classify_schema(run)
     if unreadable:
-        # The schema check has already reported why; re-deriving means from an
-        # artifact whose fields are not understood would add noise, not evidence.
         return problems
 
     for model in MODELS:
@@ -516,7 +550,6 @@ def _spread(values: list[float | None]) -> dict[str, Any]:
         return {"mean": None, "std": None, "min": None, "max": None, "defined": 0}
     return {
         "mean": round(statistics.fmean(defined), 6),
-        # Sample standard deviation needs two observations; one run has none.
         "std": round(statistics.stdev(defined), 6) if len(defined) > 1 else 0.0,
         "min": round(min(defined), 6),
         "max": round(max(defined), 6),
@@ -547,13 +580,11 @@ def aggregate(runs: list[RunArtifact]) -> dict[str, Any]:
             }
             run_means = [_mean_defined(per_run[name]) for name in names]
             metrics[metric] = {
-                # Each run's across-fold mean, then the spread of those means.
                 "per_run_mean": {
                     name: None if mean is None else round(mean, 6)
                     for name, mean in zip(names, run_means)
                 },
                 "across_runs": _spread(run_means),
-                # And the same metric fold by fold, across runs.
                 "per_fold": [
                     {
                         "fold": fold,
@@ -573,8 +604,6 @@ def aggregate(runs: list[RunArtifact]) -> dict[str, Any]:
         "folds": n_folds,
         "metric_schema": schema,
         "skipped_metrics": sorted(set(SUMMARY_METRICS) - set(readable)),
-        # Why each was skipped, because "absent" and "recorded under different
-        # semantics" are different problems with different remedies.
         "skipped_because_absent": sorted(set(CURRENT_ONLY_METRICS) - set(readable)),
         "skipped_because_redefined": sorted(set(REDEFINED_METRICS) - set(readable)),
         "per_model": per_model,
@@ -689,7 +718,6 @@ def _compare_to_references(runs: list[RunArtifact]) -> dict[str, Any]:
     }
 
 
-# --- per-fold model stability, and which fold is best and worst ---------------
 def fold_model_stability(runs: list[RunArtifact]) -> list[dict[str, Any]]:
     """Per fold, how the model behaved across seeds.
 
@@ -732,7 +760,6 @@ def best_and_worst(stability: list[dict[str, Any]]) -> tuple[int, int]:
     return ranked[-1]["fold"], ranked[0]["fold"]
 
 
-# --- dataset-backed regime statistics ----------------------------------------
 def regime_report(
     runs: list[RunArtifact],
     research: Any,
@@ -751,10 +778,6 @@ def regime_report(
         entry = block_statistics(research, start, end, seq_len)
         entry["fold"] = fold.get("fold")
 
-        # The run recorded how many samples it scored. The reconstruction above
-        # must reproduce that number exactly, or these statistics describe a
-        # different set of rows than the metrics they are being used to explain
-        # — which is the whole failure this reconstruction exists to avoid.
         recorded = (fold.get("samples") or {}).get("outer_validation")
         if recorded is not None and entry["scored_rows"] != recorded:
             raise RegimeDataError(
@@ -764,9 +787,6 @@ def regime_report(
                 "disagree about which rows were evaluated; refusing to report."
             )
         if raw is not None:
-            # Deliberately the whole block, not the scored rows: this is a view
-            # of the market over the fold's span, independent of what the model
-            # could be scored on. Labelled as such wherever it is reported.
             timestamps = research.block(start, end)["date"]
             entry["market"] = raw_block_statistics(raw, timestamps, research.timeframe)
         blocks.append(entry)
@@ -924,7 +944,6 @@ def compare_best_worst(
     return comparison
 
 
-# --- LONG / SHORT attribution -------------------------------------------------
 def attribution_report(runs: list[RunArtifact], target_spec: Any = None) -> dict[str, Any]:
     """Exact per-direction attribution, or the reason it cannot be computed.
 
@@ -977,7 +996,6 @@ def attribution_report(runs: list[RunArtifact], target_spec: Any = None) -> dict
     }
 
 
-# --- candidate hypotheses ------------------------------------------------------
 def _separability_candidate(
     stability: list[dict[str, Any]],
     best: int,
@@ -1034,8 +1052,6 @@ def _separability_candidate(
         "hypothesis": hypothesis,
         "evidence": evidence,
         "strength": largest("mtst net return", "directional accuracy"),
-        # Recorded so a reader can check the wording against the numbers that
-        # chose it, rather than trusting the sentence.
         "observed": {
             "best_fold": best,
             "worst_fold": worst,
@@ -1772,8 +1788,6 @@ def main(argv: list[str] | None = None) -> int:
 
     audits = {run.name: audit_run(run) for run in runs}
     mismatches = compare_runs(runs) if len(runs) > 1 else []
-    # An unsound or incomparable set of runs gets its problems reported and no
-    # aggregate: a headline computed over them would be the thing to distrust.
     comparable = not mismatches and not any(audits.values())
     summary = aggregate(runs) if comparable else None
 
