@@ -311,7 +311,7 @@ def _market(n: int, seed: int = 0, *, gap_after: int | None = None) -> ev.Market
     offsets = np.arange(n)
     if gap_after is not None:
         # Everything after `gap_after` happens a day later than its row implies:
-        # 24 candles the exchange never published.
+        # 24 calendar intervals absent from the processed dataset.
         offsets = offsets + 24 * (offsets > gap_after)
     dates = np.datetime64("2023-01-01T00:00") + offsets * np.timedelta64(1, "h")
     return ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
@@ -392,9 +392,11 @@ def test_costs_are_charged_once_per_side_and_nowhere_else():
 
     equity = ev.portfolio_equity(market, [(4, 9, 1.0)], per_side, 4, 9)
     # Price never moves, so every change in equity is a cost.
-    assert equity[0] == pytest.approx(1.0 - per_side, abs=1e-12)  # entry candle
-    assert equity[1:5] == pytest.approx(1.0 - per_side, abs=1e-12)  # held, no move
-    assert equity[5] == pytest.approx(1.0 - 2 * per_side, abs=1e-12)  # exit candle
+    # The entry candle establishes the position and costs nothing yet: its cost
+    # belongs to the first interval the position is actually held.
+    assert equity[0] == pytest.approx(1.0, abs=1e-12)  # entry candle, row 4
+    assert equity[1:5] == pytest.approx(1.0 - per_side, abs=1e-12)  # held, rows 5-8
+    assert equity[5] == pytest.approx(1.0 - 2 * per_side, abs=1e-12)  # exit candle, row 9
     # Total charged over the trade is exactly one round trip.
     assert 1.0 - equity[-1] == pytest.approx(spec.cost_threshold, abs=1e-12)
 
@@ -676,18 +678,21 @@ def test_buy_and_hold_withholds_its_sharpe_across_a_market_data_gap():
 
 
 def test_a_gap_is_annualised_from_elapsed_time_not_row_count():
-    """The strategy's padding: 24 unpublished candles are 24 idle intervals.
+    """24 intervals absent from the dataset are 24 idle intervals of time.
 
-    The portfolio is provably flat across a gap — no trade may span one — so a
-    zero is the true return there rather than an assumption, and counting rows
-    instead of hours would treat a day-long outage as a single hour.
+    The portfolio is provably flat across a discontinuity — `build_windows`
+    refuses any window or label that crosses a segment boundary, so no scored
+    position can be held over one — so a zero is the return genuinely earned
+    there rather than an assumption. Counting dataset rows instead would treat a
+    day-long discontinuity as a single hour.
     """
     market = _market(200, seed=18, gap_after=80)
     contiguous = _market(200, seed=18)
     assert market.elapsed_intervals(0, 150) == contiguous.elapsed_intervals(0, 150) + 24
     assert market.missing_candles(0, 150) == 24
-    # With no gap, elapsed intervals and row count agree exactly.
-    assert contiguous.elapsed_intervals(0, 150) == 151
+    # With no discontinuity, elapsed intervals equal the row distance: rows
+    # [0, 150] are 151 candles but 150 intervals between them.
+    assert contiguous.elapsed_intervals(0, 150) == 150
     assert contiguous.missing_candles(0, 150) == 0
 
 
@@ -821,3 +826,104 @@ def test_cash_has_no_drawdown_because_it_never_leaves_starting_capital():
     cash = ev.cash_reference(TargetSpec(horizon=6, fee_rate=0.01, slippage_rate=0.01))
     assert cash["max_drawdown"] == 0.0
     assert cash["candle_max_drawdown"] == 0.0
+
+
+# --- how many time observations a span has ------------------------------------
+def test_a_span_of_h_intervals_yields_exactly_h_return_observations():
+    """The convention, stated and proved: **H intervals, H returns.**
+
+    Timestamps `H` intervals apart bound `H + 1` candle closes. A return needs a
+    start and an end, so those `H + 1` levels give `H` returns — one per
+    interval of time that actually elapsed. `elapsed_intervals` returns `H`, and
+    the annualisation divides by `H`.
+
+    An earlier version returned `H + 1` and manufactured a matching extra return
+    by dividing the opening equity level by 1.0. That handed the annualisation
+    one more observation than time had passed, and the extra observation was not
+    a period return at all: for buy-and-hold it was the entry cost, paid
+    instantaneously at the opening timestamp, booked as if it were a full
+    candle's performance.
+    """
+    horizon_intervals = 10
+    close = 100 * np.linspace(1.0, 1.1, horizon_intervals + 1)
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(
+        horizon_intervals + 1
+    ) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    # H intervals of wall-clock time between the first and last candle...
+    assert market.elapsed_intervals(0, horizon_intervals) == horizon_intervals
+    # ...spanned by H + 1 equity levels...
+    equity = ev.portfolio_equity(market, [], 0.0, 0, horizon_intervals)
+    assert len(equity) == horizon_intervals + 1
+    # ...which yield exactly H returns.
+    assert len(ev.portfolio_returns(equity)) == horizon_intervals
+
+
+def test_the_opening_equity_level_is_not_a_return():
+    """Starting capital is a level. Treating it as a return invents a period."""
+    close = np.full(6, 100.0)
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(6) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    equity = ev.portfolio_equity(market, [(0, 5, 1.0)], 0.01, 0, 5)
+    assert equity[0] == 1.0, "the opening candle establishes the position, costing nothing yet"
+    returns = ev.portfolio_returns(equity)
+    assert len(returns) == market.elapsed_intervals(0, 5) == 5
+    # The entry cost is a return over the first interval the position was held,
+    # not an instantaneous event at the opening timestamp.
+    assert returns[0] == pytest.approx(-0.01, abs=1e-12)
+
+
+def test_the_return_series_reconciles_with_terminal_equity():
+    """Compounding the series must land exactly on the equity it came from.
+
+    This is what the spurious opening observation broke: with it, the product
+    over the series and the curve's terminal value disagreed by the first
+    trade's entry cost.
+    """
+    spec = TargetSpec(horizon=3, fee_rate=0.001, slippage_rate=0.001)
+    market = _market(120, seed=22)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(100, HOLD_IDX)
+    for row in (4, 20, 45, 70):
+        signals[row] = LONG_IDX
+
+    entries, directions, trade_returns = realised_trades(signals, future_return[:100], spec)
+    positions = [
+        (int(e), int(e) + spec.horizon, float(d)) for e, d in zip(entries, directions)
+    ]
+    start, end = 0, 99 + spec.horizon
+    equity = ev.portfolio_equity(market, positions, spec.cost_threshold / 2, start, end)
+    returns = ev.portfolio_returns(equity)
+
+    assert np.prod(1.0 + returns) == pytest.approx(equity[-1], abs=1e-12)
+    assert equity[-1] == pytest.approx(np.cumprod(1.0 + trade_returns)[-1], abs=1e-12)
+
+
+def test_annualised_sharpe_divides_by_elapsed_intervals_not_candle_count():
+    """Closed form, on a span with no discontinuities."""
+    spec = TargetSpec(horizon=2, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(200, seed=23)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(150, HOLD_IDX)
+    signals[np.arange(3, 150, 10)] = LONG_IDX
+
+    report = trading_metrics(signals, future_return[:150], spec, market=market)
+    span_start, span_end = 0, 149 + spec.horizon
+    assert report["elapsed_intervals"] == span_end - span_start
+
+    equity = ev.portfolio_equity(
+        market,
+        [
+            (int(e), int(e) + spec.horizon, float(d))
+            for e, d in zip(*realised_trades(signals, future_return[:150], spec)[:2])
+        ],
+        spec.cost_threshold / 2,
+        span_start,
+        span_end,
+    )
+    returns = ev.portfolio_returns(equity)
+    assert len(returns) == report["elapsed_intervals"]
+    expected = returns.mean() / returns.std(ddof=1) * np.sqrt(market.candles_per_year)
+    assert report["annualised_sharpe"] == pytest.approx(expected, abs=5e-5)

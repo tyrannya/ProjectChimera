@@ -249,3 +249,183 @@ def test_a_half_renamed_report_fails_closed():
 def test_a_report_without_a_trading_section_fails_closed():
     with pytest.raises(regime.RegimeDataError, match="no trading report"):
         regime.validate_report_schema({"classification": {}}, "test")
+
+
+# --- a genuine pre-correction run must stay auditable --------------------------
+#
+# The v2 and v3 run directories persisted `outer_predictions.parquet` beside a
+# `walkforward.json` written by the *old* evaluator. After the metric
+# correction, recomputing from those predictions produces the new schema:
+# no `sharpe`, a new `per_trade_sharpe`, and a `max_drawdown` measured from
+# starting capital. Comparing that against the recorded report field-for-field
+# can never match — which would make every one of those runs unreadable exactly
+# when we need to re-audit them.
+#
+# So the recomputed report is recast into the old schema, with both changed
+# metrics rebuilt under their own historical formulas, and still compared.
+def _legacy_prediction_frame() -> pd.DataFrame:
+    """Enough trades that the legacy Sharpe has dispersion to measure."""
+    rows = [10, 20, 30, 40]
+    return pd.DataFrame(
+        {
+            "fold": [0] * len(rows),
+            "seed": [42] * len(rows),
+            "row_index": rows,
+            "timestamp": pd.to_datetime(
+                [f"2024-01-01T{10 + i:02d}:00:00Z" for i in range(len(rows))], utc=True
+            ),
+            "true_target": [SHORT_IDX, LONG_IDX, LONG_IDX, SHORT_IDX],
+            # The first trade loses, so the pre-fix drawdown (peak from the
+            # first completed trade) and the corrected one (peak from starting
+            # capital) genuinely differ — otherwise the test below is vacuous.
+            "future_return": [-0.04, 0.03, 0.01, -0.02],
+            "p_short": [0.05, 0.05, 0.05, 0.05],
+            "p_hold": [0.05, 0.05, 0.05, 0.05],
+            "p_long": [0.90, 0.90, 0.90, 0.90],
+            "selected_action": [LONG_IDX] * len(rows),
+            "threshold": [0.50] * len(rows),
+        }
+    )
+
+
+def _legacy_artifact(frame: pd.DataFrame) -> dict:
+    """A walkforward.json in the exact pre-correction schema.
+
+    Its trading report is built by taking the current evaluator's output and
+    putting it back into the old shape: `sharpe` from the trade-capacity
+    formula, `max_drawdown` from the pre-fix peak, and no candle-level fields.
+    That is what those runs actually contain.
+    """
+    spec = TargetSpec()
+    ordered = frame.sort_values("row_index")
+    proba = ordered[["p_short", "p_hold", "p_long"]].to_numpy(dtype=np.float64)
+    future_return = ordered["future_return"].to_numpy(dtype=np.float64)
+    row_index = ordered["row_index"].to_numpy(dtype=np.int64)
+
+    report = ev.evaluate(
+        proba,
+        ordered["true_target"].to_numpy(dtype=np.int64),
+        future_return,
+        spec,
+        0.50,
+        row_index=row_index,
+    )
+    _, _, trade_returns = ev.realised_trades(
+        ev.signals_from_proba(proba, 0.50), future_return, spec, row_index=row_index
+    )
+    assert len(trade_returns) >= 2, "the fixture must produce a measurable legacy Sharpe"
+
+    trading = dict(report["trading"])
+    for field in (*regime.NON_REPRODUCIBLE_TRADING_METRICS, "per_trade_sharpe"):
+        trading.pop(field, None)
+    trading["sharpe"] = round(regime.legacy_sharpe(trade_returns, spec.horizon, 24 * 365), 4)
+    trading["max_drawdown"] = round(regime.legacy_max_drawdown(trade_returns), 4)
+    report = {**report, "trading": trading}
+
+    return {
+        "dataset": {"target_spec": spec.to_dict(), "timeframe": "1h"},
+        "config": {"seed": 42},
+        "sealed_test": {"start_row": 100, "evaluated": False},
+        "test_evaluated": False,
+        "outer_predictions": "outer_predictions.parquet",
+        "folds": [
+            {
+                "fold": 0,
+                "samples": {"outer_validation": len(frame)},
+                "periods": {"outer_validation": {"row_range": [10, 50]}},
+                "selection": {"threshold": 0.50},
+                "outer_validation": {"mtst": report},
+            }
+        ],
+    }
+
+
+def test_a_genuine_legacy_run_still_binds_to_its_predictions(tmp_path):
+    """The regression: this is what the v2/v3 directories look like."""
+    frame = _legacy_prediction_frame()
+    artifact = _legacy_artifact(frame)
+    path = _write_run(tmp_path, frame, artifact)
+
+    recorded = artifact["folds"][0]["outer_validation"]["mtst"]["trading"]
+    assert "sharpe" in recorded and "annualised_sharpe" not in recorded
+    assert (
+        regime.validate_report_schema(
+            artifact["folds"][0]["outer_validation"]["mtst"], "fixture"
+        )
+        == "legacy_pre_metric_correction"
+    )
+
+    loaded = load_predictions(path, sealed_test_start=100)
+    assert len(loaded) == len(frame)
+
+
+def test_a_legacy_run_with_a_tampered_net_return_still_fails_to_bind(tmp_path):
+    """A reproducible field is still compared exactly."""
+    frame = _legacy_prediction_frame()
+    artifact = _legacy_artifact(frame)
+    artifact["folds"][0]["outer_validation"]["mtst"]["trading"]["net_return"] += 0.05
+    path = _write_run(tmp_path, frame, artifact)
+
+    with pytest.raises(RegimeDataError, match="does not reproduce"):
+        load_predictions(path, sealed_test_start=100)
+
+
+def test_a_tampered_legacy_sharpe_is_caught(tmp_path):
+    """Rebuilt under its old formula, so it is checked rather than dropped."""
+    frame = _legacy_prediction_frame()
+    artifact = _legacy_artifact(frame)
+    artifact["folds"][0]["outer_validation"]["mtst"]["trading"]["sharpe"] = 18.22
+    path = _write_run(tmp_path, frame, artifact)
+
+    with pytest.raises(RegimeDataError, match="does not reproduce"):
+        load_predictions(path, sealed_test_start=100)
+
+
+def test_a_tampered_legacy_max_drawdown_is_caught(tmp_path):
+    """Likewise: the old semantics are recomputed, not excluded."""
+    frame = _legacy_prediction_frame()
+    artifact = _legacy_artifact(frame)
+    artifact["folds"][0]["outer_validation"]["mtst"]["trading"]["max_drawdown"] = 0.999
+    path = _write_run(tmp_path, frame, artifact)
+
+    with pytest.raises(RegimeDataError, match="does not reproduce"):
+        load_predictions(path, sealed_test_start=100)
+
+
+def test_a_legacy_artifact_carrying_the_corrected_max_drawdown_fails(tmp_path):
+    """The two generations' values differ, and the check notices.
+
+    Guards against the reverse mistake: a legacy artifact whose drawdown was
+    quietly rewritten with the new semantics is not the run it claims to be.
+    """
+    frame = _legacy_prediction_frame()
+    artifact = _legacy_artifact(frame)
+    trading = artifact["folds"][0]["outer_validation"]["mtst"]["trading"]
+
+    spec = TargetSpec()
+    ordered = frame.sort_values("row_index")
+    _, _, trade_returns = ev.realised_trades(
+        ev.signals_from_proba(
+            ordered[["p_short", "p_hold", "p_long"]].to_numpy(dtype=np.float64), 0.50
+        ),
+        ordered["future_return"].to_numpy(dtype=np.float64),
+        spec,
+        row_index=ordered["row_index"].to_numpy(dtype=np.int64),
+    )
+    corrected = round(ev.max_drawdown_of(np.cumprod(1.0 + trade_returns)), 4)
+    assert corrected != trading["max_drawdown"], (
+        "the fixture must make the two drawdown definitions differ, or this test "
+        "proves nothing"
+    )
+    trading["max_drawdown"] = corrected
+    path = _write_run(tmp_path, frame, artifact)
+
+    with pytest.raises(RegimeDataError, match="does not reproduce"):
+        load_predictions(path, sealed_test_start=100)
+
+
+def test_a_current_run_still_binds_to_its_predictions(tmp_path):
+    """The corrected path is unaffected by the legacy branch."""
+    frame = _prediction_frame()
+    path = _write_run(tmp_path, frame, _artifact(frame=frame))
+    assert len(load_predictions(path, sealed_test_start=100)) == len(frame)

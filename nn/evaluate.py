@@ -262,7 +262,7 @@ SHARPE_BASIS = (
     "candle-level portfolio returns (equity unchanged while flat, marked to market "
     "while a position is open, both cost sides charged when they are paid), "
     "annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a "
-    "zero return for each candle the exchange never published"
+    "zero return for each calendar interval absent from the processed dataset"
 )
 
 #: Why a risk-adjusted statistic is absent, when it is.
@@ -296,15 +296,31 @@ class MarketContext:
         return 365 * 24 * 60 / self.candles_per_year
 
     def elapsed_intervals(self, start_row: int, end_row: int) -> int:
-        """Candle intervals of *wall-clock time* the span covers, inclusive.
+        """Candle intervals of wall-clock time between the two rows' timestamps.
 
-        Not ``end_row - start_row + 1``. The processed dataset drops candles the
-        exchange never published, so consecutive rows can be hours apart. Every
-        one of those missing candles is counted here as time that passed —
-        because it did — and the return series is padded with a zero for each.
-        Counting dataset rows instead would treat a six-hour outage as a single
-        hour and inflate any statistic annualised from the count. With no gaps
-        the two numbers agree, and a test asserts that.
+        **Intervals, not timestamps.** Rows ``[0, 150]`` are 151 candles but 150
+        elapsed intervals, and 150 is the number of return observations a series
+        over that span can have: a return needs a start and an end, so N+1
+        observation times yield N returns. Counting timestamps here would hand
+        the annualisation one observation more than time actually passed.
+
+        Not ``end_row - start_row`` either, because the processed research
+        dataset does not contain every calendar candle: consecutive rows can be
+        hours apart. Each absent interval is counted here as time that passed —
+        because it did — and the return series is padded with a zero for it.
+        Counting dataset rows instead would treat a six-hour discontinuity as a
+        single hour and inflate any statistic annualised from the count. With no
+        absent intervals the two numbers agree, and a test asserts that.
+
+        An absent interval is **not** necessarily a candle the exchange failed
+        to publish. :mod:`nn.data_pipeline` also drops per-segment warm-up rows
+        and rows whose features are undefined, then re-segments what is left by
+        timestamp. So a discontinuity here means "absent from the processed
+        research dataset", which may be a source-data gap or a deliberate
+        omission — and for the strategies this measures the distinction does not
+        change the arithmetic, because ``build_windows`` refuses any window or
+        label that crosses a segment boundary, so no scored position can be held
+        across one either way.
 
         Raises rather than rounding away a disagreement: an elapsed span that is
         not a near-integer multiple of the timeframe means the dates and the
@@ -325,11 +341,18 @@ class MarketContext:
                 f"only {intervals} candle intervals: the dates are not increasing at "
                 "least one timeframe per row."
             )
-        return intervals + 1
+        return intervals
 
     def missing_candles(self, start_row: int, end_row: int) -> int:
-        """Candles the exchange never published inside the span."""
-        return self.elapsed_intervals(start_row, end_row) - (end_row - start_row + 1)
+        """Calendar candle intervals in the span that the dataset does not carry.
+
+        Kept under this name because that is what a reader of a report wants to
+        know, but it means *absent from the processed research dataset* rather
+        than *never published by the exchange* — the processed dataset also
+        drops warm-up and undefined-feature rows, so the two are not the same
+        claim. See :meth:`elapsed_intervals`.
+        """
+        return self.elapsed_intervals(start_row, end_row) - (end_row - start_row)
 
 
 def portfolio_equity(
@@ -344,16 +367,25 @@ def portfolio_equity(
     ``positions`` is ``(entry_row, exit_row, direction)`` per trade, in time
     order and non-overlapping — exactly what :func:`realised_trades` produces.
 
+    The returned array has one entry per candle in ``[start_row, end_row]``, so
+    ``end_row - start_row + 1`` equity *levels* and one fewer interval between
+    them. ``equity[0]`` is starting capital at the opening candle: a position
+    opening on that very candle has been established but has neither earned nor
+    cost anything yet.
+
     The construction is the existing trade semantics, refined to candle
     resolution rather than replaced::
 
+        E(t) = E0                     at and before the entry candle
         E(t) = E0 · (1 + direction·(close[t] − close[entry])/close[entry] − paid)
         paid = cost_per_side          while the position is open
              = 2·cost_per_side        on the exit candle
         E(t) = E(t−1)                 while flat
 
     where ``E0`` is equity immediately before the trade opened. The whole
-    portfolio backs each trade and is not re-levered inside it.
+    portfolio backs each trade and is not re-levered inside it. Both cost sides
+    fall inside the position's own holding period, so every cost is a return
+    over an interval that actually elapsed.
 
     **Two invariants follow, and both are asserted by tests.** Telescoping the
     marked-to-market term gives ``close[exit]/close[entry] − 1 =
@@ -417,18 +449,34 @@ def _marked(
     row: int,
     cost_per_side: float,
 ) -> float:
-    """Equity while one position is open, at ``row``. See :func:`portfolio_equity`."""
+    """Equity while one position is open, at ``row``. See :func:`portfolio_equity`.
+
+    On the entry candle itself equity is unchanged. The position is established
+    at that close, so nothing has been earned yet — and its entry cost belongs
+    to the first interval the position is actually held, not to the interval
+    that ended before it existed.
+    """
+    if row <= entry:
+        return opening
     move = direction * (close[row] - close[entry]) / close[entry]
     paid = cost_per_side * (2.0 if row == exit_row else 1.0)
     return opening * (1.0 + move - paid)
 
 
 def portfolio_returns(equity: np.ndarray) -> np.ndarray:
-    """Per-candle returns of an equity curve that started at 1.0."""
-    previous = np.concatenate(([1.0], equity[:-1]))
-    if (previous <= 0).any() or (equity <= 0).any():
+    """Returns between consecutive points of an equity curve.
+
+    ``N + 1`` equity observations give ``N`` returns, one per elapsed interval,
+    matching :meth:`MarketContext.elapsed_intervals`. The first point is
+    starting capital at the span's opening candle, and it is a *level*, not a
+    return — an earlier version divided it by 1.0 to manufacture an extra
+    observation, which handed the annualisation one more interval than had
+    elapsed and, for buy-and-hold, booked an instantaneous entry cost as a
+    full candle's return.
+    """
+    if (equity <= 0).any():
         raise ValueError("portfolio equity reached zero or below; returns are undefined")
-    return equity / previous - 1.0
+    return equity[1:] / equity[:-1] - 1.0
 
 
 def annualised_sharpe(
@@ -441,12 +489,14 @@ def annualised_sharpe(
     ``returns`` holds one observation per candle *present in the dataset*;
     ``elapsed_intervals`` is how many candle intervals of wall-clock time the
     span actually covered. The series is zero-padded to that length before the
-    mean and variance are taken: the candles the exchange never published are
-    still elapsed time, and the portfolios this is called for hold nothing
-    across them, so zero is the return they genuinely earned rather than a
-    stand-in for an unknown one. (Buy-and-hold is *not* flat across a gap — it
-    is holding the asset through it — so it does not call this; see
-    :func:`buy_and_hold_reference`.)
+    mean and variance are taken: a calendar interval absent from the processed
+    research dataset is still elapsed time, and the portfolios this is called
+    for hold nothing across one — ``build_windows`` refuses any window or label
+    crossing a segment boundary, so no scored position can span a discontinuity
+    — which makes zero the return they genuinely earned rather than a stand-in
+    for an unknown one. (Buy-and-hold is *not* flat across one: it is holding
+    the asset through it, and what the price did in between is not recorded. It
+    does not call this; see :func:`buy_and_hold_reference`.)
 
     Padding is applied through the sums rather than by materialising the zeros;
     a test asserts the two agree. Returns ``(None, reason)`` when there is no
@@ -745,15 +795,20 @@ def buy_and_hold_reference(
     same :func:`portfolio_equity`, so ``annualised_sharpe`` is net of the same
     cost model on the same candle grid and carries the same ``sharpe_basis``.
 
-    **Except across a market-data gap.** No model trade ever spans one — the
-    windowing refuses it — so the strategy's portfolio is provably flat through a
-    gap and padding it with zeros invents nothing. A *hold* is not flat through a
-    gap: it is exposed to a price path nobody recorded. Rather than treat a
-    six-hour outage as one ordinary candle and publish the result under a name
-    that promises comparability, the Sharpe is withheld with a reason. Return is
-    still exact — a hold's start-to-end return is well defined even when its path
-    is not — and the drawdown is flagged as a lower bound, since an unobserved
-    intra-gap low can only deepen it.
+    **Except across a discontinuity in the processed dataset.** No model trade
+    ever spans one — ``build_windows`` refuses any window or label that crosses a
+    segment boundary — so the strategy's portfolio is provably flat through it
+    and padding with zeros invents nothing. A *hold* is not flat through it: it
+    owns the asset the whole time, across intervals the dataset does not carry.
+    Rather than treat a six-hour discontinuity as one ordinary candle and publish
+    the result under a name that promises comparability, the Sharpe is withheld
+    with a reason. Return is still exact — a hold's start-to-end return is well
+    defined even when its path is not — and the drawdown is flagged as a lower
+    bound, since an unobserved low in between can only deepen it.
+
+    Whether such an interval is a genuine exchange gap or a candle deliberately
+    absent from the feature dataset is not something this can tell, and it does
+    not need to: either way the price path over it was not recorded.
     """
     if market is None:
         return {
@@ -804,9 +859,10 @@ def buy_and_hold_reference(
 
     if missing:
         reason = (
-            f"unavailable: the hold spans {missing} candle(s) the exchange never "
-            "published. Its intra-gap price path is unknown, so a candle-level series "
-            "comparable to the strategy's cannot be built without inventing one"
+            f"unavailable: the hold spans {missing} calendar interval(s) absent from "
+            "the processed dataset. What price did in between is not recorded there, "
+            "so a candle-level series comparable to the strategy's cannot be built "
+            "without inventing a path"
         )
         report.update(
             annualised_sharpe=None, annualised_sharpe_reason=reason, sharpe_basis=reason

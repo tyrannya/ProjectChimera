@@ -168,11 +168,19 @@ name was doing both jobs and neither honestly:
   `cumprod(1 + trade_returns)` at every completed trade boundary, so it is the
   equity curve already being reported at candle resolution rather than a second
   return model. It is annualised by `sqrt(candles_per_year)` over **elapsed
-  wall-clock time**: each candle the exchange never published still counts as
-  time that passed, and carries a zero portfolio return. That zero is exact
-  rather than assumed — no model position may span a market-data gap, so the
-  portfolio is provably flat through one. Counting dataset rows instead would
-  treat a six-hour outage as a single hour and inflate the result.
+  wall-clock time**: each calendar candle interval absent from the processed
+  research dataset still counts as time that passed, and carries a zero
+  portfolio return. That zero is exact rather than assumed — `build_windows`
+  refuses any window or label crossing a segment boundary, so no scored position
+  can be held across a discontinuity. Counting dataset rows instead would treat
+  a six-hour discontinuity as a single hour and inflate the result.
+
+  An absent interval is **not** necessarily a candle the exchange failed to
+  publish. `nn/data_pipeline.py` also drops per-segment warm-up rows and rows
+  whose features are undefined, then re-segments what survives by timestamp — so
+  a discontinuity may be a genuine source-data gap *or* a candle deliberately
+  absent from the feature dataset. The arithmetic is the same either way, and
+  the reports do not claim to know which it was.
 
 Both are `None` — rendered `n/a` — when undefined, never `0.0`: a portfolio that
 never moved has no Sharpe, and a zero would read as a measurement. That rule

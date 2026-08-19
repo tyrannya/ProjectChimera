@@ -510,6 +510,75 @@ def validate_report_schema(report: Mapping[str, Any], where: str) -> str:
     )
 
 
+#: Fields the corrected evaluator emits that a pre-correction run never did.
+#:
+#: Reproducible from persisted predictions, but absent from a legacy artifact,
+#: so they are dropped from the *recomputed* side when binding one — there is
+#: nothing on the recorded side to compare them against.
+_CURRENT_ONLY_TRADING_METRICS = ("per_trade_sharpe",)
+
+
+def legacy_sharpe(trade_returns: np.ndarray, horizon: int, candles_per_year: float) -> float:
+    """The pre-correction ``sharpe``, recomputed with its own historical formula.
+
+    **Deliberately the wrong formula, kept only to read old files.** It
+    annualised per-trade statistics by ``candles_per_year / horizon`` — the
+    number of trades the strategy *could* have taken back to back rather than
+    the number it took — which is why it was replaced. It lives here rather than
+    in :mod:`nn.evaluate` so the live evaluator cannot reach it, and exists so a
+    genuine pre-correction run with persisted predictions stays **auditable**:
+    the alternative is to drop the field from the comparison, which would let a
+    tampered legacy `sharpe` bind cleanly.
+    """
+    if len(trade_returns) < 2:
+        return 0.0
+    spread = float(trade_returns.std(ddof=1))
+    if spread <= 0:
+        return 0.0
+    trades_per_year = candles_per_year / horizon
+    return float(trade_returns.mean() / spread * np.sqrt(trades_per_year))
+
+
+def legacy_max_drawdown(trade_returns: np.ndarray) -> float:
+    """The pre-correction ``max_drawdown``, with its own historical semantics.
+
+    Took the running peak from the first completed trade instead of from
+    starting capital, so a strategy under water from its first trade understated
+    the fall it took. Same reasoning as :func:`legacy_sharpe`: recomputed rather
+    than excluded, so the recorded value is still checked.
+    """
+    if len(trade_returns) == 0:
+        return 0.0
+    equity = np.cumprod(1.0 + trade_returns)
+    peak = np.maximum.accumulate(equity)
+    return float((1.0 - equity / peak).max())
+
+
+def _as_legacy_view(
+    report: Mapping[str, Any],
+    trade_returns: np.ndarray,
+    horizon: int,
+    candles_per_year: float,
+) -> dict[str, Any]:
+    """Recast a freshly recomputed report into the pre-correction schema.
+
+    Binding a legacy artifact means comparing like with like. The recorded side
+    carries ``sharpe`` and a differently-computed ``max_drawdown`` and lacks
+    ``per_trade_sharpe``; the recomputed side is the other way round. Rather
+    than delete every field whose definition changed — which would quietly
+    stop checking them — the two metrics that *can* be rebuilt from the
+    persisted trades are rebuilt under their old definitions and compared.
+    """
+    view = {key: value for key, value in report.items() if key != "trading"}
+    trading = dict(report.get("trading") or {})
+    for field in (*NON_REPRODUCIBLE_TRADING_METRICS, *_CURRENT_ONLY_TRADING_METRICS):
+        trading.pop(field, None)
+    trading["sharpe"] = round(legacy_sharpe(trade_returns, horizon, candles_per_year), 4)
+    trading["max_drawdown"] = round(legacy_max_drawdown(trade_returns), 4)
+    view["trading"] = trading
+    return view
+
+
 def _comparable_report(report: Mapping[str, Any]) -> dict[str, Any]:
     """A report with only the fields a predictions file can reproduce.
 
@@ -527,8 +596,13 @@ def _comparable_report(report: Mapping[str, Any]) -> dict[str, Any]:
 
 def _prediction_report(
     part: pd.DataFrame, artifact: Mapping[str, Any], threshold: float
-) -> dict:
-    """Recompute the MTST report from persisted rows to bind parquet to JSON content."""
+) -> tuple[dict, np.ndarray, TargetSpec]:
+    """Recompute the MTST report from persisted rows to bind parquet to JSON content.
+
+    Returns the report, the realised trade returns, and the target spec: the
+    last two let :func:`_as_legacy_view` rebuild a pre-correction artifact's own
+    metrics for comparison instead of excluding them.
+    """
     target_raw = (artifact.get("dataset") or {}).get("target_spec")
     if not isinstance(target_raw, Mapping):
         raise RegimeDataError("walkforward artifact has no dataset.target_spec")
@@ -546,20 +620,31 @@ def _prediction_report(
         )
 
     targets = _integral_column(ordered, "true_target", Path("outer_predictions.parquet"))
+    future_return = ordered["future_return"].to_numpy(dtype=np.float64)
+    row_index = ordered["row_index"].to_numpy(dtype=np.int64)
     # No market context: the candle-level statistics need the price path through
     # the last trade's exit candle, which lies past the last *scored* row and so
     # is not in a per-sample predictions file. They are excluded from the
     # comparison by name rather than recomputed from something they are not —
     # see NON_REPRODUCIBLE_TRADING_METRICS.
-    return ev.evaluate(
+    report = ev.evaluate(
         proba,
         targets,
-        ordered["future_return"].to_numpy(dtype=np.float64),
+        future_return,
         target_spec,
         threshold,
         market=None,
-        row_index=ordered["row_index"].to_numpy(dtype=np.int64),
+        row_index=row_index,
     )
+    # The trades themselves, so a pre-correction artifact's own metrics can be
+    # rebuilt under their old definitions rather than dropped from the check.
+    _, _, trade_returns = ev.realised_trades(
+        ev.signals_from_proba(proba, threshold),
+        future_return,
+        target_spec,
+        row_index=row_index,
+    )
+    return report, trade_returns, target_spec
 
 
 def _validate_predictions_against_artifact(
@@ -647,7 +732,9 @@ def _validate_predictions_against_artifact(
                 f"artifact fold {fold_id} has no outer_validation.mtst report"
             )
         try:
-            recomputed_report = _prediction_report(part, artifact, expected_threshold)
+            recomputed_report, trade_returns, target_spec = _prediction_report(
+                part, artifact, expected_threshold
+            )
         except (TypeError, ValueError) as exc:
             raise RegimeDataError(
                 f"{path} fold {fold_id} cannot be recomputed against its artifact: {exc}"
@@ -655,8 +742,23 @@ def _validate_predictions_against_artifact(
         # Presence and shape are checked before any value is excluded, so a
         # current artifact missing a candle-level field fails here rather than
         # binding cleanly because the field was dropped from both sides.
-        validate_report_schema(recorded_report, f"{path} fold {fold_id} recorded MTST report")
-        if _comparable_report(recomputed_report) != _comparable_report(recorded_report):
+        schema = validate_report_schema(
+            recorded_report, f"{path} fold {fold_id} recorded MTST report"
+        )
+        if schema == "legacy_pre_metric_correction":
+            # Compare like with like: rebuild the two metrics this artifact's
+            # generation defined differently, under their own old formulas, so
+            # they are still checked rather than dropped. A pre-correction run
+            # with persisted predictions therefore stays auditable.
+            timeframe = (artifact.get("dataset") or {}).get("timeframe") or "1h"
+            candles_per_year = 365 * 24 * 60 / timeframe_to_minutes(str(timeframe))
+            recomputed = _as_legacy_view(
+                recomputed_report, trade_returns, target_spec.horizon, candles_per_year
+            )
+        else:
+            recomputed = _comparable_report(recomputed_report)
+
+        if recomputed != _comparable_report(recorded_report):
             raise RegimeDataError(
                 f"{path} fold {fold_id} does not reproduce the artifact's MTST report; "
                 "the parquet is stale, unrelated, or was produced under different "
