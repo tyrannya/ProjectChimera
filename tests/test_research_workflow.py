@@ -249,8 +249,15 @@ def test_research_windows_respect_market_data_gaps():
         features=rng.normal(size=(n, 2)),
         targets=rng.integers(0, 3, size=n),
         future_return=rng.normal(size=n) * 0.01,
+        close=100 * np.cumprod(1 + rng.normal(size=n) * 0.01),
         segment_ids=segments,
-        dates=np.arange(n),
+        # Real timestamps, because reporting annualises from elapsed calendar
+        # time rather than from a row count. The second segment starts a day
+        # late, which is the gap this fixture exists to exercise.
+        dates=(
+            np.datetime64("2023-01-01T00:00")
+            + (np.arange(n) + 24 * (segments == 1)) * np.timedelta64(1, "h")
+        ),
         candles_per_year=24 * 365,
     )
     prepared = train.prepare_research_windows(
@@ -693,8 +700,15 @@ def test_frozen_scoring_respects_market_data_gaps():
         features=rng.normal(size=(n, 2)),
         targets=rng.integers(0, 3, size=n),
         future_return=rng.normal(size=n) * 0.01,
+        close=100 * np.cumprod(1 + rng.normal(size=n) * 0.01),
         segment_ids=segments,
-        dates=np.arange(n),
+        # Real timestamps, because reporting annualises from elapsed calendar
+        # time rather than from a row count. The second segment starts a day
+        # late, which is the gap this fixture exists to exercise.
+        dates=(
+            np.datetime64("2023-01-01T00:00")
+            + (np.arange(n) + 24 * (segments == 1)) * np.timedelta64(1, "h")
+        ),
         candles_per_year=24 * 365,
     )
     outer = Split("outer_validation", 150, 400)
@@ -793,7 +807,15 @@ def test_the_output_schema_names_all_three_regions(spied_run):
             "threshold",
             "inner_validation_loss",
         }
-        assert set(fold["outer_validation"]) == set(walkforward.MODELS)
+        # The models, plus the economic references for the same window. The
+        # references are not models — nothing in them predicts anything — but
+        # they describe this block and travel with it.
+        assert set(fold["outer_validation"]) == {
+            *walkforward.MODELS,
+            walkforward.REFERENCES_KEY,
+        }
+        references = fold["outer_validation"][walkforward.REFERENCES_KEY]
+        assert set(references) >= {"cash", "buy_and_hold"}
         # The ambiguous single "validation" key is gone: a reader cannot mistake
         # the selection block for the reported one.
         assert "validation" not in fold
@@ -835,9 +857,16 @@ def test_the_summary_aggregates_outer_validation_only(spied_run):
         stats = summary["per_model"][name]
         assert set(walkforward.SUMMARY_METRICS) <= set(stats)
         for metric, (section, key) in walkforward.SUMMARY_METRICS.items():
-            assert {"mean", "std", "values"} == set(stats[metric])
+            assert {"mean", "std", "values", "defined_folds"} == set(stats[metric])
+            # `None` survives aggregation as `None`: a risk-adjusted statistic
+            # is undefined when the portfolio never moved, and rounding a
+            # fabricated zero into the record would hide that.
             assert stats[metric]["values"] == [
-                round(float(f["outer_validation"][name][section][key]), 6)
+                (
+                    None
+                    if (raw := f["outer_validation"][name][section][key]) is None
+                    else round(float(raw), 6)
+                )
                 for f in spied_run["results"]["folds"]
             ]
     assert "outer validation" in (spied_run["out"] / "walkforward.md").read_text().lower()

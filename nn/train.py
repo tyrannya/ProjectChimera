@@ -145,6 +145,10 @@ class ResearchData:
     features: np.ndarray
     targets: np.ndarray
     future_return: np.ndarray
+    #: Close price per row. Reporting needs the price *path*, not just the
+    #: horizon-ahead return: a candle-level portfolio curve and a buy-and-hold
+    #: reference cannot be built from `future_return` alone.
+    close: np.ndarray
     segment_ids: np.ndarray | None
     dates: np.ndarray
     candles_per_year: float
@@ -152,6 +156,19 @@ class ResearchData:
     @property
     def n_rows(self) -> int:
         return len(self.features)
+
+    def market(self, visible: int) -> ev.MarketContext:
+        """Prices and timestamps, truncated to the rows a split may see.
+
+        Takes the same ``visible`` bound the features and targets are sliced
+        with, so a market context cannot reach a row the evaluation itself is
+        not allowed to reach.
+        """
+        return ev.MarketContext(
+            close=self.close[:visible],
+            dates=self.dates[:visible],
+            candles_per_year=self.candles_per_year,
+        )
 
     def period(self, split: Split) -> dict[str, Any]:
         """Wall-clock boundaries of a split, so a report can be audited later."""
@@ -171,6 +188,13 @@ def load_research_data(path: str | Path) -> ResearchData:
     if missing:
         raise SystemExit(f"dataset is missing feature columns: {missing}")
 
+    if "close" not in frame.columns:
+        raise SystemExit(
+            f"{path} has no 'close' column. Reporting needs the price path to build a "
+            "candle-level portfolio curve and a buy-and-hold reference; rebuild the "
+            "dataset with the current tools.build_features."
+        )
+
     segment_ids = (
         frame["segment_id"].to_numpy(dtype=np.int64) if "segment_id" in frame.columns else None
     )
@@ -188,6 +212,7 @@ def load_research_data(path: str | Path) -> ResearchData:
         features=frame[feature_names].to_numpy(dtype=np.float64),
         targets=frame["target"].to_numpy(dtype=np.int64),
         future_return=frame["future_return"].to_numpy(dtype=np.float64),
+        close=frame["close"].to_numpy(dtype=np.float64),
         segment_ids=segment_ids,
         dates=frame["date"].to_numpy(),
         candles_per_year=365 * 24 * 60 / timeframe_to_minutes(ds_meta.timeframe or "1h"),
@@ -363,6 +388,16 @@ def fit_and_validate(
         ),
     }
 
+    # The inner block's own prices and timestamps, bounded by the same row the
+    # windowing was bounded by. This exists so `nn.experiment`'s optional
+    # `annualised_sharpe` objective keeps working under the corrected metric —
+    # it is *reporting* input only. `select_threshold` above is already done by
+    # this point and never receives it, so nothing here can move the chosen
+    # threshold. No economic reference is computed on the inner block: CASH and
+    # buy-and-hold answer a question about a reported result, and the inner
+    # block is a selection score, never reported as one.
+    market = data.market(prepared.validation.end)
+
     def score(proba: np.ndarray, decision_threshold: float = threshold) -> dict[str, Any]:
         return ev.evaluate(
             proba,
@@ -370,7 +405,7 @@ def fit_and_validate(
             val_return,
             data.target_spec,
             decision_threshold,
-            candles_per_year=data.candles_per_year,
+            market=market,
             row_index=prepared.idx_val,
         )
 
@@ -405,6 +440,9 @@ class FrozenScore:
 
     #: ``majority_baseline`` / ``momentum_baseline`` / ``mtst``.
     reports: dict[str, dict[str, Any]]
+    #: CASH and buy-and-hold over the same window. Not models — see
+    #: :func:`nn.evaluate.economic_references`.
+    economic_references: dict[str, Any]
     #: Dataset row index of each scored sample.
     idx: np.ndarray
     #: True class of each scored sample, in the dataset's own encoding.
@@ -459,6 +497,8 @@ def score_frozen_split(
 
     future_return = data.future_return[idx]
 
+    market = data.market(visible)
+
     def score(proba: np.ndarray, decision_threshold: float = threshold) -> dict[str, Any]:
         return ev.evaluate(
             proba,
@@ -466,7 +506,7 @@ def score_frozen_split(
             future_return,
             data.target_spec,
             decision_threshold,
-            candles_per_year=data.candles_per_year,
+            market=market,
             row_index=idx,
         )
 
@@ -476,7 +516,14 @@ def score_frozen_split(
         for name, baseline in baselines.items()
     }
     reports["mtst"] = score(proba)
-    return FrozenScore(reports=reports, idx=idx, y=y, proba=proba)
+    # Not a model and not a baseline: what the same window did for someone who
+    # never traded, and for someone who bought once and held. Reported beside
+    # the models because beating a statistical floor is not the same as making
+    # money, and the aggregate verdict needs both to say so.
+    references = ev.economic_references(market, data.target_spec, idx)
+    return FrozenScore(
+        reports=reports, idx=idx, y=y, proba=proba, economic_references=references
+    )
 
 
 def train_model(
@@ -713,6 +760,7 @@ def main(argv: list[str] | None = None) -> int:
     # split. It runs after every fitted quantity (weights, scaler, threshold,
     # early-stopping epoch) is frozen, and not at all in research mode.
     test_reports: dict[str, Any] | None = None
+    test_references: dict[str, Any] | None = None
     if not args.validation_only:
         try:
             scored = score_frozen_split(
@@ -728,6 +776,7 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             raise SystemExit(f"{exc} (--seq-len is currently {args.seq_len})") from exc
         test_reports = scored.reports
+        test_references = scored.economic_references
         logger.info("test: %d samples", len(scored.idx))
 
     print("\nValidation (used for model selection):")
@@ -783,6 +832,9 @@ def main(argv: list[str] | None = None) -> int:
         "threshold_selection": result.threshold_report,
         "validation": validation_reports,
         "test": test_reports,
+        # CASH and buy-and-hold over the sealed block, beside the models scored
+        # on it. Absent in a research-only run, where the block is not opened.
+        "test_economic_references": test_references,
         # Read by nn.registry.promote, which refuses a research_only artifact.
         "research_only": bool(args.validation_only),
         "test_evaluated": test_reports is not None,
@@ -865,8 +917,15 @@ def _log_to_mlflow(
                         ],
                         f"{split}_coverage": classification["coverage"],
                         f"{split}_net_return": trading["net_return"],
-                        f"{split}_sharpe": trading["sharpe"],
                         f"{split}_max_drawdown": trading["max_drawdown"],
+                        # Undefined risk-adjusted statistics are omitted rather
+                        # than logged as zero: MLflow has no null, and a zero
+                        # here would be read as a measurement.
+                        **{
+                            f"{split}_{name}": trading[name]
+                            for name in ("annualised_sharpe", "per_trade_sharpe")
+                            if trading[name] is not None
+                        },
                     }
                 )
             mlflow.log_artifacts(str(Path(args.models_dir) / version), "model")

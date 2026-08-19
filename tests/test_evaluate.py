@@ -7,12 +7,14 @@ import pytest
 
 from chimera.contracts import HOLD_IDX, LONG_IDX, SHORT_IDX, TargetSpec, decide
 from nn.baselines import MajorityClassBaseline, MomentumBaseline
+from nn import evaluate as ev
 from nn.evaluate import (
     classification_metrics,
     compare,
     confusion_matrix,
     evaluate,
     expected_calibration_error,
+    realised_trades,
     select_threshold,
     signals_from_proba,
     trading_metrics,
@@ -159,7 +161,10 @@ def test_report_contains_every_required_trading_metric():
     for key in (
         "net_return",
         "total_costs",
-        "sharpe",
+        "annualised_sharpe",
+        "per_trade_sharpe",
+        "sharpe_basis",
+        "candle_max_drawdown",
         "max_drawdown",
         "win_rate",
         "profit_factor",
@@ -292,3 +297,633 @@ def test_compare_renders_every_model_as_a_row():
     report = evaluate(proba, y, np.full(20, 0.03), TargetSpec(horizon=1), 0.5)
     table = compare({"baseline": report, "mtst": report})
     assert "| baseline |" in table and "| mtst |" in table
+
+
+# --- portfolio equity: the two reconciliation invariants -----------------------
+#
+# `annualised_sharpe` is only worth reading if the series it comes from is the
+# equity curve already being reported. These tests are that proof, and they are
+# closed-form: they assert the identity, not that the number looks plausible.
+def _market(n: int, seed: int = 0, *, gap_after: int | None = None) -> ev.MarketContext:
+    """A price path and hourly timestamps, optionally with a missing stretch."""
+    rng = np.random.default_rng(seed)
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, n))
+    offsets = np.arange(n)
+    if gap_after is not None:
+        # Everything after `gap_after` happens a day later than its row implies:
+        # 24 calendar intervals absent from the processed dataset.
+        offsets = offsets + 24 * (offsets > gap_after)
+    dates = np.datetime64("2023-01-01T00:00") + offsets * np.timedelta64(1, "h")
+    return ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+
+def _future_return(close: np.ndarray, horizon: int) -> np.ndarray:
+    return close[horizon:] / close[:-horizon] - 1.0
+
+
+def test_one_long_trade_reconciles_with_its_realised_trade_return():
+    spec = TargetSpec(horizon=4, fee_rate=0.001, slippage_rate=0.001)
+    market = _market(40, seed=1)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(len(future_return), HOLD_IDX)
+    signals[5] = LONG_IDX
+
+    _, _, returns = realised_trades(signals, future_return, spec)
+    equity = ev.portfolio_equity(market, [(5, 9, 1.0)], spec.cost_threshold / 2, 5, 9)
+
+    # Start-to-exit portfolio return is the trade's net return, exactly.
+    assert equity[-1] - 1.0 == pytest.approx(returns[0], abs=1e-12)
+
+
+def test_one_short_trade_reconciles_too():
+    """The direction that a compounded construction would silently re-lever."""
+    spec = TargetSpec(horizon=4, fee_rate=0.001, slippage_rate=0.001)
+    market = _market(40, seed=2)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(len(future_return), HOLD_IDX)
+    signals[5] = SHORT_IDX
+
+    _, _, returns = realised_trades(signals, future_return, spec)
+    equity = ev.portfolio_equity(market, [(5, 9, -1.0)], spec.cost_threshold / 2, 5, 9)
+    assert equity[-1] - 1.0 == pytest.approx(returns[0], abs=1e-12)
+
+
+def test_sequential_trades_compound_exactly_like_the_trade_equity_curve():
+    """The invariant that a `1 + cumsum(pnl)` construction would fail.
+
+    Across several trades the candle-level curve has to reproduce
+    ``cumprod(1 + trade_returns)`` — the curve ``net_return`` and
+    ``max_drawdown`` already come from — at every completed trade boundary. If
+    it does not, the Sharpe taken from it is measuring a different portfolio
+    than the numbers printed beside it.
+    """
+    spec = TargetSpec(horizon=3, fee_rate=0.002, slippage_rate=0.002)  # 0.8% round trip
+    market = _market(80, seed=3)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(len(future_return), HOLD_IDX)
+    for row in (2, 10, 25, 40):
+        signals[row] = LONG_IDX
+    for row in (16, 50):
+        signals[row] = SHORT_IDX
+
+    entries, directions, returns = realised_trades(signals, future_return, spec)
+    assert len(returns) >= 4, "the fixture must exercise compounding"
+
+    positions = [
+        (int(e), int(e) + spec.horizon, float(d)) for e, d in zip(entries, directions)
+    ]
+    start, end = int(entries[0]), int(entries[-1]) + spec.horizon
+    equity = ev.portfolio_equity(market, positions, spec.cost_threshold / 2, start, end)
+    expected = np.cumprod(1.0 + returns)
+
+    for trade, entry in enumerate(entries):
+        exit_row = int(entry) + spec.horizon
+        assert equity[exit_row - start] == pytest.approx(expected[trade], abs=1e-12)
+    assert equity[-1] == pytest.approx(expected[-1], abs=1e-12)
+
+
+def test_costs_are_charged_once_per_side_and_nowhere_else():
+    """Entry side at entry, exit side at exit. A flat price path isolates them."""
+    spec = TargetSpec(horizon=5, fee_rate=0.001, slippage_rate=0.001)
+    per_side = spec.cost_threshold / 2
+    close = np.full(30, 100.0)
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(30) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    equity = ev.portfolio_equity(market, [(4, 9, 1.0)], per_side, 4, 9)
+    # Price never moves, so every change in equity is a cost.
+    # The entry candle establishes the position and costs nothing yet: its cost
+    # belongs to the first interval the position is actually held.
+    assert equity[0] == pytest.approx(1.0, abs=1e-12)  # entry candle, row 4
+    assert equity[1:5] == pytest.approx(1.0 - per_side, abs=1e-12)  # held, rows 5-8
+    assert equity[5] == pytest.approx(1.0 - 2 * per_side, abs=1e-12)  # exit candle, row 9
+    # Total charged over the trade is exactly one round trip.
+    assert 1.0 - equity[-1] == pytest.approx(spec.cost_threshold, abs=1e-12)
+
+
+def test_flat_candles_leave_the_portfolio_unchanged():
+    spec = TargetSpec(horizon=2, fee_rate=0.001, slippage_rate=0.001)
+    market = _market(40, seed=4)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(len(future_return), HOLD_IDX)
+    signals[10] = LONG_IDX
+
+    equity = ev.portfolio_equity(market, [(10, 12, 1.0)], spec.cost_threshold / 2, 0, 20)
+    returns = ev.portfolio_returns(equity)
+    # Held over candles 10..12; everything else is flat and earns exactly zero.
+    held = np.zeros(len(returns), dtype=bool)
+    held[10:13] = True
+    assert (returns[~held] == 0.0).all()
+    assert (returns[held] != 0.0).any()
+
+
+def test_annualised_sharpe_is_the_closed_form_with_no_horizon_term():
+    """The whole point of the correction, asserted as an identity.
+
+    If the reported number equals mean/std of the portfolio series times
+    ``sqrt(candles_per_year)``, then no ``horizon`` term can be hiding in the
+    annualisation — which is exactly what the previous formula had.
+    """
+    spec = TargetSpec(horizon=3, fee_rate=0.001, slippage_rate=0.001)
+    market = _market(120, seed=5)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(len(future_return), HOLD_IDX)
+    for row in (5, 30, 60, 90):
+        signals[row] = LONG_IDX
+
+    report = trading_metrics(signals, future_return, spec, market=market)
+    entries, directions, _ = realised_trades(signals, future_return, spec)
+    positions = [
+        (int(e), int(e) + spec.horizon, float(d)) for e, d in zip(entries, directions)
+    ]
+    start, end = 0, len(future_return) - 1 + spec.horizon
+    equity = ev.portfolio_equity(market, positions, spec.cost_threshold / 2, start, end)
+    returns = ev.portfolio_returns(equity)
+
+    expected = returns.mean() / returns.std(ddof=1) * np.sqrt(market.candles_per_year)
+    assert report["annualised_sharpe"] == pytest.approx(expected, abs=5e-5)
+    assert report["sharpe_basis"] == ev.SHARPE_BASIS
+
+
+def test_zero_padding_matches_materialising_the_zeros():
+    """The sums shortcut and an explicitly padded array must agree."""
+    returns = np.array([0.01, -0.02, 0.0, 0.03, -0.01])
+    padded = np.concatenate([returns, np.zeros(20)])
+    shortcut, _ = ev.annualised_sharpe(returns, len(padded), 24 * 365)
+    direct = padded.mean() / padded.std(ddof=1) * np.sqrt(24 * 365)
+    assert shortcut == pytest.approx(direct, abs=1e-12)
+
+
+def test_per_trade_sharpe_is_not_annualised():
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    trade_returns = np.array([0.02, -0.01, 0.03, -0.02])
+    signals = np.full(4, LONG_IDX)
+    report = trading_metrics(signals, trade_returns, spec)
+    expected = trade_returns.mean() / trade_returns.std(ddof=1)
+    assert report["per_trade_sharpe"] == pytest.approx(expected, abs=1e-4)
+
+
+def test_idle_capital_deflates_the_annualised_sharpe():
+    """The same trades, judged over a longer idle stretch, score lower.
+
+    This is the correction, stated as a controlled experiment: both arms take
+    the *identical* trades, so their per-trade statistics are identical and the
+    old formula gives them the same number. Only the amount of time capital sat
+    in cash differs. A portfolio that earned those trades over ten times as long
+    is a worse portfolio, and only the new statistic says so.
+    """
+    spec = TargetSpec(horizon=2, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(600, seed=6)
+    future_return = _future_return(market.close, spec.horizon)
+    entries = (2, 8, 14, 20, 26)
+
+    def report_over(scored_rows: int) -> dict:
+        signals = np.full(scored_rows, HOLD_IDX)
+        for row in entries:
+            signals[row] = LONG_IDX
+        return trading_metrics(signals, future_return[:scored_rows], spec, market=market)
+
+    busy = report_over(40)
+    idle = report_over(400)
+
+    # Identical trades: the per-trade view cannot tell the two apart, and neither
+    # could the formula this replaced, which scaled exactly that number.
+    assert busy["n_trades"] == idle["n_trades"] == len(entries)
+    assert busy["net_return"] == pytest.approx(idle["net_return"], abs=1e-12)
+    assert busy["per_trade_sharpe"] == pytest.approx(idle["per_trade_sharpe"], abs=1e-12)
+
+    # The portfolio view does: capital was deployed a tenth as often.
+    assert idle["exposure"] < busy["exposure"] / 5
+    assert abs(idle["annualised_sharpe"]) < abs(busy["annualised_sharpe"]) / 2
+
+
+def test_the_replaced_formula_would_have_reported_a_far_larger_number():
+    """What the correction is worth, on a signal shaped like the real one.
+
+    The old statistic was ``per_trade_sharpe * sqrt(candles_per_year / horizon)``
+    — a fixed x38 at the project's 6-candle horizon on 1h candles, applied
+    however rarely the strategy traded. This fixture trades on ~2% of candles,
+    close to MTST's measured coverage, and the two numbers are not close.
+
+    A horizon term cannot be hiding in the replacement: the closed form asserted
+    above is ``mean/std * sqrt(candles_per_year)``, and ``horizon`` appears
+    nowhere in it.
+    """
+    spec = TargetSpec(horizon=6, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(2100, seed=12)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(2000, HOLD_IDX)
+    signals[np.arange(5, 2000, 200)] = LONG_IDX
+
+    report = trading_metrics(signals, future_return[:2000], spec, market=market)
+    # Deployed 3% of the time, which is roughly MTST's measured coverage.
+    assert report["exposure"] == pytest.approx(0.03, abs=0.005)
+
+    old_value = report["per_trade_sharpe"] * np.sqrt((24 * 365) / spec.horizon)
+    assert abs(report["annualised_sharpe"]) < abs(old_value) / 3
+
+    # And the gap is not arbitrary: including the idle candles scales the figure
+    # by roughly the square root of the fraction of time capital was at work.
+    # That factor is what the old formula left out.
+    ratio = abs(old_value / report["annualised_sharpe"])
+    assert ratio == pytest.approx(1 / np.sqrt(report["exposure"]), rel=0.25)
+
+
+def test_undefined_risk_statistics_are_none_not_zero():
+    """A portfolio that never moved has no Sharpe. Reporting 0.0 would lie.
+
+    The same rule has to hold for the model as for CASH, or an identical
+    economic situation reads two different ways depending on the row's name.
+    """
+    spec = TargetSpec(horizon=1)
+    market = _market(20, seed=7)
+    report = trading_metrics(np.full(10, HOLD_IDX), np.full(10, 0.05), spec, market=market)
+    assert report["n_trades"] == 0
+    assert report["annualised_sharpe"] is None
+    assert report["per_trade_sharpe"] is None
+    assert report["annualised_sharpe_reason"]
+    assert report["per_trade_sharpe_reason"]
+
+    cash = ev.cash_reference(spec)
+    assert cash["annualised_sharpe"] is None and cash["per_trade_sharpe"] is None
+
+
+def test_a_close_series_that_stops_short_of_the_exit_raises():
+    """Truncating would price the exit at the wrong candle, silently."""
+    spec = TargetSpec(horizon=6, fee_rate=0.001, slippage_rate=0.001)
+    market = _market(12, seed=8)
+    with pytest.raises(ValueError, match="close series"):
+        ev.portfolio_equity(market, [(4, 20, 1.0)], spec.cost_threshold / 2, 4, 20)
+
+
+def test_no_report_carries_the_ambiguous_sharpe_field():
+    """Regression: the old name must not come back as a convenience alias.
+
+    Its semantics changed; keeping the name would make every committed artifact
+    look comparable to a new run when it is not.
+    """
+    spec = TargetSpec(horizon=1)
+    market = _market(20, seed=9)
+    report = trading_metrics(np.array([LONG_IDX]), np.array([0.05]), spec, market=market)
+    assert "sharpe" not in report
+    assert "annualised_sharpe" in report and "per_trade_sharpe" in report
+
+
+# --- economic references -------------------------------------------------------
+def test_cash_pays_none_of_the_strategys_costs():
+    """CASH is the zero line. It must not inherit the model's cost model.
+
+    A no-trade policy that quietly paid trading costs would make every losing
+    strategy look better than doing nothing.
+    """
+    expensive = TargetSpec(horizon=6, fee_rate=0.01, slippage_rate=0.01)  # 4% round trip
+    cash = ev.cash_reference(expensive)
+    assert cash["n_trades"] == 0
+    assert cash["net_return"] == 0.0
+    assert cash["gross_return"] == 0.0
+    assert cash["total_costs"] == 0.0
+    assert cash["max_drawdown"] == 0.0
+    assert cash["exposure"] == 0.0
+    assert cash["cost_model_applied"] is False
+
+
+def test_buy_and_hold_is_priced_from_the_evaluation_windows_own_candles():
+    """Entry at the first scored candle, exit at the last sample's label candle."""
+    spec = TargetSpec(horizon=6, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(200, seed=13)
+    row_index = np.arange(20, 150)
+
+    hold = ev.buy_and_hold_reference(market, spec, row_index)
+    assert hold["entry_row"] == 20
+    assert hold["exit_row"] == 149 + spec.horizon
+    expected = market.close[155] / market.close[20] - 1.0
+    assert hold["gross_return"] == pytest.approx(expected, abs=1e-6)
+    assert hold["net_return"] == pytest.approx(expected - spec.cost_threshold, abs=1e-6)
+
+
+def test_buy_and_hold_pays_one_round_trip_not_one_per_horizon():
+    """The distinction that separates holding an asset from churning it.
+
+    Over a long window, charging the round trip each horizon would cost orders
+    of magnitude more than holding — a different policy wearing the same name.
+    """
+    spec = TargetSpec(horizon=6, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(2100, seed=14)
+    row_index = np.arange(0, 2000)
+
+    hold = ev.buy_and_hold_reference(market, spec, row_index)
+    assert hold["total_costs"] == pytest.approx(spec.cost_threshold, abs=1e-12)
+    assert hold["n_trades"] == 1
+
+    per_horizon = (hold["exit_row"] - hold["entry_row"]) / spec.horizon * spec.cost_threshold
+    assert per_horizon > 100 * hold["total_costs"]
+    assert hold["gross_return"] - hold["net_return"] == pytest.approx(
+        spec.cost_threshold, abs=1e-6
+    )
+
+
+def test_buy_and_hold_and_the_model_report_the_same_sharpe_basis():
+    """Two rows in one table must mean the same thing by the same name."""
+    spec = TargetSpec(horizon=4, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(300, seed=15)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(250, HOLD_IDX)
+    signals[np.arange(3, 250, 20)] = LONG_IDX
+    row_index = np.arange(250)
+
+    model = trading_metrics(signals, future_return[:250], spec, market=market)
+    hold = ev.buy_and_hold_reference(market, spec, row_index)
+
+    assert model["sharpe_basis"] == ev.SHARPE_BASIS
+    assert hold["sharpe_basis"] == ev.SHARPE_BASIS
+    assert hold["annualised_sharpe"] is not None
+
+
+def test_buy_and_hold_sharpe_is_net_of_its_cost():
+    """Not a gross market Sharpe dressed up as a comparable one."""
+    spec = TargetSpec(horizon=4, fee_rate=0.02, slippage_rate=0.02)  # 8% round trip
+    market = _market(200, seed=16)
+    row_index = np.arange(150)
+
+    charged = ev.buy_and_hold_reference(market, spec, row_index)
+    free = ev.buy_and_hold_reference(
+        market, TargetSpec(horizon=4, fee_rate=0.0, slippage_rate=0.0), row_index
+    )
+    assert charged["annualised_sharpe"] != free["annualised_sharpe"]
+    assert charged["net_return"] < free["net_return"]
+
+
+def test_buy_and_hold_withholds_its_sharpe_across_a_market_data_gap():
+    """A hold is exposed to a price path nobody recorded; the strategy is not.
+
+    Rather than treat a 24-hour outage as one ordinary candle and publish the
+    result under a name that promises comparability, the statistic is withheld.
+    Return stays exact — start-to-end is well defined even when the path is not
+    — and the drawdown is flagged as a lower bound.
+    """
+    spec = TargetSpec(horizon=4, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(200, seed=17, gap_after=80)
+    row_index = np.arange(150)
+
+    hold = ev.buy_and_hold_reference(market, spec, row_index)
+    assert hold["spans_market_data_gap"] is True
+    assert hold["missing_candles"] == 24
+    assert hold["annualised_sharpe"] is None
+    assert "invent" in hold["annualised_sharpe_reason"]
+    assert hold["drawdown_is_lower_bound"] is True
+    # Still exact, and still reported.
+    expected = market.close[153] / market.close[0] - 1.0
+    assert hold["gross_return"] == pytest.approx(expected, abs=1e-6)
+    assert hold["net_return"] == pytest.approx(expected - spec.cost_threshold, abs=1e-6)
+
+
+def test_a_gap_is_annualised_from_elapsed_time_not_row_count():
+    """24 intervals absent from the dataset are 24 idle intervals of time.
+
+    The portfolio is provably flat across a discontinuity — `build_windows`
+    refuses any window or label that crosses a segment boundary, so no scored
+    position can be held over one — so a zero is the return genuinely earned
+    there rather than an assumption. Counting dataset rows instead would treat a
+    day-long discontinuity as a single hour.
+    """
+    market = _market(200, seed=18, gap_after=80)
+    contiguous = _market(200, seed=18)
+    assert market.elapsed_intervals(0, 150) == contiguous.elapsed_intervals(0, 150) + 24
+    assert market.missing_candles(0, 150) == 24
+    # With no discontinuity, elapsed intervals equal the row distance: rows
+    # [0, 150] are 151 candles but 150 intervals between them.
+    assert contiguous.elapsed_intervals(0, 150) == 150
+    assert contiguous.missing_candles(0, 150) == 0
+
+
+def test_economic_references_bundle_both_policies():
+    spec = TargetSpec(horizon=4)
+    market = _market(200, seed=19)
+    references = ev.economic_references(market, spec, np.arange(150))
+    assert set(references) >= {"cash", "buy_and_hold"}
+    assert references["buy_and_hold"]["available"] is True
+    assert references["cash"]["net_return"] == 0.0
+
+
+def test_buy_and_hold_is_unavailable_rather_than_invented_without_prices():
+    spec = TargetSpec(horizon=4)
+    hold = ev.buy_and_hold_reference(None, spec, np.arange(10))
+    assert hold["available"] is False
+    assert hold["reason"]
+    assert "net_return" not in hold
+
+
+def test_baseline_reports_do_not_move_with_the_models_threshold():
+    """The floor must not shift when the model's fitted threshold shifts.
+
+    Extended from the action-level check to the whole trading report: a
+    one-hot rule's decisions are threshold-independent, so every number derived
+    from them has to be too, including the new risk-adjusted statistics.
+    """
+    spec = TargetSpec(horizon=3, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(200, seed=20)
+    future_return = _future_return(market.close, spec.horizon)
+    y = np.array([HOLD_IDX] * 70 + [LONG_IDX] * 20 + [SHORT_IDX] * 10)
+    baseline = MajorityClassBaseline().fit(y)
+    proba = baseline.predict_proba(np.zeros((150, 1)))
+
+    reports = [
+        trading_metrics(
+            signals_from_proba(proba, threshold), future_return[:150], spec, market=market
+        )
+        for threshold in (0.0, 0.34, 0.5, 0.7, 0.9, 1.0)
+    ]
+    assert all(report == reports[0] for report in reports)
+
+
+# --- drawdown is measured from starting capital -------------------------------
+#
+# The running peak used to start at the first completed trade rather than at
+# 1.0, so a strategy that was under water from its first step reported a fall
+# from wherever it had already got to. These are closed-form: each asserts the
+# arithmetic, not that the number looks reasonable.
+def test_a_single_losing_trade_reports_its_full_drawdown():
+    """The clearest form of the bug: one -10% trade used to report zero.
+
+    Its equity curve had a single point, so that point was its own peak.
+    """
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    report = trading_metrics(np.array([LONG_IDX]), np.array([-0.10]), spec)
+    assert report["net_return"] == pytest.approx(-0.10)
+    assert report["max_drawdown"] == pytest.approx(0.10, abs=1e-12)
+
+
+def test_consecutive_losses_compound_from_initial_capital():
+    """Two 10% losses is a 19% fall from 1.0, not 10% from the first trade."""
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    report = trading_metrics(np.full(2, LONG_IDX), np.array([-0.10, -0.10]), spec)
+    assert report["max_drawdown"] == pytest.approx(1.0 - 0.9 * 0.9, abs=1e-12)
+
+
+def test_a_gain_before_a_loss_still_measures_from_the_peak():
+    """The correction must not double-count: the peak is still the peak."""
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    report = trading_metrics(np.full(2, LONG_IDX), np.array([0.10, -0.10]), spec)
+    # Peak is 1.10, trough 0.99 -> 10%, unchanged by prepending 1.0.
+    assert report["max_drawdown"] == pytest.approx(0.10, abs=1e-12)
+
+
+def test_a_purely_winning_strategy_has_no_drawdown():
+    spec = TargetSpec(horizon=1, fee_rate=0.0, slippage_rate=0.0)
+    report = trading_metrics(np.full(3, LONG_IDX), np.full(3, 0.05), spec)
+    assert report["max_drawdown"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_max_drawdown_of_measures_from_one():
+    """The helper itself, against hand-computed values."""
+    assert ev.max_drawdown_of(np.array([0.9])) == pytest.approx(0.10, abs=1e-12)
+    assert ev.max_drawdown_of(np.array([0.9, 0.81])) == pytest.approx(0.19, abs=1e-12)
+    assert ev.max_drawdown_of(np.array([1.1, 0.99])) == pytest.approx(0.10, abs=1e-12)
+    assert ev.max_drawdown_of(np.array([])) == 0.0
+
+
+def test_an_open_position_under_water_is_measured_from_starting_equity():
+    """Candle-level: the fall is from 1.0, before the trade ever closed."""
+    close = np.array([100.0, 90.0, 85.0, 95.0, 95.0])
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(5) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    equity = ev.portfolio_equity(market, [(0, 3, 1.0)], 0.0, 0, 3)
+    # Marked from the entry price: 1.00, 0.90, 0.85, 0.95.
+    assert equity == pytest.approx([1.0, 0.90, 0.85, 0.95], abs=1e-12)
+    # Trough is 0.85 against a peak of 1.0, even though the trade ended at -5%.
+    assert ev.max_drawdown_of(equity) == pytest.approx(0.15, abs=1e-12)
+
+
+def test_buy_and_holds_entry_cost_is_visible_in_its_candle_drawdown():
+    """A flat market still costs the spread, and the drawdown must show it."""
+    spec = TargetSpec(horizon=2, fee_rate=0.01, slippage_rate=0.01)  # 4% round trip
+    close = np.full(20, 100.0)
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(20) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    hold = ev.buy_and_hold_reference(market, spec, np.arange(10))
+    assert hold["gross_return"] == pytest.approx(0.0, abs=1e-12)
+    assert hold["net_return"] == pytest.approx(-spec.cost_threshold, abs=1e-12)
+    # Entry side is paid at entry, so equity is below 1.0 from the first candle;
+    # the exit side deepens it to the full round trip by the last.
+    assert hold["candle_max_drawdown"] == pytest.approx(spec.cost_threshold, abs=1e-6)
+
+
+def test_candle_drawdown_is_at_least_the_trade_level_one():
+    """Same curve, finer resolution: it also sees inside an open position."""
+    spec = TargetSpec(horizon=4, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(300, seed=21)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(250, HOLD_IDX)
+    signals[np.arange(2, 250, 15)] = LONG_IDX
+
+    report = trading_metrics(signals, future_return[:250], spec, market=market)
+    assert report["candle_max_drawdown"] >= report["max_drawdown"] - 1e-9
+
+
+def test_cash_has_no_drawdown_because_it_never_leaves_starting_capital():
+    cash = ev.cash_reference(TargetSpec(horizon=6, fee_rate=0.01, slippage_rate=0.01))
+    assert cash["max_drawdown"] == 0.0
+    assert cash["candle_max_drawdown"] == 0.0
+
+
+# --- how many time observations a span has ------------------------------------
+def test_a_span_of_h_intervals_yields_exactly_h_return_observations():
+    """The convention, stated and proved: **H intervals, H returns.**
+
+    Timestamps `H` intervals apart bound `H + 1` candle closes. A return needs a
+    start and an end, so those `H + 1` levels give `H` returns — one per
+    interval of time that actually elapsed. `elapsed_intervals` returns `H`, and
+    the annualisation divides by `H`.
+
+    An earlier version returned `H + 1` and manufactured a matching extra return
+    by dividing the opening equity level by 1.0. That handed the annualisation
+    one more observation than time had passed, and the extra observation was not
+    a period return at all: for buy-and-hold it was the entry cost, paid
+    instantaneously at the opening timestamp, booked as if it were a full
+    candle's performance.
+    """
+    horizon_intervals = 10
+    close = 100 * np.linspace(1.0, 1.1, horizon_intervals + 1)
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(
+        horizon_intervals + 1
+    ) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    # H intervals of wall-clock time between the first and last candle...
+    assert market.elapsed_intervals(0, horizon_intervals) == horizon_intervals
+    # ...spanned by H + 1 equity levels...
+    equity = ev.portfolio_equity(market, [], 0.0, 0, horizon_intervals)
+    assert len(equity) == horizon_intervals + 1
+    # ...which yield exactly H returns.
+    assert len(ev.portfolio_returns(equity)) == horizon_intervals
+
+
+def test_the_opening_equity_level_is_not_a_return():
+    """Starting capital is a level. Treating it as a return invents a period."""
+    close = np.full(6, 100.0)
+    dates = np.datetime64("2023-01-01T00:00") + np.arange(6) * np.timedelta64(1, "h")
+    market = ev.MarketContext(close=close, dates=dates, candles_per_year=24 * 365)
+
+    equity = ev.portfolio_equity(market, [(0, 5, 1.0)], 0.01, 0, 5)
+    assert equity[0] == 1.0, "the opening candle establishes the position, costing nothing yet"
+    returns = ev.portfolio_returns(equity)
+    assert len(returns) == market.elapsed_intervals(0, 5) == 5
+    # The entry cost is a return over the first interval the position was held,
+    # not an instantaneous event at the opening timestamp.
+    assert returns[0] == pytest.approx(-0.01, abs=1e-12)
+
+
+def test_the_return_series_reconciles_with_terminal_equity():
+    """Compounding the series must land exactly on the equity it came from.
+
+    This is what the spurious opening observation broke: with it, the product
+    over the series and the curve's terminal value disagreed by the first
+    trade's entry cost.
+    """
+    spec = TargetSpec(horizon=3, fee_rate=0.001, slippage_rate=0.001)
+    market = _market(120, seed=22)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(100, HOLD_IDX)
+    for row in (4, 20, 45, 70):
+        signals[row] = LONG_IDX
+
+    entries, directions, trade_returns = realised_trades(signals, future_return[:100], spec)
+    positions = [
+        (int(e), int(e) + spec.horizon, float(d)) for e, d in zip(entries, directions)
+    ]
+    start, end = 0, 99 + spec.horizon
+    equity = ev.portfolio_equity(market, positions, spec.cost_threshold / 2, start, end)
+    returns = ev.portfolio_returns(equity)
+
+    assert np.prod(1.0 + returns) == pytest.approx(equity[-1], abs=1e-12)
+    assert equity[-1] == pytest.approx(np.cumprod(1.0 + trade_returns)[-1], abs=1e-12)
+
+
+def test_annualised_sharpe_divides_by_elapsed_intervals_not_candle_count():
+    """Closed form, on a span with no discontinuities."""
+    spec = TargetSpec(horizon=2, fee_rate=0.0005, slippage_rate=0.0005)
+    market = _market(200, seed=23)
+    future_return = _future_return(market.close, spec.horizon)
+    signals = np.full(150, HOLD_IDX)
+    signals[np.arange(3, 150, 10)] = LONG_IDX
+
+    report = trading_metrics(signals, future_return[:150], spec, market=market)
+    span_start, span_end = 0, 149 + spec.horizon
+    assert report["elapsed_intervals"] == span_end - span_start
+
+    equity = ev.portfolio_equity(
+        market,
+        [
+            (int(e), int(e) + spec.horizon, float(d))
+            for e, d in zip(*realised_trades(signals, future_return[:150], spec)[:2])
+        ],
+        spec.cost_threshold / 2,
+        span_start,
+        span_end,
+    )
+    returns = ev.portfolio_returns(equity)
+    assert len(returns) == report["elapsed_intervals"]
+    expected = returns.mean() / returns.std(ddof=1) * np.sqrt(market.candles_per_year)
+    assert report["annualised_sharpe"] == pytest.approx(expected, abs=5e-5)

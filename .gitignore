@@ -28,7 +28,23 @@ coverage.xml
 
 # Data and model artifacts: reproducible from the pipeline, too large for git
 data/
-artifacts/
+artifacts/*
+# ...except the artifact index and per-directory status markers. Which research
+# generation is authoritative is documentation, not output: a reader who cannot
+# tell a superseded aggregate from the current one has no way to recover it from
+# the ignored files themselves. Committed run artifacts predate this rule and
+# are tracked individually.
+!artifacts/README.md
+!artifacts/diagnostics/
+!artifacts/walkforward/
+artifacts/diagnostics/*
+artifacts/walkforward/*
+!artifacts/diagnostics/*/
+!artifacts/walkforward/*/
+artifacts/diagnostics/*/*
+artifacts/walkforward/*/*
+!artifacts/diagnostics/*/STATUS.md
+!artifacts/walkforward/*/STATUS.md
 mlruns/
 !mlruns/.gitkeep
 ray_results/
