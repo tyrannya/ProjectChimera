@@ -2011,6 +2011,99 @@ def test_real_runs_written_after_the_fix_have_constant_baselines(real_regime_run
     assert wf_diagnostics.deterministic_baseline_drift(summary) == []
 
 
+# An undefined metric is not a moved one. A deterministic baseline can
+# legitimately never trade — a majority rule whose majority class is HOLD takes
+# no position at any threshold — and then its risk-adjusted statistics are
+# undefined in *every* run, reported as `None` rather than a fabricated zero.
+# `_spread` passes that through as `std: None`, which `None != 0.0` used to read
+# as non-zero spread, so a perfectly current study was told its artifacts predate
+# the baseline scoring fix.
+def never_trades(model: str):
+    """Give one model the report `trading_metrics` writes when it takes no trade.
+
+    The summary is re-derived by the production aggregator afterwards, so the
+    artifact stays as self-consistent as the run that would have produced it.
+    """
+
+    def mutate(payload):
+        for fold in payload["folds"]:
+            fold["outer_validation"][model]["trading"].update(
+                n_trades=0,
+                net_return=0.0,
+                exposure=0.0,
+                max_drawdown=0.0,
+                annualised_sharpe=None,
+                per_trade_sharpe=None,
+            )
+        payload["summary"] = walkforward.summarise(payload["folds"])
+
+    return mutate
+
+
+def _seed_study(tmp_path, majority: dict[str, list[float]]) -> list[Path]:
+    """Two current-schema seed runs whose momentum baseline never trades."""
+    return [
+        edit(
+            write_run(
+                tmp_path / name,
+                seed=seed,
+                returns={
+                    "majority_baseline": majority[name],
+                    "momentum_baseline": [0.0, 0.0, 0.0],
+                    "mtst": mtst,
+                },
+            ),
+            never_trades("momentum_baseline"),
+        )
+        for name, seed, mtst in (
+            ("run_a", 42, [0.1, 0.2, 0.3]),
+            ("run_b", 142, [0.2, 0.1, 0.4]),
+        )
+    ]
+
+
+def test_a_baseline_that_never_trades_is_not_reported_as_drift(tmp_path, capsys):
+    """The regression: undefined everywhere must not date a current study."""
+    runs = _seed_study(
+        tmp_path,
+        {"run_a": [-0.01, -0.02, -0.03], "run_b": [-0.01, -0.02, -0.03]},
+    )
+    out = tmp_path / "diag"
+    assert wf_diagnostics.main([str(r) for r in runs] + ["--out", str(out)]) == 0
+
+    printed = capsys.readouterr().out
+    assert "predate the baseline scoring fix" not in printed
+
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    assert payload["legacy_baseline_scoring"] == []
+    # Still current artifacts: the false banner was the only thing wrong.
+    assert payload["metric_schema"] == wf_diagnostics.SCHEMA_CURRENT
+    assert payload["skipped_metrics"] == []
+
+    # And the metrics really are undefined rather than zero, or this proves
+    # nothing about the case it is named for.
+    momentum = payload["summary"]["per_model"]["momentum_baseline"]
+    for metric in walkforward.NULLABLE_METRICS:
+        assert momentum[metric]["across_runs"]["std"] is None
+        assert all(fold["std"] is None for fold in momentum[metric]["per_fold"])
+
+
+def test_a_baseline_that_moved_is_still_caught_beside_an_undefined_one(tmp_path):
+    """The detector is narrowed, not switched off.
+
+    Same two runs, but the majority baseline's net return differs between them —
+    impossible for a rule with no fitted parameters on identical data, and still
+    reported — while the never-trading momentum baseline is not.
+    """
+    runs = _seed_study(
+        tmp_path,
+        {"run_a": [-0.01, -0.02, -0.03], "run_b": [-0.05, -0.02, -0.03]},
+    )
+    summary = wf_diagnostics.aggregate([wf_diagnostics.load_run(r) for r in runs])
+
+    assert wf_diagnostics.deterministic_baseline_drift(summary) == ["majority_baseline"]
+
+
 # --- metric schema: narrow legacy tolerance, everything else fails closed -------
 #
 # The tempting implementation is "aggregate whichever metrics are present in

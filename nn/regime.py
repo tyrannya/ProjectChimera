@@ -510,12 +510,35 @@ def validate_report_schema(report: Mapping[str, Any], where: str) -> str:
     )
 
 
-#: Fields the corrected evaluator emits that a pre-correction run never did.
+#: The exact trading keys a pre-correction ``walkforward.json`` recorded.
 #:
-#: Reproducible from persisted predictions, but absent from a legacy artifact,
-#: so they are dropped from the *recomputed* side when binding one — there is
-#: nothing on the recorded side to compare them against.
-_CURRENT_ONLY_TRADING_METRICS = ("per_trade_sharpe",)
+#: A positive contract, deliberately, rather than a blacklist of the fields the
+#: correction added. The blacklist this replaces named ``per_trade_sharpe`` and
+#: missed ``per_trade_sharpe_reason``, so the recomputed legacy view carried a
+#: key no old artifact has and *every* genuine pre-correction run failed to
+#: bind — and the next field the evaluator gains would have failed the same way.
+#: Selecting the historical keys cannot fail like that: a new field is excluded
+#: by not being named here.
+#:
+#: Read off ``nn.evaluate.trading_metrics`` at commit 10a51ae, the last revision
+#: before the metric correction — both its zero-trade and its traded return path
+#: emitted exactly these twelve — and confirmed against every ``walkforward.json``
+#: committed under ``artifacts/walkforward/``, which carry this key set and no
+#: other. A test pins both statements.
+LEGACY_TRADING_KEYS = (
+    "n_trades",
+    "net_return",
+    "gross_return",
+    "total_costs",
+    "avg_trade",
+    "win_rate",
+    "profit_factor",
+    "sharpe",
+    "max_drawdown",
+    "exposure",
+    "turnover",
+    "cost_per_trade",
+)
 
 
 def legacy_sharpe(trade_returns: np.ndarray, horizon: int, candles_per_year: float) -> float:
@@ -563,19 +586,33 @@ def _as_legacy_view(
     """Recast a freshly recomputed report into the pre-correction schema.
 
     Binding a legacy artifact means comparing like with like. The recorded side
-    carries ``sharpe`` and a differently-computed ``max_drawdown`` and lacks
-    ``per_trade_sharpe``; the recomputed side is the other way round. Rather
-    than delete every field whose definition changed — which would quietly
-    stop checking them — the two metrics that *can* be rebuilt from the
+    carries ``sharpe`` and a differently-computed ``max_drawdown`` and none of
+    the fields the correction added; the recomputed side is the other way round.
+    Rather than delete every field whose definition changed — which would
+    quietly stop checking them — the two metrics that *can* be rebuilt from the
     persisted trades are rebuilt under their old definitions and compared.
+
+    The result is then **selected down to** :data:`LEGACY_TRADING_KEYS`, the
+    shape a pre-correction run actually wrote, instead of having the known-new
+    fields removed from it. Removing them is a list that has to be kept in step
+    with the evaluator forever, and was already one field behind.
+
+    Only the recomputed side is reshaped. The recorded side keeps every key it
+    has, so an artifact carrying a field its generation never wrote fails the
+    comparison rather than having it dropped.
     """
     view = {key: value for key, value in report.items() if key != "trading"}
-    trading = dict(report.get("trading") or {})
-    for field in (*NON_REPRODUCIBLE_TRADING_METRICS, *_CURRENT_ONLY_TRADING_METRICS):
-        trading.pop(field, None)
-    trading["sharpe"] = round(legacy_sharpe(trade_returns, horizon, candles_per_year), 4)
-    trading["max_drawdown"] = round(legacy_max_drawdown(trade_returns), 4)
-    view["trading"] = trading
+    rebuilt = dict(report.get("trading") or {})
+    rebuilt["sharpe"] = round(legacy_sharpe(trade_returns, horizon, candles_per_year), 4)
+    rebuilt["max_drawdown"] = round(legacy_max_drawdown(trade_returns), 4)
+    absent = [key for key in LEGACY_TRADING_KEYS if key not in rebuilt]
+    if absent:
+        raise RegimeDataError(
+            f"the recomputed report cannot be cast to the pre-correction schema: "
+            f"{absent} are absent from it. Comparing what is left would check less "
+            "than the artifact recorded"
+        )
+    view["trading"] = {key: rebuilt[key] for key in LEGACY_TRADING_KEYS}
     return view
 
 

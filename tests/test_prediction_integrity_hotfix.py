@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,8 @@ from chimera.contracts import LONG_IDX, SHORT_IDX, TargetSpec
 from nn import evaluate as ev
 from nn import regime
 from nn.regime import RegimeDataError, direction_attribution, load_predictions
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 def _prediction_frame(*, seed: int = 42) -> pd.DataFrame:
@@ -288,39 +291,141 @@ def _legacy_prediction_frame() -> pd.DataFrame:
     )
 
 
-def _legacy_artifact(frame: pd.DataFrame) -> dict:
-    """A walkforward.json in the exact pre-correction schema.
+#: The exact trading keys a pre-correction ``walkforward.json`` carries.
+#:
+#: Stated here as a literal, independently of
+#: :data:`nn.regime.LEGACY_TRADING_KEYS`, and read off
+#: ``nn.evaluate.trading_metrics`` at commit 10a51ae — the last revision before
+#: the metric correction. A fixture that builds its "old" report by taking
+#: today's report and removing what looks new inherits every field nobody
+#: remembered to remove, on *both* sides of the comparison, so the binding test
+#: passes while the binding is broken. That is not hypothetical: it is how
+#: `per_trade_sharpe_reason` reached the recomputed legacy view unnoticed.
+HISTORICAL_TRADING_KEYS = (
+    "n_trades",
+    "net_return",
+    "gross_return",
+    "total_costs",
+    "avg_trade",
+    "win_rate",
+    "profit_factor",
+    "sharpe",
+    "max_drawdown",
+    "exposure",
+    "turnover",
+    "cost_per_trade",
+)
 
-    Its trading report is built by taking the current evaluator's output and
-    putting it back into the old shape: `sharpe` from the trade-capacity
-    formula, `max_drawdown` from the pre-fix peak, and no candle-level fields.
-    That is what those runs actually contain.
+
+def _historical_trading(
+    trade_returns: np.ndarray,
+    spec: TargetSpec,
+    rows: np.ndarray,
+    candles_per_year: float = 24 * 365,
+) -> dict:
+    """The trading block the pre-correction evaluator wrote, computed here.
+
+    Transcribed from ``nn.evaluate.trading_metrics`` at commit 10a51ae: `sharpe`
+    annualised by ``candles_per_year / horizon``, `max_drawdown` taking its
+    running peak from the first completed trade, and ten other fields whose
+    formulas have not changed since. Deliberately calls neither the current
+    evaluator's aggregation nor ``nn.regime``'s legacy reconstructions — those
+    are the code under test, and a fixture that calls them tests nothing.
+
+    Only the traded path is reproduced; the caller asserts there are trades.
     """
-    spec = TargetSpec()
+    horizon = spec.horizon
+    cost = spec.cost_threshold
+    n_trades = len(trade_returns)
+    assert n_trades > 1, "the fixture must produce a measurable legacy Sharpe"
+
+    equity = np.cumprod(1.0 + trade_returns)
+    peak = np.maximum.accumulate(equity)
+    max_drawdown = float((1.0 - equity / peak).max())
+
+    wins = trade_returns[trade_returns > 0]
+    losses = trade_returns[trade_returns < 0]
+    gross_profit = float(wins.sum())
+    gross_loss = float(-losses.sum())
+
+    std = float(trade_returns.std(ddof=1))
+    trades_per_year = candles_per_year / horizon
+    sharpe = float(trade_returns.mean() / std * np.sqrt(trades_per_year)) if std > 0 else 0.0
+    covered_rows = int(rows[-1] - rows[0] + 1)
+
+    trading = {
+        "n_trades": n_trades,
+        "net_return": round(float(equity[-1] - 1.0), 6),
+        "gross_return": round(float(trade_returns.sum() + n_trades * cost), 6),
+        "total_costs": round(n_trades * cost, 6),
+        "avg_trade": round(float(trade_returns.mean()), 6),
+        "win_rate": round(len(wins) / n_trades, 4),
+        "profit_factor": (
+            round(gross_profit / gross_loss, 4) if gross_loss > 0 else float("inf")
+        ),
+        "sharpe": round(sharpe, 4),
+        "max_drawdown": round(max_drawdown, 4),
+        "exposure": round(min(1.0, n_trades * horizon / covered_rows), 4),
+        "turnover": round(2.0 * n_trades, 1),
+        "cost_per_trade": round(cost, 6),
+    }
+    assert tuple(trading) == HISTORICAL_TRADING_KEYS
+    return trading
+
+
+def _legacy_trades(frame: pd.DataFrame, spec: TargetSpec) -> tuple[np.ndarray, np.ndarray]:
+    """The trades a pre-correction run scored, and the rows it scored them on.
+
+    ``signals_from_proba`` and ``realised_trades`` are byte-identical to their
+    10a51ae versions, so reading the trades off the current module is reading
+    what the old evaluator saw. Only the aggregation over them changed.
+    """
     ordered = frame.sort_values("row_index")
     proba = ordered[["p_short", "p_hold", "p_long"]].to_numpy(dtype=np.float64)
-    future_return = ordered["future_return"].to_numpy(dtype=np.float64)
     row_index = ordered["row_index"].to_numpy(dtype=np.int64)
+    _, _, trade_returns = ev.realised_trades(
+        ev.signals_from_proba(proba, 0.50),
+        ordered["future_return"].to_numpy(dtype=np.float64),
+        spec,
+        row_index=row_index,
+    )
+    return trade_returns, row_index
 
-    report = ev.evaluate(
-        proba,
+
+def _evaluator_report(frame: pd.DataFrame, spec: TargetSpec, row_index: np.ndarray) -> dict:
+    """What the *current* evaluator makes of the same rows: the recast's input."""
+    ordered = frame.sort_values("row_index")
+    return ev.evaluate(
+        ordered[["p_short", "p_hold", "p_long"]].to_numpy(dtype=np.float64),
         ordered["true_target"].to_numpy(dtype=np.int64),
-        future_return,
+        ordered["future_return"].to_numpy(dtype=np.float64),
         spec,
         0.50,
         row_index=row_index,
     )
-    _, _, trade_returns = ev.realised_trades(
-        ev.signals_from_proba(proba, 0.50), future_return, spec, row_index=row_index
-    )
-    assert len(trade_returns) >= 2, "the fixture must produce a measurable legacy Sharpe"
 
-    trading = dict(report["trading"])
-    for field in (*regime.NON_REPRODUCIBLE_TRADING_METRICS, "per_trade_sharpe"):
-        trading.pop(field, None)
-    trading["sharpe"] = round(regime.legacy_sharpe(trade_returns, spec.horizon, 24 * 365), 4)
-    trading["max_drawdown"] = round(regime.legacy_max_drawdown(trade_returns), 4)
-    report = {**report, "trading": trading}
+
+def _legacy_artifact(frame: pd.DataFrame) -> dict:
+    """A walkforward.json in the exact pre-correction schema.
+
+    Its trading block is built key by key from the historical formulas, never by
+    editing the current evaluator's output. The shape of an old artifact is a
+    fact about old code; a fixture that reads it off new code cannot notice when
+    the two stop agreeing, which is the whole failure this replaces.
+    """
+    spec = TargetSpec()
+    ordered = frame.sort_values("row_index")
+    proba = ordered[["p_short", "p_hold", "p_long"]].to_numpy(dtype=np.float64)
+    trade_returns, row_index = _legacy_trades(frame, spec)
+
+    # `classification_metrics` is byte-identical to its 10a51ae version, so this
+    # half of the report is unchanged between the two generations.
+    report = {
+        "classification": ev.classification_metrics(
+            proba, ordered["true_target"].to_numpy(dtype=np.int64), 0.50
+        ),
+        "trading": _historical_trading(trade_returns, spec, row_index),
+    }
 
     return {
         "dataset": {"target_spec": spec.to_dict(), "timeframe": "1h"},
@@ -340,6 +445,69 @@ def _legacy_artifact(frame: pd.DataFrame) -> dict:
     }
 
 
+def test_the_legacy_key_contract_is_what_the_committed_artifacts_carry():
+    """The historical schema, established from old artifacts and old code.
+
+    `nn.regime` reconstructs a shape no current code produces, so the shape has
+    to be pinned to something that is not current code. Both anchors are checked
+    here: the literal transcribed from commit 10a51ae, and every pre-correction
+    `walkforward.json` this repository committed.
+    """
+    assert regime.LEGACY_TRADING_KEYS == HISTORICAL_TRADING_KEYS
+
+    checked = 0
+    for artifact in sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json")):
+        payload = json.loads(artifact.read_text())
+        for fold in payload["folds"]:
+            for model, report in fold["outer_validation"].items():
+                trading = report["trading"]
+                # Only the pre-correction generation makes a claim about this
+                # contract, and `sharpe` is what dates one.
+                if "sharpe" not in trading:
+                    continue
+                assert set(trading) == set(HISTORICAL_TRADING_KEYS), (
+                    f"{artifact} fold {fold.get('fold')} {model} carries the "
+                    "pre-correction field but not the pre-correction schema "
+                    "nn.regime reconstructs"
+                )
+                checked += 1
+    assert checked, "the committed pre-correction runs are part of this contract"
+
+
+def test_the_legacy_view_carries_exactly_the_historical_trading_keys():
+    """The A1 regression: no field the correction added may survive the recast.
+
+    `per_trade_sharpe_reason` did, because the recast removed known-new fields by
+    name and that name was missing from the list — so the recomputed side carried
+    a key no old artifact has, and every genuine pre-correction run failed to
+    bind. Selecting the historical keys is what makes the next added field a
+    non-event.
+    """
+    frame = _legacy_prediction_frame()
+    spec = TargetSpec()
+    trade_returns, row_index = _legacy_trades(frame, spec)
+    current = _evaluator_report(frame, spec, row_index)
+    assert "per_trade_sharpe_reason" in current["trading"], (
+        "this test is about a current-only field reaching the legacy view; the "
+        "evaluator must still emit one"
+    )
+
+    view = regime._as_legacy_view(current, trade_returns, spec.horizon, 24 * 365)
+    assert tuple(view["trading"]) == HISTORICAL_TRADING_KEYS
+
+
+def test_a_field_the_evaluator_gains_later_does_not_reach_the_legacy_view():
+    """A whitelist cannot fall behind the evaluator; the blacklist did."""
+    frame = _legacy_prediction_frame()
+    spec = TargetSpec()
+    trade_returns, row_index = _legacy_trades(frame, spec)
+    current = _evaluator_report(frame, spec, row_index)
+    current["trading"]["a_metric_added_next_year"] = 1.0
+
+    view = regime._as_legacy_view(current, trade_returns, spec.horizon, 24 * 365)
+    assert tuple(view["trading"]) == HISTORICAL_TRADING_KEYS
+
+
 def test_a_genuine_legacy_run_still_binds_to_its_predictions(tmp_path):
     """The regression: this is what the v2/v3 directories look like."""
     frame = _legacy_prediction_frame()
@@ -347,7 +515,9 @@ def test_a_genuine_legacy_run_still_binds_to_its_predictions(tmp_path):
     path = _write_run(tmp_path, frame, artifact)
 
     recorded = artifact["folds"][0]["outer_validation"]["mtst"]["trading"]
-    assert "sharpe" in recorded and "annualised_sharpe" not in recorded
+    # Exactly the historical keys: nothing the correction added is required for
+    # this to bind, which is what makes the old runs re-auditable.
+    assert tuple(recorded) == HISTORICAL_TRADING_KEYS
     assert (
         regime.validate_report_schema(
             artifact["folds"][0]["outer_validation"]["mtst"], "fixture"
@@ -357,6 +527,21 @@ def test_a_genuine_legacy_run_still_binds_to_its_predictions(tmp_path):
 
     loaded = load_predictions(path, sealed_test_start=100)
     assert len(loaded) == len(frame)
+
+
+def test_a_legacy_artifact_carrying_a_current_only_field_fails_closed(tmp_path):
+    """Neither generation: a recorded report with `sharpe` *and* a new field.
+
+    The recomputed side is exactly the twelve historical keys, so a thirteenth on
+    the recorded side is refused rather than dropped to make the two match.
+    """
+    frame = _legacy_prediction_frame()
+    artifact = _legacy_artifact(frame)
+    artifact["folds"][0]["outer_validation"]["mtst"]["trading"]["per_trade_sharpe"] = -0.2
+    path = _write_run(tmp_path, frame, artifact)
+
+    with pytest.raises(RegimeDataError, match="does not reproduce"):
+        load_predictions(path, sealed_test_start=100)
 
 
 def test_a_legacy_run_with_a_tampered_net_return_still_fails_to_bind(tmp_path):

@@ -1146,6 +1146,21 @@ def candidate_hypotheses(
     ]
 
 
+def _moved(std: float | None) -> bool:
+    """Whether a recorded spread is evidence that a number moved.
+
+    ``None`` is not. :func:`_spread` reports ``std`` as ``None`` when a metric is
+    defined in no observation at all, and a baseline that never trades has no
+    Sharpe to move in any run. Reading that as non-zero spread — which
+    ``None != 0.0`` did — states that artifacts predate the baseline scoring fix
+    on the strength of a measurement nobody ever took.
+
+    Undefined is absence of evidence, not evidence of drift. A measured zero
+    stays a measured zero, and a measured non-zero spread is still drift.
+    """
+    return std is not None and std != 0.0
+
+
 def deterministic_baseline_drift(summary: dict[str, Any]) -> list[str]:
     """Deterministic baselines whose reported numbers moved across seeds.
 
@@ -1153,13 +1168,15 @@ def deterministic_baseline_drift(summary: dict[str, Any]) -> list[str]:
     artifacts rather than describing them: they were produced when every model —
     baselines included — was scored at the threshold selected for the *model*, so
     a rule with no fitted parameters inherited the model's seed dependence.
+
+    Only *measured* spread counts — see :func:`_moved`.
     """
     drifted = []
     for name in DETERMINISTIC_BASELINES:
         stats = summary.get("per_model", {}).get(name, {})
         moved = any(
-            metric.get("across_runs", {}).get("std", 0.0) != 0.0
-            or any(fold.get("std", 0.0) != 0.0 for fold in metric.get("per_fold", []))
+            _moved(metric.get("across_runs", {}).get("std"))
+            or any(_moved(fold.get("std")) for fold in metric.get("per_fold", []))
             for metric in stats.values()
             if isinstance(metric, dict)
         )
