@@ -16,6 +16,13 @@ only 9/20, beat buy-and-hold in 0/20, and had mean outer net return -0.019272.
 The sealed test was not evaluated. That is the finding, not a defect to be corrected
 by pointing somewhere else.
 
+**The current P2a model-family benchmark is
+[`benchmark/btc_p2a_comparison/`](benchmark/btc_p2a_comparison/).** It is a separate
+CURRENT result for the question "does model family change what can be extracted from
+the frozen OHLCV14 information set?" It does not replace v4 as the underlying BTC
+research baseline. P2a reuses the already-observed outer folds, so it is adaptive
+research evidence rather than pristine out-of-sample evidence.
+
 ## Status table
 
 `status` is one of **CURRENT** (the authoritative result for its question),
@@ -30,6 +37,12 @@ as evidence of what an earlier generation did, not as a result).
 | `walkforward/btc_nested_v4_seed_242` | v4 | CURRENT | `nn.walkforward` | itself (seed 242) | n/a | current |
 | `walkforward/btc_nested_v4_seed_342` | v4 | CURRENT | `nn.walkforward` | itself (seed 342) | n/a | current |
 | `walkforward/btc_nested_v4_seed_442` | v4 | CURRENT | `nn.walkforward` | itself (seed 442) | n/a | current |
+| `benchmark/btc_p2a_comparison` | P2a | CURRENT | `nn.benchmark_compare` | `benchmark/btc_p2a_seed_{42,142,242,342,442}` + frozen v4 MTST | **yes** | current |
+| `benchmark/btc_p2a_seed_42` | P2a | CURRENT | `nn.benchmark` | itself (seed 42) | n/a | current |
+| `benchmark/btc_p2a_seed_142` | P2a | CURRENT | `nn.benchmark` | itself (seed 142) | n/a | current |
+| `benchmark/btc_p2a_seed_242` | P2a | CURRENT | `nn.benchmark` | itself (seed 242) | n/a | current |
+| `benchmark/btc_p2a_seed_342` | P2a | CURRENT | `nn.benchmark` | itself (seed 342) | n/a | current |
+| `benchmark/btc_p2a_seed_442` | P2a | CURRENT | `nn.benchmark` | itself (seed 442) | n/a | current |
 | `diagnostics/btc_regimes_v3` | v3 | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v3_seed_{42,142,242,342,442}` | **no** | pre-correction |
 | `diagnostics/btc_regimes_v2` | v2 | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v2_seed_{42,142,242,342,442}` | **no** | pre-correction |
 | `walkforward/btc_nested_v1` | v1 | HISTORICAL | `nn.walkforward` | itself (seed 42) | n/a | pre-correction |
@@ -73,6 +86,43 @@ the actual predictions rather than reconstructed from an aggregate report.
 the completed v4 run/diagnostic freeze. It covers the generated source-run and
 diagnostic evidence files; status/index documentation added by the evidence commit is
 not part of that original run-output manifest.
+
+## Current P2a model-family evidence
+
+P2a asks whether model complexity changes what can be extracted from the exact same
+OHLCV14 information set. The simple models receive the same 64×14 windows as MTST,
+flattened only for the tabular estimators; the frozen v4 MTST artifacts are read only.
+The same research contract, research-input fingerprint, Styx boundary, fold geometry,
+target semantics, costs, threshold rule and outer rows were required before
+aggregation.
+
+Headline mean outer net return after costs:
+
+- LogisticRegression: **-0.0558**
+- LightGBM: **-0.0013**
+- XGBoost: **+0.0070**
+- frozen MTST v4: **-0.0193**
+- CASH: **0.0000**
+- buy-and-hold reference: **+0.6063**
+
+XGBoost is the only tested model with positive mean net return after fees/slippage in
+this checkpoint, but that is not a live-profitability claim. The effect is concentrated
+across only four unique temporal outer folds and P2a was designed after prior outer
+results were already observed.
+
+The five simple-model seed directories are preserved because the P2a protocol generated
+them, but their deterministic configurations produced zero seed dispersion. Repeated
+seed×fold rows therefore are **not independent temporal evidence**: the four temporal
+folds are the distinct time regimes for the deterministic models. Later checkpoints
+must report temporal-fold evidence separately from stochastic training-seed dispersion.
+
+Each P2a run preserves `benchmark.json`, `benchmark.md`, and
+`outer_predictions.parquet`. The comparison recomputed 80 outer reports from the
+persisted per-sample predictions and all matched. The sealed test remained unopened.
+
+`artifacts/btc_p2a_SHA256SUMS.txt` freezes the generated P2a run and comparison evidence
+files committed with this checkpoint. The index documentation itself is intentionally
+outside that generated-output manifest.
 
 ## What "pre-correction" means
 
