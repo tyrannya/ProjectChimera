@@ -164,6 +164,15 @@ python -m nn.train --dataset DATASET --validation-only --epochs 30
 It reports on validation and leaves the test split sealed. See
 [the research workflow](docs/ml_pipeline.md#the-research-workflow).
 
+The sealed block begins at one immutable UTC instant —
+`2025-08-27T23:00:00+00:00`, committed as `nn.dataset.SEALED_TEST_START_UTC` —
+resolved against the dataset's own timestamps. Everything before it is research;
+everything at or after it is sealed. Appending candles cannot move it, and no CLI
+flag, environment variable or dataset length may either. The row it resolves to
+(48,217 on the canonical BTC dataset) is metadata about that dataset, recorded
+beside the anchor in every artifact, and is not the contract. See
+[where the sealed test block begins](docs/ml_pipeline.md#where-the-sealed-test-block-begins).
+
 ### 4. Research: experiment grids and walk-forward validation
 
 ```bash
