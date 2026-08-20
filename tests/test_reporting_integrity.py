@@ -16,6 +16,7 @@ the numbers were never the thing that misled anyone.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -29,12 +30,30 @@ REPO = Path(__file__).resolve().parents[1]
 ARTIFACTS = REPO / "artifacts"
 INDEX = ARTIFACTS / "README.md"
 
-#: The current generation's aggregate.
+#: Stable identifiers for research questions/checkpoints. CURRENT is unique
+#: per question, not across the index: two rows answering different questions
+#: may both be CURRENT at once.
+BASELINE_QUESTION = "btc_ohlcv14_mtst_baseline"
+P2A_QUESTION = "btc_p2a_model_family_benchmark"
+
+#: Generations produced after the reporting-integrity metric-semantics fix,
+#: whose `sharpe`/`max_drawdown` are directly comparable across runs.
+POST_CORRECTION_GENERATIONS = {"v4", "P2a"}
+
+#: The current generation's aggregate for the baseline research question.
 CURRENT_BASELINE = "diagnostics/btc_regimes_v4"
 
 #: Its own committed source runs, each independently marked CURRENT.
 CURRENT_SOURCE_RUNS = {
     f"walkforward/btc_nested_v4_seed_{seed}" for seed in (42, 142, 242, 342, 442)
+}
+
+#: The current generation's aggregate for the P2a model-family question.
+CURRENT_P2A = "benchmark/btc_p2a_comparison"
+
+#: Its own committed source runs, each independently marked CURRENT.
+CURRENT_P2A_SOURCE_RUNS = {
+    f"benchmark/btc_p2a_seed_{seed}" for seed in (42, 142, 242, 342, 442)
 }
 
 #: The prior generation's aggregate, whose own source runs are absent.
@@ -227,16 +246,192 @@ def _index_rows() -> list[dict[str, str]]:
     return [row for row in rows if row.get("status")]
 
 
-def test_the_index_names_exactly_one_current_generation():
-    """CURRENT is per-generation, not per-row: the aggregate and its own
-    committed source runs share it, matching each source run's own
-    `STATUS.md`. No other generation may carry it.
+def _current_generation_by_question(rows: list[dict[str, str]]) -> dict[str, str]:
+    """The single CURRENT generation for each research question in `rows`.
+
+    CURRENT is scoped per research question, not globally unique across the
+    index: two different questions may each carry their own CURRENT
+    generation at once. A single question may still only ever have one.
+    """
+    by_question: dict[str, set[str]] = {}
+    for row in rows:
+        if row["status"] != "CURRENT":
+            continue
+        by_question.setdefault(row["research question"], set()).add(row["generation"])
+    for question, generations in by_question.items():
+        assert (
+            len(generations) == 1
+        ), f"{question!r} has more than one CURRENT generation: {sorted(generations)}"
+    return {question: next(iter(gens)) for question, gens in by_question.items()}
+
+
+_SOURCE_RUN_SHORTHAND = re.compile(r"([\w/]+_seed_)\{([\d,]+)\}")
+
+
+def _expected_source_run_paths(cell: str) -> set[str] | None:
+    """Expand a `source runs` cell's `prefix_seed_{a,b,c}` shorthand.
+
+    Returns `None` for a cell with nothing to expand (e.g. a source run's own
+    `itself (seed 42)` cell).
+    """
+    match = _SOURCE_RUN_SHORTHAND.search(cell)
+    if match is None:
+        return None
+    prefix, numbers = match.groups()
+    return {f"{prefix}{n}" for n in numbers.split(",")}
+
+
+def _validate_current_aggregates(rows: list[dict[str, str]]) -> None:
+    """A CURRENT aggregate's committed source runs must exist, be CURRENT
+    themselves, and answer the same research question as the aggregate they
+    back.
+    """
+    by_path = {row["path"]: row for row in rows}
+    for row in rows:
+        if row["status"] != "CURRENT" or row["source runs present"] != "yes":
+            continue
+        expected = _expected_source_run_paths(row["source runs"])
+        if expected is None:
+            continue
+        for source_path in expected:
+            source_row = by_path.get(source_path)
+            assert (
+                source_row is not None
+            ), f"{row['path']} names source run {source_path}, which is not in the index"
+            assert source_row["status"] == "CURRENT", (
+                f"{row['path']} is CURRENT but its source run {source_path} is "
+                f"{source_row['status']}"
+            )
+            assert source_row["research question"] == row["research question"], (
+                f"{source_path} backs {row['path']} but answers a different research "
+                "question"
+            )
+
+
+def test_the_index_names_exactly_one_current_generation_per_research_question():
+    """CURRENT is scoped per research question, not globally unique across the
+    index: the aggregate and its own committed source runs for a question
+    share its CURRENT generation, matching each source run's own `STATUS.md`.
+    Two different questions may each carry their own CURRENT generation at
+    once; a single question may still only ever have one.
     """
     rows = _index_rows()
     current = [row for row in rows if row["status"] == "CURRENT"]
     assert current, "expected at least one CURRENT entry"
-    assert {row["path"] for row in current} == {CURRENT_BASELINE, *CURRENT_SOURCE_RUNS}
-    assert {row["generation"] for row in current} == {"v4"}
+
+    assert _current_generation_by_question(rows) == {
+        BASELINE_QUESTION: "v4",
+        P2A_QUESTION: "P2a",
+    }
+
+    def paths_for(question: str) -> set[str]:
+        return {row["path"] for row in current if row["research question"] == question}
+
+    assert paths_for(BASELINE_QUESTION) == {CURRENT_BASELINE, *CURRENT_SOURCE_RUNS}
+    assert paths_for(P2A_QUESTION) == {CURRENT_P2A, *CURRENT_P2A_SOURCE_RUNS}
+
+
+def test_current_aggregates_are_backed_by_their_committed_source_runs():
+    _validate_current_aggregates(_index_rows())
+
+
+def _row(
+    path: str,
+    generation: str,
+    question: str,
+    status: str,
+    source_runs_present: str = "n/a",
+    source_runs: str = "itself",
+) -> dict[str, str]:
+    return {
+        "path": path,
+        "generation": generation,
+        "research question": question,
+        "status": status,
+        "source runs present": source_runs_present,
+        "source runs": source_runs,
+    }
+
+
+def test_two_competing_current_generations_for_the_same_question_is_rejected():
+    """The failure this scoping exists to prevent: a new generation marked
+    CURRENT for a question whose old generation was never demoted.
+    """
+    rows = [
+        _row("diagnostics/btc_regimes_v4", "v4", BASELINE_QUESTION, "CURRENT", "yes"),
+        _row("diagnostics/btc_regimes_v5", "v5", BASELINE_QUESTION, "CURRENT", "yes"),
+    ]
+    with pytest.raises(AssertionError):
+        _current_generation_by_question(rows)
+
+
+def test_two_unrelated_current_questions_are_allowed():
+    """The behaviour the old, globally-unique-CURRENT test forbade."""
+    rows = [
+        _row("diagnostics/btc_regimes_v4", "v4", BASELINE_QUESTION, "CURRENT", "yes"),
+        _row("benchmark/btc_p2a_comparison", "P2a", P2A_QUESTION, "CURRENT", "yes"),
+    ]
+    assert _current_generation_by_question(rows) == {
+        BASELINE_QUESTION: "v4",
+        P2A_QUESTION: "P2a",
+    }
+
+
+def test_a_superseded_generation_does_not_count_as_current():
+    rows = [
+        _row("diagnostics/btc_regimes_v4", "v4", BASELINE_QUESTION, "CURRENT", "yes"),
+        _row("diagnostics/btc_regimes_v3", "v3", BASELINE_QUESTION, "SUPERSEDED", "no"),
+    ]
+    assert _current_generation_by_question(rows) == {BASELINE_QUESTION: "v4"}
+
+
+def test_a_current_aggregate_missing_a_source_run_is_rejected():
+    rows = [
+        _row(
+            "diagnostics/btc_regimes_v4",
+            "v4",
+            BASELINE_QUESTION,
+            "CURRENT",
+            "yes",
+            "walkforward/btc_nested_v4_seed_{42,142}",
+        ),
+        _row("walkforward/btc_nested_v4_seed_42", "v4", BASELINE_QUESTION, "CURRENT"),
+        # seed 142 is missing from the index entirely.
+    ]
+    with pytest.raises(AssertionError):
+        _validate_current_aggregates(rows)
+
+
+def test_a_source_run_status_disagreeing_with_its_aggregate_is_rejected():
+    rows = [
+        _row(
+            "diagnostics/btc_regimes_v4",
+            "v4",
+            BASELINE_QUESTION,
+            "CURRENT",
+            "yes",
+            "walkforward/btc_nested_v4_seed_{42}",
+        ),
+        _row("walkforward/btc_nested_v4_seed_42", "v4", BASELINE_QUESTION, "HISTORICAL"),
+    ]
+    with pytest.raises(AssertionError):
+        _validate_current_aggregates(rows)
+
+
+def test_a_source_run_answering_a_different_question_is_rejected():
+    rows = [
+        _row(
+            "benchmark/btc_p2a_comparison",
+            "P2a",
+            P2A_QUESTION,
+            "CURRENT",
+            "yes",
+            "benchmark/btc_p2a_seed_{42}",
+        ),
+        _row("benchmark/btc_p2a_seed_42", "P2a", BASELINE_QUESTION, "CURRENT"),
+    ]
+    with pytest.raises(AssertionError):
+        _validate_current_aggregates(rows)
 
 
 def test_no_legacy_generation_is_labelled_current():
@@ -278,7 +473,7 @@ def test_the_index_records_that_committed_artifacts_predate_the_metric_change():
     rows = _index_rows()
     assert rows
     for row in rows:
-        if row["generation"] == "v4":
+        if row["generation"] in POST_CORRECTION_GENERATIONS:
             continue
         assert row["metric semantics"] == "pre-correction", row["path"]
     text = INDEX.read_text()

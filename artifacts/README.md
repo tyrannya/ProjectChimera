@@ -29,27 +29,33 @@ research evidence rather than pristine out-of-sample evidence.
 **SUPERSEDED** (a later generation answers the same question), or **HISTORICAL** (kept
 as evidence of what an earlier generation did, not as a result).
 
-| path | generation | status | produced by | source runs | source runs present | metric semantics |
-| --- | --- | --- | --- | --- | --- | --- |
-| `diagnostics/btc_regimes_v4` | v4 | CURRENT | `nn.wf_diagnostics` | `walkforward/btc_nested_v4_seed_{42,142,242,342,442}` | **yes** | current |
-| `walkforward/btc_nested_v4_seed_42` | v4 | CURRENT | `nn.walkforward` | itself (seed 42) | n/a | current |
-| `walkforward/btc_nested_v4_seed_142` | v4 | CURRENT | `nn.walkforward` | itself (seed 142) | n/a | current |
-| `walkforward/btc_nested_v4_seed_242` | v4 | CURRENT | `nn.walkforward` | itself (seed 242) | n/a | current |
-| `walkforward/btc_nested_v4_seed_342` | v4 | CURRENT | `nn.walkforward` | itself (seed 342) | n/a | current |
-| `walkforward/btc_nested_v4_seed_442` | v4 | CURRENT | `nn.walkforward` | itself (seed 442) | n/a | current |
-| `benchmark/btc_p2a_comparison` | P2a | CURRENT | `nn.benchmark_compare` | `benchmark/btc_p2a_seed_{42,142,242,342,442}` + frozen v4 MTST | **yes** | current |
-| `benchmark/btc_p2a_seed_42` | P2a | CURRENT | `nn.benchmark` | itself (seed 42) | n/a | current |
-| `benchmark/btc_p2a_seed_142` | P2a | CURRENT | `nn.benchmark` | itself (seed 142) | n/a | current |
-| `benchmark/btc_p2a_seed_242` | P2a | CURRENT | `nn.benchmark` | itself (seed 242) | n/a | current |
-| `benchmark/btc_p2a_seed_342` | P2a | CURRENT | `nn.benchmark` | itself (seed 342) | n/a | current |
-| `benchmark/btc_p2a_seed_442` | P2a | CURRENT | `nn.benchmark` | itself (seed 442) | n/a | current |
-| `diagnostics/btc_regimes_v3` | v3 | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v3_seed_{42,142,242,342,442}` | **no** | pre-correction |
-| `diagnostics/btc_regimes_v2` | v2 | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v2_seed_{42,142,242,342,442}` | **no** | pre-correction |
-| `walkforward/btc_nested_v1` | v1 | HISTORICAL | `nn.walkforward` | itself (seed 42) | n/a | pre-correction |
-| `walkforward/btc_nested_seed_142` | v1 | HISTORICAL | `nn.walkforward` | itself (seed 142) | n/a | pre-correction |
-| `walkforward/btc_nested_seed_242` | v1 | HISTORICAL | `nn.walkforward` | itself (seed 242) | n/a | pre-correction |
-| `walkforward/btc_nested_seed_342` | v1 | HISTORICAL | `nn.walkforward` | itself (seed 342) | n/a | pre-correction |
-| `walkforward/btc_nested_seed_442` | v1 | HISTORICAL | `nn.walkforward` | itself (seed 442) | n/a | pre-correction |
+`research question` names the stable checkpoint identity that `status` is scoped to.
+CURRENT is unique **per research question**, not across the index: two rows answering
+different questions may both be CURRENT at once, because neither one supersedes the
+other. A later generation can only be SUPERSEDED or HISTORICAL relative to an earlier
+one that shares its `research question`.
+
+| path | generation | research question | status | produced by | source runs | source runs present | metric semantics |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `diagnostics/btc_regimes_v4` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.wf_diagnostics` | `walkforward/btc_nested_v4_seed_{42,142,242,342,442}` | **yes** | current |
+| `walkforward/btc_nested_v4_seed_42` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 42) | n/a | current |
+| `walkforward/btc_nested_v4_seed_142` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 142) | n/a | current |
+| `walkforward/btc_nested_v4_seed_242` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 242) | n/a | current |
+| `walkforward/btc_nested_v4_seed_342` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 342) | n/a | current |
+| `walkforward/btc_nested_v4_seed_442` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 442) | n/a | current |
+| `benchmark/btc_p2a_comparison` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark_compare` | `benchmark/btc_p2a_seed_{42,142,242,342,442}` (frozen v4 MTST read, not aggregated) | **yes** | current |
+| `benchmark/btc_p2a_seed_42` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 42) | n/a | current |
+| `benchmark/btc_p2a_seed_142` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 142) | n/a | current |
+| `benchmark/btc_p2a_seed_242` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 242) | n/a | current |
+| `benchmark/btc_p2a_seed_342` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 342) | n/a | current |
+| `benchmark/btc_p2a_seed_442` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 442) | n/a | current |
+| `diagnostics/btc_regimes_v3` | v3 | `btc_ohlcv14_mtst_baseline` | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v3_seed_{42,142,242,342,442}` | **no** | pre-correction |
+| `diagnostics/btc_regimes_v2` | v2 | `btc_ohlcv14_mtst_baseline` | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v2_seed_{42,142,242,342,442}` | **no** | pre-correction |
+| `walkforward/btc_nested_v1` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 42) | n/a | pre-correction |
+| `walkforward/btc_nested_seed_142` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 142) | n/a | pre-correction |
+| `walkforward/btc_nested_seed_242` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 242) | n/a | pre-correction |
+| `walkforward/btc_nested_seed_342` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 342) | n/a | pre-correction |
+| `walkforward/btc_nested_seed_442` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 442) | n/a | pre-correction |
 
 ## Current v4 evidence
 
