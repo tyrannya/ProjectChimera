@@ -35,7 +35,7 @@ from chimera.contracts import ModelMetadata, TargetSpec
 from chimera.features import FeatureSpec
 from nn import experiment, train, walkforward
 from nn.data_pipeline import build_dataset, save_dataset
-from nn.dataset import Split, chronological_split, sealed_test_start, window_indices
+from nn.dataset import SEALED_TEST_START_UTC, Split, chronological_split, window_indices
 from nn.model_def import MTST, MTSTConfig
 from nn.registry import promote, resolve_current, save_model
 from tools.make_sample_data import generate_candles
@@ -87,6 +87,16 @@ def windowed_splits(monkeypatch):
 
 def only_version(models_dir):
     return next(p for p in models_dir.iterdir() if p.is_dir())
+
+
+def boundary_of(data) -> int:
+    """The sealed start row for a loaded dataset, resolved the way a run does."""
+    return data.sealed_boundary().start_row
+
+
+def split_of(data, train_frac: float = 0.70, val_frac: float = 0.15):
+    """The split plan a default run would build for a loaded dataset."""
+    return chronological_split(data.n_rows, boundary_of(data), train_frac, val_frac)
 
 
 # --- 1. validation-only mode leaves test alone --------------------------------
@@ -173,7 +183,7 @@ def test_a_research_artifact_cannot_be_promoted_by_hand(dataset, tmp_path):
 # --- 2. the fitted quantities come from the right rows ------------------------
 def test_the_threshold_is_selected_only_from_validation_rows(dataset, tmp_path, monkeypatch):
     data = train.load_research_data(dataset)
-    plan = chronological_split(data.n_rows, 0.70, 0.15)
+    plan = split_of(data)
     expected_idx = train.prepare_research_windows(
         data, plan.train, plan.validation, 16
     ).idx_val
@@ -196,7 +206,7 @@ def test_the_threshold_is_selected_only_from_validation_rows(dataset, tmp_path, 
 
 def test_the_scaler_is_fitted_only_on_training_rows(dataset, tmp_path, monkeypatch):
     data = train.load_research_data(dataset)
-    plan = chronological_split(data.n_rows, 0.70, 0.15)
+    plan = split_of(data)
 
     fitted: list[np.ndarray] = []
     original = train.StandardScaler.fit
@@ -378,6 +388,13 @@ def test_every_grid_dimension_the_docs_promise_is_wired_up(dataset, tmp_path):
 
 #: Rows in the BTC 1h dataset the default geometry is sized against.
 BTC_ROWS = 56726
+#: Where SEALED_TEST_START_UTC resolves in the canonical BTC 1h dataset of the
+#: current research generation, recorded by the five committed walk-forward
+#: artifacts. Compatibility evidence about that dataset, not the contract — the
+#: contract is the timestamp, and a repair to history before it could move this
+#: number without moving the seal. The planner tests below take a boundary as
+#: given; where it came from is tests/test_sealed_boundary.py's subject.
+BTC_SEALED_START = 48217
 
 
 def plan_defaults(boundary, folds=4):
@@ -420,7 +437,7 @@ def test_outer_validation_blocks_never_overlap():
 
 def test_the_default_step_makes_outer_blocks_contiguous():
     """Back to back, so the reported blocks tile one stretch without overlapping."""
-    folds = plan_defaults(sealed_test_start(BTC_ROWS, 0.70, 0.15))
+    folds = plan_defaults(BTC_SEALED_START)
     for previous, plan in zip(folds, folds[1:]):
         assert plan.outer.start == previous.outer.end
 
@@ -439,7 +456,7 @@ def test_no_fold_fits_on_a_row_that_it_or_a_later_fold_reports():
     The opposite direction is allowed on purpose — a later fold may *train* on an
     earlier fold's outer block, because by then those rows are history.
     """
-    folds = plan_defaults(sealed_test_start(BTC_ROWS, 0.70, 0.15))
+    folds = plan_defaults(BTC_SEALED_START)
     for k, plan in enumerate(folds):
         for later in folds[k:]:
             assert plan.train.end <= later.outer.start
@@ -457,7 +474,7 @@ def test_nested_folds_refuse_a_research_region_that_is_too_short():
 
 def test_the_planner_does_not_quietly_return_fewer_folds_than_asked_for():
     """Failing loudly beats a summary that says four folds and aggregates two."""
-    boundary = sealed_test_start(BTC_ROWS, 0.70, 0.15)
+    boundary = BTC_SEALED_START
     assert len(plan_defaults(boundary, folds=4)) == 4
     with pytest.raises(ValueError, match="lie before the sealed test block"):
         plan_defaults(boundary, folds=40)
@@ -471,7 +488,7 @@ def test_default_fold_sizes_fit_the_research_region(dataset):
     """
     data = train.load_research_data(dataset)
     args = walkforward.build_argparser().parse_args(["--dataset", str(dataset)])
-    boundary = sealed_test_start(data.n_rows, args.train_frac, args.val_frac)
+    boundary = boundary_of(data)
     folds = walkforward.plan_nested_folds(
         boundary, args.folds, *walkforward.resolve_sizes(args, boundary)
     )
@@ -483,11 +500,13 @@ def test_default_fold_sizes_fit_the_research_region(dataset):
 def test_the_default_geometry_for_the_btc_research_region():
     """The exact 4-fold plan for the 56,726-row BTC dataset, pinned row by row.
 
-    The sealed block starts at row 48,217; every number below is under it, and
-    the four outer blocks are disjoint.
+    The sealed block starts at row 48,217 in *that* dataset; every number below
+    is under it, and the four outer blocks are disjoint. Pinned because the fold
+    geometry must not drift, not because the row is the contract — where 48,217
+    comes from is asserted against the anchor in
+    ``tests/test_sealed_boundary.py``.
     """
-    boundary = sealed_test_start(BTC_ROWS, 0.70, 0.15)
-    assert boundary == 48217
+    boundary = BTC_SEALED_START
 
     args = walkforward.build_argparser().parse_args(["--dataset", "x"])
     assert args.folds == 4
@@ -591,7 +610,7 @@ def spied_run(dataset, tmp_path_factory):
     record["out"] = out
     record["data"] = train.load_research_data(dataset)
     record["results"] = json.loads((out / "walkforward.json").read_text())
-    record["boundary"] = sealed_test_start(record["data"].n_rows, 0.70, 0.15)
+    record["boundary"] = boundary_of(record["data"])
     record["plan"] = plan_defaults(record["boundary"], folds=WF_FOLDS)
     return record
 
@@ -930,15 +949,24 @@ def test_the_research_chain_runs_end_to_end(dataset, tmp_path, windowed_splits):
 # "validation", and every name-based check passed.
 #
 # Everything below therefore compares row indices against
-# nn.dataset.sealed_test_start and never looks at a split's name.
+# the resolved sealed boundary and never looks at a split's name.
 
 
-def test_sealed_test_start_agrees_with_the_chronological_split():
-    """One boundary, computed one way, for nn.train and walk-forward alike."""
-    for n_rows in (1000, 1918, 5001, 56726, 123457):
-        assert sealed_test_start(n_rows, 0.70, 0.15) == (
-            chronological_split(n_rows, 0.70, 0.15).test.start
-        )
+def test_the_resolved_boundary_is_where_the_test_split_starts(dataset):
+    """One boundary, resolved one way, for nn.train and walk-forward alike.
+
+    Both sides go through ``ResearchData.sealed_boundary``, and the split plan
+    puts the test block exactly there — so the single-split trainer and the
+    walk-forward planner cannot disagree by a row about where sealed data begins.
+    """
+    data = train.load_research_data(dataset)
+    boundary = data.sealed_boundary()
+
+    assert boundary.anchor == SEALED_TEST_START_UTC
+    for train_frac, val_frac in ((0.70, 0.15), (0.5, 0.4), (0.8, 0.1)):
+        plan = chronological_split(data.n_rows, boundary.start_row, train_frac, val_frac)
+        assert plan.test.start == boundary.start_row
+        assert plan.validation.end == boundary.start_row
 
 
 def test_nested_folds_never_plan_a_row_at_or_beyond_the_boundary():
@@ -950,7 +978,7 @@ def test_nested_folds_never_plan_a_row_at_or_beyond_the_boundary():
     assertion is on row indices — for all three regions, not just the reported
     one.
     """
-    boundary = sealed_test_start(BTC_ROWS, 0.70, 0.15)
+    boundary = BTC_SEALED_START
     folds = plan_defaults(boundary)
 
     assert len(folds) == 4
@@ -969,7 +997,7 @@ def test_planning_over_the_dataset_length_would_cross_the_boundary():
     crosses the boundary. If a future change reintroduced it, the test above
     turns red rather than both quietly agreeing.
     """
-    boundary = sealed_test_start(BTC_ROWS, 0.70, 0.15)
+    boundary = BTC_SEALED_START
     min_train = int(BTC_ROWS * 0.45)
     inner_size = outer_size = int(BTC_ROWS * 0.10)
 
@@ -980,7 +1008,7 @@ def test_planning_over_the_dataset_length_would_cross_the_boundary():
 
 
 def test_the_planner_refuses_to_borrow_from_the_sealed_block():
-    boundary = sealed_test_start(1000, 0.70, 0.15)  # 850
+    boundary = 850
     with pytest.raises(ValueError, match="lie before the sealed test block"):
         walkforward.plan_nested_folds(
             boundary, 4, min_train=500, inner_size=100, outer_size=100, step=100
@@ -994,7 +1022,7 @@ def test_walkforward_row_indices_stay_below_the_boundary(dataset, tmp_path, monk
     whose window sits below the boundary can still read its label from above it.
     """
     data = train.load_research_data(dataset)
-    boundary = sealed_test_start(data.n_rows, 0.70, 0.15)
+    boundary = boundary_of(data)
     horizon = data.target_spec.horizon
 
     seen: list[int] = []
@@ -1034,8 +1062,8 @@ def test_walkforward_row_indices_stay_below_the_boundary(dataset, tmp_path, monk
 
 def test_experiment_validation_indices_stay_below_the_boundary(dataset, tmp_path):
     data = train.load_research_data(dataset)
-    boundary = sealed_test_start(data.n_rows, 0.70, 0.15)
-    plan = chronological_split(data.n_rows, 0.70, 0.15)
+    boundary = boundary_of(data)
+    plan = split_of(data)
 
     prepared = train.prepare_research_windows(data, plan.train, plan.validation, 16)
     assert int(prepared.idx_val.max()) + data.target_spec.horizon < boundary

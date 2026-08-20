@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from nn import walkforward
+from nn.dataset import SEALED_TEST_START_UTC
 
 REPO = Path(__file__).resolve().parents[1]
 ARTIFACTS = REPO / "artifacts"
@@ -166,7 +167,9 @@ def test_the_markdown_separates_baselines_from_economic_references():
         "start": "2023-06-01T00:00:00+00:00",
         "end": "2023-07-01T00:00:00+00:00",
     }
-    markdown = walkforward.to_markdown(results, summary, sealed)
+    markdown = walkforward.to_markdown(
+        results, summary, sealed, anchor=SEALED_TEST_START_UTC.isoformat()
+    )
 
     assert "### Statistical / rule baselines and the model" in markdown
     assert "### Economic references (not models, not baselines)" in markdown
