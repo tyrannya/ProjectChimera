@@ -50,7 +50,7 @@
     "semantic_prefix_hash": "59ba439c266fa32d698d71b8e99048c6e19c07b90bc9f075e48b1cfb7977484c",
     "sha256": "424edf2c16a6e7363aca7faeecbfdd9f50ca587756502b519d6efb375abf55c1",
     "metadata_path": "data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet.meta.json",
-    "metadata_sha256": "fbd4074da42d9d1456c6ce7d99bb232bdc9689736c5069c7bb22d3ff51aeb089"
+    "metadata_sha256": "356d8c1a8c3fcf28cb67e2707e18d5309602d6c40f73ed17ef23fbf1734cb7bc"
   },
   "safety_checks": {
     "canonical_research_input_verified": true,
