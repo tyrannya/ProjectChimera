@@ -1,0 +1,12 @@
+{
+  "contract_id": "btc-usdt-1h-gen1",
+  "research_generation": 1,
+  "domain": "directional-classification",
+  "scope": {
+    "exchange": "binance",
+    "pair": "BTC/USDT",
+    "timeframe": "1h"
+  },
+  "sealed_test_start": "2025-08-27T23:00:00+00:00",
+  "description": "First Binance BTC/USDT 1h research generation. The sealed instant is the one the repository's committed walk-forward artifacts were produced under: on the 56,726-row canonical dataset it resolved to row 48217, which those files record as their sealed period start. That row number is compatibility evidence about one dataset, not the contract. Appending candles after this instant cannot move it, and a repair to history before it may move the resolved row while this contract stays identical. A later research generation is a new contract file, never an edit to this one."
+}

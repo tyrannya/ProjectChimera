@@ -12,6 +12,10 @@ PAIR_SAFE = $(subst /,_,$(PAIR))
 CANDLES  ?= data/raw/$(EXCHANGE)/$(PAIR_SAFE)_$(TIMEFRAME).parquet
 DATASET  ?= data/datasets/$(EXCHANGE)_$(PAIR_SAFE)_$(TIMEFRAME).parquet
 MODELS   ?= artifacts/models
+# Committed research contract the research targets run under. A selector, not a
+# boundary: only ids under nn/research_contracts/ are accepted, and a new
+# research generation is a new contract file.
+CONTRACT ?= btc-usdt-1h-gen1
 EPOCHS   ?= 30
 SEQ_LEN  ?= 64
 STRATEGY ?= NNPredictorStrategy
@@ -25,6 +29,7 @@ help:  ## Show this help
 	@echo ""
 	@echo "Common variables: EXCHANGE=$(EXCHANGE) PAIR=$(PAIR) TIMEFRAME=$(TIMEFRAME)"
 	@echo "                  EPOCHS=$(EPOCHS) SEQ_LEN=$(SEQ_LEN) MODE=$(MODE)"
+	@echo "                  CONTRACT=$(CONTRACT)"
 	@echo ""
 	@echo "LIVE TRADING IS OFF. See README 'Live trading protection'."
 
@@ -63,21 +68,24 @@ features:  ## Build a training dataset from downloaded candles
 	$(PYTHON) -m tools.build_features --candles $(CANDLES) --out $(DATASET) \
 		--exchange $(EXCHANGE) --pair $(PAIR) --timeframe $(TIMEFRAME)
 
-train:  ## Train a model. Args: DATASET EPOCHS SEQ_LEN
+train:  ## Train a model. Args: DATASET EPOCHS SEQ_LEN CONTRACT
 	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \
-		--epochs $(EPOCHS) --seq-len $(SEQ_LEN)
+		--research-contract $(CONTRACT) --epochs $(EPOCHS) --seq-len $(SEQ_LEN)
 
 research:  ## Train on validation only, leaving the test split sealed
 	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \
-		--epochs $(EPOCHS) --seq-len $(SEQ_LEN) --validation-only
+		--research-contract $(CONTRACT) --epochs $(EPOCHS) --seq-len $(SEQ_LEN) \
+		--validation-only
 
 experiment:  ## Grid search scored on validation only. Args: DATASET EPOCHS SEQ_LEN
 	$(PYTHON) -m nn.experiment --dataset $(DATASET) --epochs $(EPOCHS) \
+		--research-contract $(CONTRACT) \
 		--seq-len $(SEQ_LEN) --seed 1 2 3 --lr 1e-4 3e-4 1e-3 \
 		--out artifacts/experiments
 
 walkforward:  ## Nested walk-forward validation (train -> inner val -> outer val)
 	$(PYTHON) -m nn.walkforward --dataset $(DATASET) --folds 4 --epochs $(EPOCHS) \
+		--research-contract $(CONTRACT) \
 		--seq-len $(SEQ_LEN) --out artifacts/walkforward
 
 wf-diagnostics:  ## Audit and compare walk-forward runs. Args: RUNS="dir1 dir2 ..."

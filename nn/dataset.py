@@ -25,12 +25,12 @@ hours were adjacent observations.
 **The scaler is fitted on training rows only** and applied unchanged to
 validation and test.
 
-**The sealed test block begins at an immutable instant, not at a row.**
-:data:`SEALED_TEST_START_UTC` is the project-wide contract: everything strictly
-before it is research, everything at or after it is sealed.
-:func:`resolve_sealed_boundary` is the only way to turn that instant into a row
-index for a particular dataset, and the row it returns is metadata about that
-dataset — never the contract itself.
+**The sealed test block begins at an immutable instant, not at a row.** That
+instant is not this module's to choose: it comes from a committed
+:class:`nn.research_contract.ResearchContract`, one per research generation.
+:func:`resolve_sealed_boundary` is the only way to turn a contract's instant
+into a row index for a particular dataset, and the row it returns is metadata
+about that dataset — never the contract itself.
 
 The boundary used to be ``int(n_rows * (train_frac + val_frac))``. Appending
 candles moved it forward, so a timestamp that was sealed yesterday became
@@ -46,19 +46,7 @@ from typing import Any, Iterator, Sequence
 import numpy as np
 import pandas as pd
 
-#: The immutable project-wide sealed-test anchor, in UTC.
-#:
-#: Everything strictly before this instant is research data; everything at or
-#: after it is sealed. This timestamp *is* the contract. It is not a default, it
-#: is not a heuristic, and it is not derived from any dataset — no CLI flag,
-#: environment variable, dataset length or walk-forward fraction may move it.
-#:
-#: On the canonical BTC 1h dataset of the current research generation (56,726
-#: rows) this resolves to row 48,217, which is what the committed walk-forward
-#: artifacts record. That row number is compatibility evidence, not the seal: a
-#: legitimate repair to history before the anchor may move it while this instant
-#: stays exactly where it is.
-SEALED_TEST_START_UTC = pd.Timestamp("2025-08-27T23:00:00+00:00")
+from nn.research_contract import ResearchContract
 
 
 @dataclass(frozen=True)
@@ -90,32 +78,47 @@ class SplitPlan:
 
 @dataclass(frozen=True)
 class SealedBoundary:
-    """The immutable anchor, plus where it lands in one particular dataset.
+    """The research contract, plus where its seal lands in one dataset.
 
     Both halves travel together on purpose. ``start_row`` is the only form the
     row-based planners can use, and it is exactly the part that is *not* the
     contract: it is a property of the dataset it was resolved against. Carrying
-    the anchor beside it is what lets an artifact say which seal it was produced
-    under, so a row index can never be mistaken for the boundary itself.
+    the contract beside it is what lets an artifact say which seal it was
+    produced under, so a row index can never be mistaken for the boundary
+    itself — and, because the contract's identity is a hash of its
+    research-defining content, two runs cannot be read as one generation merely
+    for landing on the same row.
     """
 
-    anchor: pd.Timestamp
+    contract: ResearchContract
     start_row: int
 
+    @property
+    def anchor(self) -> pd.Timestamp:
+        """The contract's sealed instant. The seal itself, in wall-clock terms."""
+        return self.contract.sealed_test_start
+
     def to_dict(self) -> dict[str, Any]:
-        """Machine-readable provenance for a research artifact."""
-        return {"anchor_timestamp": self.anchor.isoformat(), "start_row": self.start_row}
+        """Machine-readable provenance for a research artifact.
+
+        ``anchor_timestamp`` and ``start_row`` keep the shape the timestamp
+        contract introduced; ``research_contract`` adds the exact generation
+        that instant came from, which the timestamp alone cannot identify.
+        """
+        return {
+            "anchor_timestamp": self.anchor.isoformat(),
+            "start_row": self.start_row,
+            "research_contract": self.contract.provenance(),
+        }
 
 
-def resolve_sealed_boundary(
-    dates: Any, *, anchor: pd.Timestamp = SEALED_TEST_START_UTC
-) -> SealedBoundary:
-    """Locate :data:`SEALED_TEST_START_UTC` in ``dates``: the first sealed row.
+def resolve_sealed_boundary(dates: Any, *, contract: ResearchContract) -> SealedBoundary:
+    """Locate ``contract``'s sealed instant in ``dates``: the first sealed row.
 
     The partition is defined on timestamps and only then expressed in rows::
 
-        research: timestamp <  anchor
-        sealed:   timestamp >= anchor
+        research: timestamp <  contract.sealed_test_start
+        sealed:   timestamp >= contract.sealed_test_start
 
     so the returned ``start_row`` is the first row at or after the anchor.
     Appending any number of rows *after* the anchor cannot change it, which is
@@ -136,15 +139,13 @@ def resolve_sealed_boundary(
     * no row before the anchor, so there is no research region;
     * no row at or after the anchor, so there is no sealed block.
 
-    ``anchor`` is injectable so tests can exercise the resolution rules on small
-    synthetic series. Production research entrypoints resolve the canonical
-    contract and take no anchor argument at all.
+    ``contract`` is a whole committed research contract, never a bare date:
+    there is no argument here a caller can use to name an instant of its own.
+    Production research entrypoints pass the contract their
+    ``--research-contract`` selector chose out of the committed registry, and
+    record its identity in every artifact they write.
     """
-    anchor = pd.Timestamp(anchor)
-    if anchor.tzinfo is None:
-        anchor = anchor.tz_localize("UTC")
-    else:
-        anchor = anchor.tz_convert("UTC")
+    anchor = contract.sealed_test_start
 
     # Naive input is read as UTC, which is what every dataset in this repository
     # stores; tz-aware input is converted rather than reinterpreted.
@@ -184,7 +185,7 @@ def resolve_sealed_boundary(
             f"every row is before the sealed anchor {anchor.isoformat()} (data ends at "
             f"{stamps[-1]}), so there is no sealed test block to withhold"
         )
-    return SealedBoundary(anchor=anchor, start_row=start_row)
+    return SealedBoundary(contract=contract, start_row=start_row)
 
 
 def chronological_split(
@@ -195,8 +196,8 @@ def chronological_split(
 ) -> SplitPlan:
     """Split ``n_rows`` into three contiguous blocks, oldest first.
 
-    ``sealed_start`` is the first sealed row, resolved from
-    :data:`SEALED_TEST_START_UTC` by :func:`resolve_sealed_boundary`. It is a
+    ``sealed_start`` is the first sealed row, resolved from the research
+    contract's sealed instant by :func:`resolve_sealed_boundary`. It is a
     required argument rather than something computed here, because computing it
     from ``n_rows`` is exactly the bug this signature exists to make impossible:
     the test block starts where the calendar says it starts, and the dataset's

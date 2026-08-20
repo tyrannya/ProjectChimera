@@ -412,6 +412,7 @@ def test_training_records_the_split_boundaries(tmp_path):
     from chimera.features import FeatureSpec
     from nn.data_pipeline import build_dataset, save_dataset
     from nn.registry import load_model
+    from nn.research_contract import SYNTHETIC_CONTRACT_ID
     from nn.train import main as train_main
     from tools.make_sample_data import generate_candles
 
@@ -434,6 +435,8 @@ def test_training_records_the_split_boundaries(tmp_path):
                 str(dataset),
                 "--models-dir",
                 str(models_dir),
+                "--research-contract",
+                SYNTHETIC_CONTRACT_ID,
                 "--epochs",
                 "1",
                 "--seq-len",

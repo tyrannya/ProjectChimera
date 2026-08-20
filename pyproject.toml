@@ -58,6 +58,12 @@ all = ["projectchimera[trade,ml,tracking,tune,dev]"]
 # image and a full checkout.
 include = ["chimera*", "nn*", "strategies*", "tools*"]
 
+[tool.setuptools.package-data]
+# The committed research contracts. They are data the research entrypoints
+# cannot run without — the sealed boundary lives in them — so they ship with
+# the package rather than being looked up relative to a checkout.
+nn = ["research_contracts/*.json"]
+
 [tool.black]
 line-length = 95
 target-version = ["py311"]

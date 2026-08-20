@@ -111,6 +111,14 @@ class ModelMetadata:
     exchange: str = ""
     pair: str = ""
     timeframe: str = ""
+    #: Human-readable id of the ``nn.research_contract`` generation this artifact
+    #: was trained under. Empty for artifacts that predate research contracts,
+    #: which callers must read as "unrecorded", never as "the current one".
+    research_contract_id: str = ""
+    #: SHA-256 of that contract's research-defining content. The id can be
+    #: reused while the contract behind it changes, so this — not the id — is
+    #: what identifies the exact generation.
+    research_contract_hash: str = ""
     #: Metrics recorded at promotion time, for the record.
     validation_metrics: dict[str, Any] = field(default_factory=dict)
 
@@ -149,6 +157,8 @@ class ModelMetadata:
             "exchange": self.exchange,
             "pair": self.pair,
             "timeframe": self.timeframe,
+            "research_contract_id": self.research_contract_id,
+            "research_contract_hash": self.research_contract_hash,
             "validation_metrics": self.validation_metrics,
         }
 
@@ -172,6 +182,8 @@ class ModelMetadata:
             exchange=str(data.get("exchange", "")),
             pair=str(data.get("pair", "")),
             timeframe=str(data.get("timeframe", "")),
+            research_contract_id=str(data.get("research_contract_id", "")),
+            research_contract_hash=str(data.get("research_contract_hash", "")),
             validation_metrics=dict(data.get("validation_metrics", {})),
         )
 

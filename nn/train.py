@@ -8,9 +8,10 @@ The pipeline, in order, with the leakage-relevant step called out at each turn:
 
 1. seed everything (Python, NumPy, torch) — reproducible by default;
 2. load the dataset built by ``tools/build_features.py``;
-3. resolve the immutable sealed-test anchor against the dataset's own
+3. select the committed research contract, check the dataset is in its scope,
+   resolve its immutable sealed-test anchor against the dataset's own
    timestamps, then split the rows before it into train / validation
-   (``nn.dataset``);
+   (``nn.research_contract``, ``nn.dataset``);
 4. **fit the scaler on training rows only**, then transform all three;
 5. build windows so no sample straddles a split or market-data gap boundary;
 6. fit the baselines on training data;
@@ -79,6 +80,12 @@ from nn.registry import (
     new_version,
     promote,
     save_model,
+)
+from nn.research_contract import (
+    ContractScopeError,
+    ResearchContract,
+    add_contract_argument,
+    load_contract,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,16 +186,27 @@ class ResearchData:
             candles_per_year=self.candles_per_year,
         )
 
-    def sealed_boundary(self) -> SealedBoundary:
-        """Where :data:`nn.dataset.SEALED_TEST_START_UTC` falls in this dataset.
+    def sealed_boundary(self, contract: ResearchContract) -> SealedBoundary:
+        """Where ``contract``'s sealed instant falls in this dataset.
 
         The single place every research entrypoint resolves the seal, so the
         single-split trainer, the experiment runner and the walk-forward planner
-        cannot disagree by a row — or, now, by an instant — about where sealed
-        data begins. It takes no arguments: the anchor is the contract, and a
-        research run has nothing to say about it.
+        cannot disagree by a row — or by an instant, or by a research generation
+        — about where sealed data begins.
+
+        The scope check comes first and fails closed: a contract declares the
+        exchange, pair and timeframe it describes, and resolving its instant
+        against some other market would partition data the contract never spoke
+        about while stamping that market's artifacts with this generation's
+        identity.
         """
-        return resolve_sealed_boundary(self.dates)
+        contract.require_scope(
+            exchange=self.ds_meta.exchange,
+            pair=self.ds_meta.pair,
+            timeframe=self.ds_meta.timeframe,
+            source="this dataset",
+        )
+        return resolve_sealed_boundary(self.dates, contract=contract)
 
     def period(self, split: Split) -> dict[str, Any]:
         """Wall-clock boundaries of a split, so a report can be audited later."""
@@ -665,6 +683,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--dataset", required=True, help="Parquet dataset from build_features."
     )
     parser.add_argument("--models-dir", default=str(DEFAULT_MODELS_DIR))
+    add_contract_argument(parser)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -743,14 +762,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- 1. data ------------------------------------------------------
     data = load_research_data(args.dataset)
+    contract = load_contract(args.research_contract)
     try:
-        boundary = data.sealed_boundary()
+        boundary = data.sealed_boundary(contract)
+    except ContractScopeError as exc:
+        raise SystemExit(str(exc)) from exc
     except ValueError as exc:
         raise SystemExit(f"cannot resolve the sealed test boundary: {exc}") from exc
     plan = chronological_split(data.n_rows, boundary.start_row, args.train_frac, args.val_frac)
     logger.info(
-        "Sealed test starts at %s (row %d of %d) — an immutable anchor, not a "
-        "fraction of the dataset. Split plan: %s",
+        "Research contract %s (generation %d, %s) seals at %s, which is row %d of %d "
+        "in this dataset — an immutable anchor, not a fraction of the dataset. "
+        "Split plan: %s",
+        contract.label,
+        contract.research_generation,
+        contract.domain,
         boundary.anchor.isoformat(),
         boundary.start_row,
         data.n_rows,
@@ -862,6 +888,11 @@ def main(argv: list[str] | None = None) -> int:
         exchange=data.ds_meta.exchange,
         pair=data.ds_meta.pair,
         timeframe=data.ds_meta.timeframe,
+        # Which research generation produced these weights. The id names it for
+        # a human; the hash is what actually identifies it, because an id can be
+        # reused while the contract behind it changes.
+        research_contract_id=contract.contract_id,
+        research_contract_hash=contract.contract_hash,
         validation_metrics=validation_reports["mtst"],
     )
 
@@ -878,10 +909,11 @@ def main(argv: list[str] | None = None) -> int:
         "device": str(device),
         "split_plan": plan.to_dict(),
         "periods": {split.name: data.period(split) for split in plan},
-        # Both halves of the boundary: the immutable anchor this run was planned
-        # under, and the row it resolved to in *this* dataset. An artifact that
-        # recorded only the row could not be told apart from one produced under
-        # a different seal that happened to land on the same index.
+        # Every half of the boundary: the research contract this run was planned
+        # under, the instant it seals at, and the row that instant resolved to in
+        # *this* dataset. An artifact that recorded only the row could not be
+        # told apart from one produced under a different seal that happened to
+        # land on the same index.
         "sealed_test": {
             **boundary.to_dict(),
             "period": data.period(plan.test),

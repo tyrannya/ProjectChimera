@@ -13,10 +13,13 @@ answers two questions the individual runs cannot answer about themselves:
    reproducible from the folds it claims to summarise. An artifact that has been
    hand-edited, truncated, or produced by the pre-nested code fails here rather
    than being quietly averaged into a headline. An artifact that records only a
-   ``start_row``, with no sealed anchor timestamp, is still read — it predates
-   the timestamp contract, which is a fact about it, not a defect — but it is
-   never relabelled as timestamp-anchored, and it is refused as incomparable
-   against a run that *was* sealed at a stated instant.
+   ``start_row``, with no sealed anchor timestamp and no research contract, is
+   still read — it predates both contracts, which is a fact about it, not a
+   defect — but it is never relabelled as timestamp-anchored or assigned a
+   contract, and it is refused as incomparable against a run that *was* produced
+   under a stated research contract. Runs under two different contracts are
+   refused for the same reason, even when they resolve to the same row: a shared
+   row index is not a shared research generation.
 
 2. **How much of the result is the seed?** One run of four folds gives four
    numbers. Several runs that differ only in ``--seed`` give a distribution, and
@@ -75,6 +78,11 @@ from nn.regime import (
     load_research_frame,
     raw_block_statistics,
     validate_report_schema,
+)
+from nn.research_contract import (
+    CONTRACT_SCHEMA,
+    ResearchContractError,
+    load_contract,
 )
 from nn.walkforward import MODELS, PREDICTIONS_NAME, REFERENCES_KEY, SUMMARY_METRICS
 
@@ -330,6 +338,13 @@ class RunArtifact:
     #: would label a historical run as having been produced under a contract
     #: that did not exist when it ran.
     sealed_anchor: str | None
+    #: The ``sealed_test.research_contract`` block, or ``None`` for an artifact
+    #: that predates research contracts.
+    #:
+    #: Never synthesised. The five committed walk-forward runs carry ``None``,
+    #: and filling it in from the current registry would claim they were produced
+    #: under a research generation that did not exist when they ran.
+    contract: dict[str, Any] | None
     dataset: dict[str, Any]
     folds: list[dict[str, Any]]
     summary: dict[str, Any]
@@ -338,6 +353,16 @@ class RunArtifact:
     @property
     def n_folds(self) -> int:
         return len(self.folds)
+
+    @property
+    def contract_id(self) -> str | None:
+        """Human-readable contract id, or ``None`` for a pre-contract artifact."""
+        return (self.contract or {}).get("contract_id")
+
+    @property
+    def contract_hash(self) -> str | None:
+        """The contract's semantic identity. What actually decides comparability."""
+        return (self.contract or {}).get("contract_hash")
 
     @property
     def geometry(self) -> list[tuple[int, int]]:
@@ -427,6 +452,14 @@ def load_run(path: str | Path) -> RunArtifact:
         # the current anchor, and deliberately not required: requiring it would
         # make the committed historical runs unreadable for predating it.
         sealed_anchor=sealed.get("anchor_timestamp"),
+        # Absent in every pre-contract artifact, for the same reason and with
+        # the same treatment as the anchor above: reported as missing, never
+        # filled in from the committed registry.
+        contract=(
+            sealed["research_contract"]
+            if isinstance(sealed.get("research_contract"), dict)
+            else None
+        ),
         dataset=payload.get("dataset", {}) or {},
         folds=folds,
         summary=payload.get("summary", {}) or {},
@@ -504,8 +537,88 @@ def audit_run(run: RunArtifact) -> list[str]:
                 )
                 break
 
+    problems.extend(_audit_contract(run))
     problems.extend(classify_schema(run)[1])
     problems.extend(_audit_summary_matches_folds(run))
+    return problems
+
+
+#: Fields a recorded ``sealed_test.research_contract`` block must carry.
+#:
+#: Exactly ``nn.research_contract.ResearchContract.provenance``'s keys. A block
+#: is either the whole thing or absent — a partial one would let a reader think
+#: a run's generation is known when the field that identifies it is missing.
+CONTRACT_PROVENANCE_FIELDS = (
+    "contract_schema",
+    "contract_id",
+    "contract_hash",
+    "research_generation",
+    "domain",
+    "scope",
+    "sealed_test_start",
+)
+
+
+def _audit_contract(run: RunArtifact) -> list[str]:
+    """Check the recorded research contract, if the artifact records one.
+
+    **Absent is not a fault.** The committed walk-forward runs predate research
+    contracts; requiring one would make honest history unreadable, and inventing
+    one would be worse. What is a fault is a block that is *present* and cannot
+    be trusted: half-written, disagreeing with the anchor beside it, or naming a
+    committed contract whose content has since changed — the last of which means
+    either the artifact or the contract file has been edited since the run.
+    """
+    if run.contract is None:
+        return []
+
+    problems: list[str] = []
+    missing = [f for f in CONTRACT_PROVENANCE_FIELDS if f not in run.contract]
+    if missing:
+        return [
+            f"sealed_test.research_contract is missing {missing}. A partial contract "
+            "block cannot identify a research generation; it is worse than none, "
+            "because it reads as if it could"
+        ]
+
+    schema = run.contract["contract_schema"]
+    if schema != CONTRACT_SCHEMA:
+        problems.append(
+            f"sealed_test.research_contract.contract_schema is {schema!r}, but this "
+            f"tool reads {CONTRACT_SCHEMA!r}. The recorded identity was computed over "
+            "a different definition of research-defining content"
+        )
+
+    recorded_hash = run.contract["contract_hash"]
+    if not isinstance(recorded_hash, str) or len(recorded_hash) != 64:
+        problems.append(
+            f"sealed_test.research_contract.contract_hash is {recorded_hash!r}, "
+            "expected 64 hex digits of SHA-256"
+        )
+
+    recorded_start = run.contract["sealed_test_start"]
+    if run.sealed_anchor is not None and recorded_start != run.sealed_anchor:
+        problems.append(
+            f"sealed_test.anchor_timestamp is {run.sealed_anchor!r} but the contract it "
+            f"names seals at {recorded_start!r}. The run cannot have been planned under "
+            "both"
+        )
+
+    # If the id is one this checkout commits, the identity must still match.
+    # An id it does not know may simply come from another checkout, which is a
+    # limit on what can be verified here, not evidence of a problem.
+    try:
+        committed = load_contract(str(run.contract["contract_id"]))
+    except ResearchContractError:
+        return problems
+    if committed.contract_hash != recorded_hash:
+        problems.append(
+            f"the run records contract {run.contract['contract_id']!r} with identity "
+            f"{recorded_hash}, but the committed contract with that id now hashes to "
+            f"{committed.contract_hash}. Either the artifact or the contract file has "
+            "been edited since the run; a research generation is not allowed to change "
+            "under its own id"
+        )
     return problems
 
 
@@ -566,6 +679,18 @@ def _anchor_label(anchor: str | None) -> str:
     return anchor if anchor else "an unrecorded boundary (row index only)"
 
 
+def _contract_label(run: RunArtifact) -> str:
+    """How a run's research generation reads in a report.
+
+    A pre-contract artifact is described as exactly that. It is not given the
+    current contract's name, because the one thing it cannot tell you is which
+    research generation it belongs to.
+    """
+    if not run.contract_hash:
+        return "no research contract (row-only provenance)"
+    return f"research contract {run.contract_id}@{str(run.contract_hash)[:16]}"
+
+
 def compare_runs(runs: list[RunArtifact]) -> list[str]:
     """Check the runs measure the same blocks of the same dataset.
 
@@ -584,6 +709,17 @@ def compare_runs(runs: list[RunArtifact]) -> list[str]:
                 f"carries {reference_schema!r}. The two annualise risk-adjusted "
                 "statistics differently, so averaging them would compare unlike "
                 "definitions under one name"
+            )
+        # Before the row check, on purpose: two runs landing on the same row is
+        # not evidence that they are the same research generation, and the row
+        # check alone would let a same-row pair through.
+        if run.contract_hash != reference.contract_hash:
+            problems.append(
+                f"{run.name} was produced under {_contract_label(run)} but "
+                f"{reference.name} under {_contract_label(reference)}. Different "
+                "research contracts are different research generations, so averaging "
+                "them would report one generation's result over two — a shared "
+                "sealed_test_start row does not make them comparable"
             )
         if run.sealed_test_start != reference.sealed_test_start:
             problems.append(
@@ -1321,13 +1457,16 @@ def to_markdown(
         f"{reference.sealed_test_start} ({_anchor_label(reference.sealed_anchor)}) and is "
         "not opened by this tool.",
         "",
-        "| run | path | seed | folds | integrity |",
-        "| --- | --- | --- | --- | --- |",
+        "| run | path | seed | folds | research contract | integrity |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for run in runs:
         problems = audits[run.name]
         state = "ok" if not problems else f"**{len(problems)} problem(s)**"
-        lines.append(f"| {run.name} | `{run.path}` | {run.seed} | {run.n_folds} | {state} |")
+        lines.append(
+            f"| {run.name} | `{run.path}` | {run.seed} | {run.n_folds} | "
+            f"{_contract_label(run)} | {state} |"
+        )
 
     failing = {name: problems for name, problems in audits.items() if problems}
     if failing:
@@ -1867,6 +2006,7 @@ def analyse(
         "horizon": horizon,
         "sealed_test_start": reference.sealed_test_start,
         "sealed_test_anchor": reference.sealed_anchor,
+        "research_contract": reference.contract,
         "sealed_test_evaluated": False,
         "highest_outer_row": highest_outer,
         "fold_stability": stability,
@@ -1929,6 +2069,10 @@ def main(argv: list[str] | None = None) -> int:
                             "folds": run.n_folds,
                             "sealed_test_start": run.sealed_test_start,
                             "sealed_test_anchor": run.sealed_anchor,
+                            # Copied verbatim, or null. Never defaulted to the
+                            # committed contract: an artifact that recorded no
+                            # generation does not gain one by being read.
+                            "research_contract": run.contract,
                             "integrity_problems": audits[run.name],
                         }
                         for run in runs

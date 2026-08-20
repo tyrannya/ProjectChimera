@@ -17,6 +17,7 @@ from chimera.contracts import TargetSpec
 from chimera.features import FeatureSpec, feature_columns
 from nn.data_pipeline import build_dataset, save_dataset
 from nn.registry import load_model, resolve_current
+from nn.research_contract import SYNTHETIC_CONTRACT_ID
 from nn.train import build_argparser, class_weights, main, resolve_device, set_seed
 from tools.make_sample_data import generate_candles
 
@@ -38,6 +39,10 @@ def dataset(tmp_path_factory):
 
 
 TINY = [
+    # The fixtures below are synthetic candles, so they run under the committed
+    # synthetic research contract. The BTC one would (correctly) refuse them.
+    "--research-contract",
+    SYNTHETIC_CONTRACT_ID,
     "--epochs",
     "1",
     "--seq-len",
@@ -166,6 +171,8 @@ def test_training_fails_loudly_on_too_short_a_dataset(dataset, tmp_path):
                 str(dataset),
                 "--models-dir",
                 str(tmp_path / "m"),
+                "--research-contract",
+                SYNTHETIC_CONTRACT_ID,
                 "--seq-len",
                 "5000",
                 "--epochs",

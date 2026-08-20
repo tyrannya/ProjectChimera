@@ -9,7 +9,9 @@ measured on it says anything about real performance — it exists so the pipelin
 can be exercised end to end without a network or an exchange account.
 
 By default the series is positioned so it straddles the immutable sealed-test
-anchor, because "end to end" includes the train/validation/sealed partition.
+anchor of ``synth-usdt-1h-gen1`` — the committed research contract this series
+belongs to — because "end to end" includes the train/validation/sealed
+partition.
 """
 
 from __future__ import annotations
@@ -22,9 +24,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from nn.dataset import SEALED_TEST_START_UTC
+from nn.research_contract import SYNTHETIC_CONTRACT_ID, load_contract
 
 logger = logging.getLogger(__name__)
+
+#: The instant the synthetic research contract seals at.
+#:
+#: Read from the committed contract rather than restated here, so a synthetic
+#: series straddles exactly the boundary the entrypoints resolve when they are
+#: pointed at it.
+SEALED_TEST_START_UTC = load_contract(SYNTHETIC_CONTRACT_ID).sealed_test_start
 
 #: Share of a default synthetic series that falls before the sealed anchor.
 #:
@@ -45,8 +54,8 @@ def generate_candles(
 ) -> pd.DataFrame:
     """Deterministic synthetic candles that satisfy the OHLC invariants.
 
-    ``start`` defaults to a position that puts :data:`nn.dataset.
-    SEALED_TEST_START_UTC` exactly on row ``int(rows * 0.85)``, so the series
+    ``start`` defaults to a position that puts the synthetic research contract's
+    sealed instant exactly on row ``int(rows * 0.85)``, so the series
     straddles the immutable sealed-test anchor. This generator exists to exercise
     the research pipeline end to end, and a series that lies entirely on one side
     of the seal cannot be partitioned into a research region and a sealed block

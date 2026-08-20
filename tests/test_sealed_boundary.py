@@ -23,6 +23,7 @@ replaces.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -33,14 +34,28 @@ from chimera.contracts import TargetSpec
 from chimera.features import FeatureSpec
 from nn import experiment, train, walkforward
 from nn.data_pipeline import build_dataset, save_dataset
-from nn.dataset import (
-    SEALED_TEST_START_UTC,
-    chronological_split,
-    resolve_sealed_boundary,
+from nn.dataset import chronological_split, resolve_sealed_boundary
+from nn.research_contract import (
+    DEFAULT_CONTRACT_ID,
+    SYNTHETIC_CONTRACT_ID,
+    load_contract,
 )
 from tools.make_sample_data import generate_candles
 
 REPO = Path(__file__).resolve().parents[1]
+
+#: The committed contract of the current BTC research generation, and the
+#: instant it seals at. Read from the registry rather than restated, so this
+#: suite tests the contract the entrypoints actually resolve.
+CONTRACT = load_contract(DEFAULT_CONTRACT_ID)
+SEALED_TEST_START_UTC = CONTRACT.sealed_test_start
+
+#: The contract the synthetic fixtures below belong to. It seals at the same
+#: instant, so every assertion about the boundary still reads against
+#: :data:`SEALED_TEST_START_UTC`; what differs is its scope, which is what lets
+#: the entrypoints run against synthetic candles at all.
+SYNTHETIC = load_contract(SYNTHETIC_CONTRACT_ID)
+UNDER_SYNTHETIC = ["--research-contract", SYNTHETIC_CONTRACT_ID]
 
 TINY = [
     "--epochs",
@@ -72,7 +87,7 @@ def straddling(before: int, after: int) -> pd.DatetimeIndex:
 # --- A. resolution -----------------------------------------------------------
 def test_the_first_row_at_or_after_the_anchor_is_the_sealed_start():
     dates = straddling(before=100, after=50)
-    boundary = resolve_sealed_boundary(dates)
+    boundary = resolve_sealed_boundary(dates, contract=CONTRACT)
 
     assert boundary.anchor == SEALED_TEST_START_UTC
     assert boundary.start_row == 100
@@ -83,7 +98,7 @@ def test_the_first_row_at_or_after_the_anchor_is_the_sealed_start():
 def test_a_timestamp_exactly_on_the_anchor_is_sealed():
     """The partition is half-open the sealed way: ``>= anchor`` is withheld."""
     dates = straddling(before=100, after=50)
-    boundary = resolve_sealed_boundary(dates)
+    boundary = resolve_sealed_boundary(dates, contract=CONTRACT)
 
     assert dates[boundary.start_row] == SEALED_TEST_START_UTC
     assert dates[boundary.start_row - 1] < SEALED_TEST_START_UTC
@@ -97,7 +112,7 @@ def test_the_anchor_candle_does_not_have_to_exist():
     """
     dates = straddling(before=100, after=50).delete(100)  # the anchor row itself
 
-    boundary = resolve_sealed_boundary(dates)
+    boundary = resolve_sealed_boundary(dates, contract=CONTRACT)
     assert boundary.anchor == SEALED_TEST_START_UTC
     assert boundary.start_row == 100
     assert dates[100] == SEALED_TEST_START_UTC + pd.Timedelta(hours=1)
@@ -110,7 +125,9 @@ def test_naive_timestamps_are_read_as_utc():
     aware = straddling(before=40, after=10)
     naive = aware.tz_localize(None).to_numpy()
 
-    assert resolve_sealed_boundary(naive) == resolve_sealed_boundary(aware)
+    assert resolve_sealed_boundary(naive, contract=CONTRACT) == resolve_sealed_boundary(
+        aware, contract=CONTRACT
+    )
 
 
 def test_the_anchor_is_the_committed_contract():
@@ -130,8 +147,8 @@ def test_appending_rows_after_the_anchor_never_moves_the_seal(appended):
         pd.date_range(start=original[-1] + pd.Timedelta(hours=1), periods=appended, freq="1h")
     )
 
-    base = resolve_sealed_boundary(original)
-    after = resolve_sealed_boundary(grown)
+    base = resolve_sealed_boundary(original, contract=CONTRACT)
+    after = resolve_sealed_boundary(grown, contract=CONTRACT)
 
     assert after.anchor == base.anchor == SEALED_TEST_START_UTC
     # Unchanged pre-anchor history means an unchanged resolved row, too.
@@ -148,8 +165,10 @@ def test_a_year_of_appended_candles_cannot_unseal_a_sealed_timestamp():
         pd.date_range(start=original[-1] + pd.Timedelta(hours=1), periods=24 * 365, freq="1h")
     )
 
-    was_sealed = set(original[resolve_sealed_boundary(original).start_row :])
-    now_research = set(grown[: resolve_sealed_boundary(grown).start_row])
+    was_sealed = set(
+        original[resolve_sealed_boundary(original, contract=CONTRACT).start_row :]
+    )
+    now_research = set(grown[: resolve_sealed_boundary(grown, contract=CONTRACT).start_row])
 
     assert not (was_sealed & now_research)
 
@@ -160,7 +179,9 @@ def test_appending_grows_only_the_sealed_block():
         pd.date_range(start=original[-1] + pd.Timedelta(hours=1), periods=500, freq="1h")
     )
 
-    base, after = resolve_sealed_boundary(original), resolve_sealed_boundary(grown)
+    base, after = resolve_sealed_boundary(
+        original, contract=CONTRACT
+    ), resolve_sealed_boundary(grown, contract=CONTRACT)
     base_plan = chronological_split(len(original), base.start_row)
     after_plan = chronological_split(len(grown), after.start_row)
 
@@ -183,8 +204,8 @@ def test_inserting_a_historical_row_moves_the_row_but_not_the_seal():
     inserted = original[0] - pd.Timedelta(minutes=30)
     repaired = original.insert(0, inserted).sort_values()
 
-    base = resolve_sealed_boundary(original)
-    after = resolve_sealed_boundary(repaired)
+    base = resolve_sealed_boundary(original, contract=CONTRACT)
+    after = resolve_sealed_boundary(repaired, contract=CONTRACT)
 
     # The anchor is untouched, and the row moved by exactly the one row added.
     assert after.anchor == base.anchor == SEALED_TEST_START_UTC
@@ -211,43 +232,45 @@ def test_unsorted_timestamps_are_refused():
     dates = straddling(before=50, after=20).to_numpy()
     dates[[10, 40]] = dates[[40, 10]]
     with pytest.raises(ValueError, match="not sorted ascending"):
-        resolve_sealed_boundary(dates)
+        resolve_sealed_boundary(dates, contract=CONTRACT)
 
 
 def test_duplicate_timestamps_are_refused():
     dates = straddling(before=50, after=20)
     with pytest.raises(ValueError, match="duplicate timestamp"):
-        resolve_sealed_boundary(dates.insert(10, dates[10]).sort_values())
+        resolve_sealed_boundary(dates.insert(10, dates[10]).sort_values(), contract=CONTRACT)
 
 
 def test_a_dataset_entirely_before_the_anchor_is_refused():
     """No sealed block to withhold, so there is nothing to hold out."""
     with pytest.raises(ValueError, match="no sealed test block to withhold"):
-        resolve_sealed_boundary(hours(500, end_before_anchor=1))
+        resolve_sealed_boundary(hours(500, end_before_anchor=1), contract=CONTRACT)
 
 
 def test_a_dataset_entirely_at_or_after_the_anchor_is_refused():
     """No research region, so there is nothing to train on."""
     dates = pd.date_range(start=SEALED_TEST_START_UTC, periods=500, freq="1h")
     with pytest.raises(ValueError, match="no research region"):
-        resolve_sealed_boundary(dates)
+        resolve_sealed_boundary(dates, contract=CONTRACT)
 
 
 def test_missing_timestamps_are_refused():
     dates = straddling(before=50, after=20).to_numpy()
     dates[7] = np.datetime64("NaT")
     with pytest.raises(ValueError, match="missing or unparseable"):
-        resolve_sealed_boundary(dates)
+        resolve_sealed_boundary(dates, contract=CONTRACT)
 
 
 def test_malformed_timestamps_are_refused():
     with pytest.raises(ValueError, match="could not be parsed|missing or unparseable"):
-        resolve_sealed_boundary(np.array(["2025-08-27T23:00:00Z", "not a date"]))
+        resolve_sealed_boundary(
+            np.array(["2025-08-27T23:00:00Z", "not a date"]), contract=CONTRACT
+        )
 
 
 def test_an_empty_date_column_is_refused():
     with pytest.raises(ValueError, match="empty date column"):
-        resolve_sealed_boundary(pd.DatetimeIndex([], tz="UTC"))
+        resolve_sealed_boundary(pd.DatetimeIndex([], tz="UTC"), contract=CONTRACT)
 
 
 # --- the canonical dataset -----------------------------------------------------
@@ -346,7 +369,9 @@ def test_the_fixture_really_does_append_only_sealed_rows(grown_pair):
 def test_appending_does_not_move_the_split_plan(grown_pair):
     """D: plan.test.start names the same instant, and the pre-seal geometry holds."""
     base, grown, _, _ = grown_pair
-    base_boundary, grown_boundary = base.sealed_boundary(), grown.sealed_boundary()
+    base_boundary, grown_boundary = base.sealed_boundary(SYNTHETIC), grown.sealed_boundary(
+        SYNTHETIC
+    )
 
     base_plan = chronological_split(base.n_rows, base_boundary.start_row)
     grown_plan = chronological_split(grown.n_rows, grown_boundary.start_row)
@@ -361,7 +386,7 @@ def test_appending_exposes_no_new_timestamp_to_train_or_validation(grown_pair):
     base, grown, _, _ = grown_pair
     seen = set()
     for data in (base, grown):
-        plan = chronological_split(data.n_rows, data.sealed_boundary().start_row)
+        plan = chronological_split(data.n_rows, data.sealed_boundary(SYNTHETIC).start_row)
         stamps = pd.to_datetime(pd.Index(data.dates), utc=True)
         research = set(stamps[: plan.validation.end])
         assert (pd.DatetimeIndex(sorted(research)) < SEALED_TEST_START_UTC).all()
@@ -376,7 +401,7 @@ def test_appending_does_not_change_the_walk_forward_plan(grown_pair):
 
     geometries = []
     for data in (base, grown):
-        boundary = data.sealed_boundary().start_row
+        boundary = data.sealed_boundary(SYNTHETIC).start_row
         folds = walkforward.plan_nested_folds(
             boundary, args.folds, *walkforward.resolve_sizes(args, boundary)
         )
@@ -403,7 +428,7 @@ def test_the_three_entrypoints_resolve_the_same_seal(grown_pair):
     previous design was one number by construction too, and it moved.
     """
     _, grown, _, _ = grown_pair
-    boundary = grown.sealed_boundary()
+    boundary = grown.sealed_boundary(SYNTHETIC)
     stamps = pd.to_datetime(pd.Index(grown.dates), utc=True)
 
     assert boundary.anchor == SEALED_TEST_START_UTC
@@ -422,7 +447,7 @@ def test_the_split_fractions_cannot_move_the_seal(grown_pair, train_frac, val_fr
     between train and validation.
     """
     _, grown, _, grown_path = grown_pair
-    boundary = grown.sealed_boundary().start_row
+    boundary = grown.sealed_boundary(SYNTHETIC).start_row
 
     args = train.build_argparser().parse_args(
         ["--dataset", str(grown_path), "--train-frac", train_frac, "--val-frac", val_frac]
@@ -452,11 +477,16 @@ def test_walk_forward_has_no_flag_that_looks_like_it_moves_the_seal():
 def test_the_experiment_manifest_records_the_immutable_anchor(grown_pair, tmp_path):
     _, grown, _, grown_path = grown_pair
     out = tmp_path / "exp"
-    assert experiment.main(["--dataset", str(grown_path), "--out", str(out), *TINY]) == 0
+    assert (
+        experiment.main(
+            ["--dataset", str(grown_path), "--out", str(out), *UNDER_SYNTHETIC, *TINY]
+        )
+        == 0
+    )
 
     manifest = json.loads((out / "experiment_plan.json").read_text())
     assert manifest["sealed_test"]["anchor_timestamp"] == SEALED_TEST_START_UTC.isoformat()
-    assert manifest["sealed_test"]["start_row"] == grown.sealed_boundary().start_row
+    assert manifest["sealed_test"]["start_row"] == grown.sealed_boundary(SYNTHETIC).start_row
     assert manifest["sealed_test"]["evaluated"] is False
     assert json.loads((out / "experiments.json").read_text())["test_evaluated"] is False
 
@@ -464,12 +494,14 @@ def test_the_experiment_manifest_records_the_immutable_anchor(grown_pair, tmp_pa
 def test_the_sealed_contract_is_part_of_the_plan_hash(grown_pair, tmp_path):
     """A plan made under another seal cannot share this plan's identity."""
     _, grown, _, grown_path = grown_pair
-    args = experiment.build_argparser().parse_args(["--dataset", str(grown_path)])
+    args = experiment.build_argparser().parse_args(
+        ["--dataset", str(grown_path), *UNDER_SYNTHETIC]
+    )
     configs = experiment.build_grid(
         {name: [getattr(experiment.RunConfig(), name)] for name in experiment.GRID_DIMENSIONS},
         experiment.RunConfig(),
     )
-    boundary = grown.sealed_boundary()
+    boundary = grown.sealed_boundary(SYNTHETIC)
     plan = chronological_split(grown.n_rows, boundary.start_row)
 
     real = experiment.build_plan(args, configs, grown, plan, boundary, [])
@@ -478,7 +510,7 @@ def test_the_sealed_contract_is_part_of_the_plan_hash(grown_pair, tmp_path):
         configs,
         grown,
         plan,
-        boundary.__class__(anchor=boundary.anchor, start_row=boundary.start_row - 1),
+        replace(boundary, start_row=boundary.start_row - 1),
         [],
     )
     assert real["plan_hash"] != elsewhere["plan_hash"]
@@ -495,6 +527,7 @@ def test_training_records_both_halves_of_the_boundary(grown_pair, tmp_path):
                 "--models-dir",
                 str(models_dir),
                 "--validation-only",
+                *UNDER_SYNTHETIC,
                 *TINY,
             ]
         )
@@ -505,7 +538,7 @@ def test_training_records_both_halves_of_the_boundary(grown_pair, tmp_path):
     report = json.loads((version / "report.json").read_text())
 
     assert report["sealed_test"]["anchor_timestamp"] == SEALED_TEST_START_UTC.isoformat()
-    assert report["sealed_test"]["start_row"] == grown.sealed_boundary().start_row
+    assert report["sealed_test"]["start_row"] == grown.sealed_boundary(SYNTHETIC).start_row
     assert report["sealed_test"]["evaluated"] is False
     assert report["test_evaluated"] is False
     assert pd.Timestamp(report["periods"]["validation"]["end"]) < SEALED_TEST_START_UTC
@@ -517,7 +550,16 @@ def test_every_persisted_outer_prediction_is_before_the_anchor(grown_pair, tmp_p
     out = tmp_path / "wf"
     assert (
         walkforward.main(
-            ["--dataset", str(grown_path), "--out", str(out), "--folds", "2", *TINY]
+            [
+                "--dataset",
+                str(grown_path),
+                "--out",
+                str(out),
+                "--folds",
+                "2",
+                *UNDER_SYNTHETIC,
+                *TINY,
+            ]
         )
         == 0
     )
@@ -528,7 +570,7 @@ def test_every_persisted_outer_prediction_is_before_the_anchor(grown_pair, tmp_p
     assert (stamps < SEALED_TEST_START_UTC).all()
 
     results = json.loads((out / "walkforward.json").read_text())
-    boundary = grown.sealed_boundary()
+    boundary = grown.sealed_boundary(SYNTHETIC)
     assert results["sealed_test"]["anchor_timestamp"] == SEALED_TEST_START_UTC.isoformat()
     assert results["sealed_test"]["start_row"] == boundary.start_row
     assert results["sealed_test"]["evaluated"] is False

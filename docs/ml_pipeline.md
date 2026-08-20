@@ -112,17 +112,70 @@ factor, which is why it can be tested exactly
 The scaler is fitted on training rows only and applied unchanged to validation
 and test.
 
+### Research contracts
+
+A **research contract** is a committed, versioned JSON document under
+`nn/research_contracts/` that declares one research generation: which market it
+studies, and the immutable UTC instant at which its test data is sealed. The
+first one, `nn/research_contracts/btc-usdt-1h-gen1.json`, is the current BTC
+cycle:
+
+```json
+{
+  "contract_id": "btc-usdt-1h-gen1",
+  "research_generation": 1,
+  "domain": "directional-classification",
+  "scope": { "exchange": "binance", "pair": "BTC/USDT", "timeframe": "1h" },
+  "sealed_test_start": "2025-08-27T23:00:00+00:00"
+}
+```
+
+It exists because a single module constant is a boundary you *edit*, and editing
+a sealed boundary after seeing results contaminates the holdout. A contract is a
+boundary you *add*: a new research generation — a new instrument, timeframe,
+exchange, domain, or simply a new cycle on the same market — is a new file, and
+the one already committed is never re-pointed.
+
+**Identity is semantic, and cryptographic.** `contract_hash` is SHA-256 over the
+canonicalised research-defining content: the schema name, id, generation, domain,
+exchange, pair, timeframe and sealed instant, with keys sorted, no insignificant
+whitespace, the anchor normalised to UTC ISO-8601 and scope values
+case-normalised. So reformatting the file, reordering its keys, writing the
+anchor as `Z` instead of `+00:00`, recasing `Binance`, or rewriting the
+`description` all leave the identity alone; changing the pair, timeframe,
+generation, domain, id or sealed instant all change it. The human-readable
+`contract_id` is a name, not an identity — an id can be reused while the content
+behind it moves, which is exactly what the hash catches.
+
+**Selection, never construction.** `nn.train`, `nn.experiment` and
+`nn.walkforward` each take `--research-contract`, whose accepted values are
+exactly the committed contract ids. There is no `--sealed-date`, no external
+contract path, no inline contract JSON and no environment variable: the worst a
+command line can do is pick a different committed generation, which it must then
+record in every artifact it writes.
+
+**Scope fails closed.** `ResearchContract.require_scope` refuses a dataset whose
+exchange, pair or timeframe is not the one the contract describes — and refuses a
+dataset that declares no identity at all, because a dataset that cannot say what
+it is cannot be shown to be in scope. A sealed instant only means something for
+the market it was declared for.
+
+**Every new artifact records the contract.** `report.json`, `metadata.json`,
+`experiment_plan.json`, `experiments.json` and `walkforward.json` all carry
+`contract_id` and `contract_hash` (the latter two under
+`sealed_test.research_contract`), so an artifact can name the exact generation
+that produced it. `experiment_plan.json`'s `plan_hash` covers the contract, so
+the same grid run under a different generation is a different experiment.
+
+`tests/test_research_contracts.py` holds all of this.
+
 ### Where the sealed test block begins
 
-**One immutable UTC timestamp**, committed once in `nn/dataset.py`:
-
-```python
-SEALED_TEST_START_UTC = pd.Timestamp("2025-08-27T23:00:00+00:00")
-```
+**One immutable UTC timestamp**, carried by the selected research contract:
 
 ```
-research: timestamp <  SEALED_TEST_START_UTC
-sealed:   timestamp >= SEALED_TEST_START_UTC
+research: timestamp <  contract.sealed_test_start
+sealed:   timestamp >= contract.sealed_test_start
 ```
 
 `nn.dataset.resolve_sealed_boundary` turns that instant into a row index for one
@@ -138,16 +191,20 @@ dataset that lies entirely on one side of the anchor.
 resolves to row 48,217 of 56,726, which is what the committed walk-forward
 artifacts record. That number is a property of that dataset: appending candles
 cannot change it, and a legitimate repair to history *before* the anchor could
-change it without moving the seal by one second. Artifacts therefore record both
-halves — `anchor_timestamp` and `start_row` — so a reader can tell which seal a
-run was produced under.
+change it without moving the seal by one second. Artifacts therefore record every
+half — the research contract, its `anchor_timestamp`, and the `start_row` that
+anchor resolved to — so a reader can tell which generation a run was produced
+under. Two runs landing on the same row are not thereby comparable:
+`nn.wf_diagnostics` compares contract identities, not row indices.
 
 The boundary used to be `int(n_rows * (train_frac + val_frac))`. That number moved
 forward every time the dataset grew, so timestamps that were sealed when one run
 was planned were research data by the next, and the held-out estimate shrank
 silently — nothing in any artifact recorded what the row had meant in wall-clock
 time. Nothing may move the anchor now: not a CLI flag, an environment variable,
-a dataset length, an experiment argument, or a walk-forward fraction.
+a dataset length, an experiment argument, or a walk-forward fraction. The only
+thing a command line can change is *which committed contract* it runs under, and
+that is recorded rather than hidden.
 
 `--train-frac` and `--val-frac` survive on `nn.train` and `nn.experiment`, where
 they allocate train against validation **inside** the research region
@@ -156,7 +213,8 @@ they allocate train against validation **inside** the research region
 research region, which on the canonical dataset is exactly the row the previous
 `int(n_rows * 0.70)` produced, so the default geometry is unchanged.
 
-`tests/test_sealed_boundary.py` holds all of this, including the core regression:
+`tests/test_sealed_boundary.py` and `tests/test_research_contracts.py` hold all of
+this, including the core regression:
 appending 1, 100, 10,000 or a year of candles after the anchor leaves the
 resolved boundary, the research timestamps and the fold geometry identical.
 
