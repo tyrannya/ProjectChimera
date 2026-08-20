@@ -60,6 +60,9 @@ import pandas as pd
 from chimera.contracts import CLASS_ORDER
 from nn.evaluate import SHARPE_BASIS
 from nn.regime import (
+    # Aliased: this module already has `LEGACY_TRADING_KEY` (singular) for the
+    # one field that dates an artifact, and the two names differ by a letter.
+    LEGACY_TRADING_KEYS as HISTORICAL_TRADING_KEYS,
     RegimeDataError,
     block_statistics,
     direction_attribution,
@@ -156,13 +159,17 @@ def classify_schema(run: "RunArtifact") -> tuple[str, list[str]]:
     * every required summary metric plus the complete current risk-report schema
       present, no ``sharpe``, and every defined annualised Sharpe carrying the
       current :data:`nn.evaluate.SHARPE_BASIS` — current, read in full;
-    * ``sharpe`` present, **both** :data:`CURRENT_ONLY_METRICS` absent, and every
-      other required metric present — a positively identified pre-correction
-      artifact, read with exactly those two metrics skipped and a warning.
+    * ``sharpe`` present, **both** :data:`CURRENT_ONLY_METRICS` absent, every
+      other required metric present, and a ``trading`` block whose keys are
+      *exactly* :data:`nn.regime.LEGACY_TRADING_KEYS` — a positively identified
+      pre-correction artifact, read with exactly those two metrics skipped and a
+      warning.
 
     Anything else — a missing metric with no legacy fingerprint, a mixture of
     old and new fields, a partial rename, or an incompatible Sharpe basis — is a
-    problem, not a degraded read.
+    problem, not a degraded read. The legacy shape is matched as a positive
+    contract rather than a blacklist so that the next field the evaluator gains
+    cannot sneak into an artifact claiming to predate it.
     """
     required = set(SUMMARY_METRICS)
     optional = set(CURRENT_ONLY_METRICS)
@@ -185,8 +192,9 @@ def classify_schema(run: "RunArtifact") -> tuple[str, list[str]]:
             legacy = LEGACY_TRADING_KEY in trading
             missing = required - present
 
+            where = f"fold {label} {model}"
+
             if not missing and not legacy:
-                where = f"fold {label} {model}"
                 try:
                     detected = validate_report_schema(report, where)
                 except RegimeDataError as exc:
@@ -224,6 +232,42 @@ def classify_schema(run: "RunArtifact") -> tuple[str, list[str]]:
                     continue
                 schemas.add(SCHEMA_CURRENT)
             elif legacy and missing == optional:
+                try:
+                    detected = validate_report_schema(report, where)
+                except RegimeDataError as exc:
+                    problems.append(str(exc))
+                    continue
+                if detected != SCHEMA_LEGACY:
+                    problems.append(
+                        f"{where} passed the summary-metric shape as pre-correction but "
+                        f"the risk-report validator classified it as {detected!r}"
+                    )
+                    continue
+                # The one current-only risk field the shared validator does not
+                # key on: `NON_REPRODUCIBLE_TRADING_METRICS` omits it, so a
+                # hybrid carrying only this one would pass the check above.
+                if "per_trade_sharpe_reason" in trading:
+                    problems.append(
+                        f"{where} carries the pre-correction {LEGACY_TRADING_KEY!r} field "
+                        "alongside the current 'per_trade_sharpe_reason': this is neither "
+                        "the old schema nor the new one, so its metric semantics are "
+                        "unknown"
+                    )
+                    continue
+                # The positive historical contract, matched exactly. A subset
+                # would let a pre-correction artifact that lost a field read as
+                # legitimate; a superset is the hybrid case above, generalised
+                # to whatever field the evaluator gains next.
+                extra = sorted(set(trading) - set(HISTORICAL_TRADING_KEYS))
+                absent = sorted(set(HISTORICAL_TRADING_KEYS) - set(trading))
+                if extra or absent:
+                    problems.append(
+                        f"{where} carries the pre-correction {LEGACY_TRADING_KEY!r} field "
+                        f"but its trading block is not the historical shape: unexpected "
+                        f"{extra}, missing {absent}. Only the exact pre-correction key "
+                        "set is readable as legacy"
+                    )
+                    continue
                 schemas.add(SCHEMA_LEGACY)
             elif legacy:
                 problems.append(
