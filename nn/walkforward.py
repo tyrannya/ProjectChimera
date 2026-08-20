@@ -35,23 +35,33 @@ rather than allowed to double-count rows. A fold's inner block may be a
 *previous* fold's outer block — by then it is history, and using history to
 choose a threshold is the point of the exercise.
 
-**This is a validation tool, and it is bounded.** Folds are planned over
-``[0, sealed_test_start)`` — the rows before the sealed test block under the
-same 70/15/15 contract ``nn.train`` uses — and never over the dataset length.
-That distinction is the whole safeguard, and it was learned the hard way twice:
+**This is a validation tool, and it is bounded.** Folds are planned over the
+research region — the rows strictly before ``nn.dataset.SEALED_TEST_START_UTC``
+— and never over the dataset length. That distinction is the whole safeguard,
+and it was learned the hard way three times:
 
 * an early version scored an explicit per-fold *test* block, spending the sealed
   estimate on every research iteration;
 * its replacement stopped naming any split "test" but still planned folds over
   all rows, so with the default geometry the last two validation windows landed
   inside the sealed block. The output said ``test_evaluated: false`` and was
-  wrong — the rows were sealed rows wearing the label "validation".
+  wrong — the rows were sealed rows wearing the label "validation";
+* the fix for that took the boundary from ``int(n_rows * 0.85)``, which is a
+  moving target. Appending candles walked it forward, so rows that were sealed
+  when one run was planned were research rows by the next — the seal shrank
+  every time the dataset grew.
 
-Renaming a split does not unseal its rows. So the boundary is a row index that
-both this module and ``nn.train`` compute through
-:func:`nn.dataset.sealed_test_start`, the planner takes that index rather than
-``n_rows``, and ``tests/test_research_workflow.py`` asserts on row indices —
-never on split names, which is exactly the check that missed it.
+Renaming a split does not unseal its rows, and neither does appending rows after
+them. So the boundary is an immutable UTC instant that this module,
+``nn.train`` and ``nn.experiment`` all resolve through the one function
+:meth:`nn.train.ResearchData.sealed_boundary`. The resolved row index is a
+property of the dataset, not the contract; the planner may work in row
+coordinates *after* the timestamp has been resolved, which is why the flow is
+``timestamp -> resolved boundary row -> row-based planner`` and never
+``dataset length -> percentage -> boundary row``.
+``tests/test_research_workflow.py`` and ``tests/test_sealed_boundary.py`` assert
+on row indices and timestamps — never on split names, which is exactly the check
+that missed the second bug.
 
 Results are written as JSON and a short Markdown summary, with the baselines
 alongside every fold — a model that beats its baselines in one fold out of four
@@ -79,7 +89,7 @@ import pandas as pd
 
 from chimera.contracts import CLASS_ORDER
 from nn import evaluate as ev
-from nn.dataset import Split, sealed_test_start
+from nn.dataset import Split
 from nn.train import (
     ResearchData,
     RunConfig,
@@ -155,8 +165,10 @@ def plan_nested_folds(
 ) -> list[FoldPlan]:
     """Expanding training windows, each followed by an inner and an outer block.
 
-    ``boundary`` is the first sealed row — normally
-    :func:`nn.dataset.sealed_test_start`. **Every row this function hands out —
+    ``boundary`` is the first sealed row, resolved from the immutable
+    :data:`nn.dataset.SEALED_TEST_START_UTC` anchor by
+    :meth:`nn.train.ResearchData.sealed_boundary`. **Every row this function
+    hands out —
     training, inner validation and outer validation alike — is strictly below
     it.** The planner takes the boundary rather than the dataset length
     precisely because the two are not the same number: planning over the dataset
@@ -497,7 +509,10 @@ def verdict(summary: dict[str, Any], folds: int) -> str:
 
 
 def to_markdown(
-    results: list[dict[str, Any]], summary: dict[str, Any], sealed: dict[str, Any]
+    results: list[dict[str, Any]],
+    summary: dict[str, Any],
+    sealed: dict[str, Any],
+    anchor: str,
 ) -> str:
     lines = [
         "# Nested walk-forward validation",
@@ -509,9 +524,13 @@ def to_markdown(
         "**Only the outer block is reported below.** Outer blocks do not overlap, so",
         "no row is reported as a result twice.",
         "",
-        f"**Sealed test block:** rows {sealed['row_range'][0]}-{sealed['row_range'][1]}, "
-        f"{sealed['start'][:10]} to {sealed['end'][:10]}. No fold below plans, trains",
-        "on, selects on, or scores a row at or after that boundary.",
+        f"**Sealed test block:** everything at or after `{anchor}` — an immutable "
+        "wall-clock",
+        f"anchor, which in this dataset is rows {sealed['row_range'][0]}-"
+        f"{sealed['row_range'][1]}, {sealed['start'][:10]} to {sealed['end'][:10]}. The row",
+        "range is metadata about this dataset; the timestamp is the contract, and",
+        "appending later candles cannot move it. No fold below plans, trains on,",
+        "selects on, or scores a row at or after that boundary.",
         "",
         "## Fold geometry",
         "",
@@ -681,20 +700,13 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--out", default="artifacts/walkforward")
     parser.add_argument("--folds", type=int, default=4)
-    # The sealed-test contract, with the same flags and defaults as nn.train.
-    # Walk-forward uses them for one purpose: to locate the first sealed row.
-    parser.add_argument(
-        "--train-frac",
-        type=float,
-        default=0.70,
-        help="nn.train's train fraction. Used only to locate the sealed test block.",
-    )
-    parser.add_argument(
-        "--val-frac",
-        type=float,
-        default=0.15,
-        help="nn.train's validation fraction. Used only to locate the sealed test block.",
-    )
+    # There is deliberately no --train-frac/--val-frac here. They used to exist
+    # for exactly one purpose — locating the moving sealed boundary — and the
+    # boundary is now an immutable timestamp that nothing on a command line may
+    # move. Removing them means an old command line fails loudly with
+    # "unrecognized arguments" rather than appearing to still control the seal.
+    # Walk-forward has no train/validation allocation of its own; the fold
+    # geometry below is what shapes its blocks.
 
     # Fold geometry. These fractions are of the *research* region — the rows
     # before the sealed boundary — not of the whole dataset.
@@ -778,15 +790,19 @@ def main(argv: list[str] | None = None) -> int:
     args = build_argparser().parse_args(argv)
 
     data = load_research_data(args.dataset)
-    boundary = sealed_test_start(data.n_rows, args.train_frac, args.val_frac)
+    try:
+        sealed = data.sealed_boundary()
+    except ValueError as exc:
+        raise SystemExit(f"cannot resolve the sealed test boundary: {exc}") from exc
+    boundary = sealed.start_row
     sealed_split = Split("sealed_test", boundary, data.n_rows)
     min_train, inner_size, outer_size, step = resolve_sizes(args, boundary)
     folds = plan_nested_folds(boundary, args.folds, min_train, inner_size, outer_size, step)
     logger.warning(
         "%d nested folds over rows [0, %d) of %d (min_train=%d, inner=%d, outer=%d, "
         "step=%d). Outer blocks: %s — disjoint, and only these are reported. The "
-        "sealed test block starts at row %d (%s) and is NOT planned over, trained on, "
-        "selected on, or evaluated.",
+        "sealed test block starts at the immutable anchor %s, row %d (%s), and is NOT "
+        "planned over, trained on, selected on, or evaluated.",
         len(folds),
         boundary,
         data.n_rows,
@@ -795,6 +811,7 @@ def main(argv: list[str] | None = None) -> int:
         outer_size,
         step,
         ", ".join(f"[{p.outer.start}, {p.outer.end})" for p in folds),
+        sealed.anchor.isoformat(),
         boundary,
         data.period(sealed_split)["start"],
     )
@@ -841,8 +858,12 @@ def main(argv: list[str] | None = None) -> int:
                     "outer_val_size": outer_size,
                     "step": step,
                 },
+                # The immutable anchor and the row it resolved to in this
+                # dataset, together. A reader of this file can tell which seal
+                # the run was planned under; a file carrying only start_row
+                # cannot say that, and must not be read as if it could.
                 "sealed_test": {
-                    "start_row": boundary,
+                    **sealed.to_dict(),
                     "period": data.period(sealed_split),
                     "evaluated": False,
                 },
@@ -860,7 +881,9 @@ def main(argv: list[str] | None = None) -> int:
         # one fails the repository's end-of-file hook.
         + "\n"
     )
-    markdown = to_markdown(results, summary, sealed=data.period(sealed_split))
+    markdown = to_markdown(
+        results, summary, sealed=data.period(sealed_split), anchor=sealed.anchor.isoformat()
+    )
     (out_dir / "walkforward.md").write_text(markdown)
     print(markdown)
     logger.info("Wrote results to %s", out_dir)

@@ -8,7 +8,9 @@ The pipeline, in order, with the leakage-relevant step called out at each turn:
 
 1. seed everything (Python, NumPy, torch) — reproducible by default;
 2. load the dataset built by ``tools/build_features.py``;
-3. split chronologically into train / validation / test (``nn.dataset``);
+3. resolve the immutable sealed-test anchor against the dataset's own
+   timestamps, then split the rows before it into train / validation
+   (``nn.dataset``);
 4. **fit the scaler on training rows only**, then transform all three;
 5. build windows so no sample straddles a split or market-data gap boundary;
 6. fit the baselines on training data;
@@ -61,7 +63,14 @@ from nn.baselines import (
     MomentumBaseline,
 )
 from nn.data_pipeline import DatasetMetadata, load_dataset, timeframe_to_minutes
-from nn.dataset import Split, StandardScaler, build_windows, chronological_split
+from nn.dataset import (
+    SealedBoundary,
+    Split,
+    StandardScaler,
+    build_windows,
+    chronological_split,
+    resolve_sealed_boundary,
+)
 from nn.model_def import MTST, MTSTConfig
 from nn.registry import (
     DEFAULT_MODELS_DIR,
@@ -169,6 +178,17 @@ class ResearchData:
             dates=self.dates[:visible],
             candles_per_year=self.candles_per_year,
         )
+
+    def sealed_boundary(self) -> SealedBoundary:
+        """Where :data:`nn.dataset.SEALED_TEST_START_UTC` falls in this dataset.
+
+        The single place every research entrypoint resolves the seal, so the
+        single-split trainer, the experiment runner and the walk-forward planner
+        cannot disagree by a row — or, now, by an instant — about where sealed
+        data begins. It takes no arguments: the anchor is the contract, and a
+        research run has nothing to say about it.
+        """
+        return resolve_sealed_boundary(self.dates)
 
     def period(self, split: Split) -> dict[str, Any]:
         """Wall-clock boundaries of a split, so a report can be audited later."""
@@ -651,8 +671,28 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--seq-len", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--patience", type=int, default=5)
-    parser.add_argument("--train-frac", type=float, default=0.70)
-    parser.add_argument("--val-frac", type=float, default=0.15)
+    # These allocate train against validation *inside the research region* —
+    # the rows before the immutable sealed-test anchor. Only their ratio is
+    # used, and neither can move the seal.
+    parser.add_argument(
+        "--train-frac",
+        type=float,
+        default=0.70,
+        help=(
+            "Train weight within the research region (the rows before the sealed "
+            "anchor). Cannot move the sealed test boundary, which is a fixed UTC "
+            "timestamp."
+        ),
+    )
+    parser.add_argument(
+        "--val-frac",
+        type=float,
+        default=0.15,
+        help=(
+            "Validation weight within the research region. Cannot move the sealed "
+            "test boundary."
+        ),
+    )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--d-model", type=int, default=64)
     parser.add_argument("--n-heads", type=int, default=4)
@@ -703,8 +743,19 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- 1. data ------------------------------------------------------
     data = load_research_data(args.dataset)
-    plan = chronological_split(data.n_rows, args.train_frac, args.val_frac)
-    logger.info("Split plan: %s", json.dumps(plan.to_dict()))
+    try:
+        boundary = data.sealed_boundary()
+    except ValueError as exc:
+        raise SystemExit(f"cannot resolve the sealed test boundary: {exc}") from exc
+    plan = chronological_split(data.n_rows, boundary.start_row, args.train_frac, args.val_frac)
+    logger.info(
+        "Sealed test starts at %s (row %d of %d) — an immutable anchor, not a "
+        "fraction of the dataset. Split plan: %s",
+        boundary.anchor.isoformat(),
+        boundary.start_row,
+        data.n_rows,
+        json.dumps(plan.to_dict()),
+    )
     if args.validation_only:
         logger.warning(
             "VALIDATION-ONLY research run: the test split (%d rows, %s to %s) "
@@ -827,6 +878,15 @@ def main(argv: list[str] | None = None) -> int:
         "device": str(device),
         "split_plan": plan.to_dict(),
         "periods": {split.name: data.period(split) for split in plan},
+        # Both halves of the boundary: the immutable anchor this run was planned
+        # under, and the row it resolved to in *this* dataset. An artifact that
+        # recorded only the row could not be told apart from one produced under
+        # a different seal that happened to land on the same index.
+        "sealed_test": {
+            **boundary.to_dict(),
+            "period": data.period(plan.test),
+            "evaluated": test_reports is not None,
+        },
         "dataset": data.ds_meta.to_dict(),
         "training": result.train_info,
         "threshold_selection": result.threshold_report,
