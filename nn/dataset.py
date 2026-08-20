@@ -24,14 +24,41 @@ hours were adjacent observations.
 
 **The scaler is fitted on training rows only** and applied unchanged to
 validation and test.
+
+**The sealed test block begins at an immutable instant, not at a row.**
+:data:`SEALED_TEST_START_UTC` is the project-wide contract: everything strictly
+before it is research, everything at or after it is sealed.
+:func:`resolve_sealed_boundary` is the only way to turn that instant into a row
+index for a particular dataset, and the row it returns is metadata about that
+dataset — never the contract itself.
+
+The boundary used to be ``int(n_rows * (train_frac + val_frac))``. Appending
+candles moved it forward, so a timestamp that was sealed yesterday became
+research data tomorrow, and the sealed estimate silently shrank every time the
+dataset grew. A wall-clock anchor cannot move when rows are appended after it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator, Sequence
+from typing import Any, Iterator, Sequence
 
 import numpy as np
+import pandas as pd
+
+#: The immutable project-wide sealed-test anchor, in UTC.
+#:
+#: Everything strictly before this instant is research data; everything at or
+#: after it is sealed. This timestamp *is* the contract. It is not a default, it
+#: is not a heuristic, and it is not derived from any dataset — no CLI flag,
+#: environment variable, dataset length or walk-forward fraction may move it.
+#:
+#: On the canonical BTC 1h dataset of the current research generation (56,726
+#: rows) this resolves to row 48,217, which is what the committed walk-forward
+#: artifacts record. That row number is compatibility evidence, not the seal: a
+#: legitimate repair to history before the anchor may move it while this instant
+#: stays exactly where it is.
+SEALED_TEST_START_UTC = pd.Timestamp("2025-08-27T23:00:00+00:00")
 
 
 @dataclass(frozen=True)
@@ -61,46 +88,164 @@ class SplitPlan:
         return {s.name: {"start": s.start, "end": s.end, "rows": len(s)} for s in self}
 
 
+@dataclass(frozen=True)
+class SealedBoundary:
+    """The immutable anchor, plus where it lands in one particular dataset.
+
+    Both halves travel together on purpose. ``start_row`` is the only form the
+    row-based planners can use, and it is exactly the part that is *not* the
+    contract: it is a property of the dataset it was resolved against. Carrying
+    the anchor beside it is what lets an artifact say which seal it was produced
+    under, so a row index can never be mistaken for the boundary itself.
+    """
+
+    anchor: pd.Timestamp
+    start_row: int
+
+    def to_dict(self) -> dict[str, Any]:
+        """Machine-readable provenance for a research artifact."""
+        return {"anchor_timestamp": self.anchor.isoformat(), "start_row": self.start_row}
+
+
+def resolve_sealed_boundary(
+    dates: Any, *, anchor: pd.Timestamp = SEALED_TEST_START_UTC
+) -> SealedBoundary:
+    """Locate :data:`SEALED_TEST_START_UTC` in ``dates``: the first sealed row.
+
+    The partition is defined on timestamps and only then expressed in rows::
+
+        research: timestamp <  anchor
+        sealed:   timestamp >= anchor
+
+    so the returned ``start_row`` is the first row at or after the anchor.
+    Appending any number of rows *after* the anchor cannot change it, which is
+    the whole point: the previous row-fraction boundary moved forward every time
+    the dataset grew, quietly handing previously-sealed timestamps to research.
+
+    The anchor candle does **not** have to exist. When it is missing because of a
+    real market-data gap or a dropped feature row, the first surviving row after
+    it is the sealed start; no candle is invented to make the timestamp present.
+
+    Fails closed rather than guessing, because every failure here is a case where
+    the temporal partition would otherwise be ambiguous or absent:
+
+    * malformed or unparseable timestamps;
+    * timestamps that are not strictly increasing — unsorted *or* duplicated,
+      either of which makes "the first row at or after the anchor" mean more
+      than one thing;
+    * no row before the anchor, so there is no research region;
+    * no row at or after the anchor, so there is no sealed block.
+
+    ``anchor`` is injectable so tests can exercise the resolution rules on small
+    synthetic series. Production research entrypoints resolve the canonical
+    contract and take no anchor argument at all.
+    """
+    anchor = pd.Timestamp(anchor)
+    if anchor.tzinfo is None:
+        anchor = anchor.tz_localize("UTC")
+    else:
+        anchor = anchor.tz_convert("UTC")
+
+    # Naive input is read as UTC, which is what every dataset in this repository
+    # stores; tz-aware input is converted rather than reinterpreted.
+    try:
+        stamps = pd.to_datetime(pd.Index(np.asarray(dates)), utc=True)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"timestamps could not be parsed as UTC datetimes: {exc}") from exc
+
+    n_rows = len(stamps)
+    if n_rows == 0:
+        raise ValueError("cannot resolve the sealed boundary in an empty date column")
+    if stamps.hasnans:
+        raise ValueError(
+            f"{int(stamps.isna().sum())} timestamp(s) are missing or unparseable, so the "
+            "sealed boundary cannot be resolved"
+        )
+    if not stamps.is_monotonic_increasing:
+        raise ValueError(
+            "timestamps are not sorted ascending, so 'the first row at or after "
+            f"{anchor.isoformat()}' is ambiguous; sort the dataset before splitting it"
+        )
+    if not stamps.is_unique:
+        duplicated = stamps[stamps.duplicated()]
+        raise ValueError(
+            f"{len(duplicated)} duplicate timestamp(s) (first: {duplicated[0]}) make the "
+            "temporal partition ambiguous; de-duplicate the dataset before splitting it"
+        )
+
+    start_row = int(stamps.searchsorted(anchor, side="left"))
+    if start_row == 0:
+        raise ValueError(
+            f"every row is at or after the sealed anchor {anchor.isoformat()} (data "
+            f"starts at {stamps[0]}), so there is no research region to train on"
+        )
+    if start_row == n_rows:
+        raise ValueError(
+            f"every row is before the sealed anchor {anchor.isoformat()} (data ends at "
+            f"{stamps[-1]}), so there is no sealed test block to withhold"
+        )
+    return SealedBoundary(anchor=anchor, start_row=start_row)
+
+
 def chronological_split(
     n_rows: int,
+    sealed_start: int,
     train_frac: float = 0.7,
     val_frac: float = 0.15,
 ) -> SplitPlan:
     """Split ``n_rows`` into three contiguous blocks, oldest first.
 
-    The test block is whatever remains, so the fractions cannot silently drop
-    rows on the floor.
+    ``sealed_start`` is the first sealed row, resolved from
+    :data:`SEALED_TEST_START_UTC` by :func:`resolve_sealed_boundary`. It is a
+    required argument rather than something computed here, because computing it
+    from ``n_rows`` is exactly the bug this signature exists to make impossible:
+    the test block starts where the calendar says it starts, and the dataset's
+    length has no vote.
+
+    ``train_frac`` and ``val_frac`` allocate train against validation **inside
+    the research region** ``[0, sealed_start)``, by weight — only their ratio is
+    used. Under the default 0.70/0.15 the training block is 70/85 of the research
+    region, which on the canonical dataset is the same row the previous
+    ``int(n_rows * 0.70)`` produced. They cannot move ``test.start``.
     """
     if n_rows <= 0:
         raise ValueError("n_rows must be positive")
     if not (0 < train_frac < 1 and 0 < val_frac < 1 and train_frac + val_frac < 1):
         raise ValueError("train_frac and val_frac must be in (0, 1) and sum below 1")
+    # Independently of the resolver, which refuses the same thing upstream: this
+    # is a public partition primitive, and a plan whose sealed block is empty is
+    # a plan with no held-out estimate at all.
+    if not 0 < sealed_start < n_rows:
+        raise ValueError(
+            f"sealed_start ({sealed_start}) must leave rows on both sides of the "
+            f"boundary in a {n_rows}-row dataset"
+        )
 
-    train_end = int(n_rows * train_frac)
-    val_end = int(n_rows * (train_frac + val_frac))
-    return SplitPlan(
+    train_end = int(sealed_start * train_frac / (train_frac + val_frac))
+    if not 0 < train_end < sealed_start:
+        raise ValueError(
+            f"a research region of {sealed_start} row(s) split {train_frac}/{val_frac} "
+            f"leaves an empty train or validation block (train would end at {train_end})"
+        )
+
+    plan = SplitPlan(
         train=Split("train", 0, train_end),
-        validation=Split("validation", train_end, val_end),
-        test=Split("test", val_end, n_rows),
+        validation=Split("validation", train_end, sealed_start),
+        test=Split("test", sealed_start, n_rows),
     )
-
-
-def sealed_test_start(n_rows: int, train_frac: float = 0.7, val_frac: float = 0.15) -> int:
-    """First row of the sealed test block: the boundary research must not cross.
-
-    Delegates to :func:`chronological_split` with the same defaults ``nn.train``
-    uses, so the single-split trainer and the walk-forward planner cannot
-    disagree by a row about where sealed data begins. Research tooling plans
-    over ``[0, sealed_test_start)`` and nothing else.
-
-    Naming a split "validation" does not make its rows unsealed. Walk-forward
-    once planned folds over the whole dataset, which put its last two validation
-    windows inside the test block — the metrics were labelled validation and
-    were, in substance, test. This function exists so that boundary is a number
-    both sides compute the same way, and so tests can assert on row indices
-    rather than on split names.
-    """
-    return chronological_split(n_rows, train_frac, val_frac).test.start
+    # The arithmetic above already guarantees these; check them anyway, because
+    # a plan that quietly hands a sealed row to validation looks exactly like a
+    # plan that does not. Raised rather than asserted, as in
+    # :func:`nn.walkforward.plan_nested_folds`: a leakage guard that `python -O`
+    # removes is not a guard.
+    if not (
+        plan.train.end <= plan.validation.start
+        and plan.validation.end == sealed_start
+        and plan.test.start == sealed_start
+        and plan.test.end == n_rows
+    ):
+        raise AssertionError(f"split plan does not partition at {sealed_start}: {plan}")
+    return plan
 
 
 def window_indices(split: Split, seq_len: int, horizon: int) -> np.ndarray:

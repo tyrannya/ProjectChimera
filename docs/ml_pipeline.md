@@ -112,6 +112,54 @@ factor, which is why it can be tested exactly
 The scaler is fitted on training rows only and applied unchanged to validation
 and test.
 
+### Where the sealed test block begins
+
+**One immutable UTC timestamp**, committed once in `nn/dataset.py`:
+
+```python
+SEALED_TEST_START_UTC = pd.Timestamp("2025-08-27T23:00:00+00:00")
+```
+
+```
+research: timestamp <  SEALED_TEST_START_UTC
+sealed:   timestamp >= SEALED_TEST_START_UTC
+```
+
+`nn.dataset.resolve_sealed_boundary` turns that instant into a row index for one
+particular dataset: the first row whose timestamp is at or after the anchor. The
+anchor candle need not exist — if it is missing because of a real market-data gap
+or a dropped feature row, the first surviving row after it is the sealed start,
+and no candle is invented to make the timestamp present. The resolver fails
+closed on malformed timestamps, on timestamps that are not strictly increasing
+(unsorted or duplicated, either of which makes the partition ambiguous), and on a
+dataset that lies entirely on one side of the anchor.
+
+**The row index is not the contract.** On the canonical BTC 1h dataset the anchor
+resolves to row 48,217 of 56,726, which is what the committed walk-forward
+artifacts record. That number is a property of that dataset: appending candles
+cannot change it, and a legitimate repair to history *before* the anchor could
+change it without moving the seal by one second. Artifacts therefore record both
+halves — `anchor_timestamp` and `start_row` — so a reader can tell which seal a
+run was produced under.
+
+The boundary used to be `int(n_rows * (train_frac + val_frac))`. That number moved
+forward every time the dataset grew, so timestamps that were sealed when one run
+was planned were research data by the next, and the held-out estimate shrank
+silently — nothing in any artifact recorded what the row had meant in wall-clock
+time. Nothing may move the anchor now: not a CLI flag, an environment variable,
+a dataset length, an experiment argument, or a walk-forward fraction.
+
+`--train-frac` and `--val-frac` survive on `nn.train` and `nn.experiment`, where
+they allocate train against validation **inside** the research region
+`[0, sealed_start)` — only their ratio is used, and they cannot move
+`test.start`. Under the default 0.70/0.15 the training block is 70/85 of the
+research region, which on the canonical dataset is exactly the row the previous
+`int(n_rows * 0.70)` produced, so the default geometry is unchanged.
+
+`tests/test_sealed_boundary.py` holds all of this, including the core regression:
+appending 1, 100, 10,000 or a year of candles after the anchor leaves the
+resolved boundary, the research timestamps and the fold geometry identical.
+
 ### What the test split is for
 
 Exactly one thing: a single estimate of unseen performance, produced after every
@@ -499,10 +547,12 @@ refused rather than allowed to double-count. A fold's *inner* block may be a
 previous fold's outer block, and a later fold may train on it — by then those
 rows are history, which is exactly what walk-forward is meant to simulate.
 
-**Folds are planned over the research region only** — rows `[0,
-sealed_test_start)`, where the boundary comes from
-`nn.dataset.sealed_test_start` under the same 70/15/15 contract `nn.train` uses.
-`--train-frac` and `--val-frac` locate that boundary and do nothing else.
+**Folds are planned over the research region only** — the rows strictly before
+`nn.dataset.SEALED_TEST_START_UTC`, resolved against the dataset's own timestamps
+by `ResearchData.sealed_boundary()`, the same call `nn.train` and `nn.experiment`
+make. Walk-forward has no `--train-frac`/`--val-frac`: they existed only to
+locate the old moving boundary, and were removed rather than left looking as
+though they still control the seal.
 
 Fold geometry is configurable as fractions *of the research region*: `--folds`,
 `--min-train-frac` (or `--min-train-size`), `--inner-val-frac` (or
@@ -512,7 +562,10 @@ folds is never silently reduced, and the sealed rows are never borrowed to make
 up the difference.
 
 The defaults (45% / 10% / 10%, step = outer size) give four folds on the
-56,726-row BTC 1h dataset, whose research region is rows `[0, 48217)`:
+56,726-row BTC 1h dataset, in which the anchor resolves to row 48,217 — so the
+research region is rows `[0, 48217)`. That row is metadata about *that* dataset;
+appending candles does not move it, and a repair to history before the anchor
+could move it without moving the seal:
 
 | fold | train | inner validation | outer validation |
 | --- | --- | --- | --- |
@@ -577,9 +630,11 @@ of split names — a name-based check is exactly what let the second bug through
 and would have passed against the third.
 
 Output: `artifacts/walkforward/walkforward.json` (which records
-`sealed_test.start_row`, the sealed period, `reported_block:
-"outer_validation"`, and per fold a `periods` object with all three regions, a
-`selection` object and an `outer_validation` object) and `walkforward.md`.
+`sealed_test.anchor_timestamp` and `sealed_test.start_row`, the sealed period,
+`reported_block: "outer_validation"`, and per fold a `periods` object with all
+three regions, a `selection` object and an `outer_validation` object) and
+`walkforward.md`. Both halves of the boundary are recorded because an artifact
+carrying only a row cannot say which seal it was produced under.
 
 ### Diagnostics across several walk-forward runs
 
@@ -604,6 +659,10 @@ re-checked against what landed on disk, on row indices rather than region names:
   `inner.end <= outer.start`;
 - outer blocks disjoint within the run — no row reported by two folds;
 - no region ending at or beyond `sealed_test.start_row`;
+- runs compared against each other agree on `sealed_test.anchor_timestamp`, so a
+  timestamp-anchored run is never averaged together with one that records only a
+  row index. The five committed artifacts predate the anchor, carry none, and are
+  reported as row-only rather than relabelled;
 - `test_evaluated` and `sealed_test.evaluated` both false, failing closed when
   either is absent rather than absent-means-fine;
 - `reported_block` and `summary.aggregated_from` both `outer_validation`;

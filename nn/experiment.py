@@ -11,7 +11,10 @@ interrupted, and a results file can be checked against the plan it came from
 through the ``plan_hash`` both carry.
 
 The test split is never touched. Not "not by default": this module has no code
-path that windows it. It calls :func:`nn.train.prepare_research_windows`, whose
+path that windows it. Where it begins is not this module's decision either — the
+boundary is the immutable ``nn.dataset.SEALED_TEST_START_UTC`` anchor resolved
+against the dataset's own timestamps, recorded in the manifest and hashed into
+``plan_hash``. It calls :func:`nn.train.prepare_research_windows`, whose
 signature takes a training and a validation split and nothing else, so the model
 selection done here cannot consume the sealed estimate that a later
 ``nn.train`` run will spend once.
@@ -48,7 +51,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from nn import evaluate as ev
-from nn.dataset import chronological_split
+from nn.dataset import SealedBoundary, chronological_split
 from nn.train import (
     RunConfig,
     fit_and_validate,
@@ -149,14 +152,18 @@ def build_plan(
     configs: list[RunConfig],
     data: Any,
     plan: Any,
+    boundary: SealedBoundary,
     argv: list[str] | None,
 ) -> dict[str, Any]:
     """The immutable manifest: everything decided before any model was trained.
 
-    ``plan_hash`` covers the grid, the fixed parameters and the dataset — the
-    inputs that define the search — so a results file can be tied back to the
-    plan it came from, and a plan that was quietly edited between the manifest
-    and the results does not match.
+    ``plan_hash`` covers the grid, the fixed parameters, the dataset and the
+    sealed-test contract — the inputs that define the search — so a results file
+    can be tied back to the plan it came from, and a plan that was quietly edited
+    between the manifest and the results does not match. The sealed contract is
+    hashed material because a grid searched under one seal is not the same
+    experiment as the same grid searched under another; without it, two plans
+    that withheld different data would share an identity.
     """
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -169,7 +176,7 @@ def build_plan(
             "validation": data.period(plan.validation),
         },
         "sealed_test": {
-            "start_row": plan.test.start,
+            **boundary.to_dict(),
             "period": data.period(plan.test),
             "evaluated": False,
         },
@@ -195,6 +202,7 @@ def build_plan(
             "fixed": manifest["fixed"],
             "objective": manifest["objective"],
             "dataset": manifest["dataset"],
+            "sealed_test": manifest["sealed_test"],
             "runs": manifest["runs"],
         },
         sort_keys=True,
@@ -320,8 +328,27 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--out", default="artifacts/experiments")
-    parser.add_argument("--train-frac", type=float, default=0.70)
-    parser.add_argument("--val-frac", type=float, default=0.15)
+    # As in nn.train: train against validation *inside the research region*,
+    # the rows before the immutable sealed-test anchor. Neither moves the seal.
+    parser.add_argument(
+        "--train-frac",
+        type=float,
+        default=0.70,
+        help=(
+            "Train weight within the research region (the rows before the sealed "
+            "anchor). Cannot move the sealed test boundary, which is a fixed UTC "
+            "timestamp."
+        ),
+    )
+    parser.add_argument(
+        "--val-frac",
+        type=float,
+        default=0.15,
+        help=(
+            "Validation weight within the research region. Cannot move the sealed "
+            "test boundary."
+        ),
+    )
     parser.add_argument(
         "--objective",
         default="net_return",
@@ -354,7 +381,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_argparser().parse_args(argv)
 
     data = load_research_data(args.dataset)
-    plan = chronological_split(data.n_rows, args.train_frac, args.val_frac)
+    try:
+        boundary = data.sealed_boundary()
+    except ValueError as exc:
+        raise SystemExit(f"cannot resolve the sealed test boundary: {exc}") from exc
+    plan = chronological_split(data.n_rows, boundary.start_row, args.train_frac, args.val_frac)
     device = resolve_device(args.device)
     objective = OBJECTIVES[args.objective]
 
@@ -365,12 +396,12 @@ def main(argv: list[str] | None = None) -> int:
     # predeclared grid that is only written out once the results are in is not
     # predeclared, it is a description of what happened to finish.
     out_dir = Path(args.out)
-    manifest = build_plan(args, configs, data, plan, argv)
+    manifest = build_plan(args, configs, data, plan, boundary, argv)
     plan_path = write_plan(out_dir, manifest)
     logger.warning(
         "Wrote the experiment plan (%d configurations, plan_hash %s) to %s before "
-        "training. Validation rows %s to %s; the test split (%d rows, from row %d) "
-        "REMAINS SEALED.",
+        "training. Validation rows %s to %s; the test split (%d rows, from row %d, "
+        "sealed at the immutable anchor %s) REMAINS SEALED.",
         len(configs),
         manifest["plan_hash"],
         plan_path,
@@ -378,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
         data.period(plan.validation)["end"],
         len(plan.test),
         plan.test.start,
+        boundary.anchor.isoformat(),
     )
 
     records: list[dict[str, Any]] = []

@@ -34,7 +34,7 @@ from nn import evaluate as ev
 from nn import regime, walkforward, wf_diagnostics
 from nn.data_pipeline import build_dataset, save_dataset
 from nn.dataset import Split, build_windows, sample_indices
-from nn.dataset import sealed_test_start
+from nn.dataset import SEALED_TEST_START_UTC, resolve_sealed_boundary
 from tools.make_sample_data import generate_candles
 
 TINY = [
@@ -60,9 +60,21 @@ SEQ_LEN = 16
 
 
 # --- synthetic artifacts ------------------------------------------------------
+def synthetic_boundary(n_rows: int) -> int:
+    """An arbitrary sealed start row for a hand-written artifact.
+
+    Diagnostics *reads* a boundary out of an artifact; it never derives one, so
+    for these fixtures the number only has to be a plausible row that the
+    artifact then records. It is deliberately not resolved from the real anchor:
+    these payloads have no dataset behind them, and pretending otherwise would
+    tie a fixture to a contract it is not testing.
+    """
+    return int(n_rows * 0.85)
+
+
 def plan_for(n_rows: int = N_ROWS, folds: int = FOLDS):
     """Fold geometry straight from the production planner."""
-    boundary = sealed_test_start(n_rows, 0.70, 0.15)
+    boundary = synthetic_boundary(n_rows)
     args = walkforward.build_argparser().parse_args(["--dataset", "x", "--folds", str(folds)])
     sizes = walkforward.resolve_sizes(args, boundary)
     return boundary, walkforward.plan_nested_folds(boundary, folds, *sizes)
@@ -356,7 +368,7 @@ def test_training_overlapping_the_inner_block_is_caught(tmp_path):
 @pytest.mark.parametrize("region", wf_diagnostics.REGIONS)
 def test_any_region_reaching_the_sealed_block_is_caught(tmp_path, region):
     """Asserted on rows for all three regions, not just the reported one."""
-    boundary = sealed_test_start(N_ROWS, 0.70, 0.15)
+    boundary = synthetic_boundary(N_ROWS)
 
     def cross(payload):
         payload["folds"][-1]["periods"][region]["row_range"][1] = boundary + 1
@@ -475,6 +487,49 @@ def test_a_different_sealed_boundary_is_not_comparable(tmp_path):
         ),
     ]
     assert any("sealed_test_start" in p for p in wf_diagnostics.compare_runs(runs))
+
+
+def test_a_row_only_boundary_is_not_comparable_with_a_timestamp_anchored_one(tmp_path):
+    """Two runs landing on the same row is not evidence they sealed the same data.
+
+    A run that records only ``start_row`` cannot say which instant that row meant,
+    so pairing it with one that *was* sealed at a stated anchor would put a single
+    sealed-test claim on runs that do not share one. The five committed artifacts
+    are all row-only, which is why this fails closed on the mismatch rather than
+    on the absence.
+    """
+    anchored = edit(
+        write_run(tmp_path / "b"),
+        lambda p: p["sealed_test"].update(anchor_timestamp=SEALED_TEST_START_UTC.isoformat()),
+    )
+    runs = [
+        wf_diagnostics.load_run(write_run(tmp_path / "a")),
+        wf_diagnostics.load_run(anchored),
+    ]
+
+    assert runs[0].sealed_anchor is None
+    assert runs[1].sealed_anchor == SEALED_TEST_START_UTC.isoformat()
+    # Same row, so the row check passes and only the provenance check fires.
+    assert runs[0].sealed_test_start == runs[1].sealed_test_start
+    problems = wf_diagnostics.compare_runs(runs)
+    assert any("row index only" in problem for problem in problems)
+
+
+def test_runs_sharing_row_only_provenance_stay_comparable(tmp_path):
+    """The committed generation must not become unreadable for predating the anchor."""
+    runs = [
+        wf_diagnostics.load_run(write_run(tmp_path / "a")),
+        wf_diagnostics.load_run(write_run(tmp_path / "b", seed=142)),
+    ]
+    assert all(run.sealed_anchor is None for run in runs)
+    assert wf_diagnostics.compare_runs(runs) == []
+
+
+def test_a_historical_artifact_is_never_relabelled_as_timestamp_anchored(tmp_path):
+    """Absent provenance is reported as absent, never filled in from the anchor."""
+    run = wf_diagnostics.load_run(write_run(tmp_path / "a"))
+    assert run.sealed_anchor is None
+    assert wf_diagnostics.audit_run(run) == [], "row-only provenance is not an integrity fault"
 
 
 # --- 4. the seed-stability aggregate ------------------------------------------
@@ -819,14 +874,14 @@ def artifact_for(directory: Path, frame, meta, *, seed: int = 42, folds: int = 3
 def research_for(dataset_pair, frame):
     processed, _, _, _ = dataset_pair
     return regime.load_research_frame(
-        processed, sealed_test_start=sealed_test_start(len(frame), 0.70, 0.15)
+        processed, sealed_test_start=resolve_sealed_boundary(frame["date"]).start_row
     )
 
 
 def test_the_research_frame_stops_at_the_sealed_boundary(dataset_pair):
     """Sealed rows are absent from the object, not merely unread."""
     processed, _, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     assert len(research.frame) == boundary
@@ -839,7 +894,7 @@ def test_the_research_frame_stops_at_the_sealed_boundary(dataset_pair):
 
 def test_a_block_at_or_past_the_boundary_is_refused(dataset_pair):
     processed, _, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     with pytest.raises(regime.RegimeDataError, match="beyond the sealed"):
@@ -851,7 +906,7 @@ def test_a_block_at_or_past_the_boundary_is_refused(dataset_pair):
 def test_block_statistics_use_only_the_rows_of_that_block(dataset_pair):
     """Every statistic recomputed independently from the same slice."""
     processed, _, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 400, 520
@@ -883,7 +938,7 @@ def test_block_statistics_use_only_the_rows_of_that_block(dataset_pair):
 
 def test_feature_statistics_are_exact_including_the_percentiles(dataset_pair):
     processed, _, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 300, 480
@@ -915,7 +970,7 @@ def test_feature_statistics_are_exact_including_the_percentiles(dataset_pair):
 
 def test_the_target_distribution_is_exact(dataset_pair):
     processed, _, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 250, 500
@@ -964,7 +1019,7 @@ def test_the_matching_dataset_identity_is_accepted(dataset_pair):
     processed, _, frame, meta = dataset_pair
     research = regime.load_research_frame(
         processed,
-        sealed_test_start=sealed_test_start(len(frame), 0.70, 0.15),
+        sealed_test_start=resolve_sealed_boundary(frame["date"]).start_row,
         identity=identity_of(frame, meta),
     )
     assert research.timeframe == meta.timeframe
@@ -998,7 +1053,7 @@ def test_every_identity_dimension_fails_closed(dataset_pair, field, wrong_value)
     with pytest.raises(regime.RegimeDataError) as raised:
         regime.load_research_frame(
             processed,
-            sealed_test_start=sealed_test_start(len(frame), 0.70, 0.15),
+            sealed_test_start=resolve_sealed_boundary(frame["date"]).start_row,
             identity=identity,
         )
     assert field in str(raised.value)
@@ -1018,7 +1073,7 @@ def test_metadata_is_cross_checked_against_the_frames_own_timestamps(dataset_pai
     with pytest.raises(regime.RegimeDataError, match="metadata says the data starts"):
         regime.load_research_frame(
             copied,
-            sealed_test_start=sealed_test_start(len(frame), 0.70, 0.15),
+            sealed_test_start=resolve_sealed_boundary(frame["date"]).start_row,
             identity={**identity_of(frame, meta), "start": payload["start"]},
         )
 
@@ -1027,7 +1082,7 @@ def test_metadata_is_cross_checked_against_the_frames_own_timestamps(dataset_pai
 def test_raw_candles_are_matched_on_timestamps_not_position(dataset_pair):
     """The processed dataset dropped warm-up rows, so the offset is real."""
     processed, raw_path, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     raw = regime.load_raw_ohlcv(raw_path)
 
@@ -1045,7 +1100,7 @@ def test_raw_candles_are_matched_on_timestamps_not_position(dataset_pair):
 
 def test_a_missing_raw_timestamp_fails_closed(dataset_pair, tmp_path):
     processed, raw_path, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     timestamps = research.block(200, 260)["date"]
 
@@ -1070,7 +1125,7 @@ def test_duplicate_raw_timestamps_fail_closed(dataset_pair, tmp_path):
 
 def test_an_incompatible_timeframe_fails_closed(dataset_pair):
     processed, raw_path, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     timestamps = research.block(200, 240)["date"]
 
@@ -1089,7 +1144,7 @@ def test_raw_without_ohlcv_columns_fails_closed(tmp_path):
 
 def test_raw_block_statistics_are_exact(dataset_pair):
     processed, raw_path, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     raw = regime.load_raw_ohlcv(raw_path)
 
@@ -1121,7 +1176,7 @@ def test_raw_block_statistics_are_exact(dataset_pair):
 def test_raw_statistics_skip_returns_across_a_market_gap(dataset_pair, tmp_path):
     """A missing exchange candle is not a price move."""
     processed, raw_path, frame, _ = dataset_pair
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     timestamps = research.block(300, 360)["date"]
 
@@ -1383,7 +1438,7 @@ def real_regime_runs(tmp_path_factory):
         "dataset": processed,
         "raw": raw_path,
         "rows": len(frame),
-        "boundary": sealed_test_start(len(frame), 0.70, 0.15),
+        "boundary": resolve_sealed_boundary(frame["date"]).start_row,
     }
 
 
@@ -1617,7 +1672,7 @@ def gapped_research_frame(tmp_path, *, rows=900, gap_at=300, gap_len=5, horizon=
     )
     processed = tmp_path / "gapped.parquet"
     save_dataset(processed, frame, meta)
-    boundary = sealed_test_start(len(frame), 0.70, 0.15)
+    boundary = resolve_sealed_boundary(frame["date"]).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     return research, frame, boundary
 
