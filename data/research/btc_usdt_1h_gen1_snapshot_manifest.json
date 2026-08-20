@@ -1,0 +1,62 @@
+{
+  "snapshot_schema": "chimera.research-snapshot/1",
+  "contract": {
+    "contract_schema": "chimera.research-contract/1",
+    "contract_id": "btc-usdt-1h-gen1",
+    "contract_hash": "dca6d0a891a257197a7c8aecec04fdba0a0b3009cfe93c5f3a397d458ab4a1de",
+    "research_generation": 1,
+    "domain": "directional-classification",
+    "scope": {
+      "exchange": "binance",
+      "pair": "BTC/USDT",
+      "timeframe": "1h"
+    },
+    "sealed_test_start": "2025-08-27T23:00:00+00:00"
+  },
+  "contains_styx": false,
+  "canonical_reference": {
+    "artifact": "artifacts/walkforward/btc_nested_v4_seed_42/walkforward.json",
+    "research_input_hash": "1c09218442cdf98cfe2f49ac521c70b2d7692717d7488e8105c972a3d2ac4740",
+    "research_rows": 48217,
+    "max_outer_end_row": 45802,
+    "outer_to_styx_margin_rows": 2415,
+    "target_horizon": 6
+  },
+  "raw_pre_styx": {
+    "path": "data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet",
+    "rows": 49551,
+    "start": "2020-01-01T00:00:00+00:00",
+    "end": "2025-08-27T22:00:00+00:00",
+    "semantic_hash": "8724f622e666ef1fb12fbbefd5fcddd5b885f36d629f25f95934fa469239145e",
+    "sha256": "04f9748e09adfd4cb38dd84898a43aa7eb5de1ff9f6aa938e3e1302b20cefeee",
+    "columns": [
+      "date",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume"
+    ]
+  },
+  "processed_outer_coverage": {
+    "path": "data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet",
+    "rows": 45802,
+    "row_range": [
+      0,
+      45802
+    ],
+    "start": "2020-01-04T06:00:00+00:00",
+    "end": "2025-05-19T07:00:00+00:00",
+    "semantic_prefix_hash": "59ba439c266fa32d698d71b8e99048c6e19c07b90bc9f075e48b1cfb7977484c",
+    "sha256": "424edf2c16a6e7363aca7faeecbfdd9f50ca587756502b519d6efb375abf55c1",
+    "metadata_path": "data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet.meta.json",
+    "metadata_sha256": "fbd4074da42d9d1456c6ce7d99bb232bdc9689736c5069c7bb22d3ff51aeb089"
+  },
+  "safety_checks": {
+    "canonical_research_input_verified": true,
+    "raw_strictly_before_styx": true,
+    "processed_strictly_before_styx": true,
+    "outer_horizon_within_research": true,
+    "styx_rows_exported": 0
+  }
+}
