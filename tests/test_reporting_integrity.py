@@ -29,8 +29,16 @@ REPO = Path(__file__).resolve().parents[1]
 ARTIFACTS = REPO / "artifacts"
 INDEX = ARTIFACTS / "README.md"
 
-#: The one artifact directory the index may mark CURRENT.
-CURRENT_BASELINE = "diagnostics/btc_regimes_v3"
+#: The current generation's aggregate.
+CURRENT_BASELINE = "diagnostics/btc_regimes_v4"
+
+#: Its own committed source runs, each independently marked CURRENT.
+CURRENT_SOURCE_RUNS = {
+    f"walkforward/btc_nested_v4_seed_{seed}" for seed in (42, 142, 242, 342, 442)
+}
+
+#: The prior generation's aggregate, whose own source runs are absent.
+V3_BASELINE = "diagnostics/btc_regimes_v3"
 
 
 # --- verdict wording ------------------------------------------------------------
@@ -219,11 +227,16 @@ def _index_rows() -> list[dict[str, str]]:
     return [row for row in rows if row.get("status")]
 
 
-def test_the_index_names_exactly_one_current_artifact():
+def test_the_index_names_exactly_one_current_generation():
+    """CURRENT is per-generation, not per-row: the aggregate and its own
+    committed source runs share it, matching each source run's own
+    `STATUS.md`. No other generation may carry it.
+    """
     rows = _index_rows()
     current = [row for row in rows if row["status"] == "CURRENT"]
-    assert len(current) == 1, f"expected one CURRENT entry, got {[r['path'] for r in current]}"
-    assert current[0]["path"] == CURRENT_BASELINE
+    assert current, "expected at least one CURRENT entry"
+    assert {row["path"] for row in current} == {CURRENT_BASELINE, *CURRENT_SOURCE_RUNS}
+    assert {row["generation"] for row in current} == {"v4"}
 
 
 def test_no_legacy_generation_is_labelled_current():
@@ -265,6 +278,8 @@ def test_the_index_records_that_committed_artifacts_predate_the_metric_change():
     rows = _index_rows()
     assert rows
     for row in rows:
+        if row["generation"] == "v4":
+            continue
         assert row["metric semantics"] == "pre-correction", row["path"]
     text = INDEX.read_text()
     assert "not comparable" in text
@@ -279,8 +294,8 @@ def test_the_index_states_that_the_v3_source_runs_are_absent():
     directories are not those runs.
     """
     rows = {row["path"]: row for row in _index_rows()}
-    assert rows[CURRENT_BASELINE]["source runs present"] == "no"
-    assert "btc_nested_v3_seed" in rows[CURRENT_BASELINE]["source runs"]
+    assert rows[V3_BASELINE]["source runs present"] == "no"
+    assert "btc_nested_v3_seed" in rows[V3_BASELINE]["source runs"]
 
     text = INDEX.read_text()
     assert "not fixed by copying or renaming" in text.lower()

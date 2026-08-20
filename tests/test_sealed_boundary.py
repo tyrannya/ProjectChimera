@@ -280,7 +280,9 @@ def test_an_empty_date_column_is_refused():
 # for it. Timestamps and row counts only: no feature, target, return or
 # prediction from the sealed block is read here or anywhere else in this suite.
 
-HISTORICAL_RUNS = sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json"))
+ALL_RUNS = sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json"))
+HISTORICAL_RUNS = [p for p in ALL_RUNS if "_v4_" not in p.parent.name]
+V4_RUNS = [p for p in ALL_RUNS if "_v4_" in p.parent.name]
 
 
 def test_the_committed_artifacts_are_present_to_check_against():
@@ -310,6 +312,21 @@ def test_historical_artifacts_are_not_relabelled_as_timestamp_anchored(artifact)
     """They predate the contract. Saying otherwise would manufacture provenance."""
     sealed = json.loads(artifact.read_text())["sealed_test"]
     assert "anchor_timestamp" not in sealed
+
+
+def test_the_committed_v4_artifacts_are_present_to_check_against():
+    assert len(V4_RUNS) == 5
+
+
+@pytest.mark.parametrize("artifact", V4_RUNS, ids=lambda p: p.parent.name)
+def test_the_v4_anchor_names_the_instant_the_current_generation_sealed_at(artifact):
+    """v4 appended rows after the same seal; the anchor instant did not move."""
+    payload = json.loads(artifact.read_text())
+    sealed = payload["sealed_test"]
+
+    assert sealed["start_row"] == 48217
+    assert pd.Timestamp(sealed["anchor_timestamp"]) == SEALED_TEST_START_UTC
+    assert pd.Timestamp(sealed["period"]["start"]) == SEALED_TEST_START_UTC
 
 
 # --- D/E. the entrypoints share one seal, and appending does not move it ------

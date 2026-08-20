@@ -749,7 +749,11 @@ def test_a_partial_fingerprint_block_is_a_fault(tmp_path, sealed_row):
 
 def test_the_committed_artifacts_have_no_fingerprint_and_are_never_given_one():
     """They predate this work. Reading them must not invent provenance."""
-    for artifact in sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json")):
+    all_artifacts = sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json"))
+    legacy_artifacts = [a for a in all_artifacts if "_v4_" not in a.parent.name]
+    assert legacy_artifacts, "expected at least one pre-fingerprint committed artifact"
+
+    for artifact in legacy_artifacts:
         payload = json.loads(artifact.read_text())
         assert "research_input" not in payload
 
@@ -764,6 +768,26 @@ def test_the_committed_artifacts_have_no_fingerprint_and_are_never_given_one():
         assert (
             wf_diagnostics._research_input_label(run)
             == "no research-input fingerprint (dataset metadata only)"
+        )
+
+
+def test_the_committed_v4_artifacts_carry_current_research_input_provenance():
+    """v4 is current-generation work. Its provenance is real and must be read as such."""
+    v4_artifacts = sorted((REPO / "artifacts" / "walkforward").glob("*_v4_*/walkforward.json"))
+    assert v4_artifacts, "expected the committed v4 walkforward artifacts"
+
+    for artifact in v4_artifacts:
+        payload = json.loads(artifact.read_text())
+        assert "research_input" in payload
+
+        run = wf_diagnostics.load_run(artifact)
+        assert run.research_input is not None
+        assert run.research_input_hash
+        assert not any(
+            "research_input" in problem for problem in wf_diagnostics.audit_run(run)
+        )
+        assert wf_diagnostics._research_input_label(run) == (
+            f"research input sha256:{str(run.research_input_hash)[:16]}"
         )
 
 

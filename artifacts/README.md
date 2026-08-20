@@ -25,7 +25,11 @@ as evidence of what an earlier generation did, not as a result).
 | path | generation | status | produced by | source runs | source runs present | metric semantics |
 | --- | --- | --- | --- | --- | --- | --- |
 | `diagnostics/btc_regimes_v4` | v4 | CURRENT | `nn.wf_diagnostics` | `walkforward/btc_nested_v4_seed_{42,142,242,342,442}` | **yes** | current |
-| `walkforward/btc_nested_v4_seed_{42,142,242,342,442}` | v4 | CURRENT | `nn.walkforward` | each run is its own source | **yes** | current |
+| `walkforward/btc_nested_v4_seed_42` | v4 | CURRENT | `nn.walkforward` | itself (seed 42) | n/a | current |
+| `walkforward/btc_nested_v4_seed_142` | v4 | CURRENT | `nn.walkforward` | itself (seed 142) | n/a | current |
+| `walkforward/btc_nested_v4_seed_242` | v4 | CURRENT | `nn.walkforward` | itself (seed 242) | n/a | current |
+| `walkforward/btc_nested_v4_seed_342` | v4 | CURRENT | `nn.walkforward` | itself (seed 342) | n/a | current |
+| `walkforward/btc_nested_v4_seed_442` | v4 | CURRENT | `nn.walkforward` | itself (seed 442) | n/a | current |
 | `diagnostics/btc_regimes_v3` | v3 | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v3_seed_{42,142,242,342,442}` | **no** | pre-correction |
 | `diagnostics/btc_regimes_v2` | v2 | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v2_seed_{42,142,242,342,442}` | **no** | pre-correction |
 | `walkforward/btc_nested_v1` | v1 | HISTORICAL | `nn.walkforward` | itself (seed 42) | n/a | pre-correction |

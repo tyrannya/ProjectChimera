@@ -633,6 +633,8 @@ def historical_copy(directory: Path, *, contract: ResearchContract | None = None
 def test_the_committed_artifacts_keep_their_row_only_provenance():
     """They predate contracts. Reading them must not invent one."""
     for artifact in sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json")):
+        if "_v4_" in artifact.parent.name:
+            continue
         payload = json.loads(artifact.read_text())
         assert "research_contract" not in payload["sealed_test"]
         assert "anchor_timestamp" not in payload["sealed_test"]
