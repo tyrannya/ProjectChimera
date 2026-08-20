@@ -182,6 +182,20 @@ recorded beside the contract in every artifact, and is not the contract. See
 [research contracts](docs/ml_pipeline.md#research-contracts) and
 [where the sealed test block begins](docs/ml_pipeline.md#where-the-sealed-test-block-begins).
 
+A contract says what a generation was *allowed* to see. It cannot say what it
+*saw*: two datasets can agree on scope, row count, period, feature contract and
+target spec and still differ in a historical candle. So every new artifact also
+records a **research-input fingerprint** — a SHA-256 over the values research
+reads, in the rows before the seal. It is semantic, not a hash of the Parquet
+file: recompressing, restoring at a different resolution, reordering columns or
+moving the file leaves it alone, while one changed price does not. Appending
+candles after the seal cannot change it either, so the ordinary way this dataset
+grows never makes two runs incomparable; a correction *before* the seal does
+change it, and should. `nn.wf_diagnostics` refuses to average runs that read
+different data even when their contract, geometry and dates all match, and
+verifies the fingerprint against any dataset it is handed. See
+[research-data provenance](docs/ml_pipeline.md#research-data-provenance).
+
 ### 4. Research: experiment grids and walk-forward validation
 
 ```bash

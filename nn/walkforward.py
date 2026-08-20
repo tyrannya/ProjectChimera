@@ -64,6 +64,11 @@ coordinates *after* the timestamp has been resolved, which is why the flow is
 on row indices and timestamps — never on split names, which is exactly the check
 that missed the second bug.
 
+Beside the contract, every run records the identity of the research-visible data
+it read (``nn.data_fingerprint``), because the contract cannot say which candles
+were actually there. Runs that disagree on it are not repeated measurements of
+one procedure, and ``nn.wf_diagnostics`` refuses to average them.
+
 Results are written as JSON and a short Markdown summary, with the baselines
 alongside every fold — a model that beats its baselines in one fold out of four
 has not been shown to work. Per-sample outer predictions go beside them in
@@ -90,6 +95,7 @@ import pandas as pd
 
 from chimera.contracts import CLASS_ORDER
 from nn import evaluate as ev
+from nn.data_fingerprint import ResearchInputFingerprint
 from nn.dataset import Split
 from nn.research_contract import (
     ContractScopeError,
@@ -521,6 +527,7 @@ def to_markdown(
     sealed: dict[str, Any],
     anchor: str,
     contract: ResearchContract,
+    fingerprint: ResearchInputFingerprint,
 ) -> str:
     lines = [
         "# Nested walk-forward validation",
@@ -536,6 +543,13 @@ def to_markdown(
         f"(generation {contract.research_generation}, {contract.domain}, "
         f"{contract.scope.exchange} {contract.scope.pair} {contract.scope.timeframe}),",
         f"semantic identity `sha256:{contract.contract_hash}`.",
+        "",
+        f"**Research input:** `sha256:{fingerprint.research_input_hash}` over "
+        f"{fingerprint.research_rows} research-visible rows,",
+        f"{fingerprint.research_start[:10]} to {fingerprint.research_end[:10]}. The "
+        "contract says what this generation was allowed",
+        "to see; this says what it saw. Two runs are repeated measurements of one "
+        "procedure only if both match.",
         "",
         f"**Sealed test block:** everything at or after `{anchor}` — an immutable "
         "wall-clock",
@@ -812,6 +826,7 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         raise SystemExit(f"cannot resolve the sealed test boundary: {exc}") from exc
     boundary = sealed.start_row
+    fingerprint = data.input_fingerprint(sealed)
     sealed_split = Split("sealed_test", boundary, data.n_rows)
     min_train, inner_size, outer_size, step = resolve_sizes(args, boundary)
     folds = plan_nested_folds(boundary, args.folds, min_train, inner_size, outer_size, step)
@@ -869,6 +884,10 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "dataset": data.ds_meta.to_dict(),
+                # Identity of the values, beside the description of the build.
+                # `nn.wf_diagnostics` refuses to aggregate runs that disagree
+                # here even when their contract, geometry and dates all match.
+                "research_input": fingerprint.to_dict(),
                 "config": vars(args),
                 "sizes": {
                     "min_train": min_train,
@@ -906,6 +925,7 @@ def main(argv: list[str] | None = None) -> int:
         sealed=data.period(sealed_split),
         anchor=sealed.anchor.isoformat(),
         contract=contract,
+        fingerprint=fingerprint,
     )
     (out_dir / "walkforward.md").write_text(markdown)
     print(markdown)

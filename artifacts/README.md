@@ -59,14 +59,15 @@ unavailable rather than inferring it.
 
 ## Row-only sealed-boundary provenance
 
-Every artifact committed here records `sealed_test.start_row: 48217` and neither
-`sealed_test.anchor_timestamp` nor `sealed_test.research_contract`, because it
-predates both the immutable timestamp contract and the versioned research
-contracts that now carry it. Under the boundary those runs were produced with,
-the sealed start was `int(rows * 0.85)` on a 56,726-row dataset; it happens to
-name the same instant the `btc-usdt-1h-gen1` contract does —
-`2025-08-27 23:00:00+00:00`, which each file records as its sealed period start —
-but the file itself cannot say so.
+Every artifact committed here records `sealed_test.start_row: 48217` and none of
+`sealed_test.anchor_timestamp`, `sealed_test.research_contract` or
+`research_input`, because it predates the immutable timestamp contract, the
+versioned research contracts that now carry it, and the research-data
+fingerprints that say which candles a run actually read. Under the boundary those
+runs were produced with, the sealed start was `int(rows * 0.85)` on a 56,726-row
+dataset; it happens to name the same instant the `btc-usdt-1h-gen1` contract
+does — `2025-08-27 23:00:00+00:00`, which each file records as its sealed period
+start — but the file itself cannot say so.
 
 They are **not** rewritten, `start_row` is **not** restated in the new contract's
 terms, and no research contract is assigned to them. They are historical
@@ -75,11 +76,20 @@ the same reason the v1 directories are not renamed into v2/v3 above.
 
 `nn.wf_diagnostics` reads them exactly as before: absent anchor provenance is
 reported as *an unrecorded boundary (row index only)*, absent contract provenance
-as *no research contract (row-only provenance)*, neither filled in from the
-committed registry, and neither an integrity fault. It does refuse to compare a
-row-only run with a contract-bearing one, and refuses to compare two runs under
-different contracts, because two runs landing on the same row is not evidence
-that they belong to the same research generation.
+as *no research contract (row-only provenance)*, absent data provenance as *no
+research-input fingerprint (dataset metadata only)*, none of them filled in from
+the committed registry or from whatever dataset is on the reader's disk, and none
+of them an integrity fault. It does refuse to compare a row-only run with a
+contract-bearing one, refuses to compare two runs under different contracts, and
+refuses to compare two runs that read different research data — because two runs
+landing on the same row is not evidence that they belong to the same research
+generation, and sharing a generation is not evidence that they saw the same
+candles.
+
+The dataset those runs were produced from is not committed either, and no
+fingerprint can be computed for them after the fact: a digest taken from a
+dataset rebuilt today would identify today's file, not what they read. That gap
+is a property of the runs, not something this checkpoint can close.
 
 ## Missing provenance
 
@@ -120,3 +130,10 @@ python -m nn.wf_diagnostics artifacts/walkforward/<run_a> artifacts/walkforward/
 
 Neither the dataset nor the raw candles are committed; both are local paths given at
 runtime. The sealed test block is not opened by either command.
+
+A current-generation run records a `research_input` fingerprint of the
+research-visible data it read, and the diagnostics recompute it from whatever
+`--dataset` they are handed and refuse a mismatch. That is what makes a future
+generation re-auditable without the Parquet files: the artifacts carry the
+identity of their input, so any file claiming to be that input can be checked
+against them rather than taken on trust.

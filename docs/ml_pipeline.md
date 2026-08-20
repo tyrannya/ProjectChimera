@@ -169,6 +169,83 @@ the same grid run under a different generation is a different experiment.
 
 `tests/test_research_contracts.py` holds all of this.
 
+### Research-data provenance
+
+A contract says what a generation was *allowed* to see. It cannot say what it
+*saw*. Two datasets can agree on exchange, pair, timeframe, row count, first and
+last timestamp, feature contract and target spec while differing in one
+historical candle — and every field any artifact records would be identical. The
+raw candles and the built dataset are local runtime inputs and are not committed,
+so "same metadata" was the strongest claim available.
+
+So every new artifact also records a **research-input fingerprint**
+(`nn/data_fingerprint.py`), under a top-level `research_input` key:
+
+```json
+"research_input": {
+  "fingerprint_schema": "chimera.research-input/1",
+  "research_input_hash": "…64 hex…",
+  "full_table_hash": "…64 hex…",
+  "research_rows": 48217,
+  "total_rows": 56726,
+  "research_start": "…", "research_end": "…",
+  "columns": ["date", "close", "segment_id", "…features…", "future_return", "target"]
+}
+```
+
+**It is semantic, not a hash of the file.** Nothing reads Parquet bytes. The
+digest covers the *values* research reads, each normalised to a fixed width and
+byte order: timestamps as UTC nanoseconds since the epoch, integers as
+little-endian `int64`, floats as little-endian `float64` with `-0.0` folded onto
+`0.0` and every NaN folded onto one. A canonical JSON header carries the
+normalised market, the ordered feature names, the feature spec and the target
+spec. So recompressing the file, storing timestamps at microsecond resolution,
+reordering its columns, writing a pandas index into it, reformatting the sidecar,
+recasing `Binance` or moving the file all leave the identity alone; one changed
+price does not.
+
+**Which rows.** `research_input_hash` covers rows `[0, sealed_start)` — exactly
+the research-visible region under the selected contract. Appending candles after
+the seal is the ordinary way this dataset grows and cannot change it, so growth
+never makes two runs incomparable. A correction *before* the seal does change it,
+and should: every row index in an artifact then addresses a different candle.
+
+**Which columns.** `date`, `close`, `segment_id` (when present), the feature
+columns in their recorded order, `future_return` and `target` — precisely what
+`nn.train.ResearchData` reads. A column research never looks at does not change
+the identity; a missing `segment_id` does, because gap handling is not a detail.
+
+**`full_table_hash` is audit metadata, and only that.** It spans every row,
+answering "is this the same file?", and it is never a comparability input — a run
+whose dataset has since grown past the seal is still the same research input.
+Computing it feeds sealed values into a one-way digest; no label is inspected, no
+metric computed, and nothing branches on the result.
+
+**Three identities, three reasons to change.** The contract is the research
+question. The resolved row is where its instant lands in one table. The
+fingerprint is what was in that table. A corrected candle before the seal moves
+the last two and leaves the contract alone — which is exactly the case the
+separation exists to represent.
+
+**Comparability.** `nn.wf_diagnostics` refuses to aggregate runs whose
+`research_input_hash` differs, checked alongside the contract hash and before the
+row and geometry checks, because matching contracts, geometry and dates say the
+runs measured the same *rows*, not that those rows held the same data. Handed a
+`--dataset`, it recomputes the fingerprint from the research half of that file
+and refuses a mismatch rather than silently re-indexing. Handed `--raw`, it
+records a `raw_input` fingerprint of the candles at or before the last
+research-visible timestamp, so the market statistics can be reproduced from any
+file with that identity.
+
+**History stays history.** Artifacts that predate fingerprints carry none, are
+read exactly as before, and are never given one — reported as *no research-input
+fingerprint (dataset metadata only)*, which is not an integrity fault. A block
+that is *present* but untrustworthy — partial, from another schema, malformed, or
+claiming a research region that is not the one the same file's
+`sealed_test.start_row` describes — is a fault.
+
+`tests/test_data_provenance.py` holds all of this.
+
 ### Where the sealed test block begins
 
 **One immutable UTC timestamp**, carried by the selected research contract:
@@ -721,6 +798,10 @@ re-checked against what landed on disk, on row indices rather than region names:
   timestamp-anchored run is never averaged together with one that records only a
   row index. The five committed artifacts predate the anchor, carry none, and are
   reported as row-only rather than relabelled;
+- a recorded `research_input` block is whole, from a schema this tool reads, made
+  of well-formed digests, and claims the same research region as the same file's
+  `sealed_test.start_row`. Absent is not a fault — the committed artifacts
+  predate fingerprints — but present and untrustworthy is;
 - `test_evaluated` and `sealed_test.evaluated` both false, failing closed when
   either is absent rather than absent-means-fine;
 - `reported_block` and `summary.aggregated_from` both `outer_validation`;
@@ -741,7 +822,10 @@ next is not a result.
 
 Runs whose geometry, sealed boundary, dataset or fold count differ are reported
 as **not comparable** and no aggregate is produced: averaging metrics from
-different blocks of market is a category error, not a seed study. The same
+different blocks of market is a category error, not a seed study. So are runs
+whose `research_input_hash` differs — checked before the row and geometry
+checks, because a shared contract, a shared shape and a shared date range say
+the runs measured the same *rows*, not that those rows held the same data. The same
 applies when any run fails its audit — the problems are printed and the headline
 is withheld. The command exits non-zero in both cases, so it can gate a
 pipeline.
@@ -801,9 +885,12 @@ median / std candle return, annualised realised volatility, mean absolute candle
 return, positive and negative candle fractions, and max drawdown. These are taken
 over the **whole block span** — a view of the market independent of which rows
 were scorable — and labelled as such, so they are not read as row-for-row
-comparable with the model-facing statistics above.
+comparable with the model-facing statistics above. The report records a
+`raw_input` fingerprint of the candles at or before the last research-visible
+timestamp, so these numbers can be reproduced from any file with that identity
+rather than only from the local path they were read through.
 
-Three rules make those numbers trustworthy rather than merely available:
+Four rules make those numbers trustworthy rather than merely available:
 
 - **The sealed boundary is enforced by slicing.** `load_research_frame`
   truncates the dataset at `sealed_test_start` on load, so a sealed row is not
@@ -816,6 +903,13 @@ Three rules make those numbers trustworthy rather than merely available:
   the frame's own first and last timestamps, because a sidecar can be stale. A
   wrong file with a coincidentally matching row count is refused rather than
   silently reindexed.
+- **Matching metadata is not matching data.** When the artifact records a
+  research-input fingerprint, it is recomputed from the truncated frame and a
+  mismatch is refused — the case where a dataset passes every field check above
+  and still holds a different candle. Only the research half is verifiable here,
+  because the frame is cut at the seal before the check can run. A run that
+  recorded no fingerprint is still analysable; it simply cannot be verified, and
+  that is reported rather than glossed.
 - **Raw candles join on timestamps, never on position.** The processed dataset
   dropped warm-up and label rows, so processed row *i* is not raw row *i*. A
   missing timestamp, a duplicate, or a timeframe that disagrees is an error.

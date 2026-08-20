@@ -504,14 +504,12 @@ def test_the_sealed_contract_is_part_of_the_plan_hash(grown_pair, tmp_path):
     boundary = grown.sealed_boundary(SYNTHETIC)
     plan = chronological_split(grown.n_rows, boundary.start_row)
 
-    real = experiment.build_plan(args, configs, grown, plan, boundary, [])
+    moved = replace(boundary, start_row=boundary.start_row - 1)
+    real = experiment.build_plan(
+        args, configs, grown, plan, boundary, grown.input_fingerprint(boundary), []
+    )
     elsewhere = experiment.build_plan(
-        args,
-        configs,
-        grown,
-        plan,
-        replace(boundary, start_row=boundary.start_row - 1),
-        [],
+        args, configs, grown, plan, moved, grown.input_fingerprint(moved), []
     )
     assert real["plan_hash"] != elsewhere["plan_hash"]
 
