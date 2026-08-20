@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup lint format test smoke sample backfill features train \
-	research experiment walkforward wf-diagnostics \
+	research experiment walkforward wf-diagnostics benchmark benchmark-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
@@ -17,6 +17,8 @@ MODELS   ?= artifacts/models
 # research generation is a new contract file.
 CONTRACT ?= btc-usdt-1h-gen1
 EPOCHS   ?= 30
+# Run seed for the P2a benchmark; the checkpoint runs 42, 142, 242, 342, 442.
+SEED     ?= 42
 SEQ_LEN  ?= 64
 STRATEGY ?= NNPredictorStrategy
 MODE     ?= test
@@ -90,6 +92,15 @@ walkforward:  ## Nested walk-forward validation (train -> inner val -> outer val
 
 wf-diagnostics:  ## Audit and compare walk-forward runs. Args: RUNS="dir1 dir2 ..."
 	$(PYTHON) -m nn.wf_diagnostics $(RUNS)
+
+benchmark:  ## P2a: untuned simple models on MTST's own samples. Args: DATASET SEED
+	$(PYTHON) -m nn.benchmark --dataset $(DATASET) --folds 4 \
+		--research-contract $(CONTRACT) --seq-len $(SEQ_LEN) --seed $(SEED) \
+		--out artifacts/benchmark/btc_p2a_seed_$(SEED)
+
+benchmark-compare:  ## P2a vs the frozen MTST evidence. Args: BENCH="..." MTST="..."
+	$(PYTHON) -m nn.benchmark_compare --benchmark $(BENCH) --mtst $(MTST) \
+		--dataset $(DATASET) --out artifacts/benchmark/btc_p2a_comparison
 
 infer:  ## Serve the promoted model on port 3000
 	CHIMERA_MODELS_DIR=$(MODELS) uvicorn nn.infer_service:app --host 127.0.0.1 --port 3000

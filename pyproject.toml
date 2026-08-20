@@ -38,6 +38,19 @@ tracking = ["mlflow>=2.10"]
 # Hyperparameter search. Only needed for `nn.train --tune-trials N`; the
 # default of 0 runs a single training pass with no search at all.
 tune = ["ray[tune]>=2.9"]
+# Research benchmarks only: the simple-model family `nn.benchmark` (research
+# checkpoint P2a) compares against MTST. Deliberately its own group rather than
+# part of `ml`, because nothing in the inference container or any live path
+# imports them — a model fitted here is research evidence, never a deployed
+# artifact — and the Freqtrade and inference images must not grow three
+# gradient-boosting libraries to serve a Transformer. CI installs `.[all]`, so
+# the benchmark and its tests are exercised without any of this reaching a
+# runtime image.
+benchmark = [
+    "scikit-learn>=1.4",
+    "lightgbm>=4.3",
+    "xgboost>=2.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",
@@ -47,7 +60,7 @@ dev = [
     "mypy>=1.9",
     "pre-commit>=3.6",
 ]
-all = ["projectchimera[trade,ml,tracking,tune,dev]"]
+all = ["projectchimera[trade,ml,tracking,tune,benchmark,dev]"]
 
 [tool.setuptools.packages.find]
 # Discovered rather than listed. Each container image copies only the packages

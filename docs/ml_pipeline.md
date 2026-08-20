@@ -970,6 +970,68 @@ with sections for the integrity audit, dataset/sealed status, fold geometry,
 market regime statistics, seed stability, per-fold model stability, best vs
 worst, attribution, hypotheses and limitations.
 
+### P2a: does the model family matter, on identical information?
+
+`nn.benchmark` answers one diagnostic question — **does model complexity add
+predictive or economic value when simple models receive exactly the same
+information as MTST?** — and `nn.benchmark_compare` scores the answer against the
+frozen MTST evidence without retraining it:
+
+```bash
+python -m nn.benchmark --dataset DATASET --research-contract btc-usdt-1h-gen1 \
+    --folds 4 --seq-len 64 --seed 42 --out artifacts/benchmark/btc_p2a_seed_42
+
+python -m nn.benchmark_compare \
+    --benchmark artifacts/benchmark/btc_p2a_seed_{42,142,242,342,442} \
+    --mtst artifacts/walkforward/btc_nested_v4_seed_{42,142,242,342,442} \
+    --dataset DATASET --out artifacts/benchmark/btc_p2a_comparison
+```
+
+Three untuned, predeclared models — logistic regression, LightGBM, XGBoost —
+against MTST, the majority and momentum baselines, CASH and buy-and-hold. One
+thing varies: the model family.
+
+**The samples are MTST's samples, not a re-derivation of them.** The benchmark
+plans folds with `nn.walkforward.plan_nested_folds`, builds train and inner
+windows with `nn.train.prepare_research_windows`, and scores the outer block
+through `nn.train.score_frozen_split` — the same three calls the MTST
+walk-forward makes. The one addition is `nn.simple_models.flatten_windows`, which
+turns the `(64, 14)` sequence into a `896`-wide row where column `t * 14 + f` is
+feature `f` at timestep `t`, oldest first. A tabular model given only the latest
+candle would be answering a different question, so it is not given one.
+
+Everything else is held: the same train-only scaler, the same eligible rows, the
+same gap handling, the same labels, horizon and cost model, the same threshold
+grid and cost-aware selection objective on the inner block only, the same sealed
+boundary. There is no hyperparameter search of any kind, no early stopping, and
+no flag on the command line that can move a model's configuration.
+
+`nn.benchmark_compare` **fails closed**. It refuses to aggregate runs that
+disagree on the research contract, the contract hash, the research-input
+fingerprint, the sealed anchor or its resolved row, the fold count or geometry,
+the feature contract, the target/horizon/cost semantics or the sequence length —
+and, beyond the metadata, it requires that both families scored the *same outer
+rows* and that their shared statistical baselines produced *identical* numbers.
+Those baselines are fitted on the fold's training labels and on nothing, so on
+the same samples they are a constant: a discrepancy in them is a discrepancy in
+the samples, which no agreement between metadata blocks could reveal.
+
+The report keeps two verdicts apart and never collapses them. *Predictive-baseline
+improvement* is "did it learn more than a trivial rule" — a floor test.
+*Economic alpha after costs* is "did acting on it earn money after fees and
+slippage, above CASH". A model can pass the first and fail the second, and this
+repository has published exactly that.
+
+P2a is an adaptive follow-up designed after prior outer-validation results were
+observed, and it reuses those outer folds. They are research evidence, not a
+pristine out-of-sample test, and no number it produces is a claim about live
+profitability. The sealed test block is not planned over, fitted on, selected on
+or scored.
+
+The three libraries are their own optional dependency group — `pip install -e
+".[benchmark]"` — because nothing in the inference container or any live path
+imports them. `.[all]`, which CI installs, includes it.
+
 ### Spending the test split
 
 When the research decisions are frozen — architecture, hyperparameters, feature
