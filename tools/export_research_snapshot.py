@@ -30,9 +30,7 @@ from nn.regime import load_raw_ohlcv
 from nn.research_contract import load_contract
 
 SNAPSHOT_SCHEMA = "chimera.research-snapshot/1"
-DEFAULT_REFERENCE = Path(
-    "artifacts/walkforward/btc_nested_v4_seed_42/walkforward.json"
-)
+DEFAULT_REFERENCE = Path("artifacts/walkforward/btc_nested_v4_seed_42/walkforward.json")
 RAW_NAME = "btc_usdt_1h_gen1_raw_pre_styx.parquet"
 PROCESSED_NAME = "btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet"
 MANIFEST_NAME = "btc_usdt_1h_gen1_snapshot_manifest.json"
@@ -48,8 +46,7 @@ def _sha256(path: Path) -> str:
 
 def _outer_end(reference: dict[str, Any]) -> int:
     ends = [
-        int(fold["periods"]["outer_validation"]["row_range"][1])
-        for fold in reference["folds"]
+        int(fold["periods"]["outer_validation"]["row_range"][1]) for fold in reference["folds"]
     ]
     if not ends:
         raise ValueError("reference artifact contains no outer folds")
@@ -90,9 +87,7 @@ def export_snapshot(
             f"{recorded_contract['contract_id']!r} != {contract.contract_id!r}"
         )
     if recorded_contract["contract_hash"] != contract.contract_hash:
-        raise ValueError(
-            "reference artifact contract hash does not match selected contract"
-        )
+        raise ValueError("reference artifact contract hash does not match selected contract")
 
     dates = pd.DatetimeIndex(pd.to_datetime(frame["date"], utc=True))
     if not dates.is_monotonic_increasing or dates.has_duplicates:
@@ -138,9 +133,7 @@ def export_snapshot(
             f"outer coverage end {outer_end} is not inside research rows [0, {seal_row})"
         )
     if outer_end + horizon > seal_row:
-        raise ValueError(
-            "frozen outer coverage is too close to Styx for its target horizon"
-        )
+        raise ValueError("frozen outer coverage is too close to Styx for its target horizon")
 
     processed = frame.iloc[:outer_end].copy()
     processed_dates = pd.DatetimeIndex(pd.to_datetime(processed["date"], utc=True))
@@ -176,6 +169,8 @@ def export_snapshot(
         created_at=metadata.created_at,
     )
     save_dataset(processed_out, processed, prefix_metadata)
+    metadata_out = processed_out.with_suffix(processed_out.suffix + ".meta.json")
+    metadata_out.write_text(metadata_out.read_text().rstrip("\n") + "\n")
 
     prefix_hash = research_input_digest(
         {name: processed[name] for name in processed.columns},
@@ -224,18 +219,12 @@ def export_snapshot(
             "end": processed_dates[-1].isoformat(),
             "semantic_prefix_hash": prefix_hash,
             "sha256": _sha256(processed_out),
-            "metadata_path": str(
-                processed_out.with_suffix(processed_out.suffix + ".meta.json")
-            ),
-            "metadata_sha256": _sha256(
-                processed_out.with_suffix(processed_out.suffix + ".meta.json")
-            ),
+            "metadata_path": str(metadata_out),
+            "metadata_sha256": _sha256(metadata_out),
         },
         "safety_checks": {
             "canonical_research_input_verified": True,
-            "raw_strictly_before_styx": bool(
-                raw_safe.index[-1] < contract.sealed_test_start
-            ),
+            "raw_strictly_before_styx": bool(raw_safe.index[-1] < contract.sealed_test_start),
             "processed_strictly_before_styx": bool(
                 processed_dates[-1] < contract.sealed_test_start
             ),
