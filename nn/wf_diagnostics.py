@@ -65,12 +65,19 @@ from typing import Any
 import pandas as pd
 
 from chimera.contracts import CLASS_ORDER
+from nn.data_fingerprint import (
+    RESEARCH_INPUT_SCHEMA,
+    DataFingerprintError,
+    RawInputFingerprint,
+    fingerprint_raw_input,
+)
 from nn.evaluate import SHARPE_BASIS
 from nn.regime import (
     # Aliased: this module already has `LEGACY_TRADING_KEY` (singular) for the
     # one field that dates an artifact, and the two names differ by a letter.
     LEGACY_TRADING_KEYS as HISTORICAL_TRADING_KEYS,
     RegimeDataError,
+    ResearchFrame,
     block_statistics,
     direction_attribution,
     load_predictions,
@@ -345,6 +352,13 @@ class RunArtifact:
     #: and filling it in from the current registry would claim they were produced
     #: under a research generation that did not exist when they ran.
     contract: dict[str, Any] | None
+    #: The ``research_input`` block, or ``None`` for an artifact that predates
+    #: research-data fingerprints.
+    #:
+    #: Never synthesised, for the same reason as the contract above: recomputing
+    #: it from whatever dataset is on this machine would claim the run read data
+    #: nobody can show it read.
+    research_input: dict[str, Any] | None
     dataset: dict[str, Any]
     folds: list[dict[str, Any]]
     summary: dict[str, Any]
@@ -363,6 +377,16 @@ class RunArtifact:
     def contract_hash(self) -> str | None:
         """The contract's semantic identity. What actually decides comparability."""
         return (self.contract or {}).get("contract_hash")
+
+    @property
+    def research_input_hash(self) -> str | None:
+        """Identity of the data the run saw, or ``None`` if it recorded none.
+
+        The contract's hash and this one answer different questions and both
+        gate comparability: the first is which generation the run belongs to,
+        the second is which candles were actually in front of it.
+        """
+        return (self.research_input or {}).get("research_input_hash")
 
     @property
     def geometry(self) -> list[tuple[int, int]]:
@@ -460,6 +484,14 @@ def load_run(path: str | Path) -> RunArtifact:
             if isinstance(sealed.get("research_contract"), dict)
             else None
         ),
+        # Absent in every pre-fingerprint artifact, and left absent: a run that
+        # did not record which data it read does not acquire one by being read
+        # on a machine that happens to hold a dataset.
+        research_input=(
+            payload["research_input"]
+            if isinstance(payload.get("research_input"), dict)
+            else None
+        ),
         dataset=payload.get("dataset", {}) or {},
         folds=folds,
         summary=payload.get("summary", {}) or {},
@@ -538,6 +570,7 @@ def audit_run(run: RunArtifact) -> list[str]:
                 break
 
     problems.extend(_audit_contract(run))
+    problems.extend(_audit_research_input(run))
     problems.extend(classify_schema(run)[1])
     problems.extend(_audit_summary_matches_folds(run))
     return problems
@@ -622,6 +655,73 @@ def _audit_contract(run: RunArtifact) -> list[str]:
     return problems
 
 
+#: Fields a recorded ``research_input`` block must carry.
+#:
+#: Exactly ``nn.data_fingerprint.ResearchInputFingerprint.to_dict``'s keys, and
+#: whole-or-absent for the same reason the contract block is: a half-written
+#: identity reads as if the run's input were known.
+RESEARCH_INPUT_FIELDS = (
+    "fingerprint_schema",
+    "research_input_hash",
+    "full_table_hash",
+    "research_rows",
+    "total_rows",
+    "research_start",
+    "research_end",
+    "columns",
+)
+
+
+def _audit_research_input(run: RunArtifact) -> list[str]:
+    """Check the recorded research-input identity, if the artifact records one.
+
+    **Absent is not a fault**, exactly as for the contract: the committed
+    walk-forward runs predate fingerprints. What is a fault is a block that is
+    present and cannot be trusted — partial, computed under a schema this tool
+    does not read, malformed, or claiming a research region that is not the one
+    the same file's ``sealed_test.start_row`` describes.
+
+    That last check is what ties the two halves together. The fingerprint covers
+    rows ``[0, start_row)``; a block claiming some other row count was either
+    taken over a different boundary than the run planned against, or edited.
+    """
+    if run.research_input is None:
+        return []
+
+    problems: list[str] = []
+    missing = [f for f in RESEARCH_INPUT_FIELDS if f not in run.research_input]
+    if missing:
+        return [
+            f"research_input is missing {missing}. A partial fingerprint cannot "
+            "identify the data a run read; it is worse than none, because it reads "
+            "as if it could"
+        ]
+
+    schema = run.research_input["fingerprint_schema"]
+    if schema != RESEARCH_INPUT_SCHEMA:
+        problems.append(
+            f"research_input.fingerprint_schema is {schema!r}, but this tool reads "
+            f"{RESEARCH_INPUT_SCHEMA!r}. The recorded identity was computed over a "
+            "different definition of research-visible content"
+        )
+
+    for field in ("research_input_hash", "full_table_hash"):
+        digest = run.research_input[field]
+        if not isinstance(digest, str) or len(digest) != 64:
+            problems.append(
+                f"research_input.{field} is {digest!r}, expected 64 SHA-256 hex digits"
+            )
+
+    rows = run.research_input["research_rows"]
+    if rows != run.sealed_test_start:
+        problems.append(
+            f"research_input.research_rows is {rows!r} but the run seals at row "
+            f"{run.sealed_test_start}. The fingerprint covers the rows before the "
+            "seal, so these cannot disagree in an artifact written by one run"
+        )
+    return problems
+
+
 def _audit_summary_matches_folds(run: RunArtifact) -> list[str]:
     """The recorded across-fold means must be reproducible from the folds.
 
@@ -691,6 +791,19 @@ def _contract_label(run: RunArtifact) -> str:
     return f"research contract {run.contract_id}@{str(run.contract_hash)[:16]}"
 
 
+def _research_input_label(run: RunArtifact) -> str:
+    """How a run's research data reads in a report.
+
+    A pre-fingerprint artifact is described as exactly that. Its dataset
+    metadata is still reported elsewhere; what it cannot tell you is whether
+    those rows held the same values as anyone else's.
+    """
+    digest = run.research_input_hash
+    if not digest:
+        return "no research-input fingerprint (dataset metadata only)"
+    return f"research input sha256:{str(digest)[:16]}"
+
+
 def compare_runs(runs: list[RunArtifact]) -> list[str]:
     """Check the runs measure the same blocks of the same dataset.
 
@@ -720,6 +833,18 @@ def compare_runs(runs: list[RunArtifact]) -> list[str]:
                 "research contracts are different research generations, so averaging "
                 "them would report one generation's result over two — a shared "
                 "sealed_test_start row does not make them comparable"
+            )
+        # After the contract, before the row and geometry checks, for the same
+        # reason: a shared boundary and a shared shape say the two runs measured
+        # the same *rows*, not that those rows held the same data.
+        if run.research_input_hash != reference.research_input_hash:
+            problems.append(
+                f"{run.name} read {_research_input_label(run)} but {reference.name} "
+                f"read {_research_input_label(reference)}. The runs did not see the "
+                "same research data, so they are not repeated measurements of one "
+                "procedure — matching contracts, row geometry and date ranges do not "
+                "make them comparable, because a corrected or rebuilt dataset changes "
+                "none of those"
             )
         if run.sealed_test_start != reference.sealed_test_start:
             problems.append(
@@ -1457,15 +1582,15 @@ def to_markdown(
         f"{reference.sealed_test_start} ({_anchor_label(reference.sealed_anchor)}) and is "
         "not opened by this tool.",
         "",
-        "| run | path | seed | folds | research contract | integrity |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| run | path | seed | folds | research contract | research input | integrity |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for run in runs:
         problems = audits[run.name]
         state = "ok" if not problems else f"**{len(problems)} problem(s)**"
         lines.append(
             f"| {run.name} | `{run.path}` | {run.seed} | {run.n_folds} | "
-            f"{_contract_label(run)} | {state} |"
+            f"{_contract_label(run)} | {_research_input_label(run)} | {state} |"
         )
 
     failing = {name: problems for name, problems in audits.items() if problems}
@@ -1730,6 +1855,23 @@ def _analysis_markdown(analysis: dict[str, Any], reference: RunArtifact) -> list
             f"(sealed test starts at {reference.sealed_test_start}).",
             "- Sealed test evaluated: **no**.",
         ]
+        lines.append(
+            "- Research input: recomputed from this dataset and **matches** "
+            f"`sha256:{str(analysis['research_input']['research_input_hash'])[:16]}` "
+            "— the runs' recorded identity."
+            if analysis.get("research_input_verified")
+            else "- Research input: the runs record no fingerprint, so this dataset "
+            "could not be checked against what they actually read. Its metadata "
+            "matches; that is a weaker claim, and it is not upgraded to a stronger one."
+        )
+        if analysis.get("raw_input"):
+            raw_input = analysis["raw_input"]
+            lines.append(
+                f"- Raw input: `sha256:{str(raw_input['raw_input_hash'])[:16]}` over "
+                f"{raw_input['rows']} candles through `{raw_input['visible_through']}` "
+                "— the market statistics below can be reproduced from any file with "
+                "that identity, not only from the local path above."
+            )
 
     if regime:
         lines += [
@@ -1965,6 +2107,28 @@ def build_argparser() -> argparse.ArgumentParser:
     return parser
 
 
+def _raw_provenance(raw: pd.DataFrame, research: ResearchFrame) -> RawInputFingerprint:
+    """Identify the raw candles the research region covers.
+
+    Bounded by the last research-visible processed timestamp rather than by the
+    end of the raw file: the raw candles keep arriving, and a fingerprint that
+    moved every time one did could not identify what a past run read. Rows the
+    diagnostics never look at — everything at or after the seal — are outside
+    it, which is also why computing it opens nothing sealed.
+    """
+    visible_through = pd.to_datetime(research.frame["date"], utc=True).iloc[-1]
+    try:
+        return fingerprint_raw_input(
+            raw,
+            exchange=research.exchange,
+            pair=research.pair,
+            timeframe=research.timeframe,
+            visible_through=visible_through,
+        )
+    except DataFingerprintError as exc:
+        raise RegimeDataError(f"the raw candles cannot be identified: {exc}") from exc
+
+
 def analyse(
     runs: list[RunArtifact],
     dataset: str | None,
@@ -1985,14 +2149,21 @@ def analyse(
     research = None
     regime = None
     seq_len = None
+    raw_input = None
     if dataset:
         seq_len = _seq_len(reference)
+        # The recorded fingerprint is passed in, so a dataset that merely
+        # *describes* itself like the artifact's but holds different values is
+        # refused here rather than quietly re-indexed.
         research = load_research_frame(
             dataset,
             sealed_test_start=reference.sealed_test_start,
             identity=reference.dataset,
+            research_input=reference.research_input,
         )
         raw = load_raw_ohlcv(raw_path) if raw_path else None
+        if raw is not None:
+            raw_input = _raw_provenance(raw, research)
         regime = regime_report(runs, research, raw)
 
     attribution = attribution_report(runs, research.target_spec if research else None)
@@ -2007,6 +2178,16 @@ def analyse(
         "sealed_test_start": reference.sealed_test_start,
         "sealed_test_anchor": reference.sealed_anchor,
         "research_contract": reference.contract,
+        # What the runs recorded reading, and — when a dataset was supplied —
+        # the fact that it was recomputed from that dataset and matched. Null
+        # for a run that recorded no fingerprint; never filled in from the
+        # dataset on this machine.
+        "research_input": reference.research_input,
+        "research_input_verified": bool(dataset and reference.research_input_hash),
+        # Identity of the raw candles these statistics were computed from, when
+        # any were. Without it the market-level numbers below could not be
+        # reproduced from anything but one local file.
+        "raw_input": raw_input.to_dict() if raw_input else None,
         "sealed_test_evaluated": False,
         "highest_outer_row": highest_outer,
         "fold_stability": stability,
@@ -2073,6 +2254,10 @@ def main(argv: list[str] | None = None) -> int:
                             # committed contract: an artifact that recorded no
                             # generation does not gain one by being read.
                             "research_contract": run.contract,
+                            # Same rule: copied verbatim, or null. An artifact
+                            # that recorded no research-input identity does not
+                            # gain one from whatever dataset is on this disk.
+                            "research_input": run.research_input,
                             "integrity_problems": audits[run.name],
                         }
                         for run in runs

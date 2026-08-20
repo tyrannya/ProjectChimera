@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from nn import walkforward
+from nn.data_fingerprint import ResearchInputFingerprint
 from nn.research_contract import load_contract
 
 REPO = Path(__file__).resolve().parents[1]
@@ -174,6 +175,15 @@ def test_the_markdown_separates_baselines_from_economic_references():
         sealed,
         anchor=contract.sealed_test_start.isoformat(),
         contract=contract,
+        fingerprint=ResearchInputFingerprint(
+            research_input_hash="a" * 64,
+            full_table_hash="b" * 64,
+            research_rows=1000,
+            total_rows=1200,
+            research_start="2023-01-01T00:00:00+00:00",
+            research_end="2023-06-01T00:00:00+00:00",
+            columns=("date", "close", "target"),
+        ),
     )
 
     assert "### Statistical / rule baselines and the model" in markdown

@@ -30,6 +30,15 @@ identity field — exchange, pair, timeframe, row count, first and last timestam
 feature contract or target spec — and cross-checks the metadata against the
 frame's own first and last timestamps.
 
+**A dataset must be the same *values*, not merely the same description.** When
+the artifact records a research-input fingerprint (``nn.data_fingerprint``), the
+loader recomputes it from the truncated frame and refuses a mismatch. The
+identity checks above compare metadata, and two datasets can agree on every one
+of those fields while differing in a historical candle — which is exactly when
+every row index in the artifact silently means a different observation. Only the
+research half is checked, because the frame is cut at the seal before this
+happens.
+
 **Raw candles are joined on timestamps, never on position.** The processed
 dataset has lost warm-up and label rows, so processed row *i* is not raw row
 *i*. :func:`align_raw` matches exact timestamps and fails closed on a missing
@@ -53,7 +62,17 @@ import pandas as pd
 
 from chimera.contracts import CLASS_ORDER, TargetSpec
 from nn import evaluate as ev
-from nn.data_pipeline import OHLCV_COLUMNS, load_dataset, timeframe_to_minutes
+from nn.data_fingerprint import (
+    RESEARCH_INPUT_SCHEMA,
+    DataFingerprintError,
+    research_input_digest,
+)
+from nn.data_pipeline import (
+    OHLCV_COLUMNS,
+    DatasetMetadata,
+    load_dataset,
+    timeframe_to_minutes,
+)
 from nn.dataset import Split, sample_indices
 
 logger = logging.getLogger(__name__)
@@ -95,6 +114,11 @@ class ResearchFrame:
     feature_names: list[str]
     target_spec: TargetSpec
     timeframe: str
+    #: The market the dataset declares. Carried so a caller identifying the raw
+    #: candles behind these rows can say which market they belong to without
+    #: re-reading the sidecar.
+    exchange: str = ""
+    pair: str = ""
     segment_ids: np.ndarray | None = None
 
     def block(self, start: int, end: int) -> pd.DataFrame:
@@ -151,11 +175,64 @@ def _identity_mismatch(name: str, actual: Any, expected: Any) -> str | None:
     return f"{name} is {actual!r} but the artifact recorded {expected!r}"
 
 
+def _verify_research_input(
+    path: Path,
+    research: pd.DataFrame,
+    meta: DatasetMetadata,
+    recorded: Mapping[str, Any],
+) -> None:
+    """Recompute the artifact's research-input identity from this dataset.
+
+    The metadata checks above compare *descriptions* of a build; this compares
+    the values. Two datasets can pass every one of those checks and still differ
+    in a historical candle, which is precisely the case where every row index in
+    the artifact addresses a different observation than it did.
+
+    Only the research half is verifiable here, and deliberately so: this frame
+    was truncated at the sealed boundary before this function could see it, so
+    the recorded ``full_table_hash`` is not recomputed and the sealed block is
+    not read.
+    """
+    schema = recorded.get("fingerprint_schema")
+    expected = recorded.get("research_input_hash")
+    if not expected:
+        return
+    if schema != RESEARCH_INPUT_SCHEMA:
+        raise RegimeDataError(
+            f"the artifact records a {schema!r} research-input identity but this tool "
+            f"computes {RESEARCH_INPUT_SCHEMA!r}; the two are taken over different "
+            "definitions of research-visible content and cannot be compared"
+        )
+    columns = {name: research[name] for name in research.columns}
+    try:
+        actual = research_input_digest(
+            columns,
+            feature_names=list(meta.feature_names),
+            exchange=meta.exchange,
+            pair=meta.pair,
+            timeframe=meta.timeframe,
+            feature_spec=meta.feature_spec,
+            target_spec=meta.target_spec,
+            rows=len(research),
+        )
+    except DataFingerprintError as exc:
+        raise RegimeDataError(f"{path} cannot be fingerprinted: {exc}") from exc
+    if actual != expected:
+        raise RegimeDataError(
+            f"{path} is not the research input this artifact was produced against: it "
+            f"hashes to sha256:{actual} but the run recorded sha256:{expected}. The "
+            "metadata matches, so this is a dataset that was rebuilt or corrected "
+            "rather than a different market — every row index in the artifact now "
+            "addresses a different candle, so no statistics are computed."
+        )
+
+
 def load_research_frame(
     path: str | Path,
     *,
     sealed_test_start: int,
     identity: Mapping[str, Any] | None = None,
+    research_input: Mapping[str, Any] | None = None,
 ) -> ResearchFrame:
     """Read the processed dataset and cut it at the sealed boundary immediately."""
     frame, meta = load_dataset(path)
@@ -203,12 +280,17 @@ def load_research_frame(
         if "segment_id" in research.columns
         else None
     )
+    if research_input:
+        _verify_research_input(Path(path), research, meta, research_input)
+
     return ResearchFrame(
         frame=research,
         sealed_test_start=sealed_test_start,
         feature_names=list(meta.feature_names),
         target_spec=TargetSpec.from_dict(meta.target_spec),
         timeframe=meta.timeframe or "1h",
+        exchange=meta.exchange,
+        pair=meta.pair,
         segment_ids=segment_ids,
     )
 

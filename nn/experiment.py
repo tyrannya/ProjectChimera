@@ -14,7 +14,10 @@ The test split is never touched. Not "not by default": this module has no code
 path that windows it. Where it begins is not this module's decision either — the
 boundary is the immutable sealed instant of the committed research contract
 ``--research-contract`` selects, resolved against the dataset's own timestamps,
-recorded in the manifest and hashed into ``plan_hash``. It calls
+recorded in the manifest and hashed into ``plan_hash``. The identity of the data
+that boundary made visible (``nn.data_fingerprint``) is recorded and hashed in
+beside it, so a grid re-searched over a corrected dataset is a new plan rather
+than a silent second opinion on the old one. It calls
 :func:`nn.train.prepare_research_windows`, whose signature takes a training and a
 validation split and nothing else, so the model selection done here cannot
 consume the sealed estimate that a later ``nn.train`` run will spend once.
@@ -51,6 +54,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from nn import evaluate as ev
+from nn.data_fingerprint import ResearchInputFingerprint
 from nn.dataset import SealedBoundary, chronological_split
 from nn.research_contract import (
     ContractScopeError,
@@ -158,24 +162,32 @@ def build_plan(
     data: Any,
     plan: Any,
     boundary: SealedBoundary,
+    fingerprint: ResearchInputFingerprint,
     argv: list[str] | None,
 ) -> dict[str, Any]:
     """The immutable manifest: everything decided before any model was trained.
 
-    ``plan_hash`` covers the grid, the fixed parameters, the dataset and the
-    research contract — the inputs that define the search — so a results file can
-    be tied back to the plan it came from, and a plan that was quietly edited
-    between the manifest and the results does not match. The contract is hashed
-    material because a grid searched under one research generation is not the
-    same experiment as the same grid searched under another; without it, two
-    plans that withheld different data — or that belong to different generations
-    while happening to resolve to the same row — would share an identity.
+    ``plan_hash`` covers the grid, the fixed parameters, the dataset, the
+    research contract and the identity of the research data itself — the inputs
+    that define the search — so a results file can be tied back to the plan it
+    came from, and a plan that was quietly edited between the manifest and the
+    results does not match. The contract is hashed material because a grid
+    searched under one research generation is not the same experiment as the
+    same grid searched under another; without it, two plans that withheld
+    different data — or that belong to different generations while happening to
+    resolve to the same row — would share an identity. The research input is
+    hashed for the converse reason: the same grid, under the same contract, over
+    a dataset whose history has since been corrected is also not the same
+    experiment, and the metadata block alone cannot tell the two apart.
     """
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "argv": list(argv) if argv is not None else sys.argv[1:],
         "dataset": data.ds_meta.to_dict(),
         "dataset_path": args.dataset,
+        # The path is a convenience for whoever still has the file; the
+        # fingerprint is the identity, and it does not need one.
+        "research_input": fingerprint.to_dict(),
         "split_plan": plan.to_dict(),
         "periods": {
             "train": data.period(plan.train),
@@ -208,6 +220,7 @@ def build_plan(
             "fixed": manifest["fixed"],
             "objective": manifest["objective"],
             "dataset": manifest["dataset"],
+            "research_input": manifest["research_input"],
             "sealed_test": manifest["sealed_test"],
             "runs": manifest["runs"],
         },
@@ -406,7 +419,9 @@ def main(argv: list[str] | None = None) -> int:
     # predeclared grid that is only written out once the results are in is not
     # predeclared, it is a description of what happened to finish.
     out_dir = Path(args.out)
-    manifest = build_plan(args, configs, data, plan, boundary, argv)
+    manifest = build_plan(
+        args, configs, data, plan, boundary, data.input_fingerprint(boundary), argv
+    )
     plan_path = write_plan(out_dir, manifest)
     logger.warning(
         "Wrote the experiment plan (%d configurations, plan_hash %s) to %s before "
@@ -481,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
                 "plan_file": PLAN_FILE,
                 "argv": manifest["argv"],
                 "dataset": manifest["dataset"],
+                "research_input": manifest["research_input"],
                 "split_plan": manifest["split_plan"],
                 "periods": manifest["periods"],
                 "sealed_test": manifest["sealed_test"],

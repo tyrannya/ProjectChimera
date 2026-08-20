@@ -10,8 +10,9 @@ The pipeline, in order, with the leakage-relevant step called out at each turn:
 2. load the dataset built by ``tools/build_features.py``;
 3. select the committed research contract, check the dataset is in its scope,
    resolve its immutable sealed-test anchor against the dataset's own
-   timestamps, then split the rows before it into train / validation
-   (``nn.research_contract``, ``nn.dataset``);
+   timestamps, fingerprint the rows before it so the artifact can say which data
+   it actually read, then split those rows into train / validation
+   (``nn.research_contract``, ``nn.data_fingerprint``, ``nn.dataset``);
 4. **fit the scaler on training rows only**, then transform all three;
 5. build windows so no sample straddles a split or market-data gap boundary;
 6. fit the baselines on training data;
@@ -63,6 +64,7 @@ from nn.baselines import (
     MajorityClassBaseline,
     MomentumBaseline,
 )
+from nn.data_fingerprint import ResearchInputFingerprint, fingerprint_research_input
 from nn.data_pipeline import DatasetMetadata, load_dataset, timeframe_to_minutes
 from nn.dataset import (
     SealedBoundary,
@@ -207,6 +209,48 @@ class ResearchData:
             source="this dataset",
         )
         return resolve_sealed_boundary(self.dates, contract=contract)
+
+    def research_columns(self) -> dict[str, Any]:
+        """The columns a research input's identity is taken over, by name.
+
+        Built from the arrays this object already holds rather than from the
+        frame, so the identity covers exactly the values research reads — not
+        whatever else happened to be stored in the Parquet file beside them.
+        """
+        columns: dict[str, Any] = {
+            "date": self.dates,
+            "close": self.close,
+            "future_return": self.future_return,
+            "target": self.targets,
+        }
+        if self.segment_ids is not None:
+            columns["segment_id"] = self.segment_ids
+        columns.update(
+            {name: self.features[:, i] for i, name in enumerate(self.feature_names)}
+        )
+        return columns
+
+    def input_fingerprint(self, boundary: SealedBoundary) -> ResearchInputFingerprint:
+        """Identity of the data this dataset makes visible under ``boundary``.
+
+        Deliberately a separate object from the boundary it is resolved against.
+        The contract says what this generation may see, the boundary says where
+        that lands in these rows, and this says what was actually there — three
+        things that change for three different reasons. A corrected candle before
+        the seal moves the last two and leaves the contract alone; appending
+        candles after the seal moves none of them.
+        """
+        return fingerprint_research_input(
+            self.research_columns(),
+            feature_names=self.feature_names,
+            exchange=self.ds_meta.exchange,
+            pair=self.ds_meta.pair,
+            timeframe=self.ds_meta.timeframe,
+            feature_spec=self.ds_meta.feature_spec,
+            target_spec=self.ds_meta.target_spec,
+            research_rows=boundary.start_row,
+            total_rows=self.n_rows,
+        )
 
     def period(self, split: Split) -> dict[str, Any]:
         """Wall-clock boundaries of a split, so a report can be audited later."""
@@ -770,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         raise SystemExit(f"cannot resolve the sealed test boundary: {exc}") from exc
     plan = chronological_split(data.n_rows, boundary.start_row, args.train_frac, args.val_frac)
+    fingerprint = data.input_fingerprint(boundary)
     logger.info(
         "Research contract %s (generation %d, %s) seals at %s, which is row %d of %d "
         "in this dataset — an immutable anchor, not a fraction of the dataset. "
@@ -781,6 +826,16 @@ def main(argv: list[str] | None = None) -> int:
         boundary.start_row,
         data.n_rows,
         json.dumps(plan.to_dict()),
+    )
+    logger.info(
+        "Research input sha256:%s — %d research-visible rows, %s to %s. This is what "
+        "the run saw, as opposed to what the contract allowed it to see; a rebuild "
+        "that changes a candle before the seal changes it, appending candles after "
+        "the seal does not.",
+        fingerprint.short_hash,
+        fingerprint.research_rows,
+        fingerprint.research_start,
+        fingerprint.research_end,
     )
     if args.validation_only:
         logger.warning(
@@ -893,6 +948,9 @@ def main(argv: list[str] | None = None) -> int:
         # reused while the contract behind it changes.
         research_contract_id=contract.contract_id,
         research_contract_hash=contract.contract_hash,
+        # And which data that generation actually saw. The contract cannot say
+        # this: two datasets in its scope can differ in a historical candle.
+        research_input_hash=fingerprint.research_input_hash,
         validation_metrics=validation_reports["mtst"],
     )
 
@@ -920,6 +978,10 @@ def main(argv: list[str] | None = None) -> int:
             "evaluated": test_reports is not None,
         },
         "dataset": data.ds_meta.to_dict(),
+        # The dataset metadata above describes the build; this identifies the
+        # values. Two builds can agree on every field of the former and still
+        # differ in a candle, which only the latter would show.
+        "research_input": fingerprint.to_dict(),
         "training": result.train_info,
         "threshold_selection": result.threshold_report,
         "validation": validation_reports,

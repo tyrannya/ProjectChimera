@@ -119,6 +119,11 @@ class ModelMetadata:
     #: reused while the contract behind it changes, so this — not the id — is
     #: what identifies the exact generation.
     research_contract_hash: str = ""
+    #: SHA-256 of the research-visible data this artifact was fitted on, from
+    #: ``nn.data_fingerprint``. The contract says what the generation was allowed
+    #: to see; this says what it saw. Empty for artifacts that predate it, which
+    #: callers must read as "unrecorded", never as "the current dataset".
+    research_input_hash: str = ""
     #: Metrics recorded at promotion time, for the record.
     validation_metrics: dict[str, Any] = field(default_factory=dict)
 
@@ -159,6 +164,7 @@ class ModelMetadata:
             "timeframe": self.timeframe,
             "research_contract_id": self.research_contract_id,
             "research_contract_hash": self.research_contract_hash,
+            "research_input_hash": self.research_input_hash,
             "validation_metrics": self.validation_metrics,
         }
 
@@ -184,6 +190,7 @@ class ModelMetadata:
             timeframe=str(data.get("timeframe", "")),
             research_contract_id=str(data.get("research_contract_id", "")),
             research_contract_hash=str(data.get("research_contract_hash", "")),
+            research_input_hash=str(data.get("research_input_hash", "")),
             validation_metrics=dict(data.get("validation_metrics", {})),
         )
 

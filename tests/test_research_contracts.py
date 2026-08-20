@@ -553,7 +553,9 @@ def test_experiment_identity_changes_with_the_contract(dataset):
         from nn.dataset import chronological_split
 
         plan = chronological_split(data.n_rows, boundary.start_row)
-        return experiment.build_plan(args, configs, data, plan, boundary, [])["plan_hash"]
+        return experiment.build_plan(
+            args, configs, data, plan, boundary, data.input_fingerprint(boundary), []
+        )["plan_hash"]
 
     gen1 = plan_hash_for(CONTRACT)
     # A second generation that seals at the same instant, so the two resolve to

@@ -106,7 +106,7 @@ class ContractScopeError(ValueError):
     """A contract was applied to a dataset it does not describe."""
 
 
-def _normalise_scope_value(field: str, value: Any) -> str:
+def normalise_scope_value(field: str, value: Any) -> str:
     """Case- and whitespace-insensitive form of one scope field.
 
     Exchanges and timeframes are written lower case and pairs upper case
@@ -206,7 +206,7 @@ class ResearchContract:
             if not isinstance(value, str) or not value.strip():
                 problems.append(f"{field} is unset ({value!r}), expected {expected[field]!r}")
                 continue
-            if _normalise_scope_value(field, value) != expected[field]:
+            if normalise_scope_value(field, value) != expected[field]:
                 problems.append(f"{field} is {value!r}, expected {expected[field]!r}")
         if problems:
             raise ContractScopeError(
@@ -317,7 +317,7 @@ def parse_contract(
         research_generation=generation,
         domain=domain.strip(),
         scope=DatasetScope(
-            **{field: _normalise_scope_value(field, scope[field]) for field in SCOPE_FIELDS}
+            **{field: normalise_scope_value(field, scope[field]) for field in SCOPE_FIELDS}
         ),
         sealed_test_start=stamp.tz_convert("UTC"),
         description=description,
