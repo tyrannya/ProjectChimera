@@ -168,11 +168,11 @@ def plan_nested_folds(
     ``boundary`` is the first sealed row, resolved from the immutable
     :data:`nn.dataset.SEALED_TEST_START_UTC` anchor by
     :meth:`nn.train.ResearchData.sealed_boundary`. **Every row this function
-    hands out —
-    training, inner validation and outer validation alike — is strictly below
-    it.** The planner takes the boundary rather than the dataset length
-    precisely because the two are not the same number: planning over the dataset
-    length is what silently walked the last folds into the sealed block.
+    hands out — training, inner validation and outer validation alike — is
+    strictly below it.** The planner takes the boundary rather than the dataset
+    length precisely because the two are not the same number: planning over the
+    dataset length is what silently walked the last folds into the sealed block,
+    and deriving the boundary *from* that length is what let it creep forward.
 
     Fold ``k`` trains on rows ``[0, min_train + k*step)``, selects on the
     ``inner_size`` rows that follow, and is *reported* on the ``outer_size`` rows

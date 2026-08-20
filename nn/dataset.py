@@ -233,13 +233,18 @@ def chronological_split(
         validation=Split("validation", train_end, sealed_start),
         test=Split("test", sealed_start, n_rows),
     )
-    # The arithmetic above already guarantees these; assert them anyway, because
+    # The arithmetic above already guarantees these; check them anyway, because
     # a plan that quietly hands a sealed row to validation looks exactly like a
-    # plan that does not.
-    assert plan.train.end <= plan.validation.start
-    assert plan.validation.end == sealed_start
-    assert plan.test.start == sealed_start
-    assert plan.test.end == n_rows
+    # plan that does not. Raised rather than asserted, as in
+    # :func:`nn.walkforward.plan_nested_folds`: a leakage guard that `python -O`
+    # removes is not a guard.
+    if not (
+        plan.train.end <= plan.validation.start
+        and plan.validation.end == sealed_start
+        and plan.test.start == sealed_start
+        and plan.test.end == n_rows
+    ):
+        raise AssertionError(f"split plan does not partition at {sealed_start}: {plan}")
     return plan
 
 
