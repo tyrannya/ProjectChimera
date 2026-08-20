@@ -862,7 +862,7 @@ def test_raw_identity_changes_when_a_covered_candle_changes(tmp_path, raw_candle
 
 
 def test_raw_identity_refuses_unsorted_candles(raw_candles):
-    """"The rows before the bound" is a prefix only in a sorted table."""
+    """Rows before the bound are a prefix only in a sorted table."""
     shuffled = load_raw_ohlcv(raw_candles).iloc[::-1]
     with pytest.raises(DataFingerprintError, match="not sorted ascending"):
         fingerprint_raw_input(
