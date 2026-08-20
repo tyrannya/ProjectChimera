@@ -12,7 +12,11 @@ answers two questions the individual runs cannot answer about themselves:
    ``sealed_test_start``, the sealed block unopened, and the recorded summary
    reproducible from the folds it claims to summarise. An artifact that has been
    hand-edited, truncated, or produced by the pre-nested code fails here rather
-   than being quietly averaged into a headline.
+   than being quietly averaged into a headline. An artifact that records only a
+   ``start_row``, with no sealed anchor timestamp, is still read — it predates
+   the timestamp contract, which is a fact about it, not a defect — but it is
+   never relabelled as timestamp-anchored, and it is refused as incomparable
+   against a run that *was* sealed at a stated instant.
 
 2. **How much of the result is the seed?** One run of four folds gives four
    numbers. Several runs that differ only in ``--seed`` give a distribution, and
@@ -317,6 +321,15 @@ class RunArtifact:
     path: Path
     seed: Any
     sealed_test_start: int
+    #: The immutable sealed-test anchor the run was planned under, or ``None``
+    #: for an artifact that recorded only a row index.
+    #:
+    #: The five committed walk-forward runs predate the timestamp contract and
+    #: carry ``None``. That is reported as what it is — row-only boundary
+    #: provenance — and never filled in from the current anchor: inferring it
+    #: would label a historical run as having been produced under a contract
+    #: that did not exist when it ran.
+    sealed_anchor: str | None
     dataset: dict[str, Any]
     folds: list[dict[str, Any]]
     summary: dict[str, Any]
@@ -410,6 +423,10 @@ def load_run(path: str | Path) -> RunArtifact:
         path=artifact,
         seed=payload.get("config", {}).get("seed"),
         sealed_test_start=int(sealed["start_row"]),
+        # Absent in every pre-timestamp artifact. Deliberately not defaulted to
+        # the current anchor, and deliberately not required: requiring it would
+        # make the committed historical runs unreadable for predating it.
+        sealed_anchor=sealed.get("anchor_timestamp"),
         dataset=payload.get("dataset", {}) or {},
         folds=folds,
         summary=payload.get("summary", {}) or {},
@@ -539,6 +556,16 @@ def _audit_summary_matches_folds(run: RunArtifact) -> list[str]:
     return problems
 
 
+def _anchor_label(anchor: str | None) -> str:
+    """How an artifact's boundary provenance reads in a report.
+
+    A row-only artifact is described as exactly that rather than as some
+    timestamp, because the one thing it cannot tell you is which instant its
+    ``start_row`` meant.
+    """
+    return anchor if anchor else "an unrecorded boundary (row index only)"
+
+
 def compare_runs(runs: list[RunArtifact]) -> list[str]:
     """Check the runs measure the same blocks of the same dataset.
 
@@ -562,6 +589,14 @@ def compare_runs(runs: list[RunArtifact]) -> list[str]:
             problems.append(
                 f"{run.name} has sealed_test_start {run.sealed_test_start}, "
                 f"{reference.name} has {reference.sealed_test_start}"
+            )
+        if run.sealed_anchor != reference.sealed_anchor:
+            problems.append(
+                f"{run.name} was sealed at {_anchor_label(run.sealed_anchor)} but "
+                f"{reference.name} at {_anchor_label(reference.sealed_anchor)}. The two "
+                "withheld different data, or one cannot say what it withheld, so "
+                "averaging them would put a single sealed-test claim on runs that do "
+                "not share one"
             )
         if run.n_folds != reference.n_folds:
             problems.append(
@@ -1283,7 +1318,8 @@ def to_markdown(
         "# Walk-forward regime diagnostics",
         "",
         f"{len(runs)} run(s), read from disk. Sealed test block starts at row "
-        f"{reference.sealed_test_start} and is not opened by this tool.",
+        f"{reference.sealed_test_start} ({_anchor_label(reference.sealed_anchor)}) and is "
+        "not opened by this tool.",
         "",
         "| run | path | seed | folds | integrity |",
         "| --- | --- | --- | --- | --- |",
@@ -1830,6 +1866,7 @@ def analyse(
         "seq_len": seq_len,
         "horizon": horizon,
         "sealed_test_start": reference.sealed_test_start,
+        "sealed_test_anchor": reference.sealed_anchor,
         "sealed_test_evaluated": False,
         "highest_outer_row": highest_outer,
         "fold_stability": stability,
@@ -1891,6 +1928,7 @@ def main(argv: list[str] | None = None) -> int:
                             "seed": run.seed,
                             "folds": run.n_folds,
                             "sealed_test_start": run.sealed_test_start,
+                            "sealed_test_anchor": run.sealed_anchor,
                             "integrity_problems": audits[run.name],
                         }
                         for run in runs
