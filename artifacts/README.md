@@ -59,23 +59,27 @@ unavailable rather than inferring it.
 
 ## Row-only sealed-boundary provenance
 
-Every artifact committed here records `sealed_test.start_row: 48217` and no
-`sealed_test.anchor_timestamp`, because it predates the immutable timestamp
-contract. Under the boundary those runs were produced with, the sealed start was
-`int(rows * 0.85)` on a 56,726-row dataset; it happens to name the same instant the
-current anchor does — `2025-08-27 23:00:00+00:00`, which each file records as its
-sealed period start — but the file itself cannot say so.
+Every artifact committed here records `sealed_test.start_row: 48217` and neither
+`sealed_test.anchor_timestamp` nor `sealed_test.research_contract`, because it
+predates both the immutable timestamp contract and the versioned research
+contracts that now carry it. Under the boundary those runs were produced with,
+the sealed start was `int(rows * 0.85)` on a 56,726-row dataset; it happens to
+name the same instant the `btc-usdt-1h-gen1` contract does —
+`2025-08-27 23:00:00+00:00`, which each file records as its sealed period start —
+but the file itself cannot say so.
 
-They are **not** rewritten, and `start_row` is **not** restated in the new
-contract's terms. They are historical evidence, and relabelling them would
-manufacture provenance that does not exist — the same reason the v1 directories
-are not renamed into v2/v3 above.
+They are **not** rewritten, `start_row` is **not** restated in the new contract's
+terms, and no research contract is assigned to them. They are historical
+evidence, and relabelling them would manufacture provenance that does not exist —
+the same reason the v1 directories are not renamed into v2/v3 above.
 
 `nn.wf_diagnostics` reads them exactly as before: absent anchor provenance is
-reported as *an unrecorded boundary (row index only)*, never filled in from the
-current anchor, and is not an integrity fault. It does refuse to compare a
-row-only run with a timestamp-anchored one, because two runs landing on the same
-row is not evidence that they sealed the same data.
+reported as *an unrecorded boundary (row index only)*, absent contract provenance
+as *no research contract (row-only provenance)*, neither filled in from the
+committed registry, and neither an integrity fault. It does refuse to compare a
+row-only run with a contract-bearing one, and refuses to compare two runs under
+different contracts, because two runs landing on the same row is not evidence
+that they belong to the same research generation.
 
 ## Missing provenance
 

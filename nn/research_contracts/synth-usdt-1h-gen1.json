@@ -1,0 +1,12 @@
+{
+  "contract_id": "synth-usdt-1h-gen1",
+  "research_generation": 1,
+  "domain": "pipeline-smoke",
+  "scope": {
+    "exchange": "synthetic",
+    "pair": "SYNTH/USDT",
+    "timeframe": "1h"
+  },
+  "sealed_test_start": "2025-08-27T23:00:00+00:00",
+  "description": "The contract the synthetic candles from tools.make_sample_data run under, so the smoke path and the test suite exercise the real research entrypoints instead of a bypass. It seals at the same instant as btc-usdt-1h-gen1 and resolves to the same kind of boundary, but its scope is the synthetic series, which is what makes it a different contract: neither can be applied to the other's data, and no run under this one is comparable with a run under that one. Nothing measured under this contract is a research result - the series is a random walk, not a market."
+}

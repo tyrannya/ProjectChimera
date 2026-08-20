@@ -12,12 +12,12 @@ through the ``plan_hash`` both carry.
 
 The test split is never touched. Not "not by default": this module has no code
 path that windows it. Where it begins is not this module's decision either — the
-boundary is the immutable ``nn.dataset.SEALED_TEST_START_UTC`` anchor resolved
-against the dataset's own timestamps, recorded in the manifest and hashed into
-``plan_hash``. It calls :func:`nn.train.prepare_research_windows`, whose
-signature takes a training and a validation split and nothing else, so the model
-selection done here cannot consume the sealed estimate that a later
-``nn.train`` run will spend once.
+boundary is the immutable sealed instant of the committed research contract
+``--research-contract`` selects, resolved against the dataset's own timestamps,
+recorded in the manifest and hashed into ``plan_hash``. It calls
+:func:`nn.train.prepare_research_windows`, whose signature takes a training and a
+validation split and nothing else, so the model selection done here cannot
+consume the sealed estimate that a later ``nn.train`` run will spend once.
 
 Three things it deliberately does *not* do, because a research tool that hides
 its failures is worse than none:
@@ -52,6 +52,11 @@ from typing import Any, Callable
 
 from nn import evaluate as ev
 from nn.dataset import SealedBoundary, chronological_split
+from nn.research_contract import (
+    ContractScopeError,
+    add_contract_argument,
+    load_contract,
+)
 from nn.train import (
     RunConfig,
     fit_and_validate,
@@ -158,12 +163,13 @@ def build_plan(
     """The immutable manifest: everything decided before any model was trained.
 
     ``plan_hash`` covers the grid, the fixed parameters, the dataset and the
-    sealed-test contract — the inputs that define the search — so a results file
-    can be tied back to the plan it came from, and a plan that was quietly edited
-    between the manifest and the results does not match. The sealed contract is
-    hashed material because a grid searched under one seal is not the same
-    experiment as the same grid searched under another; without it, two plans
-    that withheld different data would share an identity.
+    research contract — the inputs that define the search — so a results file can
+    be tied back to the plan it came from, and a plan that was quietly edited
+    between the manifest and the results does not match. The contract is hashed
+    material because a grid searched under one research generation is not the
+    same experiment as the same grid searched under another; without it, two
+    plans that withheld different data — or that belong to different generations
+    while happening to resolve to the same row — would share an identity.
     """
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -328,6 +334,7 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--out", default="artifacts/experiments")
+    add_contract_argument(parser)
     # As in nn.train: train against validation *inside the research region*,
     # the rows before the immutable sealed-test anchor. Neither moves the seal.
     parser.add_argument(
@@ -381,8 +388,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_argparser().parse_args(argv)
 
     data = load_research_data(args.dataset)
+    contract = load_contract(args.research_contract)
     try:
-        boundary = data.sealed_boundary()
+        boundary = data.sealed_boundary(contract)
+    except ContractScopeError as exc:
+        raise SystemExit(str(exc)) from exc
     except ValueError as exc:
         raise SystemExit(f"cannot resolve the sealed test boundary: {exc}") from exc
     plan = chronological_split(data.n_rows, boundary.start_row, args.train_frac, args.val_frac)
@@ -400,11 +410,12 @@ def main(argv: list[str] | None = None) -> int:
     plan_path = write_plan(out_dir, manifest)
     logger.warning(
         "Wrote the experiment plan (%d configurations, plan_hash %s) to %s before "
-        "training. Validation rows %s to %s; the test split (%d rows, from row %d, "
-        "sealed at the immutable anchor %s) REMAINS SEALED.",
+        "training. Research contract %s; validation rows %s to %s; the test split "
+        "(%d rows, from row %d, sealed at the immutable anchor %s) REMAINS SEALED.",
         len(configs),
         manifest["plan_hash"],
         plan_path,
+        contract.label,
         data.period(plan.validation)["start"],
         data.period(plan.validation)["end"],
         len(plan.test),

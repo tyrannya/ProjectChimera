@@ -42,6 +42,7 @@ def run_smoke(workdir: Path, rows: int = 1200, epochs: int = 1, seq_len: int = 2
     from chimera.risk import RiskEngine, RiskLimits
     from nn.data_pipeline import build_dataset, save_dataset, validate_ohlcv
     from nn.registry import load_model
+    from nn.research_contract import SYNTHETIC_CONTRACT_ID
     from nn.train import main as train_main
     from tools.make_sample_data import generate_candles
 
@@ -79,6 +80,11 @@ def run_smoke(workdir: Path, rows: int = 1200, epochs: int = 1, seq_len: int = 2
             str(dataset_path),
             "--models-dir",
             str(models_dir),
+            # The synthetic series has its own committed research contract. The
+            # BTC one would (correctly) refuse this dataset: a sealed instant is
+            # only meaningful for the market it was declared for.
+            "--research-contract",
+            SYNTHETIC_CONTRACT_ID,
             "--epochs",
             str(epochs),
             "--seq-len",

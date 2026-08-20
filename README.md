@@ -164,13 +164,22 @@ python -m nn.train --dataset DATASET --validation-only --epochs 30
 It reports on validation and leaves the test split sealed. See
 [the research workflow](docs/ml_pipeline.md#the-research-workflow).
 
-The sealed block begins at one immutable UTC instant —
-`2025-08-27T23:00:00+00:00`, committed as `nn.dataset.SEALED_TEST_START_UTC` —
-resolved against the dataset's own timestamps. Everything before it is research;
-everything at or after it is sealed. Appending candles cannot move it, and no CLI
-flag, environment variable or dataset length may either. The row it resolves to
-(48,217 on the canonical BTC dataset) is metadata about that dataset, recorded
-beside the anchor in every artifact, and is not the contract. See
+The sealed block begins at one immutable UTC instant, and that instant belongs to
+a **research contract**: a committed, versioned document under
+`nn/research_contracts/` that says which market a research generation studies and
+where its data is sealed. The first one is `btc-usdt-1h-gen1` — Binance BTC/USDT
+1h, generation 1, sealed at `2025-08-27T23:00:00+00:00`.
+
+Everything before the seal is research; everything at or after it is sealed.
+Appending candles cannot move it, and no CLI flag, environment variable or dataset
+length may either: `--research-contract` *selects* one of the committed contracts
+and cannot define a new boundary, and there is no flag anywhere that takes a date.
+A new research generation is a new contract file, never an edit to an existing
+one — editing one changes its SHA-256 semantic identity, which every artifact
+records and the diagnostics refuse to aggregate across. The row the instant
+resolves to (48,217 on the canonical BTC dataset) is metadata about that dataset,
+recorded beside the contract in every artifact, and is not the contract. See
+[research contracts](docs/ml_pipeline.md#research-contracts) and
 [where the sealed test block begins](docs/ml_pipeline.md#where-the-sealed-test-block-begins).
 
 ### 4. Research: experiment grids and walk-forward validation

@@ -33,11 +33,19 @@ from chimera.features import FeatureSpec
 from nn import evaluate as ev
 from nn import regime, walkforward, wf_diagnostics
 from nn.data_pipeline import build_dataset, save_dataset
-from nn.dataset import Split, build_windows, sample_indices
-from nn.dataset import SEALED_TEST_START_UTC, resolve_sealed_boundary
+from nn.dataset import Split, build_windows, resolve_sealed_boundary, sample_indices
+from nn.research_contract import SYNTHETIC_CONTRACT_ID, load_contract
 from tools.make_sample_data import generate_candles
 
+#: The committed contract the synthetic fixtures below belong to, and the
+#: instant it seals at. Read from the registry so these tests exercise the
+#: contract the research entrypoints actually resolve.
+CONTRACT = load_contract(SYNTHETIC_CONTRACT_ID)
+SEALED_TEST_START_UTC = CONTRACT.sealed_test_start
+
 TINY = [
+    "--research-contract",
+    SYNTHETIC_CONTRACT_ID,
     "--epochs",
     "1",
     "--seq-len",
@@ -874,14 +882,15 @@ def artifact_for(directory: Path, frame, meta, *, seed: int = 42, folds: int = 3
 def research_for(dataset_pair, frame):
     processed, _, _, _ = dataset_pair
     return regime.load_research_frame(
-        processed, sealed_test_start=resolve_sealed_boundary(frame["date"]).start_row
+        processed,
+        sealed_test_start=resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row,
     )
 
 
 def test_the_research_frame_stops_at_the_sealed_boundary(dataset_pair):
     """Sealed rows are absent from the object, not merely unread."""
     processed, _, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     assert len(research.frame) == boundary
@@ -894,7 +903,7 @@ def test_the_research_frame_stops_at_the_sealed_boundary(dataset_pair):
 
 def test_a_block_at_or_past_the_boundary_is_refused(dataset_pair):
     processed, _, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     with pytest.raises(regime.RegimeDataError, match="beyond the sealed"):
@@ -906,7 +915,7 @@ def test_a_block_at_or_past_the_boundary_is_refused(dataset_pair):
 def test_block_statistics_use_only_the_rows_of_that_block(dataset_pair):
     """Every statistic recomputed independently from the same slice."""
     processed, _, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 400, 520
@@ -938,7 +947,7 @@ def test_block_statistics_use_only_the_rows_of_that_block(dataset_pair):
 
 def test_feature_statistics_are_exact_including_the_percentiles(dataset_pair):
     processed, _, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 300, 480
@@ -970,7 +979,7 @@ def test_feature_statistics_are_exact_including_the_percentiles(dataset_pair):
 
 def test_the_target_distribution_is_exact(dataset_pair):
     processed, _, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
 
     start, end = 250, 500
@@ -1019,7 +1028,7 @@ def test_the_matching_dataset_identity_is_accepted(dataset_pair):
     processed, _, frame, meta = dataset_pair
     research = regime.load_research_frame(
         processed,
-        sealed_test_start=resolve_sealed_boundary(frame["date"]).start_row,
+        sealed_test_start=resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row,
         identity=identity_of(frame, meta),
     )
     assert research.timeframe == meta.timeframe
@@ -1053,7 +1062,9 @@ def test_every_identity_dimension_fails_closed(dataset_pair, field, wrong_value)
     with pytest.raises(regime.RegimeDataError) as raised:
         regime.load_research_frame(
             processed,
-            sealed_test_start=resolve_sealed_boundary(frame["date"]).start_row,
+            sealed_test_start=resolve_sealed_boundary(
+                frame["date"], contract=CONTRACT
+            ).start_row,
             identity=identity,
         )
     assert field in str(raised.value)
@@ -1073,7 +1084,9 @@ def test_metadata_is_cross_checked_against_the_frames_own_timestamps(dataset_pai
     with pytest.raises(regime.RegimeDataError, match="metadata says the data starts"):
         regime.load_research_frame(
             copied,
-            sealed_test_start=resolve_sealed_boundary(frame["date"]).start_row,
+            sealed_test_start=resolve_sealed_boundary(
+                frame["date"], contract=CONTRACT
+            ).start_row,
             identity={**identity_of(frame, meta), "start": payload["start"]},
         )
 
@@ -1082,7 +1095,7 @@ def test_metadata_is_cross_checked_against_the_frames_own_timestamps(dataset_pai
 def test_raw_candles_are_matched_on_timestamps_not_position(dataset_pair):
     """The processed dataset dropped warm-up rows, so the offset is real."""
     processed, raw_path, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     raw = regime.load_raw_ohlcv(raw_path)
 
@@ -1100,7 +1113,7 @@ def test_raw_candles_are_matched_on_timestamps_not_position(dataset_pair):
 
 def test_a_missing_raw_timestamp_fails_closed(dataset_pair, tmp_path):
     processed, raw_path, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     timestamps = research.block(200, 260)["date"]
 
@@ -1125,7 +1138,7 @@ def test_duplicate_raw_timestamps_fail_closed(dataset_pair, tmp_path):
 
 def test_an_incompatible_timeframe_fails_closed(dataset_pair):
     processed, raw_path, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     timestamps = research.block(200, 240)["date"]
 
@@ -1144,7 +1157,7 @@ def test_raw_without_ohlcv_columns_fails_closed(tmp_path):
 
 def test_raw_block_statistics_are_exact(dataset_pair):
     processed, raw_path, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     raw = regime.load_raw_ohlcv(raw_path)
 
@@ -1176,7 +1189,7 @@ def test_raw_block_statistics_are_exact(dataset_pair):
 def test_raw_statistics_skip_returns_across_a_market_gap(dataset_pair, tmp_path):
     """A missing exchange candle is not a price move."""
     processed, raw_path, frame, _ = dataset_pair
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     timestamps = research.block(300, 360)["date"]
 
@@ -1438,7 +1451,7 @@ def real_regime_runs(tmp_path_factory):
         "dataset": processed,
         "raw": raw_path,
         "rows": len(frame),
-        "boundary": resolve_sealed_boundary(frame["date"]).start_row,
+        "boundary": resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row,
     }
 
 
@@ -1672,7 +1685,7 @@ def gapped_research_frame(tmp_path, *, rows=900, gap_at=300, gap_len=5, horizon=
     )
     processed = tmp_path / "gapped.parquet"
     save_dataset(processed, frame, meta)
-    boundary = resolve_sealed_boundary(frame["date"]).start_row
+    boundary = resolve_sealed_boundary(frame["date"], contract=CONTRACT).start_row
     research = regime.load_research_frame(processed, sealed_test_start=boundary)
     return research, frame, boundary
 

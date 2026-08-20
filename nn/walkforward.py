@@ -36,9 +36,9 @@ rather than allowed to double-count rows. A fold's inner block may be a
 choose a threshold is the point of the exercise.
 
 **This is a validation tool, and it is bounded.** Folds are planned over the
-research region — the rows strictly before ``nn.dataset.SEALED_TEST_START_UTC``
-— and never over the dataset length. That distinction is the whole safeguard,
-and it was learned the hard way three times:
+research region — the rows strictly before the selected research contract's
+sealed instant — and never over the dataset length. That distinction is the whole
+safeguard, and it was learned the hard way three times:
 
 * an early version scored an explicit per-fold *test* block, spending the sealed
   estimate on every research iteration;
@@ -52,12 +52,13 @@ and it was learned the hard way three times:
   every time the dataset grew.
 
 Renaming a split does not unseal its rows, and neither does appending rows after
-them. So the boundary is an immutable UTC instant that this module,
-``nn.train`` and ``nn.experiment`` all resolve through the one function
+them. So the boundary is an immutable UTC instant, carried by a committed
+:class:`nn.research_contract.ResearchContract`, which this module, ``nn.train``
+and ``nn.experiment`` all resolve through the one function
 :meth:`nn.train.ResearchData.sealed_boundary`. The resolved row index is a
 property of the dataset, not the contract; the planner may work in row
 coordinates *after* the timestamp has been resolved, which is why the flow is
-``timestamp -> resolved boundary row -> row-based planner`` and never
+``contract -> timestamp -> resolved boundary row -> row-based planner`` and never
 ``dataset length -> percentage -> boundary row``.
 ``tests/test_research_workflow.py`` and ``tests/test_sealed_boundary.py`` assert
 on row indices and timestamps — never on split names, which is exactly the check
@@ -90,6 +91,12 @@ import pandas as pd
 from chimera.contracts import CLASS_ORDER
 from nn import evaluate as ev
 from nn.dataset import Split
+from nn.research_contract import (
+    ContractScopeError,
+    ResearchContract,
+    add_contract_argument,
+    load_contract,
+)
 from nn.train import (
     ResearchData,
     RunConfig,
@@ -513,6 +520,7 @@ def to_markdown(
     summary: dict[str, Any],
     sealed: dict[str, Any],
     anchor: str,
+    contract: ResearchContract,
 ) -> str:
     lines = [
         "# Nested walk-forward validation",
@@ -524,11 +532,16 @@ def to_markdown(
         "**Only the outer block is reported below.** Outer blocks do not overlap, so",
         "no row is reported as a result twice.",
         "",
+        f"**Research contract:** `{contract.contract_id}` "
+        f"(generation {contract.research_generation}, {contract.domain}, "
+        f"{contract.scope.exchange} {contract.scope.pair} {contract.scope.timeframe}),",
+        f"semantic identity `sha256:{contract.contract_hash}`.",
+        "",
         f"**Sealed test block:** everything at or after `{anchor}` — an immutable "
         "wall-clock",
         f"anchor, which in this dataset is rows {sealed['row_range'][0]}-"
         f"{sealed['row_range'][1]}, {sealed['start'][:10]} to {sealed['end'][:10]}. The row",
-        "range is metadata about this dataset; the timestamp is the contract, and",
+        "range is metadata about this dataset; the contract is the boundary, and",
         "appending later candles cannot move it. No fold below plans, trains on,",
         "selects on, or scores a row at or after that boundary.",
         "",
@@ -699,6 +712,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Nested walk-forward validation.")
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--out", default="artifacts/walkforward")
+    add_contract_argument(parser)
     parser.add_argument("--folds", type=int, default=4)
     # There is deliberately no --train-frac/--val-frac here. They used to exist
     # for exactly one purpose — locating the moving sealed boundary — and the
@@ -790,8 +804,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_argparser().parse_args(argv)
 
     data = load_research_data(args.dataset)
+    contract = load_contract(args.research_contract)
     try:
-        sealed = data.sealed_boundary()
+        sealed = data.sealed_boundary(contract)
+    except ContractScopeError as exc:
+        raise SystemExit(str(exc)) from exc
     except ValueError as exc:
         raise SystemExit(f"cannot resolve the sealed test boundary: {exc}") from exc
     boundary = sealed.start_row
@@ -799,10 +816,11 @@ def main(argv: list[str] | None = None) -> int:
     min_train, inner_size, outer_size, step = resolve_sizes(args, boundary)
     folds = plan_nested_folds(boundary, args.folds, min_train, inner_size, outer_size, step)
     logger.warning(
-        "%d nested folds over rows [0, %d) of %d (min_train=%d, inner=%d, outer=%d, "
-        "step=%d). Outer blocks: %s — disjoint, and only these are reported. The "
-        "sealed test block starts at the immutable anchor %s, row %d (%s), and is NOT "
-        "planned over, trained on, selected on, or evaluated.",
+        "Research contract %s. %d nested folds over rows [0, %d) of %d (min_train=%d, "
+        "inner=%d, outer=%d, step=%d). Outer blocks: %s — disjoint, and only these are "
+        "reported. The sealed test block starts at the immutable anchor %s, row %d "
+        "(%s), and is NOT planned over, trained on, selected on, or evaluated.",
+        contract.label,
         len(folds),
         boundary,
         data.n_rows,
@@ -858,10 +876,11 @@ def main(argv: list[str] | None = None) -> int:
                     "outer_val_size": outer_size,
                     "step": step,
                 },
-                # The immutable anchor and the row it resolved to in this
-                # dataset, together. A reader of this file can tell which seal
-                # the run was planned under; a file carrying only start_row
-                # cannot say that, and must not be read as if it could.
+                # The research contract, its immutable anchor, and the row
+                # that anchor resolved to in this dataset, together. A reader of
+                # this file can tell which research generation the run was
+                # planned under; a file carrying only start_row cannot say that,
+                # and must not be read as if it could.
                 "sealed_test": {
                     **sealed.to_dict(),
                     "period": data.period(sealed_split),
@@ -882,7 +901,11 @@ def main(argv: list[str] | None = None) -> int:
         + "\n"
     )
     markdown = to_markdown(
-        results, summary, sealed=data.period(sealed_split), anchor=sealed.anchor.isoformat()
+        results,
+        summary,
+        sealed=data.period(sealed_split),
+        anchor=sealed.anchor.isoformat(),
+        contract=contract,
     )
     (out_dir / "walkforward.md").write_text(markdown)
     print(markdown)

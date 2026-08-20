@@ -35,12 +35,23 @@ from chimera.contracts import ModelMetadata, TargetSpec
 from chimera.features import FeatureSpec
 from nn import experiment, train, walkforward
 from nn.data_pipeline import build_dataset, save_dataset
-from nn.dataset import SEALED_TEST_START_UTC, Split, chronological_split, window_indices
+from nn.dataset import Split, chronological_split, window_indices
 from nn.model_def import MTST, MTSTConfig
 from nn.registry import promote, resolve_current, save_model
+from nn.research_contract import SYNTHETIC_CONTRACT_ID, load_contract
 from tools.make_sample_data import generate_candles
 
+#: The committed contract of the current BTC research generation, and the
+#: instant it seals at. The fixtures below are synthetic candles, so they belong
+#: to the committed synthetic contract rather than the BTC one — the BTC contract
+#: would (correctly) refuse them. Every entrypoint invocation therefore carries
+#: the selector, which is what a real run does too.
+CONTRACT = load_contract(SYNTHETIC_CONTRACT_ID)
+SEALED_TEST_START_UTC = CONTRACT.sealed_test_start
+
 TINY = [
+    "--research-contract",
+    SYNTHETIC_CONTRACT_ID,
     "--epochs",
     "1",
     "--seq-len",
@@ -91,7 +102,7 @@ def only_version(models_dir):
 
 def boundary_of(data) -> int:
     """The sealed start row for a loaded dataset, resolved the way a run does."""
-    return data.sealed_boundary().start_row
+    return data.sealed_boundary(CONTRACT).start_row
 
 
 def split_of(data, train_frac: float = 0.70, val_frac: float = 0.15):
@@ -285,6 +296,8 @@ def experiment_args(dataset, out, extra=()):
         str(dataset),
         "--out",
         str(out),
+        "--research-contract",
+        SYNTHETIC_CONTRACT_ID,
         "--epochs",
         "1",
         "--seq-len",
@@ -960,7 +973,7 @@ def test_the_resolved_boundary_is_where_the_test_split_starts(dataset):
     walk-forward planner cannot disagree by a row about where sealed data begins.
     """
     data = train.load_research_data(dataset)
-    boundary = data.sealed_boundary()
+    boundary = data.sealed_boundary(CONTRACT)
 
     assert boundary.anchor == SEALED_TEST_START_UTC
     for train_frac, val_frac in ((0.70, 0.15), (0.5, 0.4), (0.8, 0.1)):
