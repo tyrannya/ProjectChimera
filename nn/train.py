@@ -49,7 +49,7 @@ import random
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -520,7 +520,8 @@ class FrozenScore:
     second time to get them.
     """
 
-    #: ``majority_baseline`` / ``momentum_baseline`` / ``mtst``.
+    #: ``majority_baseline`` / ``momentum_baseline`` / the scored model's name,
+    #: which is ``mtst`` unless the caller named another one.
     reports: dict[str, dict[str, Any]]
     #: CASH and buy-and-hold over the same window. Not models — see
     #: :func:`nn.evaluate.economic_references`.
@@ -539,10 +540,12 @@ def score_frozen_split(
     split: Split,
     seq_len: int,
     *,
-    model: MTST,
+    model: MTST | None = None,
     baselines: dict[str, Any],
     threshold: float,
     device: torch.device,
+    proba_of: Callable[[np.ndarray], np.ndarray] | None = None,
+    model_name: str = "mtst",
 ) -> FrozenScore:
     """Score an already-frozen model, threshold and baselines on one split.
 
@@ -551,6 +554,15 @@ def score_frozen_split(
     transforms, windows and measures — which is what makes it safe to point at a
     block that must not influence model selection: ``nn.train``'s sealed test
     block, and ``nn.walkforward``'s outer validation block.
+
+    ``proba_of`` is the hook the P2a simple-model benchmark
+    (:mod:`nn.benchmark`) scores through: a callable taking the same
+    ``(n, seq_len, n_features)`` windows MTST receives and returning
+    probabilities in ``CLASS_ORDER``. It exists so a second model family reuses
+    *this* windowing, market context, cost model and report construction instead
+    of a parallel copy that could drift — which is exactly what the parity claim
+    between the families rests on. Exactly one of ``model`` and ``proba_of`` is
+    given; ``model_name`` is the key the resulting report is filed under.
 
     Rows are read up to ``split.end`` and no further, so a split that ends
     before the sealed boundary cannot reach a sealed row even by accident. The
@@ -561,6 +573,9 @@ def score_frozen_split(
     Raises ``ValueError`` when the split is too short to hold one window plus
     its label horizon, rather than reporting metrics over zero samples.
     """
+    if (model is None) == (proba_of is None):
+        raise ValueError("score_frozen_split takes exactly one of model= and proba_of=")
+
     visible = split.end
     scaled = scaler.transform(data.features[:visible])
     X, y, idx = build_windows(
@@ -592,12 +607,12 @@ def score_frozen_split(
             row_index=idx,
         )
 
-    proba = predict_proba(model, X, device)
+    proba = predict_proba(model, X, device) if proba_of is None else proba_of(X)
     reports = {
         name: score(baseline.predict_proba(X), BASELINE_DECISION_THRESHOLD)
         for name, baseline in baselines.items()
     }
-    reports["mtst"] = score(proba)
+    reports[model_name] = score(proba)
     # Not a model and not a baseline: what the same window did for someone who
     # never traded, and for someone who bought once and held. Reported beside
     # the models because beating a statistical floor is not the same as making
