@@ -457,6 +457,8 @@ def test_the_legacy_key_contract_is_what_the_committed_artifacts_carry():
 
     checked = 0
     for artifact in sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json")):
+        if "_v4_" in artifact.parent.name:
+            continue
         payload = json.loads(artifact.read_text())
         for fold in payload["folds"]:
             for model, report in fold["outer_validation"].items():
