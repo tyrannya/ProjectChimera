@@ -83,22 +83,40 @@ def report(
 ) -> dict[str, Any]:
     """One model's evaluation report, carrying every aggregated metric.
 
-    ``schema="legacy"`` produces the pre-correction shape instead: the removed
-    ``sharpe`` field and neither of the two that replaced it. That is the exact
-    fingerprint :func:`nn.wf_diagnostics.classify_schema` keys on, and the only
-    shape it is allowed to read with fields skipped.
+    The shared base below is the eleven trading fields both generations record.
+    ``schema="legacy"`` then adds the removed ``sharpe`` and neither of the two
+    that replaced it, which makes the block exactly
+    :data:`nn.regime.LEGACY_TRADING_KEYS` — the shape every committed
+    pre-correction artifact carries, and the only one
+    :func:`nn.wf_diagnostics.classify_schema` is allowed to read with fields
+    skipped. Anything else adds the current risk-report fields instead, so the
+    fixture is the complete current evaluator shape rather than a sketch of it.
     """
     trading: dict[str, Any] = {
         "n_trades": 20,
         "net_return": net_return,
-        "exposure": 0.25,
+        "gross_return": net_return + 0.012,
+        "total_costs": 0.012,
+        "avg_trade": net_return / 20,
+        "win_rate": 0.45,
+        "profit_factor": 1.1,
         "max_drawdown": 0.05,
+        "exposure": 0.25,
+        "turnover": 40.0,
+        "cost_per_trade": 0.0006,
     }
     if schema == "legacy":
         trading["sharpe"] = net_return * 10
     else:
-        trading["annualised_sharpe"] = net_return * 2
-        trading["per_trade_sharpe"] = net_return
+        trading.update(
+            annualised_sharpe=net_return * 2,
+            annualised_sharpe_reason="",
+            sharpe_basis=ev.SHARPE_BASIS,
+            candle_max_drawdown=0.05,
+            elapsed_intervals=83,
+            per_trade_sharpe=net_return,
+            per_trade_sharpe_reason="",
+        )
     return {
         "classification": {
             "n_samples": 83,
@@ -2115,6 +2133,13 @@ def test_a_pre_correction_artifact_is_read_with_only_the_new_metrics_skipped(tmp
     write_run(tmp_path / "legacy", schema="legacy")
     run = wf_diagnostics.load_run(tmp_path / "legacy")
 
+    # The fixture must be a shape a pre-correction run actually wrote, not a
+    # current report with fields deleted: otherwise the legacy path below is
+    # tested against fiction. `regime.LEGACY_TRADING_KEYS` is itself pinned to
+    # the historical read-off in tests/test_prediction_integrity_hotfix.py.
+    trading = run.folds[0]["outer_validation"]["mtst"]["trading"]
+    assert set(trading) == set(regime.LEGACY_TRADING_KEYS)
+
     assert wf_diagnostics.audit_run(run) == []
     schema, problems = wf_diagnostics.classify_schema(run)
     assert schema == wf_diagnostics.SCHEMA_LEGACY
@@ -2158,6 +2183,115 @@ def test_a_current_artifact_missing_a_metric_fails_rather_than_dropping_it(tmp_p
     assert schema == ""
     assert any("refusing to aggregate around the gap" in p for p in problems)
     assert wf_diagnostics.audit_run(run), "a missing metric must be an integrity problem"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "annualised_sharpe_reason",
+        "sharpe_basis",
+        "candle_max_drawdown",
+        "elapsed_intervals",
+        "per_trade_sharpe_reason",
+    ],
+)
+def test_a_current_artifact_missing_any_required_risk_field_fails_closed(tmp_path, field):
+    """Every current risk-report field is required, not just summary metrics."""
+    directory = tmp_path / "missing_risk_field"
+    write_run(directory)
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    del payload["folds"][0]["outer_validation"]["mtst"]["trading"][field]
+    artifact.write_text(json.dumps(payload))
+
+    run = wf_diagnostics.load_run(directory)
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any(field in problem for problem in problems)
+    assert wf_diagnostics.audit_run(run)
+
+
+def test_a_defined_current_sharpe_with_a_different_basis_is_refused(tmp_path):
+    """Defined annualised Sharpes under unlike bases cannot be aggregated."""
+    directory = tmp_path / "wrong_basis"
+    write_run(directory)
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    payload["folds"][0]["outer_validation"]["mtst"]["trading"][
+        "sharpe_basis"
+    ] = "a different annualisation basis"
+    artifact.write_text(json.dumps(payload))
+
+    run = wf_diagnostics.load_run(directory)
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any("sharpe_basis" in problem for problem in problems)
+    assert any("Refusing to aggregate unlike risk metrics" in problem for problem in problems)
+    assert wf_diagnostics.audit_run(run)
+
+
+def _legacy_run_with(tmp_path, name: str, mutate) -> wf_diagnostics.RunArtifact:
+    """A pre-correction run whose first mtst trading block has been edited."""
+    directory = tmp_path / name
+    write_run(directory, schema="legacy")
+    artifact = directory / wf_diagnostics.ARTIFACT_NAME
+    payload = json.loads(artifact.read_text())
+    mutate(payload["folds"][0]["outer_validation"]["mtst"]["trading"])
+    artifact.write_text(json.dumps(payload))
+    return wf_diagnostics.load_run(directory)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("annualised_sharpe_reason", ""),
+        ("sharpe_basis", ev.SHARPE_BASIS),
+        ("candle_max_drawdown", 0.05),
+        ("elapsed_intervals", 83),
+        ("per_trade_sharpe_reason", ""),
+    ],
+)
+def test_a_legacy_report_carrying_any_current_only_risk_field_fails_closed(
+    tmp_path, field, value
+):
+    """A hybrid is not a degraded read: the legacy tolerance is fingerprint-only.
+
+    The pre-correction `sharpe` alongside a field only the corrected evaluator
+    emits means one of the two is not what it claims, and which numbers are
+    comparable to which is then unknown. `per_trade_sharpe_reason` is the case
+    the shared validator alone cannot catch — `NON_REPRODUCIBLE_TRADING_METRICS`
+    does not name it — so it is covered here explicitly.
+    """
+    run = _legacy_run_with(
+        tmp_path, f"hybrid_{field}", lambda trading: trading.__setitem__(field, value)
+    )
+
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any(field in problem for problem in problems)
+    assert wf_diagnostics.audit_run(run), "a hybrid report must be an integrity problem"
+
+
+def test_a_legacy_report_missing_a_historical_trading_key_fails_closed(tmp_path):
+    """`turnover` is not an aggregated metric, so only the exact-set rule sees it."""
+    run = _legacy_run_with(tmp_path, "legacy_short", lambda trading: trading.pop("turnover"))
+
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any("turnover" in problem for problem in problems)
+    assert wf_diagnostics.audit_run(run)
+
+
+def test_a_legacy_report_with_an_unknown_trading_key_fails_closed(tmp_path):
+    """A key in neither generation dates the artifact to neither."""
+    run = _legacy_run_with(
+        tmp_path, "legacy_extra", lambda trading: trading.__setitem__("sortino", 1.5)
+    )
+
+    schema, problems = wf_diagnostics.classify_schema(run)
+    assert schema == ""
+    assert any("sortino" in problem for problem in problems)
+    assert wf_diagnostics.audit_run(run)
 
 
 def test_a_half_renamed_schema_fails_rather_than_being_treated_as_legacy(tmp_path):
