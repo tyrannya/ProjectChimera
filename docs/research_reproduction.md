@@ -211,6 +211,12 @@ Logs go outside `artifacts/benchmark/` on purpose: that directory is the evidenc
 index's row space, and a stray file in it is a directory a reader has to rule
 out.
 
+**Do not edit repository source while a batch is running.** Each cell records a
+SHA-256 over every repository module its process imported, and §5 refuses to
+join cells whose digests differ. That is the point — nine cells built by nine
+revisions of the runner would otherwise join without a word — but it means a
+mid-batch edit costs you the cells that ran before it.
+
 Leave one core free: three concurrent fits on a four-core machine keeps the
 machine responsive and avoids the memory spike of a fourth.
 
@@ -260,10 +266,12 @@ python -m nn.p2b_compare \
 ```
 
 It writes `p2b_comparison.json` and `p2b_comparison.md`. It writes **nothing**
-if the cells cannot be compared or if any cell's report disagrees with its own
-persisted predictions: both raise and exit non-zero. That is the intended
-behaviour — an aggregate over cells that did not score the same rows would be a
-comparison of sample universes wearing a comparison of information sets.
+if the cells cannot be compared, if any cell's persisted predictions disagree
+with the committed snapshot, or if any cell's report disagrees with its own
+predictions: each raises and exits non-zero. That is the intended behaviour — an
+aggregate over cells that did not score the same rows, or did not run the same
+code, would be a comparison of sample universes wearing a comparison of
+information sets.
 
 ### Optional, post-hoc
 
@@ -314,9 +322,14 @@ is running: it is long, and it is not what tells you a P2b run is sound.
 
 ## 7. What to check before trusting the output
 
-Three things, in this order. All three are in
-`artifacts/benchmark/btc_p2b_comparison/p2b_comparison.json`, and the second and
-third are summarised at the top of `p2b_comparison.md`.
+Four things. All four are in
+`artifacts/benchmark/btc_p2b_comparison/p2b_comparison.json`, and the last three
+are summarised at the top of `p2b_comparison.md`.
+
+Every one of them also *stops the run* when it fails, so a comparison file that
+exists has already passed all four. Read them anyway on any artifact whose
+production you did not watch: recording the evidence instead of asserting the
+conclusion is what makes that possible.
 
 ### 7.1 The alignment proof
 
@@ -330,16 +343,34 @@ jq '.alignment.folds[] | {fold, outer: .outer_validation}' \
 
 Expect four folds, contiguous outer row ranges `[26518,31339)`, `[31339,36160)`,
 `[36160,40981)`, `[40981,45802)`, non-zero `samples`, and a
-`sample_index_sha256` on every block. Outer periods should read 2023-03 → 2023-09,
-2023-09 → 2024-04, 2024-04 → 2024-10, 2024-10 → 2025-05.
+`sample_index_sha256` on every block. Outer periods should read 2023-03 →
+2023-09, 2023-09 → 2024-04, 2024-04 → 2024-10, 2024-10 → 2025-05. An empty
+block, an outer range that overlaps its neighbour, or a missing hash means the
+plan did not survive the data.
 
-An empty block, an outer range that overlaps its neighbour, or a missing
-`sample_index_sha256` means the plan did not survive the data. None of the three
-can appear in a file `nn.p2b` wrote — `prove_alignment` raises on an empty
-block, and the planner refuses a step smaller than the outer size before any
-fold is built. Check anyway on an artifact whose production you did not watch:
-recording the evidence instead of asserting the conclusion is what makes that
-possible.
+Then the half of the proof that is about the columns rather than the rows:
+
+```bash
+jq '{checked: .alignment.checked, per_view: .alignment.checked_per_view,
+     join: .alignment.join_evidence}' \
+   artifacts/benchmark/btc_p2b_comparison/p2b_comparison.json
+```
+
+`join_evidence.matches` must be `true` and **both**
+`matches_under_plus_one_shift` and `matches_under_minus_one_shift` must be
+`false`. That pair is the point: it says the join was checked by something that
+would have failed if a market-structure value were sitting one candle off — a
+one-row shift is a one-candle look-ahead on all 39 columns at once, and nothing
+else in the proof can see it. `raw_candles_seen_by_the_engine` should read
+**47,136** — one past the raw row behind the spine's last row — and not the raw
+file's 49,551: the candle history is truncated before the engine runs, so it
+cannot reach past the last row any fold scores. `raw_rows_first` should be `78`,
+the OHLCV14 warm-up the spine already discarded and the market-structure engine
+still gets to build state over.
+
+Note that `.alignment` is one cell's block, and `checked` is shorter for a
+single-view cell — it says so in words rather than reporting cross-set
+comparisons it never made.
 
 ### 7.2 The cross-cell parity block
 
@@ -358,10 +389,34 @@ majority and momentum baseline reports, CASH and buy-and-hold references), and
 the conclusion that a difference between two cells can only be the information
 set or the model.
 
+`parity.code.source_digest` is the tenth thing they must agree on, and it is
+about the runner rather than the data: a SHA-256 over every repository module
+each process imported. `parity.code.revisions` may legitimately hold more than
+one git revision — a documentation commit between two cells moves `HEAD`
+without changing a line any cell executes — which is exactly why the digest, not
+the revision, is what the comparison enforces.
+
 If you ran only some of the nine, `cells` will show only those. A comparison of
 three cells is a valid comparison of three cells; it is not the P2b result.
 
-### 7.3 The independent-recompute mismatch count
+### 7.3 The snapshot anchoring
+
+Everything in §7.4 rebuilds a cell's numbers from the cell's own persisted
+columns, so a cell whose labels were mis-joined would reproduce its own wrong
+numbers exactly and report nothing. This is the check against data the run did
+not produce:
+
+```bash
+jq '.snapshot_anchoring' artifacts/benchmark/btc_p2b_comparison/p2b_comparison.json
+```
+
+Expect `cells_checked: 9`, `problems: 0`, and `rows_checked: 170451`
+(9 × 18,939). Every scored row's timestamp, label and realised return was
+compared against `data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet`
+at the row index the cell recorded. A low `rows_checked` means you compared
+fewer cells than you think you did.
+
+### 7.4 The independent-recompute mismatch count
 
 ```bash
 jq '.independent_recompute | {cells_checked, folds_checked, mismatches}' \
@@ -372,27 +427,28 @@ Expect `cells_checked: 9`, `folds_checked: 36`, `mismatches: 0`.
 
 **`mismatches` is always 0 in a file that exists** — a non-zero count raises
 before anything is written. The field is there so a reader can see that the
-check ran, and over how many cell-folds. What matters is that
-`folds_checked` is 36 and not, say, 12: a recomputation over a third of the
-cells proves a third of the report.
+check ran, and over how many cell-folds. What matters is that `folds_checked` is
+36 and not, say, 12: a recomputation over a third of the cells proves a third of
+the report.
 
-Two numbers are deliberately *not* recomputed, and say so in
-`not_recomputed`: the annualised Sharpe and the candle-level maximum drawdown
-need the candle price path, which the prediction file does not carry.
+Two numbers are deliberately *not* recomputed, and say so in `not_recomputed`:
+the annualised Sharpe and the candle-level maximum drawdown need the candle
+price path, which the prediction file does not carry.
 
-### And a fourth, if you are auditing rather than running
+### And the labels on the evidence, if you are auditing rather than running
 
 ```bash
-jq '{sealed_test, unit: .statistical_unit, adaptive: .adaptive_status,
-     contains_styx: .snapshot.contains_styx}' \
+jq '{sealed_test, unit: .statistical_unit, dependence: .folds_are_not_independent,
+     adaptive: .adaptive_status, contains_styx: .snapshot.contains_styx}' \
    artifacts/benchmark/btc_p2b_comparison/p2b_comparison.json
 ```
 
-`sealed_test` must be `false` and `contains_styx` must be `false`. The other two
-fields are the honest labels on the evidence: four temporal periods with no seed
-replication, and outer blocks that were designed after earlier results on those
-same blocks had been seen. See [`p2b_methodology.md`](p2b_methodology.md) §7 and
-§10.
+`sealed_test` must be `false` and `contains_styx` must be `false`. The other
+three are the honest labels on the evidence: four temporal periods with no seed
+replication; four periods that are not four independent draws, because each
+fold's inner-validation block is the previous fold's outer block; and outer
+blocks designed after earlier results on those same blocks had been seen. See
+[`p2b_methodology.md`](p2b_methodology.md) §7 and §10.
 
 ---
 

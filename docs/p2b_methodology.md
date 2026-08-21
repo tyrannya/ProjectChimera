@@ -158,7 +158,7 @@ boundaries resolved by row index land on different candles, and the two arms are
 then measured over different market periods. Nothing raises. The report still
 prints four folds. The comparison is simply no longer about the features.
 
-The defence has three layers.
+The defence has five layers.
 
 **Guaranteed by construction.** `nn.information_sets.build_information_set_views`
 builds one `ResearchData` per arm over one shared row spine. The views hold *the
@@ -168,7 +168,14 @@ a function of the split, the sequence length, the horizon and the segment ids
 alone, so the views cannot select different rows. Construction fails closed on
 anything that would move one: a spine timestamp with no raw candle, a non-finite
 market-structure value, or a processed segment the raw candle history
-contradicts.
+contradicts. The raw candle frame is also truncated to the last row the spine
+uses before the market-structure engine is run over it, so the engine is
+structurally incapable of seeing a candle later than the last row any fold
+scores. The committed raw file runs three months past the spine's end, and the
+engine is causal by construction — but "causal because the implementation is"
+is inherited, and one future feature built with a centred window would put three
+months of future structure into every training row without a single guard
+firing.
 
 **Proved per fold.** `AlignedResearchSamples.prove_alignment` re-derives the
 sample index for every view, every fold and every block, and asserts the arrays,
@@ -177,6 +184,23 @@ evidence rather than a boolean: the artifact records each block's row range,
 sample count, first and last row, first and last timestamp, and a SHA-256 over
 the sample-index array. A claim of alignment that nothing recomputes is a
 comment, not a guarantee.
+
+**Proved against the join.** The checks above are about the arrays the views
+*share*, and after the object-identity assertions they can only pass —
+`a[i] == a[i]` is not evidence. `features` is the one array that differs between
+views and the one a bad join would corrupt, so it gets its own check: every
+column of every view is compared against the column it was assembled from, and
+the assembly itself is re-derived independently when the views are built.
+`smc_body_ratio` — `|c−o| / (h−l)`, local to one candle, no ATR and no state —
+is recomputed straight from the raw candles at the joined rows, and one OHLCV14
+column is compared against the spine, pinning both halves of the matrix to the
+rows the fold plan is expressed in. The evidence records not only that the join
+matched but that a `+1` and a `−1` row shift would *not* have matched; when
+either shift also matches, construction refuses to report the check at all,
+because a test that cannot fail on this data is not evidence on this data. A
+one-row shift is both the likeliest join mistake and the most damaging — it is a
+one-candle look-ahead on all 39 columns at once — and nothing else in the proof
+can see it.
 
 **Proved across cells.** One P2b run is one cell — one information set, one
 model, four folds — because nine independent single-threaded cells finish far
@@ -192,11 +216,32 @@ feature-spec hash, and the per-fold sample-index hashes from the alignment
 proof. Nothing but the data could make nine separately-run processes agree on
 all of that.
 
-That third layer is not redundant. The runner materialises only the views it
-needs — the control plus the arm under test — so the `ohlcv14` cell holds a
-single view and its own alignment proof has nothing to compare against. What
-proves the control cell scored the same rows as the other eight is the
-cross-cell comparison of the recorded hashes, and only that.
+It also requires them to agree on the **code**. Every other identity a cell
+records describes the data or the definitions, and none of them moves when the
+runner does, so nine cells built by nine revisions of `nn.p2b` would otherwise
+join into one comparison without a word — which is not hypothetical: two
+revisions of `build_information_set_views` once produced identical alignment
+blocks while building a different number of views. Each cell records a SHA-256
+over every repository module the process imported, and the comparison requires
+one digest across all nine. The digest rather than the git revision, in both
+directions: a documentation commit moves `HEAD` without changing a line any cell
+executes, and an uncommitted edit changes everything while moving no revision at
+all. The revisions are recorded beside it, and may legitimately differ.
+
+**Anchored to the data.** Recomputation (§12) rebuilds a cell's metrics from its
+own persisted `future_return` and `true_target`, so a cell whose label array was
+mis-joined would reproduce its own wrong numbers exactly and report no mismatch.
+The last check closes that: for every scored row of every cell, the persisted
+timestamp, label and realised return must equal the committed snapshot's at the
+row index the cell says it scored. It is the only place the evidence is compared
+against something the run did not produce.
+
+The cross-cell layer is not redundant with the per-fold one. The runner
+materialises only the views it needs — the control plus the arm under test — so
+the `ohlcv14` cell holds a single view, and its alignment proof says so in its
+own artifact rather than reporting comparisons it never made. What proves the
+control cell scored the same rows as the other eight is the cross-cell
+comparison of the recorded hashes, and only that.
 
 The rule floors are computed from the control's columns for a second reason
 besides the fact that `MomentumBaseline` reads `ema_cross`, which the `smc_v1`
@@ -280,6 +325,16 @@ Four is a small number, and calling it the unit is what keeps it visible.
 Aggregates over four folds are reported with min, median and max beside the
 mean, because with four observations the range says more than the standard
 deviation does.
+
+**And the four are not independent draws.** The geometry is P2a's, and in it
+fold `k`'s inner-validation block *is* fold `k−1`'s reported outer block, while
+folds 2 and 3 train on earlier folds' outer rows. No fold touches its own outer
+rows before scoring them, so no fold's own number is contaminated — that is the
+property the nesting exists to guarantee, and it holds. But a regime that spans
+a fold boundary can move one fold's result and the next fold's *selected
+threshold* together, which means "three of four" is fewer than four independent
+observations. The verdict rule in §9 should be read that way, and every
+comparison artifact carries this caveat in its own payload.
 
 ---
 
@@ -403,11 +458,13 @@ holding `p2b.json`, `p2b.md` and `outer_predictions.parquet`, and one join at
 `artifacts/benchmark/btc_p2b_comparison/`.
 
 The join is not a concatenation. Before it reports anything, `nn.p2b_compare`
-proves the cells scored the same rows (§5) and then **rebuilds every reported
-trading and classification number from the persisted per-sample predictions**,
-through `nn.evaluate`, and refuses to continue on any disagreement. A report
-that contradicts its own predictions is a report about nothing, and there is no
-way to notice that by reading it. The annualised Sharpe and the candle-level
+proves the cells scored the same rows and ran the same code (§5), checks every
+scored row's timestamp, label and realised return against the committed snapshot
+at the row index the cell recorded, and then **rebuilds every reported trading
+and classification number from the persisted per-sample predictions**, through
+`nn.evaluate`. Any disagreement stops it; nothing is written. A report that
+contradicts its own predictions is a report about nothing, and there is no way
+to notice that by reading it. The annualised Sharpe and the candle-level
 drawdown are the declared exceptions: they need the candle price path, which the
 prediction file does not carry, and they are listed as not recomputed rather
 than silently skipped.
