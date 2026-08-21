@@ -1,9 +1,16 @@
 # SMC v1 — causal market-structure information set
 
 Version: `smc_v1`
-Status: predeclared before any P2b outer-validation result was observed.
-Research checkpoint: **P2b** (*does causal measurable market structure add usable
-information beyond OHLCV14?*).
+Research checkpoint: **P2b** (*does causal `smc_v1`, alone or combined with
+OHLCV14, add usable information beyond OHLCV14?*) — the first information family.
+
+**Status: predeclared before any P2b outer-validation result was observed**, and
+that includes §8's within-candle order, which landed at `a7a25d2` half an hour
+before the earliest cell ran. §8.3 records the one place the engine had drifted
+from this document, what it cost (nothing, measured over 1.7 million cells) and
+how to check the chronology. Like every checkpoint on these four outer blocks it
+is **adaptive** with respect to P2a, whose results were read before it was
+designed.
 
 This document is the **definition**, not a description. Every feature below has
 one exact formula and one exact firing rule. `nn/smc.py` implements it and

@@ -419,15 +419,27 @@ def test_a_manifest_entry_is_a_sha256_of_the_file_it_names():
 DOCS = ROOT / "docs"
 
 
-def test_each_feature_spec_names_its_own_checkpoint():
-    smc = (DOCS / "smc_v1.md").read_text()
-    chart = (DOCS / "chart_structure_v1.md").read_text()
-    assert "Research checkpoint: **P2c**" in chart
-    assert "Research checkpoint: **P2b**" not in chart
-    assert "chart_structure_v1" in chart.split("Research checkpoint")[1][:400]
-    # smc_v1.md predates the header convention and states its checkpoint in
-    # prose; what matters is that it does not claim P2c's.
-    assert "P2c" not in smc.split("## 9.")[0] or "chart" not in smc
+@pytest.mark.parametrize(
+    "document, checkpoint, family",
+    [
+        ("smc_v1.md", "P2b", "smc_v1"),
+        ("chart_structure_v1.md", "P2c", "chart_structure_v1"),
+    ],
+)
+def test_each_feature_spec_names_its_own_checkpoint(document, checkpoint, family):
+    """Both specs use the same header line, and it has to name the right one.
+
+    `chart_structure_v1.md` carried `Research checkpoint: **P2b**` — `smc_v1`'s
+    checkpoint, with `smc_v1`'s question — through two checkpoints.
+    """
+    text = (DOCS / document).read_text()
+    other = "P2c" if checkpoint == "P2b" else "P2b"
+    header, _, rest = text.partition("Research checkpoint:")
+    assert rest, f"{document} no longer states a research checkpoint"
+    assert rest.lstrip().startswith(f"**{checkpoint}**"), rest[:80]
+    assert f"Research checkpoint: **{other}**" not in text
+    # The question beside the header must be about this document's own family.
+    assert family in rest[:400], rest[:400]
 
 
 def test_the_chart_spec_states_its_adaptive_status_rather_than_implying_none():
