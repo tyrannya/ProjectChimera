@@ -35,10 +35,11 @@ INDEX = ARTIFACTS / "README.md"
 #: may both be CURRENT at once.
 BASELINE_QUESTION = "btc_ohlcv14_mtst_baseline"
 P2A_QUESTION = "btc_p2a_model_family_benchmark"
+P2B_QUESTION = "btc_p2b_information_set_benchmark"
 
 #: Generations produced after the reporting-integrity metric-semantics fix,
 #: whose `sharpe`/`max_drawdown` are directly comparable across runs.
-POST_CORRECTION_GENERATIONS = {"v4", "P2a"}
+POST_CORRECTION_GENERATIONS = {"v4", "P2a", "P2b"}
 
 #: The current generation's aggregate for the baseline research question.
 CURRENT_BASELINE = "diagnostics/btc_regimes_v4"
@@ -55,6 +56,16 @@ CURRENT_P2A = "benchmark/btc_p2a_comparison"
 CURRENT_P2A_SOURCE_RUNS = {
     f"benchmark/btc_p2a_seed_{seed}" for seed in (42, 142, 242, 342, 442)
 }
+
+#: The current generation's aggregate for the P2b information-set question, and
+#: its nine cells. `btc_p2b_regimes` is CURRENT for the same question but is
+#: descriptive rather than a result, so it is listed beside them.
+CURRENT_P2B = "benchmark/btc_p2b_comparison"
+CURRENT_P2B_SOURCE_RUNS = {
+    f"benchmark/btc_p2b_{arm}_{model}"
+    for arm in ("ohlcv14", "smc_v1", "ohlcv14_plus_smc_v1")
+    for model in ("logistic_regression", "lightgbm", "xgboost")
+} | {"benchmark/btc_p2b_regimes"}
 
 #: The prior generation's aggregate, whose own source runs are absent.
 V3_BASELINE = "diagnostics/btc_regimes_v3"
@@ -322,6 +333,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
     assert _current_generation_by_question(rows) == {
         BASELINE_QUESTION: "v4",
         P2A_QUESTION: "P2a",
+        P2B_QUESTION: "P2b",
     }
 
     def paths_for(question: str) -> set[str]:
@@ -329,6 +341,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
 
     assert paths_for(BASELINE_QUESTION) == {CURRENT_BASELINE, *CURRENT_SOURCE_RUNS}
     assert paths_for(P2A_QUESTION) == {CURRENT_P2A, *CURRENT_P2A_SOURCE_RUNS}
+    assert paths_for(P2B_QUESTION) == {CURRENT_P2B, *CURRENT_P2B_SOURCE_RUNS}
 
 
 def test_current_aggregates_are_backed_by_their_committed_source_runs():

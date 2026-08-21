@@ -16,6 +16,16 @@ only 9/20, beat buy-and-hold in 0/20, and had mean outer net return -0.019272.
 The sealed test was not evaluated. That is the finding, not a defect to be corrected
 by pointing somewhere else.
 
+**The current P2b information-set benchmark is
+[`benchmark/btc_p2b_comparison/`](benchmark/btc_p2b_comparison/).** It answers a third
+question — does causal market structure add usable information beyond OHLCV14? — and
+its evidence is **negative**: across three models and two market-structure arms, not one
+of the six comparisons improved on the OHLCV14 control in more than two of four temporal
+folds, against a bar of three that was fixed before the numbers were read. For XGBoost,
+P2a's strongest family, adding market structure improved 1 of 4 periods. Two arms have a
+*positive mean* delta while improving only 1 or 2 folds; the mean is not the finding.
+Like P2a it reuses already-observed outer folds and is adaptive research evidence.
+
 **The current P2a model-family benchmark is
 [`benchmark/btc_p2a_comparison/`](benchmark/btc_p2a_comparison/).** It is a separate
 CURRENT result for the question "does model family change what can be extracted from
@@ -43,6 +53,17 @@ one that shares its `research question`.
 | `walkforward/btc_nested_v4_seed_242` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 242) | n/a | current |
 | `walkforward/btc_nested_v4_seed_342` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 342) | n/a | current |
 | `walkforward/btc_nested_v4_seed_442` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 442) | n/a | current |
+| `benchmark/btc_p2b_comparison` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b_compare` | `benchmark/btc_p2b_{ohlcv14,smc_v1,ohlcv14_plus_smc_v1}_{logistic_regression,lightgbm,xgboost}` | **yes** | current |
+| `benchmark/btc_p2b_ohlcv14_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_regimes` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b_regimes` | the nine P2b cells (descriptive; nothing fitted) | **yes** | current |
 | `benchmark/btc_p2a_comparison` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark_compare` | `benchmark/btc_p2a_seed_{42,142,242,342,442}` (frozen v4 MTST read, not aggregated) | **yes** | current |
 | `benchmark/btc_p2a_seed_42` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 42) | n/a | current |
 | `benchmark/btc_p2a_seed_142` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 142) | n/a | current |
