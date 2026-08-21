@@ -1,4 +1,4 @@
-"""P2b robustness: which market-structure family is carrying the combined arm?
+"""Robustness: which feature family is carrying a checkpoint's combined arm?
 
     python -m nn.p2b_ablation --full artifacts/benchmark/btc_p2b_ohlcv14_plus_smc_v1_xgboost \
         --ablations artifacts/benchmark/btc_p2b_ablation_* \
@@ -162,15 +162,16 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 def to_markdown(payload: dict[str, Any]) -> str:
+    of = payload["of_checkpoint"]
     lines = [
-        "# P2b robustness — leave-one-family-out ablation",
+        f"# {of} robustness — leave-one-family-out ablation",
         "",
-        f"Model: **{payload['model']}**. Reference arm: `{COMBINED}`.",
+        f"Model: **{payload['model']}**. Reference arm: `{payload['reference_arm']}`.",
         "",
         "**Post-hoc and descriptive.** These comparisons were chosen after the canonical",
-        "P2b result was produced, on the same four outer blocks. They are a source of",
+        f"{of} result was produced, on the same four outer blocks. They are a source of",
         "hypotheses for a later research generation, not confirmation of anything, and no",
-        "model or threshold anywhere in P2b was selected using them.",
+        f"model or threshold anywhere in {of} was selected using them.",
         "",
         "**What a delta means.** `full − ablated` is what a family contributed *given the",
         "other five and OHLCV14 were present*. A near-zero delta means the family added",
