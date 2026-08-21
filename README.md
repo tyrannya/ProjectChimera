@@ -418,6 +418,7 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/smc_v1.md](docs/smc_v1.md) | The causal market-structure information set: 39 exact definitions |
 | [docs/p2b_methodology.md](docs/p2b_methodology.md) | Checkpoint P2b: does market structure add information beyond OHLCV14? |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
+| [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, and what is next |
 
 ## Repository layout
 
