@@ -77,7 +77,7 @@ Three things about this result matter more than the numbers:
   canonical dataset.
 - **The periods were all up.** All four outer blocks had positive total return
   (+18.9%, +162.0%, +4.5%, +43.4%) at low directionality (efficiency ratio
-  0.012-0.055): choppy uptrends. Buy-and-hold beats every arm over these
+  0.0030-0.0552): choppy uptrends. Buy-and-hold beats every arm over these
   windows, at full exposure, and is a reference rather than a competitor.
 
 What survives is the machinery, which was always the more durable half: the
