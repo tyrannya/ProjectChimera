@@ -1347,3 +1347,80 @@ def test_a_comparison_accepts_one_checkpoints_own_cells():
     ):
         cells = [_fake_cell(arm, "xgboost", name) for arm in arms]
         assert p2b_compare.checkpoint_of(cells).name == name
+
+
+# --- Cells frozen before a cell stated its own question -------------------
+#
+# The twenty-five committed P2b and P2c cells predate `Checkpoint`. Every one of
+# them is labelled "P2b", including the nine that ran chart structure, so for
+# that generation the stated label is the field known to be wrong. Reading it
+# would file P2c's result under P2b's question — the error the field was added
+# to stop — so the arms are read instead, and `load_cell` has already checked
+# each arm against the columns the cell actually flattened.
+
+
+def _generation_one(information_set_name: str, model: str) -> dict[str, Any]:
+    """A cell as the frozen artifacts are: labelled P2b, stating no question."""
+    cell = _fake_cell(information_set_name, model, "P2b")
+    del cell["payload"]["question"]
+    return cell
+
+
+def test_frozen_cells_that_state_no_question_are_identified_by_their_arms():
+    cells = [_generation_one(arm, "xgboost") for arm in (OHLCV14, SMC_V1, COMBINED)]
+    assert p2b_compare.checkpoint_of(cells).name == "P2b"
+
+
+def test_frozen_p2c_cells_are_identified_as_p2c_despite_saying_p2b():
+    """The case that matters: every one of these cells is labelled "P2b"."""
+    cells = [
+        _generation_one(arm, "xgboost") for arm in (OHLCV14, CHART_V1, OHLCV14_PLUS_CHART)
+    ]
+    assert all(c["payload"]["checkpoint"] == "P2b" for c in cells)
+    assert p2b_compare.checkpoint_of(cells).name == "P2c"
+
+
+def test_frozen_cells_of_two_checkpoints_are_refused_though_they_share_a_label():
+    """A shared label could never have caught this; the arms do.
+
+    Both halves are labelled "P2b", so the agreement check that identifies a
+    stated-question cell passes here without noticing a thing.
+    """
+    cells = [
+        _generation_one(OHLCV14, "xgboost"),
+        _generation_one(SMC_V1, "xgboost"),
+        _generation_one(CHART_V1, "xgboost"),
+    ]
+    with pytest.raises(p2b_compare.ComparisonError, match="exactly one checkpoint"):
+        p2b_compare.checkpoint_of(cells)
+
+
+def test_frozen_control_cells_alone_identify_no_checkpoint():
+    """`ohlcv14` is the control of both, which is why a single arm cannot say."""
+    cells = [_generation_one(OHLCV14, model) for model in ("xgboost", "lightgbm")]
+    with pytest.raises(p2b_compare.ComparisonError, match="exactly one checkpoint"):
+        p2b_compare.checkpoint_of(cells)
+
+
+def test_cells_of_two_generations_cannot_be_joined():
+    """One states its question and one predates the field: compare separately."""
+    cells = [
+        _fake_cell(OHLCV14, "xgboost", "P2b"),
+        _generation_one(SMC_V1, "xgboost"),
+    ]
+    with pytest.raises(p2b_compare.ComparisonError, match="predate the field"):
+        p2b_compare.checkpoint_of(cells)
+
+
+def test_frozen_cells_still_need_a_control_to_measure_against():
+    cells = [_generation_one(arm, "xgboost") for arm in (SMC_V1, COMBINED)]
+    with pytest.raises(p2b_compare.ComparisonError, match="no 'ohlcv14' cell present"):
+        p2b_compare.checkpoint_of(cells)
+
+
+def test_a_report_says_whether_its_identity_was_stated_or_recovered():
+    """A reader who opens the cells behind a P2c report finds "P2b" in each."""
+    stated = [_fake_cell(arm, "xgboost", "P2b") for arm in (OHLCV14, SMC_V1)]
+    assert p2b_compare.identity_source(stated) == "stated by every cell"
+    recovered = [_generation_one(arm, "xgboost") for arm in (OHLCV14, SMC_V1)]
+    assert "recovered from the arms" in p2b_compare.identity_source(recovered)

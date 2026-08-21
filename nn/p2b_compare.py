@@ -168,11 +168,77 @@ def checkpoint_of(cells: Sequence[dict[str, Any]]) -> Checkpoint:
     both checkpoints' cells would have averaged twelve arms of two different
     families into one table without a word.
 
-    Three things are required, not one. The cells must name the same checkpoint;
-    that name must be a checkpoint this repository declares; and every arm
-    present must belong to it — so a P2b cell relabelled ``"P2c"`` by hand is
-    still refused, because ``smc_v1`` is not one of P2c's arms.
+    A cell that states its question is identified by what it says, and three
+    things are required, not one: the cells must name the same checkpoint; that
+    name must be a checkpoint this repository declares; and every arm present
+    must belong to it — so a P2b cell relabelled ``"P2c"`` by hand is still
+    refused, because ``smc_v1`` is not one of P2c's arms.
+
+    A cell frozen before the field existed states nothing, and is identified by
+    its arms instead — see :func:`_checkpoint_from_arms`. Reading its label
+    would be worse than ignoring it, because that generation's labels are the
+    part known to be wrong. Cells of both generations together are refused.
+
+    Either way the control must be present, because every delta in the report is
+    taken against it.
     """
+    questions = {c["payload"].get("question") for c in cells}
+    if None in questions:
+        if questions != {None}:
+            raise ComparisonError(
+                "some of these cells state the research question they answer and some "
+                "predate the field. Joining two generations of artifact is how one "
+                "generation's identity gets carried across a question it was never "
+                "asked; compare them separately."
+            )
+        checkpoint = _checkpoint_from_arms(cells)
+    else:
+        checkpoint = _checkpoint_from_labels(cells, sorted(questions))
+    if not any(c["information_set"] == checkpoint.control for c in cells):
+        raise ComparisonError(
+            f"no {checkpoint.control!r} cell present; every delta below is taken against "
+            "the control and there is nothing to take one against"
+        )
+    return checkpoint
+
+
+def _checkpoint_from_arms(cells: Sequence[dict[str, Any]]) -> Checkpoint:
+    """Identity for cells frozen before a cell stated its own question.
+
+    The committed P2b and P2c evidence predates :class:`Checkpoint`. All
+    twenty-five of those cells name ``"P2b"``, including the nine that ran chart
+    structure — so for this generation the stated label is the one field that is
+    known to be wrong, and reading it would file P2c's result under P2b's
+    question. That is the exact error the field was added to stop, and honouring
+    the label here would commit it while looking careful.
+
+    The arms are trustworthy where the label is not: :func:`load_cell` has
+    already checked every cell's arm against the columns it actually flattened,
+    so an arm name cannot be a relabelling. The checkpoint is therefore the one
+    this repository declares whose arms account for every arm present, and
+    exactly one must. A glob wide enough to catch both checkpoints' cells
+    accounts to neither and is refused — which is the case that matters, and the
+    one a shared label could never have caught.
+    """
+    arms = sorted({c["information_set"] for c in cells})
+    candidates = [
+        candidate
+        for candidate in CHECKPOINTS.values()
+        if all(candidate.accepts(arm) for arm in arms)
+    ]
+    if len(candidates) != 1:
+        raise ComparisonError(
+            f"these cells state no research question, and their arms {arms} are "
+            f"accounted for by {sorted(c.name for c in candidates)} rather than by "
+            "exactly one checkpoint. Cells that predate the question field are "
+            "identified by what they ran, so arms belonging to no checkpoint — or to "
+            "two at once — leave nothing to identify them by."
+        )
+    return candidates[0]
+
+
+def _checkpoint_from_labels(cells: Sequence[dict[str, Any]], stated: list[str]) -> Checkpoint:
+    """Identity for cells that state their own question, taken from what they say."""
     named = sorted({c["payload"]["checkpoint"] for c in cells})
     if len(named) != 1:
         by_checkpoint = {
@@ -198,12 +264,6 @@ def checkpoint_of(cells: Sequence[dict[str, Any]]) -> Checkpoint:
             f"{list(checkpoint.arms)}. A cell that carries the right checkpoint label and "
             "the wrong columns is the one corruption a label check alone cannot see."
         )
-    if not any(c["information_set"] == checkpoint.control for c in cells):
-        raise ComparisonError(
-            f"no {checkpoint.control!r} cell present; every delta below is taken against "
-            "the control and there is nothing to take one against"
-        )
-    stated = sorted({c["payload"].get("question") for c in cells})
     if stated != [checkpoint.question]:
         raise ComparisonError(
             f"{checkpoint.name} asks {checkpoint.question!r} but its cells state "
@@ -211,6 +271,21 @@ def checkpoint_of(cells: Sequence[dict[str, Any]]) -> Checkpoint:
             "be the same statement, or one of the two is decoration."
         )
     return checkpoint
+
+
+def identity_source(cells: Sequence[dict[str, Any]]) -> str:
+    """How the report knows which question it answers, recorded in the report.
+
+    A reader comparing a P2c artifact against the nine cells behind it will find
+    ``"P2b"`` written in every one of them, and needs to be told that the
+    identity above came from the arms rather than from those labels.
+    """
+    if any(c["payload"].get("question") is None for c in cells):
+        return (
+            "recovered from the arms; these cells predate the field in which a cell "
+            "states its own research question, and all of them are labelled 'P2b'"
+        )
+    return "stated by every cell"
 
 
 def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -1085,6 +1160,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {
         "checkpoint": checkpoint.name,
+        "checkpoint_identity": identity_source(cells),
         "question": checkpoint.question,
         "evidence_class": DERIVED,
         "derived_from": [str(c["dir"]) for c in cells],
