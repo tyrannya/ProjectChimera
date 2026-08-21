@@ -1,6 +1,9 @@
 {
   "checkpoint": "P2b",
-  "purpose": "does causal market structure add information beyond OHLCV14? One cell: one information set, one model, four temporal folds",
+  "question": "does causal smc_v1, alone or combined with OHLCV14, add usable information beyond OHLCV14?",
+  "evidence_class": "primary",
+  "purpose": "one P2b cell: one information set, one model, 4 temporal folds",
+  "canonical_arm": true,
   "information_set": "smc_v1",
   "model": "xgboost",
   "dataset": {
@@ -86,6 +89,60 @@
       "vol_window": 24,
       "volume_window": 24
     },
+    "chart_spec_version": "chart_structure_v1",
+    "chart_spec": {
+      "atr_period": 14,
+      "win_short": 20,
+      "win_long": 60,
+      "touch_atr": 0.25,
+      "pivot_left": 3,
+      "pivot_right": 3
+    },
+    "chart_spec_hash": "0f62f35d87cd92abe439959976de288d72a8adbf98eab804b05e594c131e946b",
+    "chart_feature_families": {
+      "range": [
+        "chart_window_fill",
+        "chart_range_width_atr",
+        "chart_range_pos",
+        "chart_range_pos_fast",
+        "chart_touch_high_frac",
+        "chart_touch_low_frac"
+      ],
+      "compression": [
+        "chart_high_slope_atr",
+        "chart_low_slope_atr",
+        "chart_convergence_atr",
+        "chart_slope_asymmetry"
+      ],
+      "channel": [
+        "chart_trend_slope_atr",
+        "chart_trend_r2",
+        "chart_channel_disp_atr",
+        "chart_channel_pos"
+      ],
+      "volatility": [
+        "chart_range_ratio",
+        "chart_tr_ratio"
+      ],
+      "breakout": [
+        "chart_breakout_up_atr",
+        "chart_breakout_dn_atr",
+        "chart_failed_breakout_up_atr",
+        "chart_failed_breakout_dn_atr"
+      ],
+      "patterns": [
+        "chart_dt_valid",
+        "chart_dt_offset_atr",
+        "chart_dt_trough_atr",
+        "chart_dt_neckline_atr",
+        "chart_db_valid",
+        "chart_db_offset_atr",
+        "chart_db_peak_atr",
+        "chart_db_neckline_atr",
+        "chart_pole_atr",
+        "chart_impulse_atr"
+      ]
+    },
     "smc_spec_version": "smc_v1",
     "smc_spec": {
       "atr_period": 14,
@@ -152,13 +209,13 @@
         "smc_bear_fvg_dist_atr"
       ]
     },
-    "combined_spec_hash": "fdbe1edee1bb7899d56538a2b507dc9385ff5542c71b137e8d1e094fbac47ffd"
+    "combined_spec_hash": "2a33458e5d85caece7332c6b2598199d67b275c7828b1d7d3cac0421b5ba3939"
   },
   "code": {
-    "revision": "c8406274f3a765d3766c17c569bf99e42feb7043",
+    "revision": "1d849fbb199cc0ff81e92c7f9971a0b6558d6102",
     "dirty": true,
-    "source_digest": "df1c5513e1dad3a004b5d85abab3dc94344b070f2a757704d3ffffcf78c066ae",
-    "source_files": 19,
+    "source_digest": "7540b413b5467a9fe03a0d71b3581a5d5703d3ef5d27a108f4ac31fb28cccfca",
+    "source_files": 25,
     "note": "source_digest covers every repository module this process imported and is what nn.p2b_compare requires cells to agree on; revision and dirty are recorded beside it because neither one alone says what code ran"
   },
   "config": {
@@ -196,12 +253,14 @@
     "join_evidence": {
       "recomputed": [
         "smc_body_ratio from the raw candles",
-        "ret_1 from the spine"
+        "chart_pole_atr from the raw candles"
       ],
+      "not_evidence": "an OHLCV14 column was previously compared against the spine column it was copied from, which could not fail; dropped rather than kept as decoration",
       "rows": 45802,
       "matches": true,
       "matches_under_plus_one_shift": false,
       "matches_under_minus_one_shift": false,
+      "chart_rows_compared": 45802,
       "raw_rows_first": 78,
       "raw_rows_last": 47135,
       "raw_candles_seen_by_the_engine": 47136
@@ -469,6 +528,7 @@
     "applied_to_outer_validation": "the already-selected value, unchanged"
   },
   "tuning": "none (predeclared fixed configurations, reused from P2a)",
+  "adaptive_status": "P2b was designed after P2a's outer results had been seen, so its outer blocks are adaptive research evidence rather than a pristine out-of-sample test",
   "folds": [
     {
       "fold": 0,

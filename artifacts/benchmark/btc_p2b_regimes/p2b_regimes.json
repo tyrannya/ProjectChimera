@@ -1,5 +1,6 @@
 {
   "checkpoint": "P2b-regimes",
+  "evidence_class": "derived",
   "status": "descriptive; nothing fitted, no regime filter derived",
   "sealed_test": false,
   "computed_from": "research-visible rows of each outer block only",
