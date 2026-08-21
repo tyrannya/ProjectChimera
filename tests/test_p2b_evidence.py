@@ -37,6 +37,7 @@ MANIFESTS = (
     "btc_p2b_SHA256SUMS.txt",
     "btc_p2b_ablation_SHA256SUMS.txt",
     "btc_p2b_recheck_SHA256SUMS.txt",
+    "btc_p2c_SHA256SUMS.txt",
 )
 
 
@@ -108,6 +109,51 @@ def test_the_p2b_control_reproduces_p2as_frozen_xgboost_evidence():
             == b["model"]["selection"]["threshold"]
         )
         assert a["outer_validation"]["xgboost"] == b["outer_validation"]["xgboost"]
+
+
+def test_the_p2c_comparison_reports_a_negative_result():
+    """P2c's frozen verdicts. Same reasoning as the P2b pin below.
+
+    Every mean delta here is negative, which P2b's was not — there is no arm in
+    P2c where pooling the four periods would even have flattered the result.
+    """
+    payload = json.loads(
+        (BENCHMARK / "btc_p2c_comparison" / "p2b_comparison.json").read_text()
+    )
+    assert payload["sealed_test"] is False
+    assert payload["independent_recompute"]["mismatches"] == 0
+    assert payload["snapshot_anchoring"]["problems"] == 0
+
+    expected = {
+        ("logistic_regression", "chart_structure_v1"): 1,
+        ("logistic_regression", "ohlcv14_plus_chart_structure_v1"): 0,
+        ("lightgbm", "chart_structure_v1"): 1,
+        ("lightgbm", "ohlcv14_plus_chart_structure_v1"): 2,
+        ("xgboost", "chart_structure_v1"): 1,
+        ("xgboost", "ohlcv14_plus_chart_structure_v1"): 1,
+    }
+    for (model, arm), folds in expected.items():
+        entry = payload["deltas"][model][arm]
+        assert entry["net_return_improved_folds"] == folds
+        assert entry["aggregate"]["net_return"]["mean"] < 0
+    assert all(v < 3 for v in expected.values())
+
+
+def test_both_information_set_checkpoints_reproduce_the_same_frozen_control():
+    """P2b and P2c each re-ran the OHLCV14 control, under different code.
+
+    The two checkpoints have different source digests — P2c's wiring of a second
+    feature family changed the module `nn.p2b` imports — so their controls are
+    two independent runs of the same configuration through two versions of the
+    alignment layer. Both must equal P2a's frozen seed-42 XGBoost evidence, and
+    therefore each other. If adding a feature family ever perturbs the control's
+    sample universe, this is what notices.
+    """
+    p2a = json.loads((BENCHMARK / "btc_p2a_seed_42" / "benchmark.json").read_text())
+    frozen = [f["outer_validation"]["xgboost"] for f in p2a["folds"]]
+    for checkpoint in ("btc_p2b_ohlcv14_xgboost", "btc_p2c_ohlcv14_xgboost"):
+        cell = json.loads((BENCHMARK / checkpoint / "p2b.json").read_text())
+        assert [f["outer_validation"]["xgboost"] for f in cell["folds"]] == frozen
 
 
 def test_the_p2b_comparison_reports_a_negative_result():

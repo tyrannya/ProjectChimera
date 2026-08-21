@@ -36,10 +36,11 @@ INDEX = ARTIFACTS / "README.md"
 BASELINE_QUESTION = "btc_ohlcv14_mtst_baseline"
 P2A_QUESTION = "btc_p2a_model_family_benchmark"
 P2B_QUESTION = "btc_p2b_information_set_benchmark"
+P2C_QUESTION = "btc_p2c_information_set_benchmark"
 
 #: Generations produced after the reporting-integrity metric-semantics fix,
 #: whose `sharpe`/`max_drawdown` are directly comparable across runs.
-POST_CORRECTION_GENERATIONS = {"v4", "P2a", "P2b"}
+POST_CORRECTION_GENERATIONS = {"v4", "P2a", "P2b", "P2c"}
 
 #: The current generation's aggregate for the baseline research question.
 CURRENT_BASELINE = "diagnostics/btc_regimes_v4"
@@ -60,6 +61,13 @@ CURRENT_P2A_SOURCE_RUNS = {
 #: The current generation's aggregate for the P2b information-set question, and
 #: its nine cells. `btc_p2b_regimes` is CURRENT for the same question but is
 #: descriptive rather than a result, so it is listed beside them.
+CURRENT_P2C = "benchmark/btc_p2c_comparison"
+CURRENT_P2C_SOURCE_RUNS = {
+    f"benchmark/btc_p2c_{arm}_{model}"
+    for arm in ("ohlcv14", "chart_structure_v1", "ohlcv14_plus_chart_structure_v1")
+    for model in ("logistic_regression", "lightgbm", "xgboost")
+}
+
 CURRENT_P2B = "benchmark/btc_p2b_comparison"
 CURRENT_P2B_SOURCE_RUNS = (
     {
@@ -341,6 +349,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
         BASELINE_QUESTION: "v4",
         P2A_QUESTION: "P2a",
         P2B_QUESTION: "P2b",
+        P2C_QUESTION: "P2c",
     }
 
     def paths_for(question: str) -> set[str]:
@@ -349,6 +358,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
     assert paths_for(BASELINE_QUESTION) == {CURRENT_BASELINE, *CURRENT_SOURCE_RUNS}
     assert paths_for(P2A_QUESTION) == {CURRENT_P2A, *CURRENT_P2A_SOURCE_RUNS}
     assert paths_for(P2B_QUESTION) == {CURRENT_P2B, *CURRENT_P2B_SOURCE_RUNS}
+    assert paths_for(P2C_QUESTION) == {CURRENT_P2C, *CURRENT_P2C_SOURCE_RUNS}
 
 
 def test_current_aggregates_are_backed_by_their_committed_source_runs():

@@ -95,16 +95,32 @@ a future `smc_v2`; none of them is a threshold to search.
 
 ### P2c — does causal classical chart structure add information?
 
-Specified in [`chart_structure_v1.md`](chart_structure_v1.md) and implemented in
-`nn/chart_structure.py`, with 48 tests written from the spec without reading the
-engine. Not yet wired into any information set and not yet benchmarked.
+**No, and more cleanly than P2b.** Specified in
+[`chart_structure_v1.md`](chart_structure_v1.md), implemented in
+`nn/chart_structure.py`, same three-arm design against `ohlcv14`. Evidence:
+[`artifacts/benchmark/btc_p2c_comparison/`](../artifacts/benchmark/btc_p2c_comparison/).
 
-The same three-arm design, against `ohlcv14` — which P2b leaves as the best
-information set this repository has, by default rather than by merit.
+| model | `chart_structure_v1` − control | `ohlcv14_plus_chart_structure_v1` − control |
+| --- | --- | --- |
+| logistic regression | 1 of 4 | **0 of 4** |
+| LightGBM | 1 of 4 | 2 of 4 |
+| XGBoost | 1 of 4 | **1 of 4** |
 
-**P2c will be exploratory and adaptive, and must be labelled as such.** By the
-time it runs, the same four outer blocks will have been read many times. It can
-generate hypotheses; it cannot confirm one.
+None reached the 3-of-4 bar, and unlike P2b **every mean delta is negative** —
+there is no arm where pooling the four periods would even have flattered it.
+
+**Exploratory and adaptive, and that matters more here than anywhere.** By the
+time P2c ran, these same four outer blocks had been read by v4, P2a, P2b, the
+P2b ablation and the P2b regime description. A positive P2c would have needed
+heavy discounting; a negative one needs none, which is the asymmetry that makes
+negative results the cheap ones to trust.
+
+The control was re-run a second time and again reproduced P2a's frozen seed-42
+XGBoost evidence exactly — under a *different source digest*, because wiring a
+second feature family changed the module `nn.p2b` imports. Adding a family does
+not perturb the control.
+
+---
 
 ### After that: microstructure-lite
 
