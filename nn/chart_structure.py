@@ -260,7 +260,16 @@ def compute_chart_features(df: pd.DataFrame, spec: ChartSpec | None = None) -> p
     # The clip absorbs float noise only; it cannot move a value further (§3.4).
     trend_r2 = np.where(sst > 0.0, 1.0 - unexplained, 0.0).clip(0.0, 1.0)
     channel_pos = np.zeros(n, dtype="float64")
-    np.divide(resid[:, -1], channel_disp, out=channel_pos, where=channel_disp > 0.0)
+    # `sigma == 0` in §3.4 means "the fit is perfect", and a computed sqrt
+    # almost never lands on zero when it does: on a flat window the residuals
+    # come out around 1e-14, the exact-zero guard misses, and the ratio of two
+    # rounding errors is a number of order one. That would hand the model a
+    # measurement of nothing, bounded by sqrt(w-1) and indistinguishable from a
+    # real reading. Nine rows of the committed pre-Styx history do exactly this
+    # under an exact guard. The threshold is relative to ATR because sigma is a
+    # price-scale quantity and 1e-9 ATR is not a channel.
+    degenerate = channel_disp > 1e-9 * atr_den
+    np.divide(resid[:, -1], channel_disp, out=channel_pos, where=degenerate)
 
     # §3.5. Neither ratio is ATR-normalised: both are ratios of like to like.
     range_ratio = np.ones(n, dtype="float64")

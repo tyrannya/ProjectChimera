@@ -382,8 +382,17 @@ and is not a tuned constant.
 Position within the channel is the standardised current residual:
 
 ```
-chan_pos(t) = r[t] / sigma(t)                  0 when sigma(t) == 0
+chan_pos(t) = r[t] / sigma(t)                  0 when sigma(t) <= 1e-9 * atr_den[t]
 ```
+
+The guard is a **relative threshold, not `sigma == 0`**. `sigma` is a computed
+square root, and on a perfectly-fitted window it lands near `1e-14` rather than
+on zero — so an exact test misses, and the ratio of two rounding errors is a
+number of order one. That would hand the model a measurement of nothing,
+bounded by `sqrt(w-1)` and indistinguishable from a real reading. Nine rows of
+the committed pre-Styx history do exactly this under an exact guard. The
+threshold is relative to ATR because `sigma` is a price-scale quantity and
+`1e-9` ATR is not a channel.
 
 `r[t]` is one of the `w_l` residuals that `sigma` is computed from, and for a
 mean-zero set of `w` numbers `max|r_i| / sqrt(mean r^2) <= sqrt(w-1)`. So
@@ -595,7 +604,7 @@ Column order is fixed and is part of the spec. `V` marks an availability flag.
 | 11 | `chart_trend_slope_atr` | `b(t) / atr_den[t]`, §3.4 |
 | 12 | `chart_trend_r2` | `R2(t)` ∈ [0,1]; `0` when `sum (c-cbar)^2 == 0` |
 | 13 | `chart_channel_disp_atr` | `sigma(t) / atr_den[t]` |
-| 14 | `chart_channel_pos` | `r[t] / sigma(t)`; `0` when `sigma(t) == 0`; bounded by `sqrt(w_l - 1)` |
+| 14 | `chart_channel_pos` | `r[t] / sigma(t)`; `0` when `sigma(t) <= 1e-9 * atr_den[t]`; bounded by `sqrt(w_l - 1)` |
 
 ### D. volatility (2)
 
