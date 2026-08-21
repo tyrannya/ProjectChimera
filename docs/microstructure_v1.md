@@ -1,0 +1,510 @@
+# Microstructure v1 — causal trade-flow information set
+
+Version: `microstructure_v1`
+Research checkpoint: **P3** (*does causal `microstructure_v1`, alone or combined
+with OHLCV14, add usable information beyond OHLCV14?*) — the third information
+family, after `smc_v1`'s P2b and `chart_structure_v1`'s P2c, and the first whose
+*source* is not the hourly candle.
+
+**Status: adaptive research evidence. Not a pristine out-of-sample confirmation.**
+See §0.3.
+
+**Status of the evidence: none yet.** This document and the engine, verifier and
+runner beside it were committed before the trade source could be acquired —
+outbound access to `data.binance.vision` was denied by the egress policy in
+force — so **no P3 cell has been fitted and no P3 number exists**. That is why
+the constants below cannot have been searched against an outer result: there is
+no outer result. `docs/research_roadmap.md` records what the acquisition needs.
+
+The 32 columns research checkpoint **P3** measures, defined exactly, fixed
+before any P3 outer result was read.
+
+P3 asks:
+
+> Does causal trade-level `microstructure_v1`, alone or combined with OHLCV14,
+> add usable information beyond OHLCV14?
+
+Every checkpoint before this one — v4, P2a, P2b, P2c — read the same five
+numbers per hour. `smc_v1` and `chart_structure_v1` were two more
+transformations of those five, and both were negative. P3 is the first
+checkpoint whose *input* is different: individual executions, from Binance's
+public `aggTrades` archive, folded into the hourly sufficient statistics
+`nn/trade_aggregates.py` defines.
+
+**This document is the predeclaration.** Every constant below was chosen before
+a single P3 fold was scored, and none of them may be searched against an outer
+result afterwards. That rule is what makes a P3 answer worth anything, and it is
+the same rule `smc_v1` §0 and `chart_structure_v1` §0 were held to — both of
+which are now negative results that nobody was allowed to tune away.
+
+---
+
+## 0. Why this family, and what it is not
+
+### 0.1 What it is
+
+Trade flow measured four ways: **how much** trading happened, **which side
+aggressed**, **how it arrived in time**, and **how much price moved per unit of
+it**. Those are the questions an hourly candle cannot answer, because a candle
+is the same whether its volume arrived as ten thousand small buys or as four
+large sells.
+
+### 0.2 What it is not
+
+- **It is not order-book information.** No depth, no queue, no cancellations, no
+  order-flow imbalance in the L2 sense. A trade archive records what executed,
+  not what was resting. Every "imbalance" below is an imbalance of *aggressed*
+  volume.
+- **It is not a volume profile.** §H approximates the distribution of traded
+  volume across price with eight equal-width bins spanning one hour's own range.
+  That is a coarse histogram, not the exchange's volume profile, and the columns
+  are named and documented as approximations.
+- **It does not detect institutions.** §F computes quantities that are *large
+  aggressive imbalance with little price displacement*. Calling that "absorption"
+  is a description of the arithmetic; calling it "smart money", "institutional
+  flow" or "hidden liquidity" would be a claim about who traded and why, which
+  no trade archive can support. The columns are named `absorption_like` for that
+  reason.
+- **It is not funding, open interest, basis, liquidations or cross-exchange
+  data.** Those are later generations, and mixing them in here would make a
+  negative P3 uninterpretable.
+
+### 0.3 Adaptive status
+
+P3 was designed **after** P2a's, P2b's and P2c's outer results had been read, on
+the same four outer blocks. Its constants were fixed before its own outer results
+were read, but the family was chosen because the previous three failed, so this
+is exploratory adaptive evidence: it can generate a hypothesis and it cannot
+confirm one. A positive P3 needs confirmation on evidence these four blocks
+cannot provide; a negative P3 needs no discounting at all, which is the asymmetry
+that makes negative results the cheap ones to trust.
+
+---
+
+## 1. Domain and inputs
+
+### 1.1 The source
+
+One row per hour of `data/research/btc_usdt_1h_gen1_trades_hourly_pre_styx.parquet`,
+whose columns are defined by `nn/trade_aggregates.py` and whose identity is the
+semantic hash in the trade snapshot manifest. Nothing else is read. In particular
+this family never reads the OHLCV candles: the `ohlcv14_plus_microstructure_v1`
+arm concatenates two column sets that were computed from two sources, and keeping
+them apart is what makes the arm interpretable.
+
+Notation for the hour whose **open** instant is `t`:
+
+| symbol | column | meaning |
+| --- | --- | --- |
+| `n` | `n_trades` | aggressed orders in `[t, t+1h)` |
+| `nb` | `buy_trades` | of which taker-buy |
+| `Q`, `Qb` | `qty`, `buy_qty` | base-asset volume, and its taker-buy part |
+| `N`, `Nb` | `notional`, `buy_notional` | quote-asset volume, and its taker-buy part |
+| `p0`, `p1` | `first_price`, `last_price` | first and last traded price of the hour |
+| `pH`, `pL` | `high_price`, `low_price` | highest and lowest traded price |
+| `A` | `active_seconds` | seconds of the 3600 with at least one trade |
+| `S2` | `second_count_sq_sum` | sum over the 3600 seconds of (trades in that second)² |
+| `M` | `max_second_trades` | busiest single second |
+| `E` | `max_empty_run_seconds` | longest run of consecutive silent seconds |
+| `q_k`, `Q_k`, `Qb_k` | `qk_trades`, `qk_qty`, `qk_buy_qty` | quarter `k ∈ {0,1,2,3}` of the hour |
+| `c_b`, `s_b` | `size_count_b`, `size_qty_b` | trade-size histogram, `b ∈ [0, 12)` |
+| `v_j` | `price_qty_j` | volume-at-price histogram, `j ∈ [0, 8)` |
+
+Derived: `Qs = Q − Qb`, `Ns = N − Nb`, `ns = n − nb`, `vwap = N / Q`.
+
+### 1.2 The bar convention, and the decision instant
+
+A row whose `date` is `t` aggregates every trade with timestamp in
+`[t, t + 1h)` — exactly the trades that produced the OHLCV candle carrying the
+same `date`. The **decision instant is `t + 1h`**, the close of that candle,
+which is also the instant OHLCV14 reads `close[t]` at. The two information sets
+therefore stop at the same moment, which is the whole reason the comparison is
+about information rather than about timing.
+
+`nn.data_pipeline.compute_future_return` labels row `t` with
+`close[t+horizon] / close[t] − 1`, so the label starts accruing after the
+decision instant and no trade in row `t` is inside the target window.
+
+### 1.3 Scale normalisation
+
+BTC traded near \$7,000 at the start of the research region and near \$100,000
+at the end, and hourly volume grew by more than an order of magnitude. A raw
+level feature therefore encodes *when* as much as *what*, and a tree can
+memorise the year.
+
+So every feature is one of:
+
+- a **share** or an **imbalance**, bounded in `[0, 1]` or `[−1, 1]` by
+  construction;
+- a **ratio to a trailing window** of the same quantity, computed from strictly
+  earlier hours;
+- a **log** of a bounded-growth count.
+
+One deliberate exception, `ms_log_trade_count` (§A1), is a level. It is kept
+because trade *count* is the family's most basic observable and dropping it to
+protect against drift would be a modelling decision disguised as a definition —
+but it is the only one, it is flagged here, and §6 says what it costs.
+
+### 1.4 Trailing windows
+
+Two, fixed:
+
+```
+W_SHORT = 24    hours (one day)
+W_LONG  = 168   hours (one week)
+```
+
+A trailing statistic at row `t` is computed over the `W` rows **strictly before**
+`t` **in the same segment** (§1.5). It requires all `W` of them: a partially
+filled window would make a feature's value depend on how much history the
+snapshot happens to start with, and the append-invariance property in §4 would
+stop being exact. A row without a full window takes that feature's **declared
+default** from §3, which is always the value meaning "indistinguishable from
+typical".
+
+The trade source is acquired with one calendar month of trades before the first
+spine hour precisely so that no *scored* row ever falls back to a default:
+warm-up rows exist, and they are all before the research spine begins.
+
+### 1.5 Segments and gaps
+
+An hour in which BTCUSDT recorded no trade has no row in the source. Maximal
+runs of consecutive hours are **segments**, numbered in order. Trailing windows
+never cross a segment boundary, exactly as `smc_v1` resets its state at a
+market-data gap: a mean taken across a two-day hole would silently compare
+this week against last month.
+
+The first `W` rows of every segment take declared defaults for that window's
+features. Every non-trailing feature (§B, §G, §H, and the bounded members of §A
+and §D) is a function of one row alone and is therefore unaffected by a gap.
+
+### 1.6 Fixed constants
+
+```
+W_SHORT              = 24        trailing short window, hours
+W_LONG               = 168       trailing long window, hours
+LARGE_TRADE_QUANTILE = 0.99      the trailing count-quantile that defines "large"
+SECONDS_PER_HOUR     = 3600
+QUARTERS             = 4
+PRICE_BINS           = 8
+SIZE_BINS            = 12        half-decade edges, nn/trade_aggregates.py
+RATIO_CLIP           = 10.0      most trailing ratios
+WIDE_CLIP            = 20.0      the per-notional ratios of §E
+Z_CLIP               = 5.0       the one z-score, §B9
+EPS                  = 1e-12
+```
+
+None of these was chosen by looking at a P3 result, and none may be.
+`LARGE_TRADE_QUANTILE = 0.99` is the one that could most plausibly be searched;
+it is the conventional tail cut and it is frozen here for that reason.
+
+---
+
+## 2. The causality rule
+
+> A feature on row `t` may read the aggregate row for `t` and any aggregate row
+> strictly before `t` in the same segment. It may read nothing else. In
+> particular it may not read a global statistic of the whole table.
+
+Three consequences, each with a test in `tests/test_p3_leakage.py`:
+
+- **Append invariance.** Appending later hours cannot change any earlier row.
+- **Future mutation invariance.** Editing hours after `T` cannot change a row at
+  or before `T`.
+- **No future quantiles.** The "large trade" threshold of §C12–13 is a quantile
+  of the *trailing* pooled histogram. A whole-history quantile would put the
+  last hour of the sample into the first, and it is exactly the kind of leak
+  that raises nothing and improves everything.
+
+---
+
+## 3. The 32 features
+
+Order is fixed. The feature-spec hash, the persisted predictions and every
+comparison depend on it, so a column is never reordered, renamed or removed
+inside `v1`.
+
+Common intermediates, all dimensionless:
+
+```
+I      = (Nb − Ns) / N                         signed notional imbalance, [−1, 1]
+r      = (p1 − p0) / p0                        signed intra-hour displacement
+range  = (pH − pL) / vwap                      intra-hour traded range, ≥ 0
+d      = |r| / max(mean_168[|r|],   EPS)       displacement vs typical   (default 1.0)
+w      = N   / max(mean_168[N],     EPS)       notional vs typical       (default 1.0)
+g      = range / max(mean_168[range], EPS)     range vs typical          (default 1.0)
+```
+
+`mean_W[x]` is the mean of `x` over the `W` rows strictly before this one in this
+segment, and is undefined when the window is not full.
+
+### A. intensity (5)
+
+| # | column | definition | range | default |
+| --- | --- | --- | --- | --- |
+| 1 | `ms_log_trade_count` | `log1p(n)` | `[0, ∞)` | always defined |
+| 2 | `ms_trade_count_ratio_24` | `clip(n / max(mean_24[n], EPS), 0, 10)` | `[0, 10]` | `1.0` |
+| 3 | `ms_trade_count_ratio_168` | `clip(n / max(mean_168[n], EPS), 0, 10)` | `[0, 10]` | `1.0` |
+| 4 | `ms_trade_count_accel` | `clip(mean_24[n] / max(mean_168[n], EPS) − 1, −1, 5)` | `[−1, 5]` | `0.0` |
+| 5 | `ms_trades_per_active_second` | `log1p(n / A)` | `[0, ∞)` | always defined |
+
+`A ≥ 1` on every row by `check_table`, so §A5 never divides by zero.
+
+### B. aggressive-flow imbalance (4)
+
+| # | column | definition | range | default |
+| --- | --- | --- | --- | --- |
+| 6 | `ms_qty_imbalance` | `(Qb − Qs) / Q` | `[−1, 1]` | always defined |
+| 7 | `ms_notional_imbalance` | `I` | `[−1, 1]` | always defined |
+| 8 | `ms_count_imbalance` | `(nb − ns) / n` | `[−1, 1]` | always defined |
+| 9 | `ms_notional_imbalance_z24` | `clip((I − mean_24[I]) / max(std_24[I], EPS), −5, 5)` | `[−5, 5]` | `0.0` |
+
+`std_24` is the population standard deviation over the same 24 trailing rows.
+`Q > 0` and `N > 0` on every row by `check_table`.
+
+### C. trade size (4)
+
+`median(hist)` is the **histogram-implied** median trade size: the size at which
+the cumulative count reaches half, interpolated log-uniformly inside the bin that
+contains it. The open first and last bins are given nominal edges one decade
+beyond the outermost real edge, which is a declared convention and not a
+measurement. It is not the median of the trades; it is a monotone function of
+their distribution, and it is only ever used as a ratio.
+
+| # | column | definition | range | default |
+| --- | --- | --- | --- | --- |
+| 10 | `ms_mean_size_ratio_168` | `clip((Q/n) / max(mean_168[Q/n], EPS), 0, 10)` | `[0, 10]` | `1.0` |
+| 11 | `ms_median_size_ratio_168` | `clip(median(c) / max(median(Σ_168 c), EPS), 0, 10)` | `[0, 10]` | `1.0` |
+| 12 | `ms_large_trade_count_share` | `Σ_{b > b*} c_b / n` | `[0, 1]` | `0.0` |
+| 13 | `ms_large_trade_qty_share` | `Σ_{b > b*} s_b / Q` | `[0, 1]` | `0.0` |
+
+`b*` is the smallest bin index whose cumulative **count** share of the pooled
+trailing-168h histogram `Σ_168 c` reaches `LARGE_TRADE_QUANTILE`. It is a
+function of the previous week and of nothing else, which is what makes §C12–13
+causal. When `b*` is the top bin the shares are identically zero, which is a real
+property of a coarse grid and is reported in §6 rather than tuned away.
+
+### D. burstiness (4)
+
+`Fano = S2/n − n/S` with `S = SECONDS_PER_HOUR`, the index of dispersion of the
+per-second trade counts. It is `0` for perfectly uniform arrival and `≈1` for
+Poisson arrival, and it is `≥ 0` on every row by Cauchy–Schwarz, so the `log1p`
+below is always defined.
+
+| # | column | definition | range | default |
+| --- | --- | --- | --- | --- |
+| 14 | `ms_second_dispersion` | `log1p(S2/n − n/S)` | `[0, ∞)` | always defined |
+| 15 | `ms_active_second_share` | `A / S` | `(0, 1]` | always defined |
+| 16 | `ms_max_second_share` | `M / n` | `(0, 1]` | always defined |
+| 17 | `ms_max_silence_share` | `E / S` | `[0, 1)` | always defined |
+
+### E. displacement per volume (3)
+
+| # | column | definition | range | default |
+| --- | --- | --- | --- | --- |
+| 18 | `ms_displacement_per_notional` | `clip(d / max(w, EPS), 0, 20)` | `[0, 20]` | `1.0` |
+| 19 | `ms_range_per_notional` | `clip(g / max(w, EPS), 0, 20)` | `[0, 20]` | `1.0` |
+| 20 | `ms_signed_flow_return` | `clip(I · r / max(mean_168[|r|], EPS), −10, 10)` | `[−10, 10]` | `0.0` |
+
+§E20 is the "signed displacement per signed flow" the roadmap asked for, written
+so that it is numerically safe: dividing by signed flow would divide by a
+quantity that crosses zero every few hours, so the signed flow multiplies and
+only a trailing mean of *absolute* returns divides.
+
+### F. absorption-like (3)
+
+Named `_like` throughout. These are arithmetic descriptions of "a lot of
+one-sided aggression, not much price movement", and nothing here identifies a
+participant, an intent or a resting order.
+
+| # | column | definition | range | default |
+| --- | --- | --- | --- | --- |
+| 21 | `ms_absorption_like` | `|I| / (1 + d)` | `[0, 1]` | `|I| / 2` |
+| 22 | `ms_volume_without_range` | `clip(w / (1 + g), 0, 20)` | `[0, 20]` | `0.5` |
+| 23 | `ms_unconverted_pressure` | `I − clip(r / max(mean_168[|r|], EPS), −1, 1)` | `[−2, 2]` | `I` |
+
+The defaults are the values these take when `d = g = 1` and the trailing return
+scale is unavailable — that is, when the row is told to treat itself as typical.
+
+### G. intra-hour distribution (5)
+
+Only for a **completed** hour, which every row is: the decision instant is the
+hour's close, so the fourth quarter is as readable as the first.
+
+`ms_q1_trade_share` is deliberately absent — four shares sum to one, so the
+fourth is not information — and the three that are present are enough to place
+the hour's activity.
+
+| # | column | definition | range | default |
+| --- | --- | --- | --- | --- |
+| 24 | `ms_q2_trade_share` | `q_1 / n` | `[0, 1]` | always defined |
+| 25 | `ms_q3_trade_share` | `q_2 / n` | `[0, 1]` | always defined |
+| 26 | `ms_q4_trade_share` | `q_3 / n` | `[0, 1]` | always defined |
+| 27 | `ms_late_early_qty_imbalance` | `(Q_2 + Q_3 − Q_0 − Q_1) / Q` | `[−1, 1]` | always defined |
+| 28 | `ms_q4_flow_imbalance` | `(2·Qb_3 − Q_3) / Q_3`, or `0.0` when `Q_3 = 0` | `[−1, 1]` | always defined |
+
+### H. volume-at-price approximations (4)
+
+With shares `u_j = v_j / Q`, which sum to `1`.
+
+| # | column | definition | range | default |
+| --- | --- | --- | --- | --- |
+| 29 | `ms_price_hhi` | `Σ u_j²` | `[1/8, 1]` | always defined |
+| 30 | `ms_price_entropy` | `−Σ u_j ln u_j / ln 8`, with `0 ln 0 := 0` | `[0, 1]` | always defined |
+| 31 | `ms_close_from_vwap` | `clip((p1 − vwap) / max(pH − pL, EPS·vwap), −1, 1)` | `[−1, 1]` | always defined |
+| 32 | `ms_close_from_node` | `clip((p1 − node) / max(pH − pL, EPS·vwap), −1, 1)` | `[−1, 1]` | always defined |
+
+`node` is the centre of the highest-volume price bin,
+`pL + (j* + 0.5)·(pH − pL)/8`, with ties resolved to the lowest index. It is an
+approximate high-volume node of an eight-bin histogram over one hour, and §0.2
+says what that is not.
+
+---
+
+## 4. Invariance properties, and the tests that hold them
+
+| property | what it means | test |
+| --- | --- | --- |
+| append invariance | appending hours after `T` leaves every row at or before `T` byte-identical | `test_appending_hours_changes_no_earlier_row` |
+| future mutation invariance | editing hours after `T` leaves every row at or before `T` byte-identical | `test_mutating_the_future_changes_no_earlier_row` |
+| boundary | a trade at `t+1h−1ns` belongs to hour `t`; a trade at `t+1h` belongs to hour `t+1h` | `test_the_hour_boundary_is_half_open` |
+| gap | a missing hour starts a new segment and every trailing feature restarts from its default | `test_a_gap_resets_the_trailing_windows` |
+| order invariance | reordering trades *within* one hour changes only `first_price` and `last_price` | `test_only_first_and_last_price_depend_on_order_within_an_hour` |
+| duplicate rejection | a repeated `agg_trade_id` is refused by the aggregator, not absorbed | `test_a_duplicated_trade_is_refused` |
+| no future quantile | the large-trade threshold at row `t` is a function of rows `< t` only | `test_the_large_trade_threshold_ignores_the_future` |
+| rolled matrix | shifting the whole feature matrix by one row is rejected by the alignment proof | `test_a_rolled_microstructure_matrix_is_rejected` |
+| seal | one trade at or after Styx stops the run before any fit | `test_a_styx_breach_stops_the_run_before_any_fit` |
+| fingerprint | changing one pre-Styx value changes the semantic identity | `test_editing_one_aggregate_value_changes_the_semantic_hash` |
+
+Each of these has a **positive control** beside it: a guard that always failed
+would pass its own test, so every corruption test is paired with an assertion
+that the uncorrupted input passes.
+
+---
+
+## 5. No-NaN guarantee, and why it matters
+
+**Every one of the 32 columns is finite on every row of the source.** Not "is
+usually finite": `nn.information_sets.build_information_set_views` refuses the
+whole run if any value is `NaN` or infinite.
+
+The reason is the one `smc_v1` §5 and `chart_structure_v1` §5 give. A `NaN`
+would be dropped by the dataset builder, every later row would shift by the
+number dropped, and the fold boundaries — which are row indices — would land on
+different candles for the `microstructure_v1` arm than for the `ohlcv14` control.
+The two arms would then be measured over different market periods and nothing
+would raise. The comparison would simply stop being about the features.
+
+Finiteness is structural, not incidental:
+
+- every denominator is either guaranteed positive by `check_table` (`n`, `Q`,
+  `N`, `A`, `p0`, `vwap`) or floored with `EPS`;
+- every trailing statistic has a declared default for a window that is not full;
+- `log1p` is applied only to quantities proven `≥ 0` in §A5, §D14;
+- `0 ln 0` is defined as `0` in §H30;
+- `Q_3 = 0` is the one degenerate case with its own branch, §G28.
+
+---
+
+## 6. What this spec does not claim
+
+- **It does not claim these features are informative.** That is what P3
+  measures, and a 0-of-4 answer is a result.
+- **It does not claim aggregated trades are trades.** `aggTrades` folds
+  consecutive same-price fills of one taker order into one row, so every "trade
+  size" here is an *aggressed order* size. A venue-side change to how orders are
+  aggregated would change these numbers without any market changing.
+- **It does not claim the aggressor flag is ground truth.** `is_buyer_maker` is
+  the exchange's own label. There is no independent way to verify it from the
+  archive, and every column in §B, §E20, §F and §G28 inherits whatever it gets
+  wrong.
+- **It does not claim §H is a volume profile**, or §F an absorption detector.
+  See §0.2.
+- **It does not claim the coarse grids are free.** The 12 half-decade size bins
+  and the 8 price bins are the resolution at which anything derived from them
+  can be measured. When the trailing 99th percentile of trade size falls in the
+  top size bin, §C12–13 are identically zero for that row: real, uninformative,
+  and not to be repaired by moving the bin edges after seeing a result.
+- **`ms_log_trade_count` is not stationary.** §1.3 keeps it deliberately; a tree
+  can use it to locate the year, and a positive P3 that leaned on it alone would
+  be a finding about drift rather than about microstructure. §8 says how that is
+  checked after the fact rather than prevented before it.
+
+---
+
+## 7. Public API
+
+```python
+# nn/microstructure.py
+
+#: The 32 columns of §3, in that exact order. Never reordered: the feature-spec
+#: hash and every persisted prediction record depend on it.
+def microstructure_feature_columns() -> list[str]: ...
+
+#: Family name -> its columns. The eight families of §3.
+MICROSTRUCTURE_FEATURE_FAMILIES: dict[str, tuple[str, ...]]
+
+#: The predeclared constants of §1.6, as a frozen dataclass with a spec hash.
+class MicrostructureSpec: ...
+
+#: One row per aggregate row, in the source's own order, gap-aware.
+def compute_microstructure_features(
+    aggregates: pd.DataFrame, spec: MicrostructureSpec
+) -> pd.DataFrame: ...
+```
+
+---
+
+## 8. Reading a P3 result
+
+The continuation rule is predeclared and is a **count of temporal folds**, not a
+mean:
+
+| improved folds | reading |
+| --- | --- |
+| 4 of 4 | consistent evidence worth continuing on |
+| 3 of 4 | evidence worth continuing on |
+| 2 of 4 | regime-dependent, inconclusive |
+| 0–1 of 4 | weak-to-negative evidence |
+
+Primary metric: **outer net return after the existing costs**. P2b is why this is
+a count: `lightgbm × smc_v1` and `xgboost × smc_v1` both had a *positive* mean
+delta while improving one and two of four folds, and pooling would have reported
+them as gains.
+
+Four folds are four temporal periods. These estimators are deterministic given
+their inputs, so a second seed copies the evidence rather than adding to it.
+
+If P3 is positive, the first thing to check post hoc is whether the gain survives
+dropping `ms_log_trade_count` (§6) — as a *description* of where the signal sat,
+reported alongside the primary result and never as a replacement for it. Doing
+that check is not permission to tune: the answer is recorded and the next
+checkpoint decides what to do with it.
+
+---
+
+## 9. Known defects, recorded before they are excuses
+
+Written here as `smc_v1` §9 and `chart_structure_v1` §9 were, so that a later
+`microstructure_v2` has a list to work from and this version has none of it
+searched against P3's folds.
+
+1. **The size histogram is coarse and absolute.** Half-decade bins in BTC
+   quantity, over a period in which BTC's dollar price grew roughly fifteen-fold.
+   The features are ratios so the drift largely cancels, but the *resolution*
+   does not: two hours whose trade-size distributions differ by less than half a
+   decade are identical to §C.
+2. **`b*` can pin to the top bin.** §C12–13 then read identically zero. A `v2`
+   with a finer top tail would measure something there.
+3. **Eight price bins over one hour is a weak profile.** §H30's entropy is
+   quantised to eight-bin resolution and cannot distinguish a two-node hour from
+   a flat one as well as a real profile would.
+4. **The per-second statistics are second-resolution.** BTCUSDT can trade dozens
+   of times within one second, and everything below one second — the timescale at
+   which most microstructure lives — is invisible to §D by construction.
+5. **`aggTrades` aggregation is a venue artifact.** See §6.
+6. **No cross-hour flow state.** Every §B, §F and §G column is intra-hour;
+   `smc_v1`-style multi-hour flow state (a running imbalance, an unwound
+   pressure) is not attempted in `v1`.
+
+None of the six is a threshold to search.
