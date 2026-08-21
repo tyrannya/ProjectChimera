@@ -213,6 +213,31 @@ persisted per-sample predictions and all matched. The sealed test remained unope
 files committed with this checkpoint. The index documentation itself is intentionally
 outside that generated-output manifest.
 
+## Current P2b and P2c information-set evidence
+
+Both checkpoints ran three information sets x three untuned models x four temporal
+outer folds on one proven-identical sample universe, from the committed research
+snapshot under `data/research/` rather than from a locally built dataset. Every cell
+records the checkpoint it answers and the question that goes with it in its first two
+fields, and `nn.p2b_compare` refuses to join cells that disagree about either — so a
+glob wide enough to catch both checkpoints' cells fails closed rather than averaging
+twelve arms of two feature families into one table.
+
+Folds improved over the OHLCV14 control, out of four, against a predeclared bar of
+three:
+
+| model | P2b `smc_v1` | P2b `combined` | P2c `chart_v1` | P2c `combined` |
+| --- | --- | --- | --- | --- |
+| logistic regression | 0/4 | 2/4 | 1/4 | 0/4 |
+| LightGBM | 2/4 | 1/4 | 1/4 | 2/4 |
+| XGBoost | 1/4 | 1/4 | 1/4 | 1/4 |
+
+`artifacts/btc_p2b_SHA256SUMS.txt` and `artifacts/btc_p2c_SHA256SUMS.txt` freeze the
+eighteen cells and their per-sample predictions;
+`artifacts/btc_p2b_ablation_SHA256SUMS.txt` freezes the six leave-one-family-out arms
+and the determinism re-run. The four aggregates those cells feed are derived and are
+pinned by `tests/test_p2b_evidence.py` instead — see the section above.
+
 ## What "pre-correction" means
 
 Every artifact committed here was produced before the reporting-integrity change, so

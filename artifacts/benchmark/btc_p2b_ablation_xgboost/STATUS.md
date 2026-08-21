@@ -8,3 +8,7 @@ describe. They are a source of hypotheses for a later research generation, never
 confirmation, and no model, threshold or feature constant anywhere in P2b was selected
 using them. P2b's answer was negative, so what this measures is which market-structure
 family was least useless inside an arm that did not beat its control.
+
+**Derived evidence.** Regenerated from the cells it names by the module that produced
+it; it carries no checksum of its own, and the cells behind it do. See
+`artifacts/README.md` for what a manifest covers and what it deliberately does not.
