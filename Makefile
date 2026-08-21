@@ -2,7 +2,7 @@
 .PHONY: help setup lint format test smoke sample backfill features \
 	verify-research-snapshot train research experiment walkforward \
 	wf-diagnostics benchmark benchmark-compare \
-	p2b-cell p2b-btc p2b-compare p2b-ablation p2b-regimes \
+	p2b-cell p2b-btc p2b-compare p2b-ablation p2b-regimes freeze-evidence \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
@@ -144,6 +144,9 @@ p2b-ablation:  ## Post-hoc: leave-one-family-out. Args: MODEL=xgboost
 
 p2b-regimes:  ## Descriptive: what the four outer periods were
 	$(PYTHON) -m nn.p2b_regimes --runs $(P2B_RUNS) --out $(P2B_DIR)/btc_p2b_regimes
+
+freeze-evidence:  ## Verify a frozen checksum manifest. Args: MANIFEST=artifacts/....txt
+	$(PYTHON) -m tools.freeze_evidence --verify $(MANIFEST)
 
 infer:  ## Serve the promoted model on port 3000
 	CHIMERA_MODELS_DIR=$(MODELS) uvicorn nn.infer_service:app --host 127.0.0.1 --port 3000

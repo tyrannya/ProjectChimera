@@ -319,9 +319,7 @@ def test_a_non_finite_market_structure_value_fails_closed(spine, raw_candles, mo
         out.iloc[150, 0] = np.nan
         return out
 
-    monkeypatch.setattr(
-        "nn.information_sets.compute_smc_features_segmented", poisoned
-    )
+    monkeypatch.setattr("nn.information_sets.compute_smc_features_segmented", poisoned)
     with pytest.raises(ValueError) as excinfo:
         build_information_set_views(frame, ds_meta, raw_candles, names=(SMC_V1,))
     message = str(excinfo.value)
@@ -616,7 +614,11 @@ def _fake_cell(information_set: str, model: str) -> dict[str, Any]:
         "folds": [
             {
                 "fold": 0,
-                "samples": {"train": 21000, "inner_validation": 4750, "outer_validation": 4750},
+                "samples": {
+                    "train": 21000,
+                    "inner_validation": 4750,
+                    "outer_validation": 4750,
+                },
                 "periods": {"outer_validation": {"start": "2023-01-01", "end": "2023-07-01"}},
                 "outer_validation": {
                     "majority_baseline": {"trading": {"net_return": 0.0}},
@@ -636,7 +638,9 @@ def _fake_cell(information_set: str, model: str) -> dict[str, Any]:
 
 
 def _cell_pair() -> tuple[dict[str, Any], dict[str, Any]]:
-    return _fake_cell(OHLCV14, "logistic_regression"), _fake_cell(SMC_V1, "logistic_regression")
+    return _fake_cell(OHLCV14, "logistic_regression"), _fake_cell(
+        SMC_V1, "logistic_regression"
+    )
 
 
 def test_check_cells_agree_accepts_two_cells_that_scored_the_same_rows():
@@ -773,15 +777,16 @@ def test_build_deltas_counts_improved_folds_and_picks_the_stated_verdict(improve
 
 
 def test_build_deltas_carries_an_undefined_metric_through_as_undefined():
-    deltas = p2b_compare.build_deltas(
-        _delta_matrix([0.01] * 4, [0.02, 0.0, 0.0, 0.0])
-    )
+    deltas = p2b_compare.build_deltas(_delta_matrix([0.01] * 4, [0.02, 0.0, 0.0, 0.0]))
     per_fold = deltas["logistic_regression"][SMC_V1]["per_fold"]
     assert per_fold[3]["annualised_sharpe"] is None
     assert per_fold[0]["annualised_sharpe"] == 0.0
-    assert deltas["logistic_regression"][SMC_V1]["aggregate"]["annualised_sharpe"][
-        "defined_folds"
-    ] == 3
+    assert (
+        deltas["logistic_regression"][SMC_V1]["aggregate"]["annualised_sharpe"][
+            "defined_folds"
+        ]
+        == 3
+    )
 
 
 def _write_artifact(directory: Path, payload: dict[str, Any]) -> Path:
