@@ -1,0 +1,454 @@
+"""Information sets, and the proof that two of them were compared fairly.
+
+Research checkpoint P2b asks whether causal market structure adds information
+beyond OHLCV14. That question only has an answer if the only thing that differs
+between the two arms is the *information*. Everything else — which rows are
+scored, what the label is, where the folds fall, what a trade costs — has to be
+identical, and "identical" has to be checked rather than intended.
+
+The failure this module exists to prevent is specific and quiet. A new feature
+family warms up over its own first rows. Drop those rows and every later row
+shifts by the number dropped, so fold boundaries resolved by row index land on
+different candles, and the two arms are then measured over different market
+periods. Nothing raises. The report still prints four folds. The comparison is
+simply no longer about the features.
+
+The defence has two halves:
+
+*one spine, many views*
+    :func:`build_information_set_views` builds one :class:`nn.train.ResearchData`
+    per information set that share — by object identity, not by equality — the
+    dates, targets, future returns, closes and segment ids. Only ``features``
+    differs. Since :func:`nn.dataset.sample_indices` is a function of the split,
+    the sequence length, the horizon and the segment ids alone, the three views
+    cannot select different rows.
+
+*and say so out loud*
+    :meth:`AlignedResearchSamples.prove_alignment` re-derives the sample index,
+    timestamps, labels and costs per fold per view and asserts they match, then
+    returns the evidence for the artifact. A claim of alignment that nothing
+    recomputes is a comment, not a guarantee.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
+
+import numpy as np
+import pandas as pd
+
+from chimera.features import feature_columns
+from nn.data_pipeline import DatasetMetadata, _contiguous_segment_ids
+from nn.dataset import Split, sample_indices
+from nn.smc import (
+    SMC_FEATURE_FAMILIES,
+    SMC_SPEC_VERSION,
+    SMCSpec,
+    compute_smc_features_segmented,
+    smc_feature_columns,
+)
+from nn.train import ResearchData
+from nn.walkforward import FoldPlan
+
+#: The OHLCV14 information set: what P2a's control was measured on, unchanged.
+OHLCV14 = "ohlcv14"
+#: Causal market structure alone, with no OHLCV14 column present.
+SMC_V1 = "smc_v1"
+#: Both, concatenated in that order.
+COMBINED = "ohlcv14_plus_smc_v1"
+
+
+class AlignmentError(AssertionError):
+    """Raised when two information sets would not be compared on the same rows."""
+
+
+@dataclass(frozen=True)
+class InformationSet:
+    """A named feature column list, plus the families an ablation can remove.
+
+    ``families`` is not decoration: the P2b robustness study leaves one family
+    out at a time, and a family that is not declared here cannot be ablated —
+    which is the point, because choosing the groups after seeing which columns
+    mattered would make the ablation a search.
+    """
+
+    name: str
+    columns: tuple[str, ...]
+    families: dict[str, tuple[str, ...]]
+
+    def __post_init__(self) -> None:
+        if len(set(self.columns)) != len(self.columns):
+            raise ValueError(f"{self.name} lists a column twice")
+        covered = [column for group in self.families.values() for column in group]
+        if sorted(covered) != sorted(self.columns):
+            raise ValueError(
+                f"{self.name}'s families do not partition its columns: "
+                f"{len(covered)} covered vs {len(self.columns)} declared"
+            )
+
+    def without(self, family: str) -> "InformationSet":
+        """This set minus one family, for the leave-one-family-out ablation."""
+        if family not in self.families:
+            raise KeyError(f"{self.name} has no family {family!r}")
+        removed = set(self.families[family])
+        return InformationSet(
+            name=f"{self.name}_minus_{family}",
+            columns=tuple(c for c in self.columns if c not in removed),
+            families={k: v for k, v in self.families.items() if k != family},
+        )
+
+
+def ohlcv14_set() -> InformationSet:
+    """The frozen 14-column set, as one family — it is the control, not a subject."""
+    columns = tuple(feature_columns())
+    return InformationSet(name=OHLCV14, columns=columns, families={"ohlcv14": columns})
+
+
+def smc_v1_set() -> InformationSet:
+    return InformationSet(
+        name=SMC_V1,
+        columns=tuple(smc_feature_columns()),
+        families={k: tuple(v) for k, v in SMC_FEATURE_FAMILIES.items()},
+    )
+
+
+def combined_set() -> InformationSet:
+    ohlcv = ohlcv14_set()
+    smc = smc_v1_set()
+    return InformationSet(
+        name=COMBINED,
+        columns=ohlcv.columns + smc.columns,
+        families={**ohlcv.families, **smc.families},
+    )
+
+
+#: The three arms of P2b, in report order. Predeclared.
+P2B_INFORMATION_SETS = (OHLCV14, SMC_V1, COMBINED)
+
+
+def information_set(name: str) -> InformationSet:
+    builders = {OHLCV14: ohlcv14_set, SMC_V1: smc_v1_set, COMBINED: combined_set}
+    if name not in builders:
+        raise KeyError(f"unknown information set {name!r}; known: {sorted(builders)}")
+    return builders[name]()
+
+
+@dataclass(frozen=True)
+class AlignedResearchSamples:
+    """One :class:`ResearchData` per information set over one shared row spine.
+
+    ``spine`` is the processed research frame every view was built from. The
+    views hold *the same array objects* for everything except ``features``, so
+    the alignment this class proves is a property of how it was constructed and
+    not something a caller could break by passing the wrong thing.
+    """
+
+    views: dict[str, ResearchData]
+    sets: dict[str, InformationSet]
+    spine_dates: np.ndarray
+    spine_targets: np.ndarray
+    smc_spec: SMCSpec
+    #: Rows the common-validity mask kept. All of them, or construction failed.
+    n_rows: int
+
+    def names(self) -> list[str]:
+        return list(self.views)
+
+    def prove_alignment(self, folds: Sequence[FoldPlan], seq_len: int) -> dict[str, Any]:
+        """Recompute what each view would score, per fold, and assert it matches.
+
+        Returns the evidence rather than just a boolean: the artifact records the
+        sample counts, the first and last timestamp of every block, and a hash
+        over the sample indices, so a later reader can check the claim against
+        the persisted predictions instead of believing this docstring.
+        """
+        names = self.names()
+        reference = self.views[names[0]]
+        horizon = reference.target_spec.horizon
+
+        for name in names[1:]:
+            view = self.views[name]
+            if view.targets is not reference.targets:
+                raise AlignmentError(f"{name} does not share the spine's target array")
+            if view.dates is not reference.dates:
+                raise AlignmentError(f"{name} does not share the spine's date array")
+            if view.future_return is not reference.future_return:
+                raise AlignmentError(f"{name} does not share the spine's return array")
+            if view.close is not reference.close:
+                raise AlignmentError(f"{name} does not share the spine's close array")
+            if view.segment_ids is not reference.segment_ids:
+                raise AlignmentError(f"{name} does not share the spine's segment ids")
+            if view.target_spec != reference.target_spec:
+                raise AlignmentError(
+                    f"{name} has target spec {view.target_spec} but the control has "
+                    f"{reference.target_spec}: horizon or costs differ"
+                )
+            if view.n_rows != reference.n_rows:
+                raise AlignmentError(
+                    f"{name} has {view.n_rows} rows but the control has {reference.n_rows}"
+                )
+
+        evidence: list[dict[str, Any]] = []
+        for fold, plan in enumerate(folds):
+            blocks: dict[str, Any] = {}
+            for block, split in (
+                ("train", plan.train),
+                ("inner_validation", plan.inner),
+                ("outer_validation", plan.outer),
+            ):
+                per_view = {
+                    name: sample_indices(
+                        split, seq_len, horizon, segment_ids=self.views[name].segment_ids
+                    )
+                    for name in names
+                }
+                control = per_view[names[0]]
+                for name in names[1:]:
+                    if not np.array_equal(per_view[name], control):
+                        raise AlignmentError(
+                            f"fold {fold} {block}: {name} would score "
+                            f"{len(per_view[name])} rows against the control's "
+                            f"{len(control)}, or the same count at different rows"
+                        )
+                    if not np.array_equal(
+                        self.views[name].targets[control], reference.targets[control]
+                    ):
+                        raise AlignmentError(f"fold {fold} {block}: {name} labels differ")
+                    if not np.array_equal(
+                        self.views[name].dates[control], reference.dates[control]
+                    ):
+                        raise AlignmentError(f"fold {fold} {block}: {name} timestamps differ")
+                if len(control) == 0:
+                    raise AlignmentError(f"fold {fold} {block} produced no samples")
+                blocks[block] = {
+                    "row_range": [split.start, split.end],
+                    "samples": int(len(control)),
+                    "first_row": int(control[0]),
+                    "last_row": int(control[-1]),
+                    "start": str(reference.dates[control[0]]),
+                    "end": str(reference.dates[control[-1]]),
+                    "sample_index_sha256": _index_hash(control),
+                }
+            evidence.append({"fold": fold, **blocks})
+
+        return {
+            "information_sets": names,
+            "checked": [
+                "identical sample-index arrays per fold and block",
+                "identical labels on those samples",
+                "identical timestamps on those samples",
+                "identical fold row ranges",
+                "identical label horizon",
+                "identical fee, slippage and cost threshold",
+                "shared spine arrays by object identity",
+            ],
+            "horizon": horizon,
+            "costs": reference.target_spec.to_dict(),
+            "seq_len": seq_len,
+            "rows": self.n_rows,
+            "folds": evidence,
+        }
+
+
+def _index_hash(idx: np.ndarray) -> str:
+    """A stable digest of which rows were selected, cheap enough to store."""
+    return hashlib.sha256(np.ascontiguousarray(idx, dtype=np.int64).tobytes()).hexdigest()
+
+
+def build_information_set_views(
+    spine: pd.DataFrame,
+    ds_meta: DatasetMetadata,
+    raw_candles: pd.DataFrame,
+    names: Sequence[str] = P2B_INFORMATION_SETS,
+    *,
+    smc_spec: SMCSpec | None = None,
+    extra_sets: Mapping[str, InformationSet] | None = None,
+) -> AlignedResearchSamples:
+    """Build one aligned view per named information set.
+
+    ``spine`` is the processed research dataset — the rows that already survived
+    OHLCV14 warm-up, NaN removal and horizon trimming, and whose row indices the
+    fold plan is expressed in. ``raw_candles`` is the unprocessed OHLCV history
+    the spine was derived from; it must cover every spine timestamp and the
+    candles before the first one, because market structure entering the spine's
+    first row has to have been built from the same history OHLCV14's indicators
+    warmed up over.
+
+    Fails closed on anything that would move a row: a spine timestamp missing
+    from the raw candles, a NaN or infinity in a computed feature, a spine
+    segment whose rows are not contiguous in the raw candles.
+    """
+    smc_spec = smc_spec or SMCSpec()
+    timeframe = ds_meta.timeframe or "1h"
+
+    spine = spine.reset_index(drop=True)
+    if "date" not in spine.columns:
+        raise ValueError("the research spine has no 'date' column")
+    spine_dates = pd.to_datetime(spine["date"], utc=True)
+
+    raw = raw_candles.reset_index(drop=True).copy()
+    raw["date"] = pd.to_datetime(raw["date"], utc=True)
+    if not raw["date"].is_monotonic_increasing or not raw["date"].is_unique:
+        raise ValueError("raw candles must be sorted and free of duplicate timestamps")
+
+    smc = compute_smc_features_segmented(raw, timeframe, smc_spec)
+    smc.insert(0, "date", raw["date"].to_numpy())
+
+    # Positional join, not a merge: a merge that silently dropped or duplicated
+    # a row would be indistinguishable from a clean one in the result's shape.
+    raw_row_of = pd.Series(np.arange(len(raw), dtype=np.int64), index=raw["date"].to_numpy())
+    try:
+        raw_rows = raw_row_of.reindex(spine_dates.to_numpy())
+    except Exception as exc:  # pragma: no cover - index construction is total
+        raise ValueError(f"could not locate spine timestamps in the raw candles: {exc}")
+    if raw_rows.isna().any():
+        missing = int(raw_rows.isna().sum())
+        first = spine_dates[raw_rows.isna().to_numpy()].iloc[0]
+        raise ValueError(
+            f"{missing} research row(s) have no raw candle (first: {first}). The raw "
+            "history does not cover the processed dataset it was supposed to produce."
+        )
+    raw_rows = raw_rows.to_numpy(dtype=np.int64)
+
+    _check_segment_contiguity(spine, raw_rows, raw["date"], timeframe)
+
+    smc_values = smc[smc_feature_columns()].to_numpy(dtype=np.float64)[raw_rows]
+    if not np.isfinite(smc_values).all():
+        bad = np.argwhere(~np.isfinite(smc_values))
+        column = smc_feature_columns()[int(bad[0][1])]
+        raise ValueError(
+            f"{len(bad)} non-finite market-structure value(s), first in column "
+            f"{column!r} at research row {int(bad[0][0])}. smc_v1 guarantees a finite "
+            "value on every row (docs/smc_v1.md §5); a NaN here would silently change "
+            "which rows the information sets are compared on."
+        )
+
+    columns: dict[str, np.ndarray] = {
+        name: spine[name].to_numpy(dtype=np.float64) for name in feature_columns()
+    }
+    for position, name in enumerate(smc_feature_columns()):
+        columns[name] = smc_values[:, position]
+
+    base = _spine_arrays(spine, ds_meta)
+    available = {name: information_set(name) for name in names}
+    if extra_sets:
+        available.update(extra_sets)
+
+    views: dict[str, ResearchData] = {}
+    for name, spec in available.items():
+        missing = [c for c in spec.columns if c not in columns]
+        if missing:
+            raise ValueError(f"information set {name!r} needs unavailable columns: {missing}")
+        views[name] = ResearchData(
+            **base,
+            feature_names=list(spec.columns),
+            features=np.column_stack([columns[c] for c in spec.columns]),
+        )
+
+    return AlignedResearchSamples(
+        views=views,
+        sets=available,
+        spine_dates=base["dates"],
+        spine_targets=base["targets"],
+        smc_spec=smc_spec,
+        n_rows=len(spine),
+    )
+
+
+def _spine_arrays(spine: pd.DataFrame, ds_meta: DatasetMetadata) -> dict[str, Any]:
+    """The non-feature arrays every view shares, built exactly once.
+
+    Returned as a kwargs dict so each :class:`ResearchData` receives the *same*
+    array objects. Copying them per view would still be correct today and would
+    remove the identity check :meth:`AlignedResearchSamples.prove_alignment`
+    relies on to prove it tomorrow.
+    """
+    from chimera.contracts import TargetSpec
+    from chimera.features import FeatureSpec
+    from nn.data_pipeline import timeframe_to_minutes
+
+    segment_ids = (
+        spine["segment_id"].to_numpy(dtype=np.int64)
+        if "segment_id" in spine.columns
+        else None
+    )
+    if segment_ids is None:
+        raise ValueError(
+            "the research spine has no 'segment_id' column, so windows could bridge a "
+            "market-data gap. Rebuild it with the current tools.build_features."
+        )
+    timeframe = ds_meta.timeframe or "1h"
+    return {
+        "ds_meta": ds_meta,
+        "feature_spec": FeatureSpec.from_dict(ds_meta.feature_spec),
+        "target_spec": TargetSpec.from_dict(ds_meta.target_spec),
+        "targets": spine["target"].to_numpy(dtype=np.int64),
+        "future_return": spine["future_return"].to_numpy(dtype=np.float64),
+        "close": spine["close"].to_numpy(dtype=np.float64),
+        "segment_ids": segment_ids,
+        "dates": spine["date"].to_numpy(),
+        "candles_per_year": 365 * 24 * 60 / timeframe_to_minutes(timeframe),
+    }
+
+
+def _check_segment_contiguity(
+    spine: pd.DataFrame, raw_rows: np.ndarray, raw_dates: pd.Series, timeframe: str
+) -> None:
+    """Two spine rows in one segment must be adjacent candles in the raw history.
+
+    The spine's segment ids decide which windows are allowed to span which rows.
+    Market structure resets on the *raw* history's gaps. If the two disagreed —
+    if the spine called two rows contiguous that the raw candles separate — a
+    window would carry structure state across a gap the windowing believed was
+    not there, which is exactly the bridging the gap rule forbids.
+    """
+    segments = spine["segment_id"].to_numpy(dtype=np.int64)
+    same_segment = segments[1:] == segments[:-1]
+    raw_step = np.diff(raw_rows)
+    offenders = np.flatnonzero(same_segment & (raw_step != 1))
+    if offenders.size:
+        row = int(offenders[0])
+        raise ValueError(
+            f"research rows {row} and {row + 1} share segment {int(segments[row])} but are "
+            f"{int(raw_step[row])} candles apart in the raw history. The processed "
+            "dataset's gap structure and the raw candles' gap structure disagree, so "
+            "market-structure state would bridge a gap the windowing does not know about."
+        )
+    raw_segments = _contiguous_segment_ids(raw_dates, timeframe).to_numpy()
+    crossing = np.flatnonzero(same_segment & (raw_segments[raw_rows][1:] != raw_segments[raw_rows][:-1]))
+    if crossing.size:
+        row = int(crossing[0])
+        raise ValueError(
+            f"research rows {row} and {row + 1} share a processed segment but fall in "
+            "different raw segments; market-structure state would bridge a market-data gap"
+        )
+
+
+def feature_spec_identity(smc_spec: SMCSpec, ds_meta: DatasetMetadata) -> dict[str, Any]:
+    """What produced the columns, recorded in every P2b artifact.
+
+    Both halves, because both can change independently: the OHLCV14 window
+    lengths come from the dataset that was built months ago, and the market
+    structure constants come from the spec this run was written against.
+    """
+    return {
+        "ohlcv14_feature_spec": dict(ds_meta.feature_spec),
+        "smc_spec_version": SMC_SPEC_VERSION,
+        "smc_spec": smc_spec.to_dict(),
+        "smc_spec_hash": smc_spec.spec_hash(),
+        "smc_feature_families": {k: list(v) for k, v in SMC_FEATURE_FAMILIES.items()},
+        "combined_spec_hash": hashlib.sha256(
+            json.dumps(
+                {
+                    "ohlcv14": dict(ds_meta.feature_spec),
+                    "smc": smc_spec.to_dict(),
+                    "smc_version": SMC_SPEC_VERSION,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    }

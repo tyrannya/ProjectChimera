@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup lint format test smoke sample backfill features train \
-	research experiment walkforward wf-diagnostics benchmark benchmark-compare \
+.PHONY: help setup lint format test smoke sample backfill features \
+	verify-research-snapshot train research experiment walkforward \
+	wf-diagnostics benchmark benchmark-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
@@ -54,6 +55,7 @@ smoke:  ## End-to-end smoke: data -> features -> training -> service -> risk
 
 check: ## Everything the Definition of Done requires
 	$(PYTHON) -m compileall -q .
+	$(PYTHON) -m tools.verify_research_snapshot
 	pytest
 	pre-commit run --all-files
 	docker compose config --quiet
@@ -69,6 +71,9 @@ backfill:  ## Download candles. Args: EXCHANGE PAIR TIMEFRAME START
 features:  ## Build a training dataset from downloaded candles
 	$(PYTHON) -m tools.build_features --candles $(CANDLES) --out $(DATASET) \
 		--exchange $(EXCHANGE) --pair $(PAIR) --timeframe $(TIMEFRAME)
+
+verify-research-snapshot:  ## Check the committed research snapshot: hashes, seal, coverage
+	$(PYTHON) -m tools.verify_research_snapshot
 
 train:  ## Train a model. Args: DATASET EPOCHS SEQ_LEN CONTRACT
 	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \
