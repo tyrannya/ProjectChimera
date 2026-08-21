@@ -170,16 +170,30 @@ make p2b-cell SET=smc_v1 MODEL=xgboost
 which is exactly:
 
 ```bash
-python -m nn.p2b --information-set smc_v1 --model xgboost \
+python -m nn.p2b --checkpoint P2b --information-set smc_v1 --model xgboost \
     --out artifacts/benchmark/btc_p2b_smc_v1_xgboost
 ```
 
-`SET` is one of `ohlcv14`, `smc_v1`, `ohlcv14_plus_smc_v1`. `MODEL` is one of
-`logistic_regression`, `lightgbm`, `xgboost`. The remaining flags —
-`--manifest`, `--research-contract`, `--seed`, `--seq-len`, `--min-trades` —
-default to the predeclared values and exist to be *recorded*, not to be swept.
-There is no flag that can change a model's hyperparameters, the fold geometry,
-the costs or the boundary.
+`--checkpoint` is required and is not inferred: `ohlcv14` is the control of both
+P2b and P2c, so the arms cannot say which research question a cell is answering.
+A cell that will not say is refused before it answers one, and so is an arm that
+does not belong to the checkpoint named — `--checkpoint P2c --information-set
+smc_v1` is a mislabelled cell and is unrunnable rather than plausible. P2c's own
+cells are `make p2c-cell SET=chart_structure_v1 MODEL=xgboost`.
+
+`SET` is one of `ohlcv14`, `smc_v1`, `ohlcv14_plus_smc_v1` for P2b, and
+`ohlcv14`, `chart_structure_v1`, `ohlcv14_plus_chart_structure_v1` for P2c.
+`MODEL` is one of `logistic_regression`, `lightgbm`, `xgboost`. The remaining
+flags — `--manifest`, `--research-contract`, `--seed`, `--seq-len`,
+`--min-trades` — default to the predeclared values and exist to be *recorded*,
+not to be swept. There is no flag that can change a model's hyperparameters, the
+fold geometry, the costs or the boundary.
+
+**The runner verifies the research snapshot before it fits anything.** All 23
+checks of `tools.verify_research_snapshot` run inside `load_snapshot`, not
+beside it in a `make` target, so `python -m nn.p2b` is exactly as safe as
+`make p2b-btc`. A snapshot whose manifest has stopped describing its files
+produces zero model fits and a named rejection.
 
 Each cell writes `p2b.json`, `p2b.md` and `outer_predictions.parquet`
 (18,939 outer samples, four folds) into its `--out` directory.
@@ -202,7 +216,7 @@ mkdir -p artifacts/p2b_logs
 for s in ohlcv14 smc_v1 ohlcv14_plus_smc_v1; do
   for m in logistic_regression lightgbm xgboost; do echo "$s $m"; done
 done | xargs -P 3 -n 2 sh -c '
-  python -m nn.p2b --information-set "$1" --model "$2" \
+  python -m nn.p2b --checkpoint P2b --information-set "$1" --model "$2" \
       --out "artifacts/benchmark/btc_p2b_$1_$2" \
       > "artifacts/p2b_logs/$1_$2.log" 2>&1' _
 ```
@@ -284,7 +298,8 @@ no Make target that produces them, because they are not canonical P2b evidence:
 ```bash
 MODEL=xgboost
 for f in structure liquidity breaks sweeps displacement fvg; do
-  python -m nn.p2b --information-set "ohlcv14_plus_smc_v1_minus_$f" --model "$MODEL" \
+  python -m nn.p2b --checkpoint P2b --information-set "ohlcv14_plus_smc_v1_minus_$f" \
+      --model "$MODEL" \
       --out "artifacts/benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_${f}_${MODEL}"
 done
 make p2b-ablation MODEL=xgboost
@@ -456,41 +471,59 @@ blocks designed after earlier results on those same blocks had been seen. See
 
 ```bash
 python -m tools.freeze_evidence --out artifacts/btc_p2b_SHA256SUMS.txt \
-    artifacts/benchmark/btc_p2b_*
+    artifacts/benchmark/btc_p2b_{ohlcv14,smc_v1,ohlcv14_plus_smc_v1}_*
 make freeze-evidence MANIFEST=artifacts/btc_p2b_SHA256SUMS.txt
 ```
 
-The first command records a SHA-256 for every file the checkpoint produced; the
-second (`tools.freeze_evidence --verify`) re-hashes them and reports anything
-that moved or vanished. Freezing refuses to overwrite an existing manifest, on
-purpose: a manifest is the repository's own statement about what a past run
-produced, and regenerating it in place is how a result quietly becomes whatever
-the code does today. A checkpoint that needs new numbers gets a new artifact
-directory and a new manifest under a new name, and which directory is
-authoritative for which question is recorded in
-[`../artifacts/README.md`](../artifacts/README.md) rather than inferred from
-directory names.
+The first command records a SHA-256 for every file it is given; the second
+(`tools.freeze_evidence --verify`) re-hashes them and reports anything that
+moved or vanished, with no exemptions.
+
+**A manifest covers primary evidence only.** A cell and its predictions cannot
+be rebuilt without re-fitting, so a byte change in one is a change in the
+research result. A comparison is *derived* — regenerated from those cells
+whenever the aggregator improves — and freezing refuses it rather than promising
+something the workflow is designed to break:
+
+```bash
+$ python -m tools.freeze_evidence --out artifacts/demo.txt artifacts/benchmark/btc_p2b_*
+refusing to freeze derived evidence: artifacts/benchmark/btc_p2b_comparison, ...
+```
+
+Note the glob in the working command: it names the nine cells and excludes the
+comparison, the ablation table and the regime description, each of which
+declares `evidence_class: "derived"` in its own JSON. What pins those instead is
+`tests/test_p2b_evidence.py`, which asserts their fold counts, verdicts and
+integrity counters directly.
+
+Freezing refuses to overwrite an existing manifest, on purpose: a manifest is
+the repository's own statement about what a past run produced, and regenerating
+it in place is how a result quietly becomes whatever the code does today. A
+checkpoint that needs new numbers gets a new artifact directory and a new
+manifest under a new name, and which directory is authoritative for which
+question is recorded in [`../artifacts/README.md`](../artifacts/README.md)
+rather than inferred from directory names.
 
 ### Indexing it
 
 `artifacts/README.md` is the index of which artifact is authoritative for which
-question, and P2b is **not in it yet, on purpose**. The index's first line says
-everything under `artifacts/` is a record of a run that has already happened, and
-`tests/test_reporting_integrity.py` enforces that: a CURRENT aggregate must be
-backed by committed source runs, and
+question. The index's first line says everything under `artifacts/` is a record
+of a run that has already happened, and `tests/test_reporting_integrity.py`
+enforces that: a CURRENT aggregate must be backed by committed source runs, and
 `test_the_index_names_exactly_one_current_generation_per_research_question`
-compares the set of questions carrying a CURRENT generation against a
-hard-coded `{btc_ohlcv14_mtst_baseline: v4, btc_p2a_model_family_benchmark: P2a}`.
-Declaring where evidence will land is not recording that it did.
+compares the set of questions carrying a CURRENT generation against a hard-coded
+mapping. **Declaring where evidence will land is not recording that it did**, so
+the rows go in when the directories do, in the same commit as the evidence.
 
-So the rows go in when the directories do, in the same commit as the evidence.
-The P2b research question is `btc_p2b_information_set_benchmark`, and it is a
-*third* question — P2a's and v4's rows keep their own CURRENT status, because
-CURRENT is unique per question and P2b supersedes neither. Ten rows: one per
-cell, `produced by nn.p2b`, `source runs: itself (<set> x <model>)`,
-`source runs present: n/a`; and one for
-`benchmark/btc_p2b_comparison`, `produced by nn.p2b_compare`, naming the nine
-cells, `source runs present: yes`. All ten `metric semantics: current`. That
-commit also has to add the new question to the test's expected mapping and to
-its `CURRENT_*` path sets — the index and the guard move together, or the guard
-is not guarding this question.
+P2b's research question is `btc_p2b_information_set_benchmark` and P2c's is
+`btc_p2c_information_set_benchmark`. They are the *third* and *fourth* questions
+in the index; v4's and P2a's rows keep their own CURRENT status, because CURRENT
+is unique per question and neither information-set checkpoint supersedes anything
+above it. Per checkpoint that is ten rows: one per cell,
+`produced by nn.p2b`, `source runs: itself (<set> x <model>)`,
+`source runs present: n/a`; and one for the comparison,
+`produced by nn.p2b_compare`, naming the nine cells,
+`source runs present: yes`. All `metric semantics: current`. The same commit has
+to add the question to the test's expected mapping and to its `CURRENT_*` path
+sets — the index and the guard move together, or the guard is not guarding this
+question.

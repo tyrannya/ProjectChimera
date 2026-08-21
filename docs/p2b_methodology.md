@@ -1,4 +1,12 @@
-# P2b — does causal market structure add information beyond OHLCV14?
+# P2b and P2c — does either structure family add information beyond OHLCV14?
+
+This document is written for **P2b** (`smc_v1`, causal market structure).
+**P2c** (`chart_structure_v1`, causal classical chart structure) reuses every
+word of it except the columns: the same runner, the same control, the same four
+folds, the same label, the same costs, the same inner-only threshold rule and
+the same predeclared 3-of-4 verdict bar. Where a section says "P2b", read
+"either checkpoint" unless it names `smc_v1`. §10 is the one place the two
+genuinely differ, and it differs in how adaptive they are.
 
 Research checkpoint: **P2b**.
 Research contract: `btc-usdt-1h-gen1`, sealed at `2025-08-27T23:00:00+00:00`.
@@ -407,7 +415,28 @@ output either way.
 blocks are the same four the v4 walk-forward and P2a already reported on, and
 they have now been read repeatedly. That makes P2b's outer evidence **adaptive
 research evidence, not a pristine out-of-sample test**, and every artifact it
-writes says so in its own payload.
+writes says so in its own payload — the wording comes from the checkpoint's own
+definition rather than from a string in the reporter, so the two checkpoints
+cannot end up claiming each other's independence.
+
+**P2c is more adaptive than P2b, and says so.** Its specification and constants
+were committed before any P2b outer number existed — `b2aae3f` at 01:24:46 UTC
+against the earliest P2b cell's recorded revision `c840627` at 01:39:48 — so no
+outer result was available to search those constants against. But the *family*
+was chosen because `smc_v1` was the checkpoint in flight, and by the time P2c
+ran these four outer blocks had been read by v4, P2a, P2b, the P2b ablation and
+the P2b regime description. **P2c generates hypotheses; it cannot confirm one.**
+A positive P2c would have needed heavy discounting; the negative one it produced
+needs none, which is the asymmetry that makes negative results the cheap ones to
+trust.
+
+**Neither checkpoint's four folds are four independent draws.** Fold *k*'s
+inner-validation block *is* fold *k−1*'s reported outer block, and folds 2 and 3
+train on earlier folds' outer blocks. No fold touches its own outer rows before
+scoring them, so no fold's own number is contaminated — but a regime spanning a
+fold boundary can move one fold's result and the next fold's selected threshold
+together. "Three of four" is fewer than four independent draws and the verdict
+rule in §9 should be read that way.
 
 This is stated rather than worked around because the alternative — carving a
 fresh holdout out of the research region for each new checkpoint — would spend
@@ -455,14 +484,25 @@ verdict, and no regime filter is fitted from either.
 
 Nine cells at `artifacts/benchmark/btc_p2b_<information_set>_<model>/`, each
 holding `p2b.json`, `p2b.md` and `outer_predictions.parquet`, and one join at
-`artifacts/benchmark/btc_p2b_comparison/`.
+`artifacts/benchmark/btc_p2b_comparison/`. P2c's nine land under
+`btc_p2c_<information_set>_<model>/` with the same file names — the names are
+the *runner's*, not the checkpoint's, and every one of those files states its
+own checkpoint and research question in its first two fields.
+
+The cells are **primary** evidence and are frozen by SHA-256 manifest; the joins
+are **derived**, are regenerated whenever the aggregator improves, and are
+pinned by `tests/test_p2b_evidence.py` asserting their fold counts, verdicts and
+integrity counters instead. See [`../artifacts/README.md`](../artifacts/README.md).
 
 The join is not a concatenation. Before it reports anything, `nn.p2b_compare`
 proves the cells scored the same rows and ran the same code (§5), checks every
 scored row's timestamp, label and realised return against the committed snapshot
-at the row index the cell recorded, and then **rebuilds twelve trading and
-eleven classification numbers from the persisted per-sample predictions**,
-through `nn.evaluate`. Any disagreement stops it; nothing is written. A report
+at the row index the cell recorded, proves that those row indices **are** the
+sample its fold plan selected — count, uniqueness, strict order, first and last
+row, and a SHA-256 over the exact `int64` bytes, against the digest
+`prove_alignment` recorded before anything was fitted — and then **rebuilds
+twelve trading and eleven classification numbers from the persisted per-sample
+predictions**, through `nn.evaluate`. Any disagreement stops it; nothing is written. A report
 that contradicts its own predictions is a report about nothing, and there is no
 way to notice that by reading it.
 

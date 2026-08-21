@@ -1,9 +1,35 @@
 # Chart structure v1 — causal classical-pattern information set
 
 Version: `chart_structure_v1`
-Status: predeclared before any P2b outer-validation result was observed.
-Research checkpoint: **P2b** (*does causal measurable market structure add usable
-information beyond OHLCV14?*) — the second family, after `smc_v1`.
+Research checkpoint: **P2c** (*does causal `chart_structure_v1`, alone or combined
+with OHLCV14, add usable information beyond OHLCV14?*) — the second information
+family, after `smc_v1`'s P2b.
+
+**Status: adaptive research evidence. Not a pristine out-of-sample confirmation.**
+What git supports, and no more:
+
+- This document was committed at `b2aae3f` (01:24:46 UTC) and the engine at
+  `96abd9b` (01:38:12) — **before any P2b outer-validation number existed.** The
+  earliest P2b cell in `artifacts/benchmark/` records revision `c840627`
+  (01:39:48), so no outer result was available to read when the constants of
+  §1.3 were fixed. That is a real guarantee and it is the reason a search over
+  those constants is impossible here.
+- It is nevertheless **adaptive**, and more so than P2b. This family exists
+  because `smc_v1` was the checkpoint in flight and a second family was wanted;
+  the choice of *what to measure next* was made inside a research programme whose
+  earlier answers were already known. By the time P2c actually ran, these same
+  four outer blocks had been read by v4, P2a, P2b, the P2b ablation and the P2b
+  regime description — five times over.
+- The engine was corrected twice after those numbers began to exist, both times
+  for a degenerate guard rather than for a constant. `f5b409f` (01:48:27) moved
+  **9 cells of one column** (`chart_channel_pos`) on the committed pre-Styx
+  history; `7520e8d` (03:11:35), after P2b was frozen, moved **0 cells** there.
+  Both are recorded so the claim can be checked instead of believed: 9 of
+  1,486,530.
+
+So P2c generates hypotheses and cannot confirm one. A positive P2c result would
+have needed heavy discounting; the negative one it produced needs none. **Styx
+was not opened for it.**
 
 This document is the **definition**, not a description. Every feature below has
 one exact formula and one exact firing rule. `nn/chart_structure.py` will
@@ -43,7 +69,7 @@ swings with a trough between them, and a measured impulse followed by measured
 compression.
 
 That geometry is what `chart_structure_v1` measures. It carries no claim that
-the geometry is predictive; the whole point of P2b is to find out.
+the geometry is predictive; the whole point of P2c is to find out.
 
 ### 0.1 Continuous over categorical
 
@@ -75,7 +101,7 @@ survives §2. Deferred until a rigorous causal definition exists, exactly as
 Both families are functions of the same OHLC series, and §3.7 reuses `smc_v1`
 §3.1's pivots unchanged. The combined information set will therefore contain
 correlated columns. Correlation between two predeclared families is a modelling
-fact for P2b to report, not a leak; the alternative — dropping a measurement
+fact for P2c to report, not a leak; the alternative — dropping a measurement
 because a different family already saw the same candles — would make each
 family's content depend on the order the families were written in.
 
@@ -173,7 +199,7 @@ of freedom that a later disappointing result would invite someone to spend.
 
 `ATR_PERIOD`, `PIVOT_LEFT` and `PIVOT_RIGHT` carry `smc_v1`'s values on purpose:
 the two families then normalise against a byte-identical denominator and see an
-identical swing set, so any difference P2b measures between them is a difference
+identical swing set, so any difference P2c measures between them is a difference
 of definition rather than of parameterisation. `TOUCH_ATR` is `smc_v1`'s
 `EQUAL_ATR`, for the same reason — "these two highs are the same level" is the
 same judgement in both families and should not be made twice with two numbers.
@@ -188,7 +214,7 @@ were picked as round numbers with a 3:1 separation, not searched. Note what is
 ### 1.4 The column budget
 
 **24 to 32 columns. This set has 30.** The budget is a hard constraint, not a
-style preference, and the arithmetic is why. The P2b models flatten a
+style preference, and the arithmetic is why. The P2c models flatten a
 `SEQ_LEN = 64` candle window, so each column costs 64 model inputs:
 
 | information set | columns | flattened inputs |
@@ -198,9 +224,10 @@ style preference, and the arithmetic is why. The P2b models flatten a
 | `chart_structure_v1` | 30 | 1,920 |
 | all three combined | 83 | 5,312 |
 
-The smallest training fold in the P2b geometry is `min_train = 21,697` rows. At
+The smallest training fold in the P2c geometry — P2b's, unchanged — is
+`min_train = 21,697` rows. At
 5,312 inputs that is roughly four training rows per input, against a target
-whose signal-to-noise ratio is assumed low enough that P2b exists to test
+whose signal-to-noise ratio is assumed low enough that P2c exists to test
 whether there is any. Every column added past that point buys a little
 information and a lot of variance, and the variance lands on exactly the
 comparison the checkpoint is trying to make.
@@ -576,7 +603,7 @@ splits it, which is what makes the three columns readable together.
 small `range_ratio`, and `impulse` small or counter to `pole`", and this spec
 emits the three measurements rather than a hand-chosen product of them. The
 product would be a modelling decision — which powers, which weights, which
-sign convention — dressed up as a measurement, and the models in P2b exist to
+sign convention — dressed up as a measurement, and the models in P2c exist to
 make modelling decisions. A composite would also be untestable in the way the
 rest of this document is testable: there is no right answer to check it against.
 
@@ -672,7 +699,7 @@ Every column is finite on **every** row of every segment, including row 0.
 This is not cosmetic. `nn.data_pipeline.build_dataset` drops any row with a NaN
 feature. If these columns could be NaN, the `ohlcv14`, `smc_v1` and
 `chart_structure_v1` information sets would be evaluated on **different rows**,
-and every comparison in P2b would be confounded by the sample universe rather
+and every comparison in P2c would be confounded by the sample universe rather
 than by the information. A no-NaN engine makes the common sample universe of
 `nn/information_sets.py` provable by construction instead of by hope, and
 `build_information_set_views` must apply the same `np.isfinite` assertion to
@@ -705,19 +732,26 @@ what a mid-range close reports. Neither is ambiguous in practice, because
 reader does not have to rediscover it, which is precisely what `smc_v1` §9(a)
 failed to do.
 
-**Nothing in this spec is clipped to a chosen bound.** Where a value could be
-unbounded it is either bounded by construction (§3.4's `chart_channel_pos` by
-`sqrt(w_l - 1)`, §3.5's ratios by 1 and 3, §4's fractions by 1) or normalised
-against a reference level that is at most `WIN_LONG` bars old (17–20) or at most
-one pivot spacing old (22–28). On the committed pre-Styx history consecutive
-confirmed swing points are a median of 9 bars apart and never more than 46, so
-the level a family-F column references is at most 49 bars old. `smc_v1` §9(c)
-`smc_v1` §9(c) reports a 181-ATR distance because its equal-level references
-never expire. Columns 17-20 genuinely cannot do that, because their reference is
-re-derived from the window every row. **Columns 22-28 can**, and §9(f) records
-it: their pivot reference has no window bound, so a collapsed `atr_den` makes the
-ratio arbitrarily large
-tail cannot occur here, and no clip constant is needed to prevent it.
+**Nothing in this spec is clipped to a chosen bound**, and one group of columns
+is therefore genuinely unbounded. Columns 7-16 are bounded by construction
+(§3.4's `chart_channel_pos` by `sqrt(w_l - 1)`, §3.5's ratios by 1 and 3, §4's
+fractions by 1). Columns 17-20 are normalised against a reference the window
+re-derives every row, so they cannot inherit an old level.
+
+Columns 22-28 are the exception and the claim about them has to be stated
+carefully, because an earlier draft of this paragraph got it wrong. They are
+normalised against a *pivot* reference with no window bound. On the committed
+pre-Styx history consecutive confirmed swing points are a median of 9 bars apart
+and never more than 46, so in practice the level a family-F column references is
+at most 49 bars old — which is why `smc_v1` §9(c)'s 181-ATR equal-level tail,
+produced by references that never expire, does not appear here.
+
+"In practice" is the whole of the claim. **It is not a bound**, and §9(i)
+records the counterexample: on a synthetic frame that passes `validate_ohlcv`,
+`chart_dt_neckline_atr` reaches **360,430 ATR**, three orders past the tail this
+paragraph once said could not occur. A collapsed `atr_den` is enough. Latent on
+the committed history, unbounded in the specification, deferred to
+`chart_structure_v2` rather than closed with a clip constant that §1.3 forbids.
 
 **Warm-up** is not a NaN problem but is a real one: the first candles of a
 segment genuinely have less history. They are handled the same way the OHLCV14
@@ -733,7 +767,7 @@ real history rather than from a truncated view.
 
 ## 6. What this spec does not claim
 
-- It does not claim these features are predictive. P2b measures that.
+- It does not claim these features are predictive. P2c measures that.
 - It does not claim these are *the* chart-pattern definitions. They are *a* set
   of exact, causal, reproducible ones, fixed in advance so that a result cannot
   be manufactured by redrawing a triangle after seeing a return.
@@ -763,7 +797,7 @@ CHART_SPEC_VERSION: str = "chart_structure_v1"
 #: hash and every persisted prediction record depend on it.
 CHART_FEATURE_NAMES: tuple[str, ...]
 
-#: Family name -> its columns. The six families of §4, used by the P2b ablation:
+#: Family name -> its columns. The six families of §4. No P2c ablation was run:
 #: "range", "compression", "channel", "volatility", "breakout", "patterns".
 CHART_FEATURE_FAMILIES: dict[str, tuple[str, ...]]
 
@@ -771,7 +805,7 @@ CHART_FEATURE_FAMILIES: dict[str, tuple[str, ...]]
 class ChartSpec:
     """The predeclared constants of §1.3.
 
-    Frozen because they were fixed before any P2b outer-validation result was
+    Frozen because they were fixed before any P2b or P2c outer-validation result was
     observed and tuning them against one is forbidden; a mutable spec would make
     "the constants were not searched" a claim about discipline rather than about
     the object recorded in the artifact.
@@ -886,20 +920,29 @@ Consequences that follow from this order and are part of the definition:
 
 ---
 
-## 9. Judgement calls, and what each one costs
+## 9. Judgement calls, and the defects found after they were made
 
-Every entry here is a place where the conventional definition uses information
-this spec is not allowed to use. They are recorded now, before any result, so
-that a disappointing P2b outcome cannot later be explained away by claiming the
-features were meant to be something else.
+**(a)-(h) are judgement calls, recorded before any result.** Each is a place
+where the conventional definition uses information this spec is not allowed to
+use, and each was written down at `b2aae3f` — before P2b had produced an outer
+number, let alone P2c — so that a disappointing P2c outcome cannot later be
+explained away by claiming the features were meant to be something else.
+
+**(i) and (j) are defects, found afterwards.** They were added at `7520e8d`,
+after P2b was frozen and before P2c ran, by an independent review of the engine
+rather than by the spec's author. They are recorded here rather than fixed, for
+the same reason `smc_v1` §9 exists: editing a predeclared specification part-way
+through the checkpoint it was declared for is the move this repository exists to
+prevent. Both weaken the family; neither can leak future information or
+manufacture a positive result. A fix is `chart_structure_v2`'s job.
 
 **(a) Double top / double bottom lose their confirmation, and that is a real
 loss.** The conventional pattern is selected by its own outcome: only the tops
 that were followed by a neckline break are called double tops, which is a
 survivorship filter applied by the future. Dropping it means family F fires on
 every pair of comparable confirmed swing highs, the great majority of which a
-technician would never have marked. Concretely, this spec gives up (i) the
-retroactive validity stamp at the second top, and (ii) the entire selection
+technician would never have marked. Concretely, this spec gives up the
+retroactive validity stamp at the second top, and with it the entire selection
 effect that makes published double-top statistics look impressive. What it keeps
 is the live geometry — the two tops' offset, the trough depth, and the signed
 distance from the close to the neckline, which crosses zero on the candle where
@@ -932,7 +975,7 @@ a channel with one large outlier registers a slope that no chartist would draw.
 **(e) Two columns are exact functions of two others.** `chart_convergence_atr`
 is `chart_low_slope_atr - chart_high_slope_atr` and `chart_slope_asymmetry` is a
 ratio of the same pair. A linear model gains nothing from either. They are
-emitted because the P2b model set includes tree ensembles, which split on one
+emitted because the P2c model set includes tree ensembles, which split on one
 column at a time and cannot form a difference or a ratio across two. The
 redundancy is declared, costs 2 × 64 = 128 model inputs, and is the reason
 family B has four columns rather than two.
@@ -964,18 +1007,19 @@ and solving it badly inside this family would contaminate a measurement that is
 otherwise purely geometric. `ohlcv14` carries `volume_change` and `volume_z`;
 whether that is enough is a question for a later checkpoint.
 
-**(f) Columns 22-28 are not bounded, and §5's argument does not cover them.**
+**(i) Columns 22-28 are not bounded, and §5's argument does not cover them.**
 Their numerator references a pivot pair with no window bound, so it can be
 arbitrarily old, while the denominator is the current `atr_den`. On a
 synthetic frame that passes `validate_ohlcv` — real candles followed by a long
 frozen stretch, then one tick — `chart_dt_neckline_atr` reaches **360,430 ATR**,
-three orders past the 181-ATR tail §5 claims cannot occur here. Latent on the
+three orders past the 181-ATR tail an earlier draft of §5 said could not occur
+here — the sentence this counterexample forced §5 to withdraw. Latent on the
 committed history, where the smallest `ATR/close` is 7.9e-4 against a break
 point near 2e-7. Recorded rather than clipped: a clip constant would be a tuned
 constant, which §1.3 forbids, and the honest fix is a floor on `atr_den` that
 cannot fall below a real price scale. Deferred to `chart_structure_v2`.
 
-**(g) `chart_slope_asymmetry` is three-valued in practice, not the continuous
+**(j) `chart_slope_asymmetry` is three-valued in practice, not the continuous
 axis §3.3 describes.** `(s_hi + s_lo) / (|s_hi| + |s_lo|)` is exactly ±1
 whenever the two slopes share a sign, which over a 60-bar window is almost
 always: measured on the 49,551 committed pre-Styx rows it is exactly ±1 on

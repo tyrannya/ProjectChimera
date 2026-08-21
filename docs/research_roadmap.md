@@ -89,10 +89,6 @@ and searching them against these four outer blocks would convert a negative
 result into a fitted one. `docs/smc_v1.md` §9 records the defects worth fixing in
 a future `smc_v2`; none of them is a threshold to search.
 
----
-
-## Next
-
 ### P2c — does causal classical chart structure add information?
 
 **No, and more cleanly than P2b.** Specified in
@@ -120,11 +116,35 @@ XGBoost evidence exactly — under a *different source digest*, because wiring a
 second feature family changed the module `nn.p2b` imports. Adding a family does
 not perturb the control.
 
+**Do not respond to this by tuning `chart_structure_v1`'s constants either.**
+`WIN_SHORT` and `WIN_LONG` were fixed in advance and searching them against
+these four outer blocks would convert a negative result into a fitted one.
+`docs/chart_structure_v1.md` §9(i) and §9(j) record the two defects found after
+the spec was frozen; neither is a threshold to search.
+
+### What the two negative answers together do and do not license
+
+The strongest claim these results support is narrow, and worth writing down
+before someone reaches for a wider one:
+
+> Under the current BTC/USDT 1h research design, the tested OHLCV-derived model
+> and feature families did not produce robust incremental performance across the
+> four temporal research folds. That is evidence against spending the next
+> checkpoint on another hand-designed transformation of the same hourly bars. It
+> is **not** proof that all possible OHLCV-derived alpha is impossible.
+
+Three families of transformation, three untuned model families and one label at
+one horizon, measured over four adaptive folds of one asset on one exchange, is
+not a proof about a space. It is a reason to change what the next checkpoint
+spends its budget on.
+
 ---
 
-### After that: microstructure-lite
+## Next
 
-If both market structure and classical chart structure disappoint, the next
+### Microstructure-lite
+
+Both market structure and classical chart structure disappointed, so the next
 family is not another transformation of the same OHLCV bars. Every family so far
 is a function of five numbers per hour, and there is a limit to how much
 independent information those can hold. The next genuinely *new* information
@@ -155,4 +175,8 @@ its own contract and its own sealed boundary.
   at this one.
 - Frozen evidence is never rewritten. A checkpoint that needs new numbers gets a
   new artifact directory and a new checksum manifest; see
-  [`../artifacts/README.md`](../artifacts/README.md).
+  [`../artifacts/README.md`](../artifacts/README.md). A manifest covers *primary*
+  evidence only — the cells and their per-sample predictions, which cannot be
+  rebuilt without re-fitting. Comparisons and ablation tables are derived from
+  those cells, are regenerated whenever the aggregator improves, and are pinned
+  by regenerating them and checking what they say rather than by a hash.

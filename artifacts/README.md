@@ -16,41 +16,66 @@ only 9/20, beat buy-and-hold in 0/20, and had mean outer net return -0.019272.
 The sealed test was not evaluated. That is the finding, not a defect to be corrected
 by pointing somewhere else.
 
-**The current P2c information-set benchmark is
-[`benchmark/btc_p2c_comparison/`](benchmark/btc_p2c_comparison/).** It asks whether
-causal *classical chart structure* adds information beyond OHLCV14, and its evidence is
-**negative**: none of six comparisons improved on the control in more than two of four
-temporal folds, and every mean delta is negative. **Exploratory and adaptive** — by the
-time it ran, these four outer blocks had been read by v4, P2a, P2b, the P2b ablation and
-the P2b regime description. It generates hypotheses; it cannot confirm one.
+**The current P2a model-family benchmark is
+[`benchmark/btc_p2a_comparison/`](benchmark/btc_p2a_comparison/).** It answers a
+*different* question — "does model family change what can be extracted from the frozen
+OHLCV14 information set?" — and does not replace v4 as the underlying BTC research
+baseline. P2a reuses the already-observed outer folds, so it is adaptive research
+evidence rather than pristine out-of-sample evidence.
 
 **The current P2b information-set benchmark is
 [`benchmark/btc_p2b_comparison/`](benchmark/btc_p2b_comparison/).** It answers a third
-question — does causal market structure add usable information beyond OHLCV14? — and
-its evidence is **negative**: across three models and two market-structure arms, not one
-of the six comparisons improved on the OHLCV14 control in more than two of four temporal
-folds, against a bar of three that was fixed before the numbers were read. For XGBoost,
-P2a's strongest family, adding market structure improved 1 of 4 periods. Two arms have a
-*positive mean* delta while improving only 1 or 2 folds; the mean is not the finding.
-Like P2a it reuses already-observed outer folds and is adaptive research evidence.
+question — does causal *market* structure (`smc_v1`) add usable information beyond
+OHLCV14? — and its evidence is **negative**: across three models and two
+market-structure arms, not one of the six comparisons improved on the OHLCV14 control
+in more than two of four temporal folds, against a bar of three that was fixed before
+the numbers were read. For XGBoost, P2a's strongest family, adding market structure
+improved 1 of 4 periods. Two arms have a *positive mean* delta while improving only 1
+or 2 folds; the mean is not the finding. Like P2a it reuses already-observed outer
+folds and is adaptive research evidence.
 
-**The current P2a model-family benchmark is
-[`benchmark/btc_p2a_comparison/`](benchmark/btc_p2a_comparison/).** It is a separate
-CURRENT result for the question "does model family change what can be extracted from
-the frozen OHLCV14 information set?" It does not replace v4 as the underlying BTC
-research baseline. P2a reuses the already-observed outer folds, so it is adaptive
-research evidence rather than pristine out-of-sample evidence.
+**The current P2c information-set benchmark is
+[`benchmark/btc_p2c_comparison/`](benchmark/btc_p2c_comparison/).** It answers a fourth
+question — does causal *classical chart* structure (`chart_structure_v1`) add usable
+information beyond OHLCV14? — and its evidence is **negative**: none of six comparisons
+improved on the control in more than two of four temporal folds, and every mean delta
+is negative. **More adaptive and more exploratory than any row above it.** Its spec and
+constants were fixed before any P2b outer number existed, but the family was chosen
+because P2b was the checkpoint in flight, and by the time P2c ran these four outer
+blocks had been read by v4, P2a, P2b, the P2b ablation and the P2b regime description.
+P2c generates hypotheses; it cannot confirm one.
 
-`artifacts/btc_p2b_SHA256SUMS.txt` froze the nine cells, their predictions, the
-comparison and the regime description at the moment P2b was answered.
-`artifacts/btc_p2b_recheck_SHA256SUMS.txt` freezes the comparison a second time,
-after its recomputation was widened from ten trading keys to twelve and from four
-classification keys to eleven. **No number in the result changed** — the same
-nine cells, the same fold counts, the same verdicts — only the breadth of what
-the comparison verifies about them. The first manifest is left exactly as it was,
-because a frozen manifest records what a past run produced and is never rewritten;
-the comparison's own entry in it is therefore stale by design, and this is the
-note that says so.
+**None of these four replaces another.** They answer four different questions, so four
+rows are CURRENT at once and `status` is scoped per research question rather than
+across the index.
+
+### What the manifests cover, and what pins the rest
+
+`artifacts/*_SHA256SUMS.txt` freeze **primary** evidence: the cells and their
+per-sample outer predictions, which cannot be rebuilt without re-fitting a model. A
+byte change in one of those is a change in the research result, and
+`python -m tools.freeze_evidence --verify <manifest>` says so with no exemptions.
+
+The comparisons, the ablation table and the regime description are **derived**: each is
+recomputed from those cells by an aggregator, and each is *supposed* to change when the
+aggregator improves. Widening a recomputation from ten trading keys to twenty-three
+rewrites the file without touching a number the research reported. They declare
+`evidence_class: "derived"` in their own JSON, `tools.freeze_evidence` refuses to hash
+them, and what pins them instead is `tests/test_p2b_evidence.py`: the six fold counts
+per checkpoint, the verdicts, and the integrity counters are asserted directly, so a
+regenerated report that changed a finding fails and one that only improved its own
+prose does not.
+
+An earlier arrangement on this branch hashed both kinds together. Three manifests then
+failed their own `--verify`, a test excused the failures by matching `_comparison/` in
+the path, and this file called the resulting entries "stale by design". None of that
+survives: there is no manifest entry in this repository that any test is allowed to see
+change.
+
+`btc_v4_SHA256SUMS.txt` and `btc_p2a_SHA256SUMS.txt` predate the distinction, were
+written by hand, and cover their aggregates as well as their source runs. They verify
+exactly as they always have and are **not** rewritten — a frozen manifest records what a
+past run produced. Nothing in this workflow regenerates a v4 or P2a artifact.
 
 ## Status table
 
