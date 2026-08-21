@@ -2,6 +2,7 @@
 .PHONY: help setup lint format test smoke sample backfill features \
 	verify-research-snapshot train research experiment walkforward \
 	wf-diagnostics benchmark benchmark-compare \
+	p2b-cell p2b-btc p2b-compare p2b-ablation p2b-regimes \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
@@ -27,7 +28,7 @@ MODE     ?= test
 help:  ## Show this help
 	@echo "ProjectChimera — dry-run research platform"
 	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Common variables: EXCHANGE=$(EXCHANGE) PAIR=$(PAIR) TIMEFRAME=$(TIMEFRAME)"
@@ -106,6 +107,43 @@ benchmark:  ## P2a: untuned simple models on MTST's own samples. Args: DATASET S
 benchmark-compare:  ## P2a vs the frozen MTST evidence. Args: BENCH="..." MTST="..."
 	$(PYTHON) -m nn.benchmark_compare --benchmark $(BENCH) --mtst $(MTST) \
 		--dataset $(DATASET) --out artifacts/benchmark/btc_p2a_comparison
+
+# --- P2b: does causal market structure add information beyond OHLCV14? ------
+# These run from the committed research snapshot under data/research/, not from
+# a locally built dataset, so a fresh clone reproduces them with no VPS, no
+# private data and no access to the sealed block.
+P2B_SETS   ?= ohlcv14 smc_v1 ohlcv14_plus_smc_v1
+P2B_MODELS ?= logistic_regression lightgbm xgboost
+P2B_DIR    ?= artifacts/benchmark
+# The nine cells are independent and each estimator is pinned to one thread
+# inside the runner, so running several cells at once is both reproducible and
+# roughly four times faster on a four-core machine. `p2b-btc` runs them in
+# sequence; see docs/research_reproduction.md for the parallel invocation.
+P2B_RUNS   = $(foreach s,$(P2B_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2b_$(s)_$(m)))
+
+p2b-btc:  ## P2b: all nine cells (3 information sets x 3 models x 4 folds)
+	@for s in $(P2B_SETS); do for m in $(P2B_MODELS); do \
+		echo "--- $$s x $$m ---"; \
+		$(PYTHON) -m nn.p2b --information-set $$s --model $$m \
+			--out $(P2B_DIR)/btc_p2b_$${s}_$${m} || exit 1; \
+	done; done
+
+p2b-cell:  ## One P2b cell. Args: SET=ohlcv14 MODEL=xgboost
+	$(PYTHON) -m nn.p2b --information-set $(SET) --model $(MODEL) \
+		--out $(P2B_DIR)/btc_p2b_$(SET)_$(MODEL)
+
+p2b-compare:  ## Join the P2b cells: parity proof, recomputation, deltas
+	$(PYTHON) -m nn.p2b_compare --runs $(P2B_RUNS) \
+		--out $(P2B_DIR)/btc_p2b_comparison
+
+p2b-ablation:  ## Post-hoc: leave-one-family-out. Args: MODEL=xgboost
+	$(PYTHON) -m nn.p2b_ablation --full $(P2B_DIR)/btc_p2b_ohlcv14_plus_smc_v1_$(MODEL) \
+		--ablations $(P2B_DIR)/btc_p2b_ohlcv14_plus_smc_v1_minus_*_$(MODEL) \
+		--control $(P2B_DIR)/btc_p2b_ohlcv14_$(MODEL) \
+		--out $(P2B_DIR)/btc_p2b_ablation_$(MODEL)
+
+p2b-regimes:  ## Descriptive: what the four outer periods were
+	$(PYTHON) -m nn.p2b_regimes --runs $(P2B_RUNS) --out $(P2B_DIR)/btc_p2b_regimes
 
 infer:  ## Serve the promoted model on port 3000
 	CHIMERA_MODELS_DIR=$(MODELS) uvicorn nn.infer_service:app --host 127.0.0.1 --port 3000
