@@ -95,6 +95,7 @@ from nn.train import (
 )
 from nn.walkforward import FoldPlan, REFERENCES_KEY, SUMMARY_METRICS, plan_nested_folds, spread
 from tools.freeze_evidence import PRIMARY
+from tools.verify_research_snapshot import SnapshotVerificationError, verify_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -229,23 +230,37 @@ class SnapshotError(SystemExit):
 def load_snapshot(
     manifest_path: Path,
 ) -> tuple[pd.DataFrame, Any, pd.DataFrame, dict[str, Any]]:
-    """Read the committed research snapshot: processed spine, raw candles, manifest.
+    """Verify the committed research snapshot end to end, then read it.
 
-    Integrity of the files themselves is `tools.verify_research_snapshot`'s job
-    and is not duplicated here. What this does check is the one thing specific to
-    *running* on the snapshot: that the manifest says it contains no sealed row,
-    because every guarantee below rests on the fold plan being expressed in the
-    canonical dataset's row numbers while the data present stops short of Styx.
+    The verification is :func:`tools.verify_research_snapshot.verify_snapshot`
+    itself — the same 23 checks ``make check`` runs, not a second reading of the
+    same manifest. It recomputes every claim the manifest makes about the files
+    beside it: schema, contract identity and hash, the sealed instant, the two
+    file digests, the metadata digest, both semantic hashes, row counts, spans,
+    the processed row range, outer coverage, and that no timestamp in either
+    Parquet reaches Styx.
+
+    It runs *here*, in the only function that reads the snapshot, rather than in
+    the operator's ``make`` target, because a target is a convention and
+    ``python -m nn.p2b`` bypasses it. A corrupt snapshot must not reach a model
+    fit by any path, and the only way to guarantee that is for the load to fail.
+
+    A failure names the check and never the data. The seal check reports how many
+    rows are at or after the sealed instant and nothing about them, so a snapshot
+    that breaches Styx is rejected without printing what it breached with.
     """
-    manifest = json.loads(manifest_path.read_text())
-    if manifest.get("contains_styx") is not False:
+    try:
+        checks = verify_snapshot(manifest_path)
+    except SnapshotVerificationError as exc:
         raise SnapshotError(
-            f"{manifest_path} does not declare contains_styx=false; refusing to run "
-            "research against a snapshot that will not say it is Styx-free"
-        )
-    if manifest.get("safety_checks", {}).get("styx_rows_exported") != 0:
-        raise SnapshotError(f"{manifest_path} declares exported sealed rows; refusing to run")
+            f"the research snapshot at {manifest_path} failed verification ({exc}). "
+            "Refusing to fit a model on data whose own manifest does not describe it."
+        ) from exc
+    logger.info(
+        "research snapshot verified: %d checks passed against %s", len(checks), manifest_path
+    )
 
+    manifest = json.loads(manifest_path.read_text())
     root = manifest_path.resolve().parent.parent.parent
     spine_path = root / manifest["processed_outer_coverage"]["path"]
     raw_path = root / manifest["raw_pre_styx"]["path"]

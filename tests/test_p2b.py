@@ -35,6 +35,7 @@ import copy
 import dataclasses
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -467,27 +468,168 @@ def test_a_manifest_that_disagrees_with_the_plan_is_refused(real_manifest):
         p2b.plan_from_manifest(mutated, 45802)
 
 
-def test_load_snapshot_refuses_a_manifest_that_will_not_declare_itself_styx_free(
-    real_manifest, tmp_path
-):
-    for value in ("false", None, True):
-        mutated = copy.deepcopy(real_manifest)
-        mutated["contains_styx"] = value
-        path = tmp_path / "contains_styx.json"
-        path.write_text(json.dumps(mutated))
-        with pytest.raises(p2b.SnapshotError, match="contains_styx=false"):
-            p2b.load_snapshot(path)
+# --------------------------------------------------------------------------- #
+# D.1 the runner verifies the snapshot itself, before anything is fitted
+#
+# `make check` runs `tools.verify_research_snapshot`, and `python -m nn.p2b`
+# does not go through `make`. A guarantee that holds only when the operator
+# remembers the target is a convention; this is the version that is a property
+# of the code path. The proof that matters is not that the load raises — it is
+# that the fit function is never reached, asserted by counting calls to it.
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def snapshot_copy(tmp_path) -> Path:
+    """A writable copy of the committed snapshot, laid out as the repository is."""
+    research = tmp_path / "data" / "research"
+    research.mkdir(parents=True)
+    for path in REAL_MANIFEST.parent.iterdir():
+        shutil.copy2(path, research / path.name)
+    return research / REAL_MANIFEST.name
 
 
-def test_load_snapshot_refuses_a_manifest_declaring_exported_sealed_rows(
-    real_manifest, tmp_path
-):
-    mutated = copy.deepcopy(real_manifest)
-    mutated["safety_checks"]["styx_rows_exported"] = 1
-    path = tmp_path / "styx_rows.json"
-    path.write_text(json.dumps(mutated))
-    with pytest.raises(p2b.SnapshotError, match="declares exported sealed rows"):
-        p2b.load_snapshot(path)
+def _corrupt(manifest: Path, mutate) -> None:
+    payload = json.loads(manifest.read_text())
+    mutate(payload)
+    manifest.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+#: One corruption per family of claim the verifier makes, each reaching a
+#: different check. Every one must stop the run before a model is fitted.
+SNAPSHOT_CORRUPTIONS = {
+    "schema": lambda m: m.update(snapshot_schema="chimera.research-snapshot/99"),
+    "contract_hash": lambda m: m["contract"].update(contract_hash="0" * 64),
+    "sealed_instant": lambda m: m["contract"].update(
+        sealed_test_start="2030-01-01T00:00:00+00:00"
+    ),
+    "contains_styx": lambda m: m.update(contains_styx=True),
+    "styx_rows_exported": lambda m: m["safety_checks"].update(styx_rows_exported=1),
+    "raw_sha256": lambda m: m["raw_pre_styx"].update(sha256="0" * 64),
+    "processed_sha256": lambda m: m["processed_outer_coverage"].update(sha256="0" * 64),
+    "raw_semantic_hash": lambda m: m["raw_pre_styx"].update(semantic_hash="0" * 64),
+    "processed_semantic_prefix_hash": lambda m: m["processed_outer_coverage"].update(
+        semantic_prefix_hash="0" * 64
+    ),
+    "row_count": lambda m: m["processed_outer_coverage"].update(rows=45801),
+    "span": lambda m: m["raw_pre_styx"].update(end="2025-08-28T00:00:00+00:00"),
+    "row_range": lambda m: m["processed_outer_coverage"].update(row_range=[1, 45802]),
+    "outer_coverage": lambda m: m["canonical_reference"].update(max_outer_end_row=99999),
+    "safety_flags": lambda m: m["safety_checks"].update(
+        canonical_research_input_verified=False
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(SNAPSHOT_CORRUPTIONS))
+def test_the_runner_refuses_a_snapshot_that_fails_verification(name, snapshot_copy):
+    _corrupt(snapshot_copy, SNAPSHOT_CORRUPTIONS[name])
+    with pytest.raises(p2b.SnapshotError, match="failed verification"):
+        p2b.load_snapshot(snapshot_copy)
+
+
+def test_the_committed_snapshot_loads(snapshot_copy):
+    """The corruption tests above would pass on a load that always raised."""
+    spine, ds_meta, raw, manifest = p2b.load_snapshot(snapshot_copy)
+    assert len(spine) == manifest["processed_outer_coverage"]["rows"]
+    assert manifest["contains_styx"] is False
+    assert ds_meta.pair == "BTC/USDT"
+    assert len(raw) == manifest["raw_pre_styx"]["rows"]
+
+
+def test_a_corrupt_snapshot_fits_exactly_zero_models(snapshot_copy, monkeypatch):
+    """The whole point, counted rather than argued.
+
+    A guard that rejects a snapshot *after* the first fit has already leaked the
+    thing it exists to prevent: a model trained on data whose own manifest does
+    not describe it, and an artifact recording numbers nobody can reproduce. So
+    the assertion is on the call count of the one function that fits anything.
+    """
+    fits: list[str] = []
+
+    def spy(spec, X, y, *, seed):
+        fits.append(spec.name)
+        raise AssertionError("a model was fitted on an unverified snapshot")
+
+    monkeypatch.setattr(p2b, "fit_simple_model", spy)
+    _corrupt(snapshot_copy, SNAPSHOT_CORRUPTIONS["processed_sha256"])
+
+    argv = [
+        "--checkpoint",
+        "P2b",
+        "--manifest",
+        str(snapshot_copy),
+        "--information-set",
+        OHLCV14,
+        "--model",
+        "logistic_regression",
+        "--out",
+        str(snapshot_copy.parent / "out"),
+    ]
+    with pytest.raises(p2b.SnapshotError, match="failed verification"):
+        p2b.main(argv)
+    assert fits == []
+
+
+def test_the_spy_would_have_noticed_a_fit(snapshot_copy, monkeypatch):
+    """Falsifies the test above: on a *good* snapshot the spy is reached.
+
+    Without this, `assert fits == []` would also pass if the runner had been
+    renamed out from under the monkeypatch.
+    """
+    fits: list[str] = []
+
+    def spy(spec, X, y, *, seed):
+        fits.append(spec.name)
+        raise RuntimeError("stop here, the fit was reached")
+
+    monkeypatch.setattr(p2b, "fit_simple_model", spy)
+    argv = [
+        "--checkpoint",
+        "P2b",
+        "--manifest",
+        str(snapshot_copy),
+        "--information-set",
+        OHLCV14,
+        "--model",
+        "logistic_regression",
+        "--out",
+        str(snapshot_copy.parent / "out"),
+    ]
+    with pytest.raises(RuntimeError, match="the fit was reached"):
+        p2b.main(argv)
+    assert fits == ["logistic_regression"]
+
+
+def test_a_seal_breach_is_reported_as_a_count_and_never_as_a_row(snapshot_copy):
+    """A verifier that printed the offending candle would leak the seal it guards.
+
+    The row is fabricated here — the last pre-Styx row duplicated at the sealed
+    instant — because this repository holds no candle at or after the seal and
+    this suite reads none.
+    """
+    raw_path = (
+        snapshot_copy.parents[2]
+        / json.loads(snapshot_copy.read_text())["raw_pre_styx"]["path"]
+    )
+    frame = pd.read_parquet(raw_path)
+    extra = frame.iloc[[-1]].copy()
+    extra["date"] = pd.Timestamp("2025-08-27T23:00:00+00:00")
+    pd.concat([frame, extra], ignore_index=True).to_parquet(raw_path, index=False)
+    _corrupt(
+        snapshot_copy,
+        lambda m: m["raw_pre_styx"].update(
+            sha256=hashlib.sha256(raw_path.read_bytes()).hexdigest()
+        ),
+    )
+
+    with pytest.raises(p2b.SnapshotError) as excinfo:
+        p2b.load_snapshot(snapshot_copy)
+    message = str(excinfo.value)
+    assert "raw_before_styx" in message
+    assert "1 of 49552 rows are at or after the sealed instant" in message
+    assert "the rows themselves are withheld" in message
+    # A count and an instant. No price, no volume, no candle.
+    for leak in ("open", "high", "low", "close", "volume"):
+        assert leak not in message
 
 
 def test_fold_spread_reports_order_statistics_and_carries_undefined_folds():
