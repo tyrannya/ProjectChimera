@@ -50,6 +50,7 @@ import pandas as pd
 
 from chimera.contracts import TargetSpec
 from nn import evaluate as ev
+from nn.data_pipeline import load_dataset
 from nn.information_sets import COMBINED, OHLCV14, P2B_INFORMATION_SETS, SMC_V1
 from nn.p2b import ARTIFACT_NAME, CHECKPOINT, PREDICTIONS_NAME
 from nn.regime import direction_attribution
@@ -150,6 +151,15 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
     for cell in cells[1:]:
         payload = cell["payload"]
+        mine = (payload.get("code") or {}).get("revision")
+        theirs = (ref.get("code") or {}).get("revision")
+        if mine != theirs:
+            raise ComparisonError(
+                f"{described(cell)} was built at revision {mine} and "
+                f"{described(reference)} at {theirs}. Every other identity a cell "
+                "records describes the data or the definitions, so cells from two "
+                "revisions of the runner would otherwise join without a word."
+            )
         for key in ("contract", "sizes", "target", "threshold_selection", "snapshot"):
             if payload[key] != ref[key]:
                 raise ComparisonError(
@@ -205,6 +215,51 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "every cell scored the same outer rows; a difference between two cells can "
             "only be the information set or the model"
         ),
+    }
+
+
+def anchor_to_snapshot(cell: dict[str, Any], spine: pd.DataFrame) -> dict[str, Any]:
+    """Check a cell's predictions against the research data itself.
+
+    :func:`recompute_cell` rebuilds a cell's metrics from its own persisted
+    ``future_return`` and ``true_target``, so a cell whose label array was
+    mis-joined reproduces its own wrong numbers exactly and reports no
+    mismatch. This is the check that closes that: the persisted timestamp,
+    label and realised return of every scored row must equal the snapshot's, at
+    the row index the cell says it scored.
+
+    Cheap, and it is the only place the evidence is compared against something
+    the run did not produce.
+    """
+    predictions = cell["predictions"]
+    rows = predictions["row_index"].to_numpy(dtype=np.int64)
+    problems: list[str] = []
+    if rows.max() >= len(spine):
+        problems.append(f"row {int(rows.max())} is past the snapshot's {len(spine)} rows")
+        return {"checked": 0, "problems": problems}
+
+    for column, source in (
+        ("future_return", "future_return"),
+        ("true_target", "target"),
+    ):
+        persisted = predictions[column].to_numpy()
+        expected = spine[source].to_numpy()[rows]
+        if not np.allclose(persisted.astype(np.float64), expected.astype(np.float64)):
+            worst = int(np.argmax(np.abs(persisted.astype(float) - expected.astype(float))))
+            problems.append(
+                f"{column} at research row {int(rows[worst])} is {persisted[worst]!r} but "
+                f"the snapshot holds {expected[worst]!r}"
+            )
+    persisted_dates = pd.to_datetime(pd.Index(predictions["timestamp"].to_numpy()), utc=True)
+    expected_dates = pd.to_datetime(pd.Index(spine["date"].to_numpy()[rows]), utc=True)
+    if not persisted_dates.equals(expected_dates):
+        problems.append("persisted timestamps do not match the snapshot at those rows")
+
+    return {
+        "checked": int(len(rows)),
+        "against": "the committed research snapshot, at each prediction's own row index",
+        "columns": ["timestamp", "true_target", "future_return"],
+        "problems": problems,
     }
 
 
@@ -523,8 +578,8 @@ def to_markdown(payload: dict[str, Any]) -> str:
             lines += [
                 f"### {model}: `{set_name}` − `{CONTROL}`",
                 "",
-                "| fold | outer period | Δ net | Δ ann. Sharpe | Δ max DD | Δ exposure "
-                "| Δ trades | Δ macro F1 | Δ dir. acc |",
+                "| fold | outer period | Δ net | Δ ann. Sharpe | Δ max DD (lower is "
+                "better) | Δ exposure | Δ trades | Δ macro F1 | Δ dir. acc |",
                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
             for d in entry["per_fold"]:
@@ -612,7 +667,12 @@ def economic_reference_rows(cell: dict[str, Any]) -> list[dict[str, Any]]:
                 "period_end": record["periods"]["outer_validation"]["end"],
                 "cash_net_return": cash.get("net_return", 0.0),
                 "buy_and_hold_net_return": hold.get("net_return"),
-                "buy_and_hold_max_drawdown": hold.get("max_drawdown"),
+                # `buy_and_hold_reference` emits `candle_max_drawdown`, not
+                # `max_drawdown`. Reading the wrong key printed "n/a" in this column
+                # of every comparison ever produced — telling a reader the number was
+                # never computed, in the one table whose whole purpose is comparing a
+                # strategy's drawdown to the asset's.
+                "buy_and_hold_max_drawdown": hold.get("candle_max_drawdown"),
                 "buy_and_hold_exposure": hold.get("exposure"),
             }
         )
@@ -639,6 +699,22 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("comparing %d cells: %s", len(cells), sorted(seen))
 
     parity = check_cells_agree(cells)
+
+    manifest_path = Path(cells[0]["payload"]["snapshot"]["manifest"])
+    manifest = json.loads(manifest_path.read_text())
+    root = manifest_path.resolve().parent.parent.parent
+    spine, _ = load_dataset(root / manifest["processed_outer_coverage"]["path"])
+    anchored = {
+        f"{c['information_set']}::{c['model']}": anchor_to_snapshot(c, spine) for c in cells
+    }
+    adrift = [
+        {"cell": name, **result} for name, result in anchored.items() if result["problems"]
+    ]
+    if adrift:
+        raise ComparisonError(
+            "a cell's persisted predictions disagree with the research snapshot:\n"
+            + json.dumps(adrift, indent=2)
+        )
 
     recomputed = {f"{c['information_set']}::{c['model']}": recompute_cell(c) for c in cells}
     mismatches = [
@@ -675,12 +751,31 @@ def main(argv: list[str] | None = None) -> int:
             "one temporal outer period per fold, four in total; no seed replication, "
             "because these estimators are deterministic given their inputs"
         ),
+        "folds_are_not_independent": (
+            "the geometry is P2a's, and in it fold k's inner-validation block is "
+            "exactly fold k-1's reported outer block, while folds 2 and 3 train on "
+            "earlier folds' outer blocks. No fold touches its own outer rows before "
+            "scoring them, so no fold's own number is contaminated — but a regime "
+            "spanning a fold boundary can move one fold's result and the next fold's "
+            "selected threshold together. 'Three of four' is therefore fewer than "
+            "four independent draws, and the verdict rule should be read that way"
+        ),
         "adaptive_status": (
             "P2b was designed after P2a's outer results had been seen, so its outer blocks "
             "are adaptive research evidence rather than a pristine out-of-sample test"
         ),
         "verdict_rule": VERDICTS,
         "parity": parity,
+        "snapshot_anchoring": {
+            "cells_checked": len(cells),
+            "rows_checked": sum(r["checked"] for r in anchored.values()),
+            "problems": len(adrift),
+            "note": (
+                "every scored row's timestamp, label and realised return was compared "
+                "against the committed snapshot at the row index the cell recorded — the "
+                "one check made against data the run did not produce"
+            ),
+        },
         "independent_recompute": {
             "cells_checked": len(cells),
             "folds_checked": sum(len(v) for v in recomputed.values()),

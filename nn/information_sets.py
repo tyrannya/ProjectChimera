@@ -174,6 +174,11 @@ class AlignedResearchSamples:
     smc_spec: SMCSpec
     #: Rows the common-validity mask kept. All of them, or construction failed.
     n_rows: int
+    #: The column each view was assembled from, by name. Kept so the alignment
+    #: proof can check the one array that actually differs between views.
+    columns: dict[str, np.ndarray]
+    #: Independent re-derivation of the join, from :func:`_join_evidence`.
+    join_evidence: dict[str, Any]
 
     def names(self) -> list[str]:
         return list(self.views)
@@ -211,6 +216,23 @@ class AlignedResearchSamples:
                 raise AlignmentError(
                     f"{name} has {view.n_rows} rows but the control has {reference.n_rows}"
                 )
+
+        # The checks above are about the arrays every view *shares*, and after
+        # the identity assertions they can only succeed — `a[i] == a[i]` is not
+        # evidence. `features` is the one array that differs between views and
+        # the one a bad join would corrupt, so it is checked against the columns
+        # it was assembled from, and those columns were checked against an
+        # independent re-derivation when the views were built.
+        for name in names:
+            view = self.views[name]
+            for position, column in enumerate(view.feature_names):
+                if column not in self.columns:
+                    raise AlignmentError(f"{name} holds unknown column {column!r}")
+                if not np.array_equal(view.features[:, position], self.columns[column]):
+                    raise AlignmentError(
+                        f"{name}'s {column!r} column does not match the column it was "
+                        "assembled from; the feature matrix and the join disagree"
+                    )
 
         evidence: list[dict[str, Any]] = []
         for fold, plan in enumerate(folds):
@@ -255,17 +277,32 @@ class AlignedResearchSamples:
                 }
             evidence.append({"fold": fold, **blocks})
 
-        return {
-            "information_sets": names,
-            "checked": [
-                "identical sample-index arrays per fold and block",
-                "identical labels on those samples",
-                "identical timestamps on those samples",
+        shared = [
+            "shared spine arrays by object identity",
+            "identical fold row ranges",
+            "identical label horizon",
+            "identical fee, slippage and cost threshold",
+            "identical sample-index arrays per fold and block",
+        ]
+        # Said separately because they mean different things. The checks above
+        # are strong for two or more views and vacuous for one, and a control
+        # cell that runs a single view should not report seven comparisons it
+        # never made.
+        if len(names) < 2:
+            shared = [
+                "one information set in this run, so no cross-set comparison was made",
                 "identical fold row ranges",
                 "identical label horizon",
                 "identical fee, slippage and cost threshold",
-                "shared spine arrays by object identity",
+            ]
+        return {
+            "information_sets": names,
+            "checked": shared,
+            "checked_per_view": [
+                "every feature column equals the column it was assembled from",
+                "the join was re-derived independently — see join_evidence",
             ],
+            "join_evidence": self.join_evidence,
             "horizon": horizon,
             "costs": reference.target_spec.to_dict(),
             "seq_len": seq_len,
@@ -324,9 +361,6 @@ def build_information_set_views(
     if not raw["date"].is_monotonic_increasing or not raw["date"].is_unique:
         raise ValueError("raw candles must be sorted and free of duplicate timestamps")
 
-    smc = compute_smc_features_segmented(raw, timeframe, smc_spec)
-    smc.insert(0, "date", raw["date"].to_numpy())
-
     # Positional join, not a merge: a merge that silently dropped or duplicated
     # a row would be indistinguishable from a clean one in the result's shape.
     raw_row_of = pd.Series(np.arange(len(raw), dtype=np.int64), index=raw["date"].to_numpy())
@@ -342,6 +376,22 @@ def build_information_set_views(
             "history does not cover the processed dataset it was supposed to produce."
         )
     raw_rows = raw_rows.to_numpy(dtype=np.int64)
+
+    # The engine never sees a candle later than the last row the spine uses.
+    # The committed raw file runs three months past the spine's end, and while
+    # the engine is causal — verified bit-for-bit, the truncated and full passes
+    # agree on every spine row — that is a property of today's implementation,
+    # not of this call. One future feature built with a centred window or a
+    # backfill would put three months of future market structure into every
+    # training row of every fold, and nothing downstream would raise: the
+    # alignment proof would pass, every cell would share the leak so the parity
+    # check would pass, and recomputation reads the same poisoned predictions.
+    # Truncating makes causality structural here instead of inherited.
+    horizon_bound = int(raw_rows[-1]) + 1
+    raw = raw.iloc[:horizon_bound].reset_index(drop=True)
+
+    smc = compute_smc_features_segmented(raw, timeframe, smc_spec)
+    smc.insert(0, "date", raw["date"].to_numpy())
 
     _check_segment_contiguity(spine, raw_rows, raw["date"], timeframe)
 
@@ -361,6 +411,13 @@ def build_information_set_views(
     }
     for position, name in enumerate(smc_feature_columns()):
         columns[name] = smc_values[:, position]
+
+    evidence = _join_evidence(spine, raw, raw_rows, columns)
+    if evidence["matches_under_plus_one_shift"] or evidence["matches_under_minus_one_shift"]:
+        raise ValueError(
+            "the join check cannot tell a correct join from a shifted one on this data, "
+            "so it is not evidence; it must not be reported as though it were"
+        )
 
     base = _spine_arrays(spine, ds_meta)
     available = {name: information_set(name) for name in names}
@@ -385,7 +442,72 @@ def build_information_set_views(
         spine_targets=base["targets"],
         smc_spec=smc_spec,
         n_rows=len(spine),
+        columns=columns,
+        join_evidence=evidence,
     )
+
+
+def _join_evidence(
+    spine: pd.DataFrame,
+    raw: pd.DataFrame,
+    raw_rows: np.ndarray,
+    columns: dict[str, np.ndarray],
+) -> dict[str, Any]:
+    """Re-derive enough of the join, independently, to catch a shifted row.
+
+    The join is the step where a market-structure value could end up on the
+    wrong candle, and a shift of one row is both the most likely mistake and
+    the most damaging — it is a one-candle look-ahead on all 39 columns at once.
+    Nothing else in the alignment proof can see it, because every other array is
+    shared between the views by object identity.
+
+    So two columns are rebuilt here from the source rather than from the engine:
+
+    * ``smc_body_ratio`` — ``|c-o| / (h-l)``, purely local to one candle, no ATR
+      and no state, so it can be recomputed from the raw candles at ``raw_rows``
+      in one line and cannot agree under a shift;
+    * an OHLCV14 column, taken straight from the spine, which pins the other
+      half of the matrix to the rows the fold plan is expressed in.
+
+    A ``+1`` and a ``-1`` shift are both scored so the evidence records not just
+    that the join matched but that it would not have matched if it were wrong.
+    """
+    high = raw["high"].to_numpy(dtype=np.float64)[raw_rows]
+    low = raw["low"].to_numpy(dtype=np.float64)[raw_rows]
+    open_ = raw["open"].to_numpy(dtype=np.float64)[raw_rows]
+    close = raw["close"].to_numpy(dtype=np.float64)[raw_rows]
+    span = high - low
+    expected = np.where(
+        span > 0.0, np.abs(close - open_) / np.where(span > 0.0, span, 1.0), 0.0
+    )
+
+    joined = columns["smc_body_ratio"]
+    if not np.allclose(joined, expected, rtol=0.0, atol=1e-12):
+        worst = int(np.argmax(np.abs(joined - expected)))
+        raise ValueError(
+            f"the market-structure join is wrong: smc_body_ratio at research row {worst} "
+            f"is {joined[worst]!r} but the raw candle there gives {expected[worst]!r}. A "
+            "value is sitting on the wrong candle."
+        )
+
+    control = feature_columns()[0]
+    if not np.array_equal(columns[control], spine[control].to_numpy(dtype=np.float64)):
+        raise ValueError(f"the {control!r} column does not match the research spine")
+
+    def shifted_matches(offset: int) -> bool:
+        rolled = np.roll(expected, offset)
+        return bool(np.allclose(joined[1:-1], rolled[1:-1], rtol=0.0, atol=1e-12))
+
+    return {
+        "recomputed": ["smc_body_ratio from the raw candles", f"{control} from the spine"],
+        "rows": int(len(raw_rows)),
+        "matches": True,
+        "matches_under_plus_one_shift": shifted_matches(1),
+        "matches_under_minus_one_shift": shifted_matches(-1),
+        "raw_rows_first": int(raw_rows[0]),
+        "raw_rows_last": int(raw_rows[-1]),
+        "raw_candles_seen_by_the_engine": int(raw_rows[-1]) + 1,
+    }
 
 
 def _spine_arrays(spine: pd.DataFrame, ds_meta: DatasetMetadata) -> dict[str, Any]:

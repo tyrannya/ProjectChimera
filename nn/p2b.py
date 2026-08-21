@@ -45,6 +45,7 @@ import argparse
 import json
 import logging
 import statistics
+import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -126,6 +127,47 @@ MIN_TRADES = 10
 #: reason; this closes the remaining hole, and the observed pool state is
 #: recorded in every artifact so the claim can be checked rather than trusted.
 FIT_THREADS = 1
+
+
+def code_revision() -> dict[str, Any]:
+    """Which revision of this code produced the artifact.
+
+    Every other identity a cell records — the contract hash, the snapshot
+    hashes, the feature-spec hash, the library versions — describes the *data*
+    and the *definitions*. None of them changes when the runner does, so nine
+    cells built by nine different revisions of this module join into one
+    comparison without a word. That is not hypothetical: two revisions of
+    `build_information_set_views` produced identical `alignment["folds"]` blocks
+    while building a different number of views.
+
+    Absent when the tree is not a git checkout, which is a fact about the run
+    and is recorded as such rather than guessed at.
+    """
+    root = Path(__file__).resolve().parent.parent
+
+    def git(*args: str) -> str | None:
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):  # pragma: no cover
+            return None
+        return out.stdout.strip() if out.returncode == 0 else None
+
+    head = git("rev-parse", "HEAD")
+    status = git("status", "--porcelain")
+    return {
+        "revision": head,
+        "dirty": None if status is None else bool(status.strip()),
+        "note": (
+            "cells whose revision differs were built by different code and are not "
+            "joined by nn.p2b_compare"
+        ),
+    }
 
 
 def threadpool_record() -> dict[str, Any]:
@@ -332,41 +374,50 @@ def run_cell(
 
     records: list[dict[str, Any]] = []
     frames: list[pd.DataFrame] = []
+
+    # Build one throwaway estimator first. `threadpool_limits` can only limit
+    # pools that are already loaded when it is entered, and `spec.build` imports
+    # the model's library lazily — so entering the limit and *then* fitting left
+    # scipy's OpenBLAS and scikit-learn's libgomp at four threads on fold 0 and
+    # pinned on folds 1-3, because by then the import had happened. Fold 0 ran
+    # under a thread configuration no other fold used, and the pool snapshot
+    # recorded in the artifact named neither library.
+    spec.build(seed)
+
     with threadpool_limits(limits=FIT_THREADS):
         threads = threadpool_record()
+        for fold, plan in enumerate(folds):
+            fold_seed = seed + fold
+            prepared = prepare_research_windows(data, plan.train, plan.inner, seq_len)
+            control_prepared = prepare_research_windows(
+                control, plan.train, plan.inner, seq_len
+            )
+            baselines = fit_baselines(control, control_prepared.y_train)
+            inner_return = data.future_return[prepared.idx_val]
 
-    for fold, plan in enumerate(folds):
-        fold_seed = seed + fold
-        prepared = prepare_research_windows(data, plan.train, plan.inner, seq_len)
-        control_prepared = prepare_research_windows(control, plan.train, plan.inner, seq_len)
-        baselines = fit_baselines(control, control_prepared.y_train)
-        inner_return = data.future_return[prepared.idx_val]
-
-        logger.info(
-            "fold %d: fitting %s on %s (%d x %d = %d inputs, seed %d)",
-            fold,
-            spec.name,
-            set_name,
-            seq_len,
-            len(data.feature_names),
-            seq_len * len(data.feature_names),
-            fold_seed,
-        )
-        with threadpool_limits(limits=FIT_THREADS):
+            logger.info(
+                "fold %d: fitting %s on %s (%d x %d = %d inputs, seed %d)",
+                fold,
+                spec.name,
+                set_name,
+                seq_len,
+                len(data.feature_names),
+                seq_len * len(data.feature_names),
+                fold_seed,
+            )
             fitted = fit_simple_model(spec, prepared.X_train, prepared.y_train, seed=fold_seed)
             inner_proba = fitted.predict_proba(prepared.X_val)
-        threshold, threshold_report = ev.select_threshold(
-            inner_proba,
-            inner_return,
-            data.target_spec,
-            grid=grid,
-            min_trades=min_trades,
-            row_index=prepared.idx_val,
-        )
+            threshold, threshold_report = ev.select_threshold(
+                inner_proba,
+                inner_return,
+                data.target_spec,
+                grid=grid,
+                min_trades=min_trades,
+                row_index=prepared.idx_val,
+            )
 
-        # Frozen from here. `score_frozen_split` fits nothing, and `plan.outer`
-        # reaches this call and no other in the whole module.
-        with threadpool_limits(limits=FIT_THREADS):
+            # Frozen from here. `score_frozen_split` fits nothing, and `plan.outer`
+            # reaches this call and no other in the whole module.
             scored = score_frozen_split(
                 data,
                 prepared.scaler,
@@ -382,47 +433,51 @@ def run_cell(
                 control, control_prepared, plan.outer, seq_len, baselines, device
             )
 
-        outer = {spec.name: scored.reports[spec.name]}
-        outer.update({name: floors.reports[name] for name in BASELINE_NAMES})
-        outer[REFERENCES_KEY] = floors.economic_references
-        if not np.array_equal(floors.idx, scored.idx):
-            raise AssertionError(
-                f"fold {fold}: the rule floors scored {len(floors.idx)} rows and "
-                f"{spec.name} scored {len(scored.idx)}; the control view and the "
-                f"{set_name} view are not selecting the same samples"
-            )
+            outer = {spec.name: scored.reports[spec.name]}
+            outer.update({name: floors.reports[name] for name in BASELINE_NAMES})
+            outer[REFERENCES_KEY] = floors.economic_references
+            if not np.array_equal(floors.idx, scored.idx):
+                raise AssertionError(
+                    f"fold {fold}: the rule floors scored {len(floors.idx)} rows and "
+                    f"{spec.name} scored {len(scored.idx)}; the control view and the "
+                    f"{set_name} view are not selecting the same samples"
+                )
 
-        records.append(
-            {
-                "fold": fold,
-                "run_seed": seed,
-                "fold_seed": fold_seed,
-                "samples": {
-                    "train": len(prepared.X_train),
-                    "inner_validation": len(prepared.X_val),
-                    "outer_validation": len(scored.idx),
-                },
-                "periods": {
-                    "train": data.period(plan.train),
-                    "inner_validation": data.period(plan.inner),
-                    "outer_validation": data.period(plan.outer),
-                },
-                "model": {
-                    "provenance": {**fitted.provenance(), "threading": threads},
-                    "importance": aggregate_importance(fitted, data.feature_names, seq_len),
-                    "selection": {
-                        "block": "inner_validation",
-                        "threshold": threshold,
-                        "objective": THRESHOLD_OBJECTIVE,
-                        "threshold_grid": [float(v) for v in grid],
-                        "min_trades": min_trades,
-                        "inner_validation_trading": threshold_report,
+            records.append(
+                {
+                    "fold": fold,
+                    "run_seed": seed,
+                    "fold_seed": fold_seed,
+                    "samples": {
+                        "train": len(prepared.X_train),
+                        "inner_validation": len(prepared.X_val),
+                        "outer_validation": len(scored.idx),
                     },
-                },
-                "outer_validation": outer,
-            }
-        )
-        frames.append(outer_predictions(spec.name, fold, fold_seed, data, scored, threshold))
+                    "periods": {
+                        "train": data.period(plan.train),
+                        "inner_validation": data.period(plan.inner),
+                        "outer_validation": data.period(plan.outer),
+                    },
+                    "model": {
+                        "provenance": {**fitted.provenance(), "threading": threads},
+                        "importance": aggregate_importance(
+                            fitted, data.feature_names, seq_len
+                        ),
+                        "selection": {
+                            "block": "inner_validation",
+                            "threshold": threshold,
+                            "objective": THRESHOLD_OBJECTIVE,
+                            "threshold_grid": [float(v) for v in grid],
+                            "min_trades": min_trades,
+                            "inner_validation_trading": threshold_report,
+                        },
+                    },
+                    "outer_validation": outer,
+                }
+            )
+            frames.append(
+                outer_predictions(spec.name, fold, fold_seed, data, scored, threshold)
+            )
 
     predictions = pd.concat(frames, ignore_index=True)
     predictions.insert(0, "information_set", set_name)
@@ -673,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
             "sealed_test_start": contract.sealed_test_start.isoformat(),
         },
         "feature_spec": feature_spec_identity(aligned.smc_spec, ds_meta),
+        "code": code_revision(),
         "config": {
             "seed": args.seed,
             "seq_len": args.seq_len,
