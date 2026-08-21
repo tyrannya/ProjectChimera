@@ -836,6 +836,193 @@ def test_check_cells_agree_refuses_cells_with_a_different_baseline_report():
         p2b_compare.check_cells_agree([control, other])
 
 
+# --------------------------------------------------------------------------- #
+# G. persisted rows are the planned rows
+#
+# `anchor_to_snapshot` asks whether each persisted row agrees with the snapshot
+# *at the index the file claims*. A scorer that persisted a different set of
+# rows — consistently, each row's own timestamp, label and return copied
+# correctly — passes it silently, and every number downstream then describes a
+# sample universe nobody planned. Each corruption below is built to trip the
+# planned-index guard specifically, and the last test proves the corruptions are
+# not merely failing on some unrelated field.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def bound(aligned, cell, spine):
+    """One honest cell, its fold plan, and the spine it was scored on."""
+    records, predictions = cell
+    alignment = aligned.prove_alignment(FOLDS, SEQ_LEN)
+    frame, _ = spine
+    payload = {
+        "checkpoint": "P2b",
+        "question": CHECKPOINTS["P2b"].question,
+        "alignment": alignment,
+        "folds": copy.deepcopy(records),
+    }
+    return {
+        "dir": Path("/nonexistent"),
+        "information_set": SMC_V1,
+        "model": "logistic_regression",
+        "payload": payload,
+        "predictions": predictions,
+    }, frame
+
+
+def _corrupted(bound, mutate):
+    """A copy of the honest cell whose predictions have been altered."""
+    cell, frame = bound
+    predictions = cell["predictions"].copy(deep=True).reset_index(drop=True)
+    predictions = mutate(predictions)
+    clone = dict(cell)
+    clone["predictions"] = predictions.reset_index(drop=True)
+    return p2b_compare.planned_row_alignment(clone, frame)
+
+
+def test_an_honest_cell_binds_to_every_planned_row(bound):
+    cell, frame = bound
+    result = p2b_compare.planned_row_alignment(cell, frame)
+    assert result["problems"] == []
+    assert result["folds_checked"] == len(FOLDS) == result["folds_planned"]
+    assert result["rows_checked"] == sum(
+        block["outer_validation"]["samples"] for block in cell["payload"]["alignment"]["folds"]
+    )
+    assert all(result[name] == 0 for name in p2b_compare.ROW_BINDING_COUNTERS)
+
+
+def test_one_removed_row_is_caught(bound):
+    result = _corrupted(bound, lambda p: p.drop(index=[5]))
+    assert result["count_mismatches"] == 1
+    assert result["sample_index_hash_mismatches"] == 1
+
+
+def test_one_duplicated_row_is_caught(bound):
+    def mutate(p):
+        doubled = pd.concat([p, p.iloc[[5]]], ignore_index=True)
+        return doubled.sort_values(["fold", "row_index"], kind="stable")
+
+    result = _corrupted(bound, mutate)
+    assert result["duplicate_rows"] == 1
+    assert result["count_mismatches"] == 1
+    assert result["sample_index_hash_mismatches"] == 1
+
+
+def test_one_extra_row_is_caught(bound):
+    def mutate(p):
+        extra = p.iloc[[5]].copy()
+        extra["row_index"] = int(p["row_index"].max()) + 1
+        return pd.concat([p, extra], ignore_index=True).sort_values(
+            ["fold", "row_index"], kind="stable"
+        )
+
+    result = _corrupted(bound, mutate)
+    assert result["count_mismatches"] == 1
+    assert result["sample_index_hash_mismatches"] == 1
+    assert result["first_last_mismatches"] == 1
+
+
+def test_every_row_shifted_by_one_is_caught(bound):
+    """The most damaging corruption: right count, right order, wrong candles."""
+    result = _corrupted(bound, lambda p: p.assign(row_index=p["row_index"] + 1))
+    assert result["sample_index_hash_mismatches"] == len(FOLDS)
+    assert result["first_last_mismatches"] == len(FOLDS)
+    assert result["count_mismatches"] == 0
+    assert result["duplicate_rows"] == 0
+
+
+def test_two_swapped_row_identities_are_caught(bound):
+    """Same set of rows, two of them exchanged. Count, first and last all hold."""
+
+    def mutate(p):
+        rows = p["row_index"].to_numpy().copy()
+        rows[5], rows[6] = rows[6], rows[5]
+        return p.assign(row_index=rows)
+
+    result = _corrupted(bound, mutate)
+    assert result["count_mismatches"] == 0
+    assert result["first_last_mismatches"] == 0
+    assert result["duplicate_rows"] == 0
+    assert result["unsorted_rows"] == 1
+    assert result["sample_index_hash_mismatches"] == 1
+
+
+def test_one_wrong_row_in_the_middle_is_caught(bound):
+    """Right length, right first and last row, one identity replaced."""
+
+    def mutate(p):
+        rows = p["row_index"].to_numpy().copy()
+        rows[5] = int(rows[0])
+        return p.assign(row_index=rows)
+
+    result = _corrupted(bound, mutate)
+    assert result["count_mismatches"] == 0
+    assert result["first_last_mismatches"] == 0
+    assert result["duplicate_rows"] == 1
+    assert result["sample_index_hash_mismatches"] == 1
+
+
+def test_rows_assigned_to_the_wrong_fold_are_caught(bound):
+    """Every row is a planned row; the folds they are filed under are not."""
+    cell, _ = bound
+    folds = sorted({int(f) for f in cell["predictions"]["fold"].to_numpy()})
+    assert len(folds) > 1
+    swap = {folds[0]: folds[1], folds[1]: folds[0]}
+    result = _corrupted(
+        bound, lambda p: p.assign(fold=[swap.get(int(f), int(f)) for f in p["fold"]])
+    )
+    assert result["sample_index_hash_mismatches"] == 2
+    assert result["first_last_mismatches"] == 2
+    assert result["count_mismatches"] >= 0
+
+
+def test_a_prediction_for_a_fold_that_was_never_planned_is_caught(bound):
+    def mutate(p):
+        extra = p.iloc[[5]].copy()
+        extra["fold"] = 99
+        return pd.concat([p, extra], ignore_index=True)
+
+    result = _corrupted(bound, mutate)
+    assert result["unplanned_folds"] == 1
+    assert "never planned" in " ".join(result["problems"])
+
+
+def test_a_planned_fold_with_no_predictions_at_all_is_caught(bound):
+    cell, _ = bound
+    dropped = int(cell["predictions"]["fold"].max())
+    result = _corrupted(bound, lambda p: p[p["fold"] != dropped])
+    assert result["missing_folds"] == 1
+
+
+def test_the_shifted_corruption_is_caught_by_the_row_binding_and_not_by_luck(bound):
+    """Falsifies the guard rather than the corruption.
+
+    A corruption is only evidence about *this* guard if the guard's own
+    comparison is what rejects it. With the planned digests replaced by the
+    digests of the corrupted rows, the same shifted file passes — so the digest
+    is doing the work, not some incidental field.
+    """
+    cell, frame = bound
+    shifted = cell["predictions"].copy(deep=True)
+    shifted["row_index"] = shifted["row_index"] + 1
+    clone = copy.deepcopy({k: v for k, v in cell.items() if k != "predictions"})
+    clone["predictions"] = shifted
+    assert p2b_compare.planned_row_alignment(clone, frame)["problems"]
+
+    for block in clone["payload"]["alignment"]["folds"]:
+        rows = shifted.loc[shifted["fold"] == block["fold"], "row_index"].to_numpy(np.int64)
+        outer = block["outer_validation"]
+        outer["sample_index_sha256"] = hashlib.sha256(
+            np.ascontiguousarray(rows, dtype=np.int64).tobytes()
+        ).hexdigest()
+        outer["first_row"], outer["last_row"] = int(rows[0]), int(rows[-1])
+    relaxed = p2b_compare.planned_row_alignment(clone, frame)
+    assert relaxed["sample_index_hash_mismatches"] == 0
+    assert relaxed["first_last_mismatches"] == 0
+    # What still fails is the snapshot anchoring, which is a different guard
+    # answering a different question — and the point is that it was not the one
+    # rejecting the shift above.
+    assert relaxed["snapshot_value_mismatches"] > 0
+
+
 def _recomputable_cell(records, predictions) -> dict[str, Any]:
     return {
         "dir": Path("/nonexistent"),

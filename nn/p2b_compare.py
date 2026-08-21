@@ -39,6 +39,7 @@ result cannot pick its own bar.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import statistics
@@ -344,6 +345,155 @@ def anchor_to_snapshot(cell: dict[str, Any], spine: pd.DataFrame) -> dict[str, A
     }
 
 
+#: Counters :func:`planned_row_alignment` reports, one per way the persisted
+#: sample can differ from the planned one. Named so the comparison's evidence
+#: block says which guard held rather than only that nothing was wrong.
+ROW_BINDING_COUNTERS = (
+    "missing_folds",
+    "unplanned_folds",
+    "non_integer_row_index",
+    "duplicate_rows",
+    "unsorted_rows",
+    "count_mismatches",
+    "sample_index_hash_mismatches",
+    "first_last_mismatches",
+    "cross_fold_rows",
+    "snapshot_value_mismatches",
+)
+
+
+def planned_row_alignment(cell: dict[str, Any], spine: pd.DataFrame) -> dict[str, Any]:
+    """Prove the persisted rows *are* the planned outer sample, fold by fold.
+
+    :func:`anchor_to_snapshot` asks whether each persisted row agrees with the
+    snapshot *at the row index the file claims*. That catches a corrupted value
+    and misses a corrupted selection: a scorer that persisted a different set of
+    rows — consistently, with each row's own timestamp, label and return copied
+    correctly from the snapshot — passes it without a mark. Every number in the
+    comparison would then describe a sample universe nobody planned, while the
+    parity proof kept saying all nine cells agreed, because they would.
+
+    The plan is not a guess. ``prove_alignment`` recomputed each block's sample
+    index from the fold geometry before anything was fitted and recorded its
+    count, its first and last row, and a SHA-256 over its exact ``int64`` bytes.
+    Re-deriving that digest from the persisted ``row_index`` column and requiring
+    equality binds the file to the plan: one row removed, one duplicated, one
+    added, every row shifted, two identities swapped or one wrong row in the
+    middle all change the digest, and each is also counted separately so the
+    evidence says which of them happened.
+
+    Every category is collected rather than raised on, because a corruption that
+    trips three guards should be reported by all three. A guard that only ever
+    fires behind another one is not evidence that it works.
+    """
+    payload = cell["payload"]
+    planned = {
+        int(block["fold"]): block["outer_validation"]
+        for block in payload["alignment"]["folds"]
+    }
+    predictions = cell["predictions"]
+    counts = {name: 0 for name in ROW_BINDING_COUNTERS}
+    problems: list[str] = []
+
+    persisted_folds = sorted({int(f) for f in predictions["fold"].to_numpy()})
+    for fold in sorted(set(planned) - set(persisted_folds)):
+        counts["missing_folds"] += 1
+        problems.append(f"fold {fold} was planned and scored but has no persisted prediction")
+    for fold in sorted(set(persisted_folds) - set(planned)):
+        counts["unplanned_folds"] += 1
+        problems.append(f"fold {fold} has persisted predictions but was never planned")
+
+    rows_checked = 0
+    seen: dict[int, int] = {}
+    for fold in sorted(set(planned) & set(persisted_folds)):
+        block = planned[fold]
+        raw = predictions.loc[predictions["fold"] == fold, "row_index"].to_numpy()
+        rows = np.asarray(raw, dtype=np.int64)
+        if not np.array_equal(rows, np.asarray(raw, dtype=np.float64)):
+            counts["non_integer_row_index"] += 1
+            problems.append(f"fold {fold}: row_index does not hold whole numbers")
+            continue
+        rows_checked += len(rows)
+
+        duplicates = len(rows) - len(np.unique(rows))
+        if duplicates:
+            counts["duplicate_rows"] += duplicates
+            problems.append(f"fold {fold}: {duplicates} duplicated row index/indices")
+        if len(rows) > 1 and not bool(np.all(np.diff(rows) > 0)):
+            counts["unsorted_rows"] += 1
+            problems.append(
+                f"fold {fold}: persisted row indices are not strictly increasing, which is "
+                "the order the scorer writes them in"
+            )
+        if len(rows) != int(block["samples"]):
+            counts["count_mismatches"] += 1
+            problems.append(
+                f"fold {fold}: {len(rows)} persisted rows against the "
+                f"{int(block['samples'])} the fold plan selected"
+            )
+        digest = hashlib.sha256(
+            np.ascontiguousarray(rows, dtype=np.int64).tobytes()
+        ).hexdigest()
+        if digest != block["sample_index_sha256"]:
+            counts["sample_index_hash_mismatches"] += 1
+            problems.append(
+                f"fold {fold}: the persisted row indices hash to {digest}, but the fold "
+                f"plan selected the rows hashing to {block['sample_index_sha256']}"
+            )
+        if len(rows) and (
+            int(rows[0]) != int(block["first_row"]) or int(rows[-1]) != int(block["last_row"])
+        ):
+            counts["first_last_mismatches"] += 1
+            problems.append(
+                f"fold {fold}: persisted rows run [{int(rows[0])}, {int(rows[-1])}] but the "
+                f"plan runs [{int(block['first_row'])}, {int(block['last_row'])}]"
+            )
+        for row in np.unique(rows):
+            other = seen.setdefault(int(row), fold)
+            if other != fold:
+                counts["cross_fold_rows"] += 1
+                problems.append(
+                    f"research row {int(row)} is persisted under folds {other} and {fold}; "
+                    "the outer blocks are disjoint by construction"
+                )
+
+        inside = rows[(rows >= 0) & (rows < len(spine))]
+        if len(inside) != len(rows):
+            counts["snapshot_value_mismatches"] += 1
+            problems.append(
+                f"fold {fold}: {len(rows) - len(inside)} row index/indices fall outside the "
+                f"snapshot's {len(spine)} rows"
+            )
+            continue
+        block_frame = predictions.loc[predictions["fold"] == fold]
+        expected_dates = pd.to_datetime(pd.Index(spine["date"].to_numpy()[rows]), utc=True)
+        persisted_dates = pd.to_datetime(
+            pd.Index(block_frame["timestamp"].to_numpy()), utc=True
+        )
+        if not persisted_dates.equals(expected_dates):
+            counts["snapshot_value_mismatches"] += 1
+            problems.append(f"fold {fold}: persisted timestamps are not the snapshot's")
+        for column, source in (("true_target", "target"), ("future_return", "future_return")):
+            mine = block_frame[column].to_numpy().astype(np.float64)
+            theirs = spine[source].to_numpy()[rows].astype(np.float64)
+            if not np.allclose(mine, theirs):
+                counts["snapshot_value_mismatches"] += 1
+                problems.append(f"fold {fold}: persisted {column} is not the snapshot's")
+
+    return {
+        "folds_checked": len(set(planned) & set(persisted_folds)),
+        "folds_planned": len(planned),
+        "rows_checked": rows_checked,
+        **counts,
+        "problems": problems,
+        "note": (
+            "the persisted row_index sequence was compared against the sample index the "
+            "fold plan selected before anything was fitted, per fold: count, uniqueness, "
+            "order, first and last row, and a SHA-256 over the exact int64 bytes"
+        ),
+    }
+
+
 def recompute_cell(cell: dict[str, Any]) -> list[dict[str, Any]]:
     """Rebuild each fold's reported metrics from the persisted predictions.
 
@@ -642,6 +792,29 @@ def to_markdown(payload: dict[str, Any]) -> str:
     ]
     lines += [f"- {item}" for item in payload["parity"]["identical_across_cells"]]
 
+    bound = payload["planned_row_alignment"]
+    lines += [
+        "",
+        "## Persisted rows are the planned rows",
+        "",
+        "Each cell's persisted `row_index` sequence was compared against the outer sample",
+        "index its fold plan selected before anything was fitted — count, uniqueness,",
+        "strict order, first and last row, and a SHA-256 over the exact `int64` bytes:",
+        "",
+        f"- **{bound['cells_checked']} cells, {bound['folds_checked']} folds, "
+        f"{bound['rows_checked']} rows checked**",
+    ]
+    lines += [
+        f"- {name.replace('_', ' ')}: **{bound[name]}**" for name in ROW_BINDING_COUNTERS
+    ]
+    lines += [
+        "",
+        "A wrong sample chosen consistently — every row's own timestamp, label and return",
+        "copied correctly from the snapshot — passes the anchoring check below and fails",
+        "this one.",
+        "",
+    ]
+
     recompute = payload["independent_recompute"]
     lines += [
         "",
@@ -858,6 +1031,21 @@ def main(argv: list[str] | None = None) -> int:
     adrift = [
         {"cell": name, **result} for name, result in anchored.items() if result["problems"]
     ]
+    # Computed before the raise below rather than after, because the two guards
+    # answer different questions and a cell can fail one while satisfying the
+    # other. Reporting only whichever happens to be checked first would leave
+    # the second one untested in exactly the case it exists for.
+    bound = {
+        f"{c['information_set']}::{c['model']}": planned_row_alignment(c, spine) for c in cells
+    }
+    unbound = [
+        {"cell": name, **result} for name, result in bound.items() if result["problems"]
+    ]
+    if unbound:
+        raise ComparisonError(
+            "a cell's persisted predictions are not the outer sample its fold plan "
+            "selected:\n" + json.dumps(unbound, indent=2)
+        )
     if adrift:
         raise ComparisonError(
             "a cell's persisted predictions disagree with the research snapshot:\n"
@@ -919,6 +1107,14 @@ def main(argv: list[str] | None = None) -> int:
                 "against the committed snapshot at the row index the cell recorded — the "
                 "one check made against data the run did not produce"
             ),
+        },
+        "planned_row_alignment": {
+            "cells_checked": len(cells),
+            "folds_checked": sum(r["folds_checked"] for r in bound.values()),
+            "rows_checked": sum(r["rows_checked"] for r in bound.values()),
+            **{name: sum(r[name] for r in bound.values()) for name in ROW_BINDING_COUNTERS},
+            "problems": len(unbound),
+            "note": next(iter(bound.values()))["note"],
         },
         "independent_recompute": {
             "cells_checked": len(cells),
