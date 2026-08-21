@@ -423,6 +423,14 @@ def _check_segment_contiguity(
     if the spine called two rows contiguous that the raw candles separate — a
     window would carry structure state across a gap the windowing believed was
     not there, which is exactly the bridging the gap rule forbids.
+
+    The converse is allowed and is not checked. A spine boundary with no raw gap
+    behind it happens when :func:`nn.data_pipeline.build_dataset` drops a row for
+    a NaN feature and re-derives the segments over what is left. There the
+    windowing is *stricter* than the market-structure state: no window spans the
+    dropped row, while the structure entering the next row was built from the
+    real, contiguous, past candles on either side of it. That direction cannot
+    leak, so it is left alone rather than forced into agreement.
     """
     segments = spine["segment_id"].to_numpy(dtype=np.int64)
     same_segment = segments[1:] == segments[:-1]
