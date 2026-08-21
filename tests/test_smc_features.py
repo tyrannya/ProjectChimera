@@ -20,6 +20,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from pathlib import Path
+import re
 from typing import Sequence
 
 import numpy as np
@@ -27,6 +28,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
+import nn.smc
 from nn.smc import (
     SMC_FEATURE_FAMILIES,
     SMC_FEATURE_NAMES,
@@ -1067,3 +1069,118 @@ def test_spec_hash_is_stable_and_changes_with_every_constant() -> None:
     for field, value in changed.items():
         other = dataclasses.replace(spec, **{field: value})
         assert other.spec_hash() != spec.spec_hash(), field
+
+
+# --------------------------------------------------------------------------- #
+# 8. the within-candle order of operations
+#
+# `docs/smc_v1.md` §8 fixes the order because several rules can fire on one
+# candle and which state each one sees is part of the answer. The spec and the
+# engine disagreed about it: §8 creates the fair-value gap at step 3, before the
+# break, and the loop created it at step 7, after the reclaim. Nothing between
+# those two positions reads or writes gap state, so the disagreement changed no
+# value — measured over the 45,802 rows P2b scores, and over the full committed
+# pre-Styx history, the two orders are byte-identical in all 39 columns. It was
+# still a spec nobody could check the next change against, and §8 was pinned
+# before any P2b cell ran, so the engine was moved to the declared order.
+#
+# These tests pin the same-row interactions the position of step 3 is about,
+# rather than the append invariance that holds under either order.
+# --------------------------------------------------------------------------- #
+SPEC_DOCUMENT = REPO_ROOT / "docs" / "smc_v1.md"
+
+
+def _numbered_verbs(text: str, pattern: str) -> list[str]:
+    return [match.group(2) for match in re.finditer(pattern, text, re.M)]
+
+
+def test_the_engine_transcribes_the_specs_order_step_for_step() -> None:
+    """The guard for the failure this section documents.
+
+    A drift between §8 and the loop is invisible from either side alone: both
+    documents read plausibly, and the engine passes every behavioural test in
+    this file under either order. Comparing the two lists is the only thing that
+    would have said no.
+    """
+    section = SPEC_DOCUMENT.read_text().split("## 8. Order of operations within a candle")
+    assert len(section) == 2, "smc_v1.md no longer has a §8 to transcribe"
+    declared = _numbered_verbs(section[1].split("###")[0], r"^(\d)\. \*\*(\w+)\*\*")
+    implemented = _numbered_verbs(nn.smc.__doc__ or "", r"^(\d)\. (\w+)")
+
+    assert declared == [
+        "absorb",
+        "retire",
+        "create",
+        "break",
+        "sweep",
+        "reclaim",
+        "emit",
+    ]
+    assert implemented == declared
+
+
+#: A hump peaking at index 4 (confirmed at index 7), then a candle that gaps up
+#: over index 9 and closes far above the confirmed high.
+F_BREAK_AND_FVG = _frame(
+    _mid_candles([99.5, 99.7, 99.9, 100.1, 100.6, 100.1, 99.9, 99.7, 99.5, 99.4])
+    + [(99.4, 99.8, 99.0, 99.6), (102.1, 103.5, 102.0, 103.2)]
+)
+
+#: The same hump, then a high sweep at index 10 and a candle at index 11 that
+#: closes back below the sweep candle's low while gapping down under index 9.
+F_RECLAIM_AND_FVG = _frame(
+    _mid_candles([99.5, 99.7, 99.9, 100.1, 100.6, 100.1, 99.9, 99.7, 99.5, 99.4])
+    + [(99.4, 101.2, 99.3, 99.6), (98.0, 98.0, 97.0, 97.2)]
+)
+
+
+def test_a_gap_created_on_a_breaking_candle_is_reported_on_that_candle() -> None:
+    """Step 3 before step 4, and neither event consumes the other.
+
+    Row 11 breaks the swing high confirmed at row 7 *and* completes a bullish
+    imbalance over row 9. Both fire, and the gap is already active in the same
+    row's emitted state — which is what "create at step 3, emit at step 7"
+    means and what an engine that created the gap after emitting could not do.
+    """
+    out = compute_smc_features(F_BREAK_AND_FVG)
+    assert out["smc_bos_bull"].iloc[11] == 1.0
+    assert out["smc_break_magnitude_atr"].iloc[11] > 0.0
+    assert out["smc_fvg_bull"].iloc[11] == 1.0
+    assert out["smc_fvg_bull_size_atr"].iloc[11] > 0.0
+    assert out["smc_bull_fvg_active"].iloc[11] == 1.0
+    assert out["smc_bull_fvg_dist_atr"].iloc[11] > 0.0
+    # Nothing before it: the gap is this candle's, not an inherited one.
+    assert (out["smc_bull_fvg_active"].iloc[:11] == 0.0).all()
+
+
+def test_a_gap_created_on_a_reclaiming_candle_is_reported_on_that_candle() -> None:
+    """Step 3 before step 6, from the other side.
+
+    Row 10 sweeps the high; row 11 closes below row 10's low, which is the
+    reclaim, and in doing so gaps down under row 9. A loop that created the gap
+    only after resolving the reclaim would still report both — the point is that
+    the declared order does too, so moving step 3 up cannot silently drop one.
+    """
+    out = compute_smc_features(F_RECLAIM_AND_FVG)
+    assert out["smc_sweep_high"].iloc[10] == 1.0
+    assert out["smc_sweep_high_reclaim"].iloc[11] == 1.0
+    assert out["smc_fvg_bear"].iloc[11] == 1.0
+    assert out["smc_bear_fvg_active"].iloc[11] == 1.0
+    assert out["smc_bear_fvg_dist_atr"].iloc[11] > 0.0
+
+
+@pytest.mark.parametrize("seed", [3, 7, 11, 19])
+def test_every_candle_that_creates_a_gap_reports_one_active(seed: int) -> None:
+    """The invariant that fixes step 3 *before* step 7 on real event density.
+
+    A new bullish gap's top is this candle's low and a new bearish gap's bottom
+    is this candle's high, so a gap created at ``t`` is always in range of
+    ``t``'s own close. Creating it after the emit would leave every creation
+    candle reporting no active gap, and no other test in this file would notice.
+    """
+    out = compute_smc_features(_random_walk(1200, seed))
+    created_bull = out["smc_fvg_bull"] == 1.0
+    created_bear = out["smc_fvg_bear"] == 1.0
+    assert created_bull.sum() > 20 and created_bear.sum() > 20, "fixture fires too rarely"
+    assert (out.loc[created_bull, "smc_bull_fvg_active"] == 1.0).all()
+    assert (out.loc[created_bear, "smc_bear_fvg_active"] == 1.0).all()

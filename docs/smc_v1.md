@@ -494,6 +494,25 @@ invariance holds. Read it as "detectable, and only ever consulted at
 rather than of confirmation can copy it into a two-pass design and silently
 break causality.
 
+### 8.3 The engine drifted from this list once, and was brought back
+
+§8 was written down at commit `a7a25d2`, before any P2b cell ran: the earliest
+cell in `artifacts/benchmark/` recorded revision `c840627`, half an hour later.
+The engine, committed before §8 existed, created the fair-value gap **after**
+the reclaim rather than at step 3, and nobody noticed for the length of two
+checkpoints — the loop reads plausibly in either order and every behavioural
+test in `tests/test_smc_features.py` passed under both.
+
+It changed nothing. Steps 4–6 neither read nor write gap state, and a gap
+cannot be retired by the candle that created it in either arrangement, so the
+two orders are **byte-identical**: 0 of 1,786,278 cells differ over the 45,802
+rows P2b scores, 0 of 1,932,489 over the full committed pre-Styx history, and 0
+over twelve synthetic frames. The engine was moved to the declared order anyway,
+because a specification the code does not follow cannot be used to check the
+next change, and this one was predeclared. `tests/test_smc_features.py`
+transcribes both lists and compares them step for step, which is the only check
+that would have caught the drift.
+
 ---
 
 ## 9. Known defects in `smc_v1`, deferred
@@ -504,8 +523,13 @@ recorded here rather than fixed, because editing a predeclared feature
 specification part-way through the checkpoint it was declared for is exactly the
 move this repository exists to prevent. A fix is `smc_v2`'s job.
 
-All three make the features **weaker** than intended. None can leak future
-information, and none can manufacture a positive result.
+Four are recorded. **(a)**, **(b)** and **(c)** make the features **weaker**
+than intended: a collision that hides a distinction, a name that misdescribes a
+signed quantity, and a tail a standardiser will struggle with. **(d)** is not a
+predictive defect at all — it is a hole in the hash recipe, and what it can
+corrupt is the *identity* of a run rather than the information in a column.
+None of the four can leak future information, and none can manufacture a
+positive result.
 
 **(a) `smc_bars_since_*` cannot distinguish "never" from "just now".**
 `smc_bars_since_break`, `smc_bars_since_sweep_high` and
@@ -541,8 +565,8 @@ no-arbitrary-window reasoning as §3.5 and is deliberate, but these two columns
 are the ones a standardiser will struggle with, and a later version should
 consider a scale-bounded transform rather than a lookback parameter.
 
-**(d) The spec pins the hash recipe but not the JSON type of the integer
-constants.** `spec_hash()` hashes `dataclasses.asdict(spec)`, which keeps
+**(d) A provenance defect, not a predictive one: the spec pins the hash recipe
+but not the JSON type of the integer constants.** `spec_hash()` hashes `dataclasses.asdict(spec)`, which keeps
 `atr_period`, `pivot_left` and `pivot_right` as `int` — so the canonical JSON
 contains `"atr_period":14`, not `14.0`, and an implementation that casts them to
 float to satisfy the `dict[str, float]` annotation in §7 gets a different hash.

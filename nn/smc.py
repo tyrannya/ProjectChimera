@@ -20,14 +20,23 @@ not a property a test has to hope for.
 which state they see is part of the answer, so the loop fixes the order once:
 
 1. absorb the pivot confirmed at this row (§3.2), creating any equal level (§3.4);
-2. remove equal levels this candle's high/low traded through (§3.4);
-3. remove fair-value gaps this candle filled (§3.7);
-4. breaks — bullish evaluated before bearish, the declared tie-break of §3.3;
-5. sweeps (§3.5), which deliberately leave ``active_sh``/``active_sl`` standing;
-6. reclaims, so a fresh sweep on the same side replaces the pending one rather
+2. retire equal levels this candle's high/low traded through (§3.4) and fair-value
+   gaps this candle filled (§3.7);
+3. create the fair-value gap ending at this row (§3.7);
+4. break — bullish evaluated before bearish, the declared tie-break of §3.3;
+5. sweep (§3.5), which deliberately leaves ``active_sh``/``active_sl`` standing;
+6. reclaim a pending sweep, so a fresh sweep on the same side replaces it rather
    than resolving it on its own candle (§3.5);
-7. create the fair-value gap ending at this row (§3.7);
-8. emit the row.
+7. emit the row.
+
+This is ``docs/smc_v1.md`` §8 verbatim, and it is transcribed rather than chosen.
+The two disagreed until this was written: §8 creates the gap at step 3 and the
+loop created it at step 7, after the reclaim. Nothing between those two positions
+reads or writes gap state, so the disagreement was inert — measured over the
+45,802 research rows the two orders produce byte-identical values in all 39
+columns — but a spec that says one thing while the code does another is a spec
+nobody can check the next change against, and §8 was pinned before any P2b cell
+ran. The declared order wins.
 
 Steps 4-6 run in the order §3 defines them, which decides the two cases the spec
 leaves implicit: a break cancels a pending reclaim before that reclaim can fire
@@ -289,17 +298,30 @@ def compute_smc_features(df: pd.DataFrame, spec: SMCSpec | None = None) -> pd.Da
                 last_sl, last_sl_i = price, pivot
                 active_sl = price
 
-        # 2. liquidity taken by this candle is gone before the row reports it
+        # 2. liquidity taken and gaps filled by this candle are gone before the
+        # row reports them (§3.4, §3.7)
         if eqh_levels:
             eqh_levels = [level for level in eqh_levels if h[t] <= level]
         if eql_levels:
             eql_levels = [level for level in eql_levels if lo_[t] >= level]
 
-        # 3. gaps this candle filled, likewise (§3.7)
         if bull_gaps:
             bull_gaps = [gap for gap in bull_gaps if lo_[t] > gap[0]]
         if bear_gaps:
             bear_gaps = [gap for gap in bear_gaps if h[t] < gap[1]]
+
+        # 3. the three-candle imbalance ending here (§3.7)
+        if t >= 2:
+            gap_up = lo_[t] - h[t - 2]
+            if gap_up > 0.0 and gap_up >= spec.fvg_min_atr * den:
+                fvg_bull = 1.0
+                fvg_bull_size = gap_up / den
+                bull_gaps.append((h[t - 2], lo_[t]))
+            gap_down = lo_[t - 2] - h[t]
+            if gap_down > 0.0 and gap_down >= spec.fvg_min_atr * den:
+                fvg_bear = 1.0
+                fvg_bear_size = gap_down / den
+                bear_gaps.append((h[t], lo_[t - 2]))
 
         # 4. breaks on the close, bullish first (§3.3)
         if active_sh is not None and c_t > active_sh + spec.break_atr * den:
@@ -353,20 +375,7 @@ def compute_smc_features(df: pd.DataFrame, spec: SMCSpec | None = None) -> pd.Da
             sweep_low_reclaim = 1.0
             pending_low_sweep = -1
 
-        # 7. the three-candle imbalance ending here (§3.7)
-        if t >= 2:
-            gap_up = lo_[t] - h[t - 2]
-            if gap_up > 0.0 and gap_up >= spec.fvg_min_atr * den:
-                fvg_bull = 1.0
-                fvg_bull_size = gap_up / den
-                bull_gaps.append((h[t - 2], lo_[t]))
-            gap_down = lo_[t - 2] - h[t]
-            if gap_down > 0.0 and gap_down >= spec.fvg_min_atr * den:
-                fvg_bear = 1.0
-                fvg_bear_size = gap_down / den
-                bear_gaps.append((h[t], lo_[t - 2]))
-
-        # 8. emit
+        # 7. emit
         has_sh = last_sh_i >= 0
         has_sl = last_sl_i >= 0
         width = last_sh - last_sl if has_sh and has_sl else 0.0
