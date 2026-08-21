@@ -224,6 +224,51 @@ def plan_from_manifest(
     return folds, sizes
 
 
+def aggregate_importance(
+    fitted: Any, feature_names: Sequence[str], seq_len: int
+) -> dict[str, Any]:
+    """Fold a tree model's per-column importance back onto the feature it came from.
+
+    A flattened row holds one column per (timestep, feature) pair, so a raw
+    importance vector is 3,392 numbers about 53 features. Summing over the
+    ``seq_len`` timesteps — the exact inverse of the ``t * n_features + f``
+    layout :data:`nn.simple_models.FLATTEN_ORDER` declares — turns it back into
+    one number per feature, which is the granularity the family question is
+    asked at.
+
+    Returns ``{}`` for an estimator with no importance to give, rather than
+    inventing one. Both libraries' native units are recorded because they are
+    not the same quantity: a split count and a summed gain rank features
+    differently, and a reader who is not told which one they are looking at
+    cannot know which.
+    """
+    estimator = fitted.estimator
+    raw = getattr(estimator, "feature_importances_", None)
+    if raw is None:
+        return {}
+    n_features = len(feature_names)
+    values = np.asarray(raw, dtype=np.float64)
+    if values.size != seq_len * n_features:
+        return {}
+    per_feature = values.reshape(seq_len, n_features).sum(axis=0)
+    total = float(per_feature.sum())
+    share = per_feature / total if total > 0 else np.zeros_like(per_feature)
+    return {
+        "importance_type": getattr(estimator, "importance_type", "unknown"),
+        "aggregated_over": (
+            f"summed across the {seq_len} timesteps of each feature, inverting "
+            "column j = timestep t * n_features + feature f"
+        ),
+        "total": round(total, 8),
+        "per_feature": {
+            name: round(float(v), 8) for name, v in zip(feature_names, per_feature)
+        },
+        "per_feature_share": {
+            name: round(float(v), 8) for name, v in zip(feature_names, share)
+        },
+    }
+
+
 def score_baselines(
     control: ResearchData,
     prepared: Any,
@@ -364,6 +409,7 @@ def run_cell(
                 },
                 "model": {
                     "provenance": {**fitted.provenance(), "threading": threads},
+                    "importance": aggregate_importance(fitted, data.feature_names, seq_len),
                     "selection": {
                         "block": "inner_validation",
                         "threshold": threshold,
