@@ -274,7 +274,17 @@ def test_duplicate_raw_timestamps_fail_closed(spine, raw_candles):
 
 def test_a_spine_without_segment_ids_fails_closed(spine, raw_candles):
     """Without segment ids a window could bridge a market-data gap unnoticed, so
-    the module refuses the frame and says how to rebuild it."""
+    the module refuses the frame and says how to rebuild it.
+
+    **Currently failing, and the module is what is wrong.** ``_spine_arrays``
+    raises exactly this ``ValueError`` — but it is unreachable:
+    ``build_information_set_views`` calls ``_check_segment_contiguity`` first,
+    which reads ``spine["segment_id"]`` unguarded and dies with a bare
+    ``KeyError('segment_id')``. The run still stops, so nothing unsafe happens,
+    but the operator is told a column name instead of being told to rebuild the
+    dataset. Not weakened to ``(ValueError, KeyError)``: the fix is to check for
+    the column before the contiguity check, not to bless the symptom.
+    """
     frame, ds_meta = spine
     with pytest.raises(ValueError, match="no 'segment_id' column"):
         build_information_set_views(

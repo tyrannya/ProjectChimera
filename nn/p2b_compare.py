@@ -160,6 +160,15 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             != ref["feature_spec"]["combined_spec_hash"]
         ):
             raise ComparisonError(f"{described(cell)} used a different feature spec")
+        # Length first: `zip` truncates, so two cells with a different number of
+        # folds would compare only the folds they share and pass.
+        if len(payload["alignment"]["folds"]) != len(ref["alignment"]["folds"]) or len(
+            payload["folds"]
+        ) != len(ref["folds"]):
+            raise ComparisonError(
+                f"{described(cell)} and {described(reference)} report a different "
+                "number of folds"
+            )
         for fold, (a, b) in enumerate(
             zip(payload["alignment"]["folds"], ref["alignment"]["folds"])
         ):
@@ -215,7 +224,10 @@ def recompute_cell(cell: dict[str, Any]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for record in payload["folds"]:
         fold = record["fold"]
-        rows = predictions[predictions["fold"] == fold]
+        # Sorted by row index, because the trade walk in `realised_trades` is
+        # sequential: this makes the check one about the persisted values rather
+        # than about the order they happen to sit in the file.
+        rows = predictions[predictions["fold"] == fold].sort_values("row_index")
         reported = record["outer_validation"][model]
         threshold = record["model"]["selection"]["threshold"]
 
