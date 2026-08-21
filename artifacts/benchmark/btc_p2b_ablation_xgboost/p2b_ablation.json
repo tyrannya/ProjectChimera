@@ -1,7 +1,6 @@
 {
   "checkpoint": "P2b-robustness",
   "of_checkpoint": "P2b",
-  "checkpoint_identity": "recovered from the arms; these cells predate the field in which a cell states its own research question, and all of them are labelled 'P2b'",
   "evidence_class": "derived",
   "status": "post-hoc descriptive diagnostic; not canonical P2b evidence",
   "question": "which smc_v1 family carries the combined arm, given the others?",
@@ -31,6 +30,60 @@
       "atr_period": 14,
       "vol_window": 24,
       "volume_window": 24
+    },
+    "chart_spec_version": "chart_structure_v1",
+    "chart_spec": {
+      "atr_period": 14,
+      "win_short": 20,
+      "win_long": 60,
+      "touch_atr": 0.25,
+      "pivot_left": 3,
+      "pivot_right": 3
+    },
+    "chart_spec_hash": "0f62f35d87cd92abe439959976de288d72a8adbf98eab804b05e594c131e946b",
+    "chart_feature_families": {
+      "range": [
+        "chart_window_fill",
+        "chart_range_width_atr",
+        "chart_range_pos",
+        "chart_range_pos_fast",
+        "chart_touch_high_frac",
+        "chart_touch_low_frac"
+      ],
+      "compression": [
+        "chart_high_slope_atr",
+        "chart_low_slope_atr",
+        "chart_convergence_atr",
+        "chart_slope_asymmetry"
+      ],
+      "channel": [
+        "chart_trend_slope_atr",
+        "chart_trend_r2",
+        "chart_channel_disp_atr",
+        "chart_channel_pos"
+      ],
+      "volatility": [
+        "chart_range_ratio",
+        "chart_tr_ratio"
+      ],
+      "breakout": [
+        "chart_breakout_up_atr",
+        "chart_breakout_dn_atr",
+        "chart_failed_breakout_up_atr",
+        "chart_failed_breakout_dn_atr"
+      ],
+      "patterns": [
+        "chart_dt_valid",
+        "chart_dt_offset_atr",
+        "chart_dt_trough_atr",
+        "chart_dt_neckline_atr",
+        "chart_db_valid",
+        "chart_db_offset_atr",
+        "chart_db_peak_atr",
+        "chart_db_neckline_atr",
+        "chart_pole_atr",
+        "chart_impulse_atr"
+      ]
     },
     "smc_spec_version": "smc_v1",
     "smc_spec": {
@@ -98,7 +151,7 @@
         "smc_bear_fvg_dist_atr"
       ]
     },
-    "combined_spec_hash": "fdbe1edee1bb7899d56538a2b507dc9385ff5542c71b137e8d1e094fbac47ffd"
+    "combined_spec_hash": "2a33458e5d85caece7332c6b2598199d67b275c7828b1d7d3cac0421b5ba3939"
   },
   "sealed_test": false,
   "parity": {
@@ -125,11 +178,12 @@
       "CASH and buy-and-hold economic references"
     ],
     "code": {
-      "source_digest": "df1c5513e1dad3a004b5d85abab3dc94344b070f2a757704d3ffffcf78c066ae",
+      "source_digest": "7540b413b5467a9fe03a0d71b3581a5d5703d3ef5d27a108f4ac31fb28cccfca",
       "revisions": [
-        "685764bcd1d1ba1fc5bfbe441461d84eae2ec1ab",
-        "8d4ce10ba3b663cf3aafe04a6322e9ceb0762889",
-        "f5b409f403b90d996f1410f37b271d6d99b4f828"
+        "1d849fbb199cc0ff81e92c7f9971a0b6558d6102",
+        "cbe9449ab2ee783717c3332e382700a84ee132d2",
+        "cd8eddaf5c7bd73a76b4741c215819c1bfebb836",
+        "fe2d64cf2045e5e1a32180ee3932faf944786076"
       ],
       "note": "one source digest across every cell. The revision list may hold more than one entry when documentation was committed between cells; that moves HEAD without changing a line any cell executed"
     },

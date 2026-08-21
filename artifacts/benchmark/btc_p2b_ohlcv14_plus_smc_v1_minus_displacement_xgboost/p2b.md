@@ -1,5 +1,7 @@
 # P2b cell — xgboost on `ohlcv14_plus_smc_v1_minus_displacement`
 
+**Question:** does causal smc_v1, alone or combined with OHLCV14, add usable information beyond OHLCV14?
+
 One information set, one model, 4 temporal folds.
 Each row is a `64 x 48` window flattened to
 `3072` values. Nothing is tuned.
