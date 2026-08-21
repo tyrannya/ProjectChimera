@@ -41,7 +41,7 @@ from chimera.contracts import CLASS_ORDER
 from nn.data_pipeline import load_dataset
 from nn.information_sets import COMBINED, OHLCV14, SMC_V1
 from nn.p2b import DEFAULT_MANIFEST, plan_from_manifest
-from nn.p2b_compare import ComparisonError, fold_row, load_cell
+from nn.p2b_compare import ComparisonError, checkpoint_of, fold_row, load_cell
 from tools.freeze_evidence import DERIVED
 
 logger = logging.getLogger(__name__)
@@ -220,6 +220,16 @@ def main(argv: list[str] | None = None) -> int:
     candles_per_year = 365 * 24 * 60 / 60
 
     cells = [load_cell(Path(d)) for d in sorted(args.runs)]
+    # This description is written against P2b's arm names, so it must be given
+    # P2b's cells. Without the check a P2c batch would produce a document titled
+    # "P2b — ... where market structure helped" whose delta table was silently
+    # empty, because `SMC_V1` and `COMBINED` appear in none of its arms.
+    checkpoint = checkpoint_of(cells)
+    if checkpoint.name != "P2b":
+        raise ComparisonError(
+            f"this regime description is written for P2b's arms and was given "
+            f"{checkpoint.name} cells; it would title itself P2b and report nothing"
+        )
     by_model: dict[str, dict[str, dict[int, float]]] = {}
     for cell in cells:
         rows = {r["fold"]: fold_row(r, cell["model"]) for r in cell["payload"]["folds"]}

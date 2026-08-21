@@ -287,6 +287,23 @@ aggregate over cells that did not score the same rows, or did not run the same
 code, would be a comparison of sample universes wearing a comparison of
 information sets.
 
+### P2c, the other checkpoint
+
+Identical in every respect except the columns and the checkpoint name:
+
+```bash
+make p2c-btc        # nine cells: ohlcv14, chart_structure_v1, ohlcv14_plus_chart_structure_v1
+make p2c-compare    # -> artifacts/benchmark/btc_p2c_comparison
+```
+
+Its cells land in `btc_p2c_<information_set>_<model>/` and carry the same file
+names — `p2b.json`, `p2b.md`, `outer_predictions.parquet`. The names are the
+*runner's*, not the checkpoint's; every one of those files states its own
+checkpoint and research question in its first two fields, and
+`nn.p2b_compare` refuses to join cells that disagree about either. A glob wide
+enough to catch both checkpoints' cells fails closed rather than averaging
+twelve arms of two feature families into one table.
+
 ### Optional, post-hoc
 
 Both label themselves as post-hoc in their own output, and neither is part of
@@ -430,6 +447,26 @@ Expect `cells_checked: 9`, `problems: 0`, and `rows_checked: 170451`
 compared against `data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet`
 at the row index the cell recorded. A low `rows_checked` means you compared
 fewer cells than you think you did.
+
+### 7.3.1 The planned-row binding
+
+`snapshot_anchoring` asks whether each persisted row agrees with the snapshot at
+the index the file claims. It cannot see a *wrong selection*: a scorer that
+persisted a different set of rows — consistently, each row's own timestamp,
+label and return copied correctly — passes it without a mark. This is the check
+that closes that:
+
+```bash
+jq '.planned_row_alignment' artifacts/benchmark/btc_p2b_comparison/p2b_comparison.json
+```
+
+Expect `cells_checked: 9`, `folds_checked: 36`, `rows_checked: 170451`, and
+**every counter zero**: `missing_folds`, `unplanned_folds`,
+`non_integer_row_index`, `duplicate_rows`, `unsorted_rows`, `count_mismatches`,
+`sample_index_hash_mismatches`, `first_last_mismatches`, `cross_fold_rows`,
+`snapshot_value_mismatches`. The hash counter is the load-bearing one: it
+compares a SHA-256 over the persisted `row_index` bytes against the digest
+`prove_alignment` recorded from the fold geometry before anything was fitted.
 
 ### 7.4 The independent-recompute mismatch count
 

@@ -43,6 +43,7 @@ from nn.information_sets import ABLATION_PREFIX, COMBINED, SMC_FEATURE_FAMILIES
 from nn.p2b_compare import (
     ComparisonError,
     check_cells_agree,
+    checkpoint_of,
     fold_row,
     load_cell,
     recompute_cell,
@@ -278,8 +279,13 @@ def main(argv: list[str] | None = None) -> int:
             f"the ablation compares one model at a time, got {sorted(models)}"
         )
 
-    # Same guarantee the canonical comparison rests on: if the arms did not score
-    # the same rows, every delta below measures the sample universe instead.
+    # Same guarantees the canonical comparison rests on. `checkpoint_of` first:
+    # an ablation of one checkpoint's combined arm has nothing to say about
+    # another's, and the six diagnostic arms belong to P2b by declaration rather
+    # than by their names happening to start with the right prefix.
+    checkpoint = checkpoint_of(cells)
+    # If the arms did not score the same rows, every delta below measures the
+    # sample universe instead.
     parity = check_cells_agree(cells)
     mismatches = [
         {"cell": f"{c['information_set']}::{c['model']}", **finding}
@@ -332,23 +338,26 @@ def main(argv: list[str] | None = None) -> int:
     ordered.update({f: v for f, v in families.items() if f not in ordered})
 
     payload = {
-        "checkpoint": "P2b-robustness",
+        "checkpoint": f"{checkpoint.name}-robustness",
+        "of_checkpoint": checkpoint.name,
         "evidence_class": DERIVED,
         "status": "post-hoc descriptive diagnostic; not canonical P2b evidence",
         "question": (
-            "which market-structure family carries the combined arm, given the others?"
+            f"which {checkpoint.family} family carries the combined arm, given the others?"
         ),
         "model": full["model"],
         "reference_arm": COMBINED,
         "delta_definition": "full minus ablated, per fold, on identical rows",
         "caveats": [
-            "chosen after the canonical P2b result was produced, on the same four outer "
-            "blocks — adaptive, and a source of hypotheses rather than confirmation",
+            f"chosen after the canonical {checkpoint.name} result was produced, on the "
+            "same four outer blocks — adaptive, and a source of hypotheses rather than "
+            "confirmation",
             "a marginal contribution given the other families, not a standalone value; a "
             "near-zero delta cannot distinguish an uninformative family from a redundant one",
             "four temporal periods do not support a significance claim, so sign consistency "
             "is reported instead of one",
-            "no model, threshold or feature constant anywhere in P2b was selected using this",
+            f"no model, threshold or feature constant anywhere in {checkpoint.name} was "
+            "selected using this",
         ],
         "contract": full["payload"]["contract"],
         "feature_spec": full["payload"]["feature_spec"],
