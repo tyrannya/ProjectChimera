@@ -494,4 +494,3 @@ cells, `source runs present: yes`. All ten `metric semantics: current`. That
 commit also has to add the new question to the test's expected mapping and to
 its `CURRENT_*` path sets — the index and the guard move together, or the guard
 is not guarding this question.
-
