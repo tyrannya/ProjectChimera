@@ -65,6 +65,7 @@ from nn.data_pipeline import load_dataset
 from nn.information_sets import (
     OHLCV14,
     P2B_INFORMATION_SETS,
+    ablation_set_names,
     AlignedResearchSamples,
     build_information_set_views,
     feature_spec_identity,
@@ -527,7 +528,15 @@ def to_markdown(payload: dict[str, Any]) -> str:
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--information-set", choices=list(P2B_INFORMATION_SETS), required=True)
+    parser.add_argument(
+        "--information-set",
+        # The six ablation arms are accepted here too. They are not a fourth
+        # information set: each is the combined arm with one declared family
+        # removed, and what they produce is post-hoc diagnostic evidence rather
+        # than canonical P2b evidence.
+        choices=list(P2B_INFORMATION_SETS) + ablation_set_names(),
+        required=True,
+    )
     parser.add_argument("--model", choices=list(SIMPLE_MODEL_NAMES), required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--research-contract", default="btc-usdt-1h-gen1")
@@ -560,7 +569,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     folds, sizes = plan_from_manifest(manifest, len(spine))
-    aligned = build_information_set_views(spine, ds_meta, raw)
+    names = tuple(dict.fromkeys((CONTROL_SET, args.information_set)))
+    aligned = build_information_set_views(spine, ds_meta, raw, names=names)
     alignment = aligned.prove_alignment(folds, args.seq_len)
 
     spec = next(s for s in SIMPLE_MODELS if s.name == args.model)

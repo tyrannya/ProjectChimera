@@ -129,11 +129,32 @@ def combined_set() -> InformationSet:
 P2B_INFORMATION_SETS = (OHLCV14, SMC_V1, COMBINED)
 
 
+#: Separator between the combined set and the family an ablation removed.
+ABLATION_PREFIX = f"{COMBINED}_minus_"
+
+#: The families the P2b ablation may remove, in report order. Fixed here rather
+#: than derived from whatever columns turned out to matter: an ablation whose
+#: groups were chosen after seeing the result is a search wearing a diagnostic's
+#: name.
+ABLATABLE_FAMILIES = tuple(SMC_FEATURE_FAMILIES)
+
+
 def information_set(name: str) -> InformationSet:
+    """Any of the three P2b arms, or one leave-one-family-out ablation of the combined arm."""
     builders = {OHLCV14: ohlcv14_set, SMC_V1: smc_v1_set, COMBINED: combined_set}
-    if name not in builders:
-        raise KeyError(f"unknown information set {name!r}; known: {sorted(builders)}")
-    return builders[name]()
+    if name in builders:
+        return builders[name]()
+    if name.startswith(ABLATION_PREFIX):
+        family = name[len(ABLATION_PREFIX) :]
+        if family in ABLATABLE_FAMILIES:
+            return combined_set().without(family)
+    known = sorted(builders) + [f"{ABLATION_PREFIX}{f}" for f in ABLATABLE_FAMILIES]
+    raise KeyError(f"unknown information set {name!r}; known: {known}")
+
+
+def ablation_set_names() -> list[str]:
+    """The six leave-one-family-out arms, in family order."""
+    return [f"{ABLATION_PREFIX}{family}" for family in ABLATABLE_FAMILIES]
 
 
 @dataclass(frozen=True)
