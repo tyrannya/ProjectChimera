@@ -308,6 +308,15 @@ def build_information_set_views(
     spine = spine.reset_index(drop=True)
     if "date" not in spine.columns:
         raise ValueError("the research spine has no 'date' column")
+    if "segment_id" not in spine.columns:
+        # Checked here rather than only in `_spine_arrays`, which raises the same
+        # thing further down: `_check_segment_contiguity` reads the column on the
+        # way past and would otherwise stop the run with a bare KeyError, telling
+        # the operator a column name instead of what to do about it.
+        raise ValueError(
+            "the research spine has no 'segment_id' column, so windows could bridge a "
+            "market-data gap. Rebuild it with the current tools.build_features."
+        )
     spine_dates = pd.to_datetime(spine["date"], utc=True)
 
     raw = raw_candles.reset_index(drop=True).copy()
