@@ -63,6 +63,14 @@ one that shares its `research question`.
 | `benchmark/btc_p2b_ohlcv14_plus_smc_v1_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x logistic_regression) | n/a | current |
 | `benchmark/btc_p2b_ohlcv14_plus_smc_v1_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x lightgbm) | n/a | current |
 | `benchmark/btc_p2b_ohlcv14_plus_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ablation_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b_ablation` | the six `btc_p2b_ohlcv14_plus_smc_v1_minus_*_xgboost` arms plus the combined and control cells (post-hoc; nothing fitted) | **yes** | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_structure_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus structure x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_liquidity_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus liquidity x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_breaks_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus breaks x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_sweeps_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus sweeps x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_displacement_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus displacement x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_fvg_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus fvg x xgboost) | n/a | current |
+| `benchmark/btc_p2b_repro_ohlcv14_plus_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | HISTORICAL | `nn.p2b` | itself (determinism re-run of the combined x xgboost cell) | n/a | current |
 | `benchmark/btc_p2b_regimes` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b_regimes` | the nine P2b cells (descriptive; nothing fitted) | **yes** | current |
 | `benchmark/btc_p2a_comparison` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark_compare` | `benchmark/btc_p2a_seed_{42,142,242,342,442}` (frozen v4 MTST read, not aggregated) | **yes** | current |
 | `benchmark/btc_p2a_seed_42` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 42) | n/a | current |

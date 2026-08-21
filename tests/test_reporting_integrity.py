@@ -65,7 +65,10 @@ CURRENT_P2B_SOURCE_RUNS = {
     f"benchmark/btc_p2b_{arm}_{model}"
     for arm in ("ohlcv14", "smc_v1", "ohlcv14_plus_smc_v1")
     for model in ("logistic_regression", "lightgbm", "xgboost")
-} | {"benchmark/btc_p2b_regimes"}
+} | {"benchmark/btc_p2b_regimes", "benchmark/btc_p2b_ablation_xgboost"} | {
+    f"benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_{family}_xgboost"
+    for family in ("structure", "liquidity", "breaks", "sweeps", "displacement", "fvg")
+}
 
 #: The prior generation's aggregate, whose own source runs are absent.
 V3_BASELINE = "diagnostics/btc_regimes_v3"
