@@ -421,7 +421,8 @@ cannot end up claiming each other's independence.
 
 **P2c is more adaptive than P2b, and says so.** Its specification and constants
 were committed before any P2b outer number existed — `b2aae3f` at 01:24:46 UTC
-against the earliest P2b cell's recorded revision `c840627` at 01:39:48 — so no
+against runner revision `c840627` at 01:39:48, which is what the P2b cells
+recorded when they were first committed at `685764b` — so no
 outer result was available to search those constants against. But the *family*
 was chosen because `smc_v1` was the checkpoint in flight, and by the time P2c
 ran these four outer blocks had been read by v4, P2a, P2b, the P2b ablation and

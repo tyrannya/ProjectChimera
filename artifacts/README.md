@@ -245,6 +245,15 @@ three:
 | LightGBM | 2/4 | 1/4 | 1/4 | 2/4 |
 | XGBoost | 1/4 | 1/4 | 1/4 | 1/4 |
 
+**A note on the file names.** Every cell directory holds `p2b.json`, `p2b.md` and
+`outer_predictions.parquet`, including P2c's — the names are the **runner's**
+(`nn.p2b`), not the checkpoint's, and they were kept rather than renamed because
+renaming eighteen directories buys a reader nothing the file itself does not already
+say. The directory name and the columns agree: `nn.p2b_compare` checks each cell's
+`information_set` against the columns it actually flattened, and refuses a comparison
+whose arms belong to no single checkpoint. What the *label* inside says is a separate
+matter, covered directly below. Only the file name is historical.
+
 `artifacts/btc_p2b_cells_SHA256SUMS.txt` and `artifacts/btc_p2c_cells_SHA256SUMS.txt`
 freeze the eighteen cells and their per-sample predictions;
 `artifacts/btc_p2b_ablation_cells_SHA256SUMS.txt` freezes the six leave-one-family-out

@@ -930,6 +930,64 @@ def _corrupted(bound, mutate):
     return p2b_compare.planned_row_alignment(clone, frame)
 
 
+def test_an_honest_cell_anchors_to_the_snapshot(bound):
+    cell, frame = bound
+    result = p2b_compare.anchor_to_snapshot(cell, frame)
+    assert result["problems"] == []
+    assert result["checked"] == len(cell["predictions"])
+    assert result["columns"] == ["timestamp", "true_target", "future_return"]
+
+
+@pytest.mark.parametrize(
+    "column, expected",
+    [
+        ("future_return", "future_return at research row"),
+        ("true_target", "true_target at research row"),
+    ],
+)
+def test_a_persisted_value_edited_away_from_the_snapshot_is_reported(bound, column, expected):
+    """The guard against a cell that mis-joined its labels.
+
+    `recompute_cell` rebuilds a cell's metrics from its own persisted columns, so
+    a cell whose label array was mis-joined reproduces its own wrong numbers
+    exactly and reports no mismatch. This is the only check made against
+    something the run did not produce, and it had no test.
+    """
+    cell, frame = bound
+    edited = dict(cell)
+    predictions = cell["predictions"].copy(deep=True).reset_index(drop=True)
+    values = predictions[column].to_numpy().copy()
+    values[7] = values[7] + 1.0
+    edited["predictions"] = predictions.assign(**{column: values})
+    result = p2b_compare.anchor_to_snapshot(edited, frame)
+    assert result["problems"], f"{column} corruption went unreported"
+    assert expected in result["problems"][0]
+
+
+def test_a_persisted_timestamp_edited_away_from_the_snapshot_is_reported(bound):
+    cell, frame = bound
+    edited = dict(cell)
+    predictions = cell["predictions"].copy(deep=True).reset_index(drop=True)
+    stamps = pd.to_datetime(predictions["timestamp"], utc=True).to_numpy().copy()
+    stamps[7] = stamps[0]
+    edited["predictions"] = predictions.assign(timestamp=stamps)
+    result = p2b_compare.anchor_to_snapshot(edited, frame)
+    assert result["problems"] == [
+        "persisted timestamps do not match the snapshot at those rows"
+    ]
+
+
+def test_a_row_index_past_the_snapshot_is_reported_rather_than_indexed(bound):
+    cell, frame = bound
+    edited = dict(cell)
+    predictions = cell["predictions"].copy(deep=True).reset_index(drop=True)
+    rows = predictions["row_index"].to_numpy().copy()
+    rows[3] = len(frame) + 5
+    edited["predictions"] = predictions.assign(row_index=rows)
+    result = p2b_compare.anchor_to_snapshot(edited, frame)
+    assert result["problems"] and "past the snapshot" in result["problems"][0]
+
+
 def test_an_honest_cell_binds_to_every_planned_row(bound):
     cell, frame = bound
     result = p2b_compare.planned_row_alignment(cell, frame)

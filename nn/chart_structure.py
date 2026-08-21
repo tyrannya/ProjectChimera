@@ -27,12 +27,12 @@ come from :mod:`chimera.features` so the denominator these features scale agains
 is byte-identical to the one ``atr_norm`` uses in the OHLCV14 set, and
 ``_raw_pivots`` comes from :mod:`nn.smc` so this family sees the identical swing
 set §1.3 promises. A second implementation agreeing to within a rounding error
-would make every P2b comparison between the families depend on which of the two
+would make every P2c comparison between the families depend on which of the two
 produced the number.
 
 **No column is ever NaN or infinite, on any row, including row 0.**
 ``nn.data_pipeline.build_dataset`` drops rows with a NaN feature, so a NaN here
-would evaluate the information sets on different samples and confound P2b with
+would evaluate the information sets on different samples and confound P2c with
 the sample universe rather than the information. Where state does not exist yet
 the value is §5's declared default, and the two availability flags of §4 F carry
 the "not yet" — they exist precisely because ``0.0`` is a legal signed distance.
@@ -54,8 +54,11 @@ from nn.smc import _raw_pivots
 
 CHART_SPEC_VERSION: str = "chart_structure_v1"
 
-#: Family name -> its columns, the six families of §4 in order. The P2b ablation
-#: drops one family at a time, so the grouping is part of the contract too.
+#: Family name -> its columns, the six families of §4 in order. A leave-one-family-out
+#: ablation drops one family at a time, so the grouping is part of the contract too.
+#: None was run for P2c; the grouping is declared in advance either way, because
+#: choosing the groups after seeing which columns mattered would make the ablation
+#: a search wearing a diagnostic's name.
 CHART_FEATURE_FAMILIES: dict[str, tuple[str, ...]] = {
     "range": (
         "chart_window_fill",
@@ -115,10 +118,11 @@ _REQUIRED_COLUMNS = ("open", "high", "low", "close")
 class ChartSpec:
     """The predeclared constants of §1.3.
 
-    Frozen because they were fixed before any P2b outer-validation result was
-    observed and tuning them against one is forbidden; a mutable spec would make
-    "the constants were not searched" a claim about discipline rather than about
-    the object recorded in the artifact.
+    Frozen because they were fixed before any P2b *or* P2c outer-validation result
+    was observed — the spec landed at ``b2aae3f``, eleven minutes before the
+    earliest P2b cell's recorded revision — and tuning them against one is
+    forbidden; a mutable spec would make "the constants were not searched" a claim
+    about discipline rather than about the object recorded in the artifact.
     """
 
     atr_period: int = 14

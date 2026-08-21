@@ -111,10 +111,16 @@ P2b ablation and the P2b regime description. A positive P2c would have needed
 heavy discounting; a negative one needs none, which is the asymmetry that makes
 negative results the cheap ones to trust.
 
-The control was re-run a second time and again reproduced P2a's frozen seed-42
-XGBoost evidence exactly — under a *different source digest*, because wiring a
-second feature family changed the module `nn.p2b` imports. Adding a family does
-not perturb the control.
+The control was re-run for P2c rather than copied from P2b, and again reproduced
+P2a's frozen seed-42 XGBoost evidence exactly. The comparison that carries weight
+is against **P2a**, not between the two checkpoints: P2a read the canonical
+56,790-row dataset through `nn.benchmark`, and these read the 45,802-row
+committed snapshot through `nn.p2b` and its alignment layer. Identical fold
+returns across two runners and two data paths is evidence that adding a feature
+family does not perturb the control. (When P2c first ran it also carried a
+different source digest from P2b's; after the provenance remediation both
+checkpoints run one revision of the runner, so that particular difference is
+gone and the P2a comparison is the one doing the work.)
 
 **Do not respond to this by tuning `chart_structure_v1`'s constants either.**
 `WIN_SHORT` and `WIN_LONG` were fixed in advance and searching them against

@@ -1,11 +1,19 @@
-"""P2b: read the nine cells, recompute them, and compare information sets.
+"""Read one checkpoint's nine cells, recompute them, and compare information sets.
 
-    python -m nn.p2b_compare --runs artifacts/benchmark/btc_p2b_* \
+    python -m nn.p2b_compare \
+        --runs artifacts/benchmark/btc_p2b_{ohlcv14,smc_v1,ohlcv14_plus_smc_v1}_* \
         --out artifacts/benchmark/btc_p2b_comparison
 
-Each :mod:`nn.p2b` run covers one information set and one model. This joins
-them into the answer P2b was asked for, and does three things on the way that a
-plain aggregator would not:
+Each :mod:`nn.p2b` run covers one information set and one model. This joins them
+into the answer their checkpoint was asked for, and does four things on the way
+that a plain aggregator would not:
+
+*it refuses to aggregate cells that answer different questions*
+    The checkpoint is a property of the cell, not of this module, and
+    :func:`checkpoint_of` requires the cells to agree on it, requires every arm
+    present to belong to it, and requires each cell's stated question to be the
+    one its checkpoint asks. A glob wide enough to catch both checkpoints' cells
+    fails closed rather than averaging two feature families into one table.
 
 *it refuses to aggregate cells that did not score the same rows*
     Every cell records its own baselines, its own economic references and a
@@ -14,6 +22,13 @@ plain aggregator would not:
     Checking them is a direct, data-level proof of the parity claim — the claim
     survives being split across nine processes precisely because nothing but the
     data could make these agree.
+
+*it binds the persisted rows to the rows the fold plan selected*
+    ``prove_alignment`` recorded a SHA-256 over each block's sample index before
+    anything was fitted. :func:`planned_row_alignment` re-derives that digest
+    from the persisted ``row_index`` column and requires equality, because a
+    scorer that persisted a consistent but *wrong* selection satisfies every
+    other check here.
 
 *it recomputes, from the persisted predictions, every number that can be*
     ``outer_predictions.parquet`` holds the probability, the selected action,
@@ -114,7 +129,9 @@ def load_cell(run_dir: Path) -> dict[str, Any]:
     """One cell: its artifact, its predictions, and where they came from."""
     artifact_path = run_dir / ARTIFACT_NAME
     if not artifact_path.is_file():
-        raise ComparisonError(f"{run_dir} has no {ARTIFACT_NAME}; it is not a P2b cell")
+        raise ComparisonError(
+            f"{run_dir} has no {ARTIFACT_NAME}; it is not an information-set cell"
+        )
     payload = json.loads(artifact_path.read_text())
     # Which checkpoint this is comes from the cell, and the cells must then agree
     # — see `checkpoint_of`. What is refused here is a cell that names no
