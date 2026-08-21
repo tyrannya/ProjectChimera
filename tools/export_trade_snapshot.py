@@ -363,12 +363,17 @@ def download_archive(archive: Archive, dest: Path, *, timeout: int = 300) -> dic
 
 def _member(zf: zipfile.ZipFile, archive_name: str) -> str:
     names = [name for name in zf.namelist() if not name.endswith("/")]
-    if len(names) != 1:
-        raise TradeExportError(
-            f"{archive_name} holds {len(names)} files ({names[:4]}); this tool expects "
-            "exactly one CSV per archive and will not guess which one is the trades"
-        )
-    return names[0]
+    if len(names) == 1:
+        return names[0]
+
+    expected = archive_name.removesuffix(".zip") + ".csv"
+    if expected in names:
+        return expected
+
+    raise TradeExportError(
+        f"{archive_name} holds {len(names)} files ({names[:4]}); expected canonical "
+        f"root member {expected!r} and will not guess which one is the trades"
+    )
 
 
 def _has_header(first_line: str) -> bool:
