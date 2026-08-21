@@ -1,4 +1,6 @@
-# Information-set benchmark — do `chart_structure_v1` or `ohlcv14_plus_chart_structure_v1` add information beyond `ohlcv14`?
+# P2c — do `chart_structure_v1` or `ohlcv14_plus_chart_structure_v1` add information beyond `ohlcv14`?
+
+**Research question:** does causal chart_structure_v1, alone or combined with OHLCV14, add usable information beyond OHLCV14?
 
 3 information sets, 3 untuned models, four temporal outer
 folds, one sample universe. `ohlcv14` is the control, re-run under this code
@@ -19,8 +21,7 @@ estimators are deterministic given their inputs, so no seed replication appears
 anywhere below:
 a second seed would copy this evidence rather than add to it.
 
-**Adaptive status:** P2b was designed after P2a's outer results had been seen. Its
-outer blocks are adaptive research evidence, not a pristine out-of-sample test.
+**Adaptive status:** P2c was designed after P2b's outer results had been seen, and by the time it ran these four outer blocks had already been read by v4, P2a, P2b, the P2b ablation and the P2b regime description. Its constants were fixed before its own outer results were read, but the family was chosen because the previous one failed, so this is exploratory adaptive evidence: it generates hypotheses and cannot confirm one.
 
 ## Sample-universe parity
 
@@ -29,12 +30,36 @@ every cell scored the same outer rows; a difference between two cells can only b
 - research contract and its hash
 - snapshot identity and semantic hashes
 - fold sizes and periods
+- the research checkpoint each cell says it answers
 - per-fold sample-index hashes from the alignment proof
 - label horizon and costs
 - threshold grid, objective and trade floor
 - combined feature-spec hash
 - majority and momentum baseline outer reports
 - CASH and buy-and-hold economic references
+
+## Persisted rows are the planned rows
+
+Each cell's persisted `row_index` sequence was compared against the outer sample
+index its fold plan selected before anything was fitted — count, uniqueness,
+strict order, first and last row, and a SHA-256 over the exact `int64` bytes:
+
+- **9 cells, 36 folds, 170451 rows checked**
+- missing folds: **0**
+- unplanned folds: **0**
+- non integer row index: **0**
+- duplicate rows: **0**
+- unsorted rows: **0**
+- count mismatches: **0**
+- sample index hash mismatches: **0**
+- first last mismatches: **0**
+- cross fold rows: **0**
+- snapshot value mismatches: **0**
+
+A wrong sample chosen consistently — every row's own timestamp, label and return
+copied correctly from the snapshot — passes the anchoring check below and fails
+this one.
+
 
 ## Independent recomputation
 

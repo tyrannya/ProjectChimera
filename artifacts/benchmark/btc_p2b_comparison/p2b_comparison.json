@@ -1,6 +1,19 @@
 {
   "checkpoint": "P2b",
-  "question": "does causal market structure (smc_v1) add usable information beyond the OHLCV14 information set?",
+  "checkpoint_identity": "recovered from the arms; these cells predate the field in which a cell states its own research question, and all of them are labelled 'P2b'",
+  "question": "does causal smc_v1, alone or combined with OHLCV14, add usable information beyond OHLCV14?",
+  "evidence_class": "derived",
+  "derived_from": [
+    "artifacts/benchmark/btc_p2b_ohlcv14_lightgbm",
+    "artifacts/benchmark/btc_p2b_ohlcv14_logistic_regression",
+    "artifacts/benchmark/btc_p2b_ohlcv14_plus_smc_v1_lightgbm",
+    "artifacts/benchmark/btc_p2b_ohlcv14_plus_smc_v1_logistic_regression",
+    "artifacts/benchmark/btc_p2b_ohlcv14_plus_smc_v1_xgboost",
+    "artifacts/benchmark/btc_p2b_ohlcv14_xgboost",
+    "artifacts/benchmark/btc_p2b_smc_v1_lightgbm",
+    "artifacts/benchmark/btc_p2b_smc_v1_logistic_regression",
+    "artifacts/benchmark/btc_p2b_smc_v1_xgboost"
+  ],
   "control": "ohlcv14",
   "contract": {
     "contract_id": "btc-usdt-1h-gen1",
@@ -368,6 +381,7 @@
       "research contract and its hash",
       "snapshot identity and semantic hashes",
       "fold sizes and periods",
+      "the research checkpoint each cell says it answers",
       "per-fold sample-index hashes from the alignment proof",
       "label horizon and costs",
       "threshold grid, objective and trade floor",
@@ -390,6 +404,23 @@
     "rows_checked": 170451,
     "problems": 0,
     "note": "every scored row's timestamp, label and realised return was compared against the committed snapshot at the row index the cell recorded \u2014 the one check made against data the run did not produce"
+  },
+  "planned_row_alignment": {
+    "cells_checked": 9,
+    "folds_checked": 36,
+    "rows_checked": 170451,
+    "missing_folds": 0,
+    "unplanned_folds": 0,
+    "non_integer_row_index": 0,
+    "duplicate_rows": 0,
+    "unsorted_rows": 0,
+    "count_mismatches": 0,
+    "sample_index_hash_mismatches": 0,
+    "first_last_mismatches": 0,
+    "cross_fold_rows": 0,
+    "snapshot_value_mismatches": 0,
+    "problems": 0,
+    "note": "the persisted row_index sequence was compared against the sample index the fold plan selected before anything was fitted, per fold: count, uniqueness, order, first and last row, and a SHA-256 over the exact int64 bytes"
   },
   "independent_recompute": {
     "cells_checked": 9,
