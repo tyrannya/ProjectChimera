@@ -130,7 +130,13 @@ def _canonical_chunk(chunk: Any, kind: str) -> np.ndarray:
                 "the date column contains missing or unparseable timestamps, so the "
                 "rows a research input covers cannot be stated"
             )
-        return np.asarray(stamps.asi8, dtype=np.int64).astype("<i8", copy=False)
+        # `.as_unit("ns")` is what makes the nanosecond claim above true rather
+        # than incidental. `asi8` reports the index's *own* resolution, and
+        # pandas 2 happened to coerce everything to nanoseconds while pandas 3
+        # preserves whatever the Parquet file stored — so the same candles read
+        # by two pandas versions hashed to two different identities, which is
+        # precisely the failure a semantic fingerprint exists to rule out.
+        return np.asarray(stamps.as_unit("ns").asi8, dtype=np.int64).astype("<i8", copy=False)
     if kind == "i8":
         return np.asarray(chunk, dtype=np.int64).astype("<i8", copy=False)
     # ``+ 0.0`` both copies (so the NaN fold below cannot touch the caller's

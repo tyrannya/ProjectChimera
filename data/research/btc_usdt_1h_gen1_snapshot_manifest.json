@@ -27,7 +27,7 @@
     "rows": 49551,
     "start": "2020-01-01T00:00:00+00:00",
     "end": "2025-08-27T22:00:00+00:00",
-    "semantic_hash": "8724f622e666ef1fb12fbbefd5fcddd5b885f36d629f25f95934fa469239145e",
+    "semantic_hash": "c62de8d92a1eb80397d17ff89e480005d381525ec14c5f6519efddbc2cbe86ed",
     "sha256": "04f9748e09adfd4cb38dd84898a43aa7eb5de1ff9f6aa938e3e1302b20cefeee",
     "columns": [
       "date",
@@ -47,7 +47,7 @@
     ],
     "start": "2020-01-04T06:00:00+00:00",
     "end": "2025-05-19T07:00:00+00:00",
-    "semantic_prefix_hash": "59ba439c266fa32d698d71b8e99048c6e19c07b90bc9f075e48b1cfb7977484c",
+    "semantic_prefix_hash": "d5738f0cc5c0927e91425dd9ab6ef1fa44bda45d07ca15a729167a7de45f7545",
     "sha256": "424edf2c16a6e7363aca7faeecbfdd9f50ca587756502b519d6efb375abf55c1",
     "metadata_path": "data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet.meta.json",
     "metadata_sha256": "356d8c1a8c3fcf28cb67e2707e18d5309602d6c40f73ed17ef23fbf1734cb7bc"
