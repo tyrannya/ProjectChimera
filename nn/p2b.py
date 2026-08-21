@@ -91,11 +91,13 @@ from nn.information_sets import (
     OHLCV14,
     P2B_INFORMATION_SETS,
     P2C_INFORMATION_SETS,
+    P3_INFORMATION_SETS,
     ablation_set_names,
     AlignedResearchSamples,
     build_information_set_views,
     checkpoint as load_checkpoint,
     feature_spec_identity,
+    microstructure_spec_identity,
 )
 from nn.research_contract import ContractScopeError, ResearchContract, load_contract
 from nn.simple_models import (
@@ -116,6 +118,10 @@ from nn.train import (
 from nn.walkforward import FoldPlan, REFERENCES_KEY, SUMMARY_METRICS, plan_nested_folds, spread
 from tools.freeze_evidence import PRIMARY
 from tools.verify_research_snapshot import SnapshotVerificationError, verify_snapshot
+from tools.verify_trade_snapshot import (
+    TradeSnapshotVerificationError,
+    verify_trade_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +134,11 @@ PREDICTIONS_NAME = "outer_predictions.parquet"
 CONTROL_SET = OHLCV14
 
 DEFAULT_MANIFEST = Path("data/research/btc_usdt_1h_gen1_snapshot_manifest.json")
+
+#: P3's second source. Only read when the checkpoint under test needs it: P2b and
+#: P2c are functions of the candles alone, and a run that loaded a trade table it
+#: never used would record a provenance it did not have.
+DEFAULT_TRADE_MANIFEST = Path("data/research/btc_usdt_1h_gen1_trade_snapshot_manifest.json")
 
 #: The geometry P2a ran under. Fractions of the *canonical* research region, not
 #: of the snapshot: the snapshot is a truncated prefix, and taking fractions of
@@ -287,6 +298,49 @@ def load_snapshot(
     spine, ds_meta = load_dataset(spine_path)
     raw = pd.read_parquet(raw_path)
     return spine, ds_meta, raw, manifest
+
+
+def load_trade_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Verify the committed trade snapshot end to end, then read it.
+
+    The verification is :func:`tools.verify_trade_snapshot.verify_trade_snapshot`
+    itself — the same checks ``make verify-trade-snapshot`` runs, not a second
+    reading of the same manifest. It recomputes every claim: schema, contract
+    identity and hash, the sealed instant, the file digest, the aggregation spec,
+    the semantic hash, the table's internal consistency, the declared trade
+    counts, the coverage claims, the binding to the OHLCV snapshot, and that
+    every spine hour has a trade row.
+
+    It runs *here*, in the only function that reads the trade source, rather than
+    in the operator's ``make`` target, because a target is a convention and
+    ``python -m nn.p2b`` bypasses it. A corrupt trade snapshot must not reach a
+    model fit by any path, and the only way to guarantee that is for the load to
+    fail.
+
+    A failure names the check and never the data. The seal check reports how many
+    hours are at or after the sealed instant and nothing about them.
+    """
+    if not Path(manifest_path).is_file():
+        raise SnapshotError(
+            f"P3 needs a trade snapshot and there is none at {manifest_path}. It is "
+            "produced by tools.export_trade_snapshot from Binance's public aggTrades "
+            "archive; see docs/microstructure_v1.md §1.1. Refusing to fit a "
+            "microstructure arm without the source it is defined over."
+        )
+    try:
+        checks = verify_trade_snapshot(manifest_path)
+    except TradeSnapshotVerificationError as exc:
+        raise SnapshotError(
+            f"the trade snapshot at {manifest_path} failed verification ({exc}). "
+            "Refusing to fit a model on data whose own manifest does not describe it."
+        ) from exc
+    logger.info(
+        "trade snapshot verified: %d checks passed against %s", len(checks), manifest_path
+    )
+    manifest = json.loads(Path(manifest_path).read_text())
+    root = Path(manifest_path).resolve().parent.parent.parent
+    aggregates = pd.read_parquet(root / manifest["aggregate"]["path"])
+    return aggregates, manifest
 
 
 def plan_from_manifest(
@@ -699,6 +753,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument(
+        "--trade-manifest",
+        type=Path,
+        default=DEFAULT_TRADE_MANIFEST,
+        help="the P3 trade snapshot. Read only by checkpoints whose arms need it.",
+    )
+    parser.add_argument(
         # Required, and not inferred from the information set: `ohlcv14` is the
         # control of both checkpoints, so the arms cannot name the question on
         # their own. A run that will not say which question it is answering
@@ -716,7 +776,10 @@ def build_argparser() -> argparse.ArgumentParser:
         # removed, and what they produce is post-hoc diagnostic evidence rather
         # than canonical P2b evidence.
         choices=sorted(
-            set(P2B_INFORMATION_SETS) | set(P2C_INFORMATION_SETS) | set(ablation_set_names())
+            set(P2B_INFORMATION_SETS)
+            | set(P2C_INFORMATION_SETS)
+            | set(P3_INFORMATION_SETS)
+            | set(ablation_set_names())
         ),
         required=True,
     )
@@ -765,9 +828,51 @@ def main(argv: list[str] | None = None) -> int:
             f"to {contract.contract_hash}"
         )
 
+    trade_aggregates: pd.DataFrame | None = None
+    trade_provenance: dict[str, Any] | None = None
+    if checkpoint.trade_source:
+        trade_aggregates, trade_manifest = load_trade_snapshot(args.trade_manifest)
+        if trade_manifest["contract"]["contract_hash"] != contract.contract_hash:
+            raise SnapshotError(
+                "the trade snapshot was exported under contract hash "
+                f"{trade_manifest['contract']['contract_hash']} but "
+                f"{args.research_contract} hashes to {contract.contract_hash}"
+            )
+        if (
+            trade_manifest["alignment"]["ohlcv_processed_semantic_prefix_hash"]
+            != manifest["processed_outer_coverage"]["semantic_prefix_hash"]
+        ):
+            raise SnapshotError(
+                "the trade snapshot was aligned to a different OHLCV research input "
+                "than the one this run loaded; two sources that were never aligned to "
+                "each other must not be joined into one information set"
+            )
+        source = trade_manifest["source"]
+        trade_provenance = {
+            "manifest": str(args.trade_manifest),
+            "snapshot_schema": trade_manifest["snapshot_schema"],
+            "venue": source["venue"],
+            "market_type": source["market_type"],
+            "symbol": source["symbol"],
+            "source_type": source["source_type"],
+            "semantic_hash": trade_manifest["aggregate"]["semantic_hash"],
+            "aggregation_spec_hash": trade_manifest["aggregation"]["aggregation_spec_hash"],
+            "hours": trade_manifest["aggregate"]["rows"],
+            "start": trade_manifest["aggregate"]["start"],
+            "end": trade_manifest["aggregate"]["end"],
+            "trades": trade_manifest["trade_stream"]["trades"],
+            "archives": trade_manifest["acquisition"]["archive_count"],
+            "contains_styx": trade_manifest["contains_styx"],
+            "ohlcv_binding": trade_manifest["alignment"][
+                "ohlcv_processed_semantic_prefix_hash"
+            ],
+        }
+
     folds, sizes = plan_from_manifest(manifest, len(spine))
     names = tuple(dict.fromkeys((CONTROL_SET, args.information_set)))
-    aligned = build_information_set_views(spine, ds_meta, raw, names=names)
+    aligned = build_information_set_views(
+        spine, ds_meta, raw, names=names, trade_aggregates=trade_aggregates
+    )
     alignment = aligned.prove_alignment(folds, args.seq_len)
 
     spec = next(s for s in SIMPLE_MODELS if s.name == args.model)
@@ -828,6 +933,20 @@ def main(argv: list[str] | None = None) -> int:
             "sealed_test_start": contract.sealed_test_start.isoformat(),
         },
         "feature_spec": feature_spec_identity(aligned.smc_spec, ds_meta, aligned.chart_spec),
+        # Present only for a checkpoint that reads trades. A P2b or P2c cell that
+        # recorded `null` here would be claiming a relationship to a source it
+        # never opened, and would no longer be byte-comparable with the frozen
+        # cells those checkpoints already produced.
+        **(
+            {
+                "trade_snapshot": trade_provenance,
+                "microstructure_spec": microstructure_spec_identity(
+                    aligned.micro_spec, trade_provenance or {}
+                ),
+            }
+            if checkpoint.trade_source and aligned.micro_spec is not None
+            else {}
+        ),
         "code": code_revision(),
         "config": {
             "seed": args.seed,

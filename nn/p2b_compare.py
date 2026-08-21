@@ -277,8 +277,22 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 "every repository module the process imported, so a documentation "
                 "commit does not split a batch and an uncommitted edit does not hide."
             )
-        for key in ("contract", "sizes", "target", "threshold_selection", "snapshot"):
-            if payload[key] != ref[key]:
+        # `.get`, not `[...]`: `trade_snapshot` and `microstructure_spec` exist
+        # only for a checkpoint whose evidence is defined against the trade
+        # source, and a P2b cell that has neither must still compare equal to
+        # another P2b cell that has neither. What must never pass is one cell
+        # carrying a source identity and another carrying a different one — or
+        # none, which is the same failure wearing an absence.
+        for key in (
+            "contract",
+            "sizes",
+            "target",
+            "threshold_selection",
+            "snapshot",
+            "trade_snapshot",
+            "microstructure_spec",
+        ):
+            if payload.get(key) != ref.get(key):
                 raise ComparisonError(
                     f"{described(cell)} and {described(reference)} disagree on {key!r}"
                 )
@@ -320,6 +334,9 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "identical_across_cells": [
             "research contract and its hash",
             "snapshot identity and semantic hashes",
+            "trade-source identity, aggregation spec and microstructure spec, where a "
+            "checkpoint has one",
+            "the same absence of a trade source, where it has none",
             "fold sizes and periods",
             "the research checkpoint each cell says it answers",
             "per-fold sample-index hashes from the alignment proof",

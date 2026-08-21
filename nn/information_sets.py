@@ -51,6 +51,13 @@ from nn.chart_structure import (
     chart_feature_columns,
     compute_chart_features_segmented,
 )
+from nn.microstructure import (
+    MICROSTRUCTURE_FEATURE_FAMILIES,
+    MICROSTRUCTURE_SPEC_VERSION,
+    MicrostructureSpec,
+    compute_microstructure_features,
+    microstructure_feature_columns,
+)
 from nn.smc import (
     SMC_FEATURE_FAMILIES,
     SMC_SPEC_VERSION,
@@ -71,6 +78,11 @@ COMBINED = "ohlcv14_plus_smc_v1"
 CHART_V1 = "chart_structure_v1"
 #: OHLCV14 plus chart structure — P2c's combined arm.
 OHLCV14_PLUS_CHART = "ohlcv14_plus_chart_structure_v1"
+#: Causal trade-flow microstructure alone (docs/microstructure_v1.md). The first
+#: information set in this repository that is not a function of the hourly candle.
+MICROSTRUCTURE_V1 = "microstructure_v1"
+#: OHLCV14 plus trade-flow microstructure — P3's combined arm.
+OHLCV14_PLUS_MICROSTRUCTURE = "ohlcv14_plus_microstructure_v1"
 
 
 class AlignmentError(AssertionError):
@@ -145,6 +157,24 @@ def ohlcv14_plus_chart_set() -> InformationSet:
     )
 
 
+def microstructure_v1_set() -> InformationSet:
+    return InformationSet(
+        name=MICROSTRUCTURE_V1,
+        columns=tuple(microstructure_feature_columns()),
+        families={k: tuple(v) for k, v in MICROSTRUCTURE_FEATURE_FAMILIES.items()},
+    )
+
+
+def ohlcv14_plus_microstructure_set() -> InformationSet:
+    ohlcv = ohlcv14_set()
+    micro = microstructure_v1_set()
+    return InformationSet(
+        name=OHLCV14_PLUS_MICROSTRUCTURE,
+        columns=ohlcv.columns + micro.columns,
+        families={**ohlcv.families, **micro.families},
+    )
+
+
 def combined_set() -> InformationSet:
     ohlcv = ohlcv14_set()
     smc = smc_v1_set()
@@ -165,6 +195,12 @@ P2B_INFORMATION_SETS = (OHLCV14, SMC_V1, COMBINED)
 #: measuring against it.
 P2C_INFORMATION_SETS = (OHLCV14, CHART_V1, OHLCV14_PLUS_CHART)
 
+#: The three arms of P3, in report order. The control is `ohlcv14` again, and for
+#: the same reason P2c used it: three families have now failed to improve on it,
+#: so it remains the best information set this repository has — by default rather
+#: than by merit, which is exactly why the next family is measured against it.
+P3_INFORMATION_SETS = (OHLCV14, MICROSTRUCTURE_V1, OHLCV14_PLUS_MICROSTRUCTURE)
+
 
 #: Separator between the combined set and the family an ablation removed.
 ABLATION_PREFIX = f"{COMBINED}_minus_"
@@ -184,6 +220,8 @@ def information_set(name: str) -> InformationSet:
         COMBINED: combined_set,
         CHART_V1: chart_v1_set,
         OHLCV14_PLUS_CHART: ohlcv14_plus_chart_set,
+        MICROSTRUCTURE_V1: microstructure_v1_set,
+        OHLCV14_PLUS_MICROSTRUCTURE: ohlcv14_plus_microstructure_set,
     }
     if name in builders:
         return builders[name]()
@@ -227,6 +265,14 @@ class Checkpoint:
     arms: tuple[str, ...]
     #: Extra arms this checkpoint accepts that are not canonical evidence.
     diagnostic_arms: tuple[str, ...] = ()
+    #: Whether this checkpoint's evidence is defined against the trade source.
+    #:
+    #: True for every arm of such a checkpoint, including its OHLCV14 control.
+    #: The control is not a P2 cell that happens to be re-run here: it is P3
+    #: evidence, it must carry the same trade-source identity as the arms it is
+    #: compared against, and `nn.p2b_compare` refuses a batch whose cells
+    #: disagree about which source they were measured under.
+    trade_source: bool = False
     #: What had already been read when this checkpoint was designed.
     adaptive_status: str = ""
 
@@ -284,8 +330,32 @@ P2C = Checkpoint(
     ),
 )
 
+#: P3. The first checkpoint whose input is not the hourly candle.
+#:
+#: Designed after P2b's and P2c's outer results had been seen, so it is at least
+#: as adaptive as P2c. What changes is the *source*: `microstructure_v1` is
+#: computed from Binance's public aggTrades archive rather than from OHLCV, which
+#: is why this checkpoint was worth spending on after two negative feature
+#: families rather than fitting a third transformation of the same five numbers.
+P3 = Checkpoint(
+    name="P3",
+    family=MICROSTRUCTURE_V1,
+    control=OHLCV14,
+    arms=P3_INFORMATION_SETS,
+    trade_source=True,
+    adaptive_status=(
+        "P3 was designed after P2b's and P2c's outer results had been seen, and by the "
+        "time it ran these four outer blocks had already been read by v4, P2a, P2b, the "
+        "P2b ablation, the P2b regime description and P2c. Its constants were fixed "
+        "before its own outer results were read, and its information source is new "
+        "rather than another transformation of the same candles — but the blocks are "
+        "the same blocks, so this is exploratory adaptive evidence: it generates "
+        "hypotheses and cannot confirm one"
+    ),
+)
+
 #: Every checkpoint this runner can execute, by name.
-CHECKPOINTS: dict[str, Checkpoint] = {c.name: c for c in (P2B, P2C)}
+CHECKPOINTS: dict[str, Checkpoint] = {c.name: c for c in (P2B, P2C, P3)}
 
 
 def checkpoint(name: str) -> Checkpoint:
@@ -319,6 +389,10 @@ class AlignedResearchSamples:
     columns: dict[str, np.ndarray]
     #: Independent re-derivation of the join, from :func:`_join_evidence`.
     join_evidence: dict[str, Any]
+    #: The microstructure constants this run used, when a trade source was
+    #: supplied. ``None`` for a P2b or P2c run, which reads no trade data at all
+    #: and must not record a spec it never applied.
+    micro_spec: MicrostructureSpec | None = None
 
     def names(self) -> list[str]:
         return list(self.views)
@@ -464,6 +538,8 @@ def build_information_set_views(
     *,
     smc_spec: SMCSpec | None = None,
     chart_spec: ChartSpec | None = None,
+    micro_spec: MicrostructureSpec | None = None,
+    trade_aggregates: pd.DataFrame | None = None,
     extra_sets: Mapping[str, InformationSet] | None = None,
 ) -> AlignedResearchSamples:
     """Build one aligned view per named information set.
@@ -476,9 +552,17 @@ def build_information_set_views(
     first row has to have been built from the same history OHLCV14's indicators
     warmed up over.
 
+    ``trade_aggregates`` is P3's second source: the hourly trade table from the
+    committed trade snapshot, covering every spine timestamp and the warm-up
+    hours before the first one. It is optional because P2b and P2c read no trade
+    data at all, and a run that was handed none may not produce a microstructure
+    column — asking for a P3 arm without a trade source is a refusal, not an
+    empty matrix.
+
     Fails closed on anything that would move a row: a spine timestamp missing
-    from the raw candles, a NaN or infinity in a computed feature, a spine
-    segment whose rows are not contiguous in the raw candles.
+    from the raw candles or from the trade aggregates, a NaN or infinity in a
+    computed feature, a spine segment whose rows are not contiguous in the raw
+    candles or in the trade hours.
     """
     smc_spec = smc_spec or SMCSpec()
     chart_spec = chart_spec or ChartSpec()
@@ -567,8 +651,23 @@ def build_information_set_views(
     for position, name in enumerate(chart_feature_columns()):
         columns[name] = chart_values[:, position]
 
+    micro_evidence: dict[str, Any] = {"trade_source": "absent; no P3 arm may be built"}
+    applied_micro_spec: MicrostructureSpec | None = None
+    if trade_aggregates is not None:
+        applied_micro_spec = micro_spec or MicrostructureSpec()
+        columns, micro_evidence = _join_microstructure(
+            spine, spine_dates, trade_aggregates, applied_micro_spec, columns
+        )
+
     evidence = _join_evidence(spine, raw, raw_rows, columns, timeframe)
-    if evidence["matches_under_plus_one_shift"] or evidence["matches_under_minus_one_shift"]:
+    evidence["microstructure"] = micro_evidence
+    degenerate = [
+        evidence["matches_under_plus_one_shift"],
+        evidence["matches_under_minus_one_shift"],
+        micro_evidence.get("matches_under_plus_one_shift", False),
+        micro_evidence.get("matches_under_minus_one_shift", False),
+    ]
+    if any(degenerate):
         raise ValueError(
             "the join check cannot tell a correct join from a shifted one on this data, "
             "so it is not evidence; it must not be reported as though it were"
@@ -580,8 +679,16 @@ def build_information_set_views(
         available.update(extra_sets)
 
     views: dict[str, ResearchData] = {}
+    micro_columns = set(microstructure_feature_columns())
     for name, spec in available.items():
         missing = [c for c in spec.columns if c not in columns]
+        if missing and set(missing) <= micro_columns:
+            raise ValueError(
+                f"information set {name!r} needs {len(missing)} microstructure column(s) "
+                "and this run was given no trade source. A P3 arm is built from the "
+                "committed trade snapshot; pass trade_aggregates, or run a checkpoint "
+                "whose arms are functions of the candles alone."
+            )
         if missing:
             raise ValueError(f"information set {name!r} needs unavailable columns: {missing}")
         views[name] = ResearchData(
@@ -600,6 +707,7 @@ def build_information_set_views(
         n_rows=len(spine),
         columns=columns,
         join_evidence=evidence,
+        micro_spec=applied_micro_spec,
     )
 
 
@@ -716,6 +824,173 @@ def _join_evidence(
     }
 
 
+def _join_microstructure(
+    spine: pd.DataFrame,
+    spine_dates: pd.Series,
+    trade_aggregates: pd.DataFrame,
+    spec: MicrostructureSpec,
+    columns: dict[str, np.ndarray],
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """Compute ``microstructure_v1`` and put each value on the candle it describes.
+
+    The join is the step where a trade-flow value could end up on the wrong hour,
+    and a shift of one row is both the most likely mistake and the most damaging:
+    it is a one-hour look-ahead on all 32 columns at once, and nothing else in
+    the alignment proof can see it, because every other array is shared between
+    the views by object identity.
+
+    Causality is made structural rather than inherited, the same way the raw
+    candles are truncated above. The aggregate table is cut at the last hour the
+    spine uses *before* the engine runs, so a future feature written with a
+    centred window could not reach a later hour even if it tried. Trailing
+    windows are unaffected: they only ever look backwards.
+    """
+    aggregates = trade_aggregates.reset_index(drop=True).copy()
+    if "date" not in aggregates.columns:
+        raise ValueError("the trade aggregate table has no 'date' column")
+    aggregates["date"] = pd.to_datetime(aggregates["date"], utc=True)
+    if not aggregates["date"].is_monotonic_increasing or not aggregates["date"].is_unique:
+        raise ValueError("trade aggregate hours must be sorted and free of duplicates")
+
+    last_used = spine_dates.iloc[-1]
+    aggregates = aggregates.loc[aggregates["date"] <= last_used].reset_index(drop=True)
+    if aggregates.empty:
+        raise ValueError(
+            "no trade aggregate hour is at or before the spine's last row; the trade "
+            "source and the candles do not describe the same period"
+        )
+
+    # Positional join, not a merge: a merge that silently dropped or duplicated a
+    # row would be indistinguishable from a clean one in the result's shape.
+    agg_row_of = pd.Series(
+        np.arange(len(aggregates), dtype=np.int64), index=aggregates["date"].to_numpy()
+    )
+    agg_rows = agg_row_of.reindex(spine_dates.to_numpy())
+    if agg_rows.isna().any():
+        missing = int(agg_rows.isna().sum())
+        first = spine_dates[agg_rows.isna().to_numpy()].iloc[0]
+        raise ValueError(
+            f"{missing} research row(s) have no trade-aggregate hour (first: {first}). "
+            "The trade source does not cover the candles it is being aligned to, and a "
+            "microstructure row for those candles would have to be invented."
+        )
+    agg_rows = agg_rows.to_numpy(dtype=np.int64)
+
+    micro = compute_microstructure_features(aggregates, spec)
+    names = microstructure_feature_columns()
+    values = micro[names].to_numpy(dtype=np.float64)[agg_rows]
+    if not np.isfinite(values).all():
+        bad = np.argwhere(~np.isfinite(values))
+        column = names[int(bad[0][1])]
+        raise ValueError(
+            f"{len(bad)} non-finite microstructure value(s), first in column {column!r} at "
+            "research row "
+            f"{int(bad[0][0])}. microstructure_v1 guarantees a finite value on every row "
+            "(docs/microstructure_v1.md §5); a NaN here would silently change which rows "
+            "the information sets are compared on."
+        )
+    for position, name in enumerate(names):
+        columns[name] = values[:, position]
+
+    _check_trade_segment_contiguity(spine, agg_rows)
+    return columns, _microstructure_join_evidence(aggregates, agg_rows, spine_dates, columns)
+
+
+def _microstructure_join_evidence(
+    aggregates: pd.DataFrame,
+    agg_rows: np.ndarray,
+    spine_dates: pd.Series,
+    columns: dict[str, np.ndarray],
+) -> dict[str, Any]:
+    """Re-derive two microstructure columns from the source, two different ways.
+
+    Two, and by two different join mechanisms, because they fail differently:
+
+    * ``ms_qty_imbalance`` is rebuilt **positionally**, from the aggregate rows
+      the join selected. It is local to one hour — ``(2·buy_qty − qty) / qty``,
+      no window and no state — so it can be recomputed in one line and cannot
+      agree under a shift.
+    * ``ms_log_trade_count`` is rebuilt **by timestamp**, through a lookup keyed
+      on the hour itself rather than on a row number. A positional join that was
+      off by one would satisfy neither, but a positional check alone would also
+      pass if ``agg_rows`` and the re-derivation were shifted together.
+
+    A ``+1`` and a ``−1`` shift are both scored, so the evidence records not just
+    that the join matched but that it would not have matched if it were wrong.
+    """
+    eps = MicrostructureSpec().eps
+    qty = aggregates["qty"].to_numpy(dtype=np.float64)
+    buy_qty = aggregates["buy_qty"].to_numpy(dtype=np.float64)
+    expected = ((2.0 * buy_qty - qty) / np.maximum(qty, eps))[agg_rows]
+    joined = columns["ms_qty_imbalance"]
+    if not np.allclose(joined, expected, rtol=0.0, atol=1e-12):
+        worst = int(np.argmax(np.abs(joined - expected)))
+        raise ValueError(
+            f"the microstructure join is wrong: ms_qty_imbalance at research row {worst} "
+            f"is {joined[worst]!r} but the trade aggregate there gives {expected[worst]!r}. "
+            "A value is sitting on the wrong hour."
+        )
+
+    by_hour = pd.Series(
+        np.log1p(aggregates["n_trades"].to_numpy(dtype=np.float64)),
+        index=pd.DatetimeIndex(aggregates["date"]),
+    )
+    looked_up = by_hour.reindex(pd.DatetimeIndex(spine_dates)).to_numpy(dtype=np.float64)
+    if not np.allclose(columns["ms_log_trade_count"], looked_up, rtol=0.0, atol=1e-12):
+        worst = int(np.argmax(np.abs(columns["ms_log_trade_count"] - looked_up)))
+        raise ValueError(
+            "the microstructure join is wrong: ms_log_trade_count at research row "
+            f"{worst} does not match the aggregate hour with that timestamp"
+        )
+
+    def shifted_matches(offset: int) -> bool:
+        rolled = np.roll(expected, offset)
+        return bool(np.allclose(joined[1:-1], rolled[1:-1], rtol=0.0, atol=1e-12))
+
+    return {
+        "recomputed": [
+            "ms_qty_imbalance from the trade aggregates, positionally",
+            "ms_log_trade_count from the trade aggregates, by timestamp",
+        ],
+        "rows": int(len(agg_rows)),
+        "matches": True,
+        "matches_under_plus_one_shift": shifted_matches(1),
+        "matches_under_minus_one_shift": shifted_matches(-1),
+        "aggregate_rows_first": int(agg_rows[0]),
+        "aggregate_rows_last": int(agg_rows[-1]),
+        "aggregate_hours_seen_by_the_engine": int(len(aggregates)),
+        "warmup_hours_before_the_spine": int(agg_rows[0]),
+    }
+
+
+def _check_trade_segment_contiguity(spine: pd.DataFrame, agg_rows: np.ndarray) -> None:
+    """Two spine rows in one segment must be adjacent hours in the trade source.
+
+    The spine's segment ids decide which windows may span which rows.
+    ``microstructure_v1`` resets its trailing windows on the *trade table's* own
+    gaps. If the two disagreed — if the spine called two rows contiguous that the
+    trade hours separate — a window would carry trailing state across a gap the
+    windowing believed was not there, which is the bridging the gap rule forbids.
+
+    The converse is allowed and is not checked, for the reason
+    :func:`_check_segment_contiguity` gives: a spine boundary with no trade gap
+    behind it makes the windowing stricter than the feature state, and that
+    direction cannot leak.
+    """
+    segments = spine["segment_id"].to_numpy(dtype=np.int64)
+    same_segment = segments[1:] == segments[:-1]
+    step = np.diff(agg_rows)
+    offenders = np.flatnonzero(same_segment & (step != 1))
+    if offenders.size:
+        row = int(offenders[0])
+        raise ValueError(
+            f"research rows {row} and {row + 1} share segment {int(segments[row])} but are "
+            f"{int(step[row])} hours apart in the trade source. The processed dataset's "
+            "gap structure and the trade table's gap structure disagree, so trailing "
+            "microstructure state would bridge a gap the windowing does not know about."
+        )
+
+
 def _spine_arrays(spine: pd.DataFrame, ds_meta: DatasetMetadata) -> dict[str, Any]:
     """The non-feature arrays every view shares, built exactly once.
 
@@ -820,6 +1095,45 @@ def feature_spec_identity(
                     "smc_version": SMC_SPEC_VERSION,
                     "chart": chart_spec.to_dict(),
                     "chart_version": CHART_SPEC_VERSION,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    }
+
+
+def microstructure_spec_identity(
+    micro_spec: MicrostructureSpec, trade_source: Mapping[str, Any]
+) -> dict[str, Any]:
+    """What produced the P3 columns, recorded in every P3 artifact.
+
+    Kept apart from :func:`feature_spec_identity` rather than folded into it, and
+    deliberately. That function's ``combined_spec_hash`` is recorded in every
+    committed P2b and P2c cell; widening what it covers would mean a re-run of
+    those checkpoints produced a different identity for the same research, which
+    is precisely the silent reinterpretation the hash exists to prevent. P3 is a
+    new source, so it gets a new block.
+
+    Both halves are here because both can change independently: the feature
+    constants come from the spec this run was written against, and the source
+    identity comes from the trade snapshot it read.
+    """
+    return {
+        "microstructure_spec_version": MICROSTRUCTURE_SPEC_VERSION,
+        "microstructure_spec": micro_spec.to_dict(),
+        "microstructure_spec_hash": micro_spec.spec_hash(),
+        "microstructure_feature_families": {
+            k: list(v) for k, v in MICROSTRUCTURE_FEATURE_FAMILIES.items()
+        },
+        "trade_source": dict(trade_source),
+        "combined_microstructure_hash": hashlib.sha256(
+            json.dumps(
+                {
+                    "spec": micro_spec.to_dict(),
+                    "version": MICROSTRUCTURE_SPEC_VERSION,
+                    "columns": list(microstructure_feature_columns()),
+                    "source": dict(trade_source),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
