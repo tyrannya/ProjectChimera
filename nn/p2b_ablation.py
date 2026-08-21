@@ -48,6 +48,7 @@ from nn.p2b_compare import (
     recompute_cell,
     spread_of,
 )
+from tools.freeze_evidence import DERIVED
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {
         "checkpoint": "P2b-robustness",
+        "evidence_class": DERIVED,
         "status": "post-hoc descriptive diagnostic; not canonical P2b evidence",
         "question": (
             "which market-structure family carries the combined arm, given the others?"
