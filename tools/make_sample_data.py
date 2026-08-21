@@ -109,6 +109,82 @@ def generate_candles(
     )
 
 
+def generate_trades(
+    hours: int = 240,
+    *,
+    seed: int = 11,
+    start: str | pd.Timestamp = "2020-01-01T00:00:00+00:00",
+    trades_per_hour: int = 24,
+    start_price: float = 30000.0,
+    volatility: float = 0.0008,
+    skip_hours: tuple[int, ...] = (),
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Deterministic synthetic trades: ``(ts_ns, price, qty, buyer_maker, agg_id)``.
+
+    The counterpart of :func:`generate_candles`, for the trade-level source P3
+    reads. It exists for exactly one reason: **the aggregator, the verifier and
+    every leakage guard must be exercised against inputs that can be corrupted to
+    order**, and the public archive cannot be made to serve a duplicated trade id
+    or a sealed timestamp on request.
+
+    It is not market data, nothing measured on it is a research result, and no
+    P3 evidence in this repository was produced from it. The arrays satisfy the
+    invariants :func:`nn.trade_aggregates.check_table` enforces — strictly
+    increasing ids, non-decreasing timestamps, positive prices and quantities,
+    at least one trade per emitted hour — because a fixture that could not pass
+    the checks would test the checks and nothing else.
+
+    ``skip_hours`` omits whole hours, which is how a gap is built: an hour with
+    no trade has no aggregate row, and that is what starts a new segment.
+    """
+    if hours < 1 or trades_per_hour < 1:
+        raise ValueError("need at least one hour and one trade per hour")
+    rng = np.random.default_rng(seed)
+    origin = int(pd.Timestamp(start).tz_convert("UTC").value)
+    if origin % 3_600_000_000_000:
+        raise ValueError("synthetic trades start on an hour boundary")
+
+    # Hourly activity *varies*, and deliberately. A generator that put the same
+    # number of trades in every hour would make every trailing ratio in
+    # `microstructure_v1` identically 1.0, and a test asserting that a full
+    # window differs from its default would pass without the window ever having
+    # been computed.
+    counts = rng.integers(max(trades_per_hour // 2, 1), trades_per_hour * 2 + 1, size=hours)
+    # Offsets spread across the hour but never at its very end, so a boundary
+    # test can place its own trade at the last nanosecond and mean it.
+    ts = np.concatenate(
+        [
+            origin
+            + h * 3_600_000_000_000
+            + np.linspace(0, 3_500_000_000_000, int(c), dtype=np.int64)
+            for h, c in enumerate(counts)
+        ]
+    ).astype(np.int64)
+    n = int(len(ts))
+    steps = rng.normal(0.0, volatility, size=n)
+    price = start_price * np.exp(np.cumsum(steps))
+    # Log-uniform sizes over four decades, which is the shape the half-decade
+    # histogram of nn.trade_aggregates is built for.
+    qty = 10.0 ** rng.uniform(-3.0, 1.0, size=n)
+    buyer_maker = rng.random(n) < 0.5
+    agg_id = np.arange(1, n + 1, dtype=np.int64)
+
+    # `skip_hours` deletes rows from a series that was drawn for the whole span,
+    # so removing an hour leaves every other hour byte-identical. A generator
+    # that redrew after a skip would make the gap tests compare two unrelated
+    # series and pass or fail for the wrong reason.
+    if skip_hours:
+        keep = ~np.isin((ts - origin) // 3_600_000_000_000, np.asarray(skip_hours))
+        ts, price, qty, buyer_maker, agg_id = (
+            ts[keep],
+            price[keep],
+            qty[keep],
+            buyer_maker[keep],
+            agg_id[keep],
+        )
+    return ts, price, qty, buyer_maker, agg_id
+
+
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate synthetic OHLCV candles.")
     parser.add_argument("--rows", type=int, default=3000)

@@ -61,6 +61,7 @@ import numpy as np
 import pandas as pd
 
 from nn.research_contract import normalise_scope_value
+from nn.trade_aggregates import AGGREGATE_COLUMN_KINDS, TRADE_AGGREGATE_SCHEMA
 
 #: Names the meaning of a research-input digest. Hashed with the data, so a
 #: future change to *what counts as* research-visible content is a change of
@@ -449,4 +450,151 @@ def fingerprint_raw_input(
         end=dates[rows - 1].isoformat(),
         visible_through=bound.isoformat(),
         columns=tuple(name for name, _ in RAW_COLUMN_KINDS),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Trade-level research source (P3)
+#
+# The same three ideas as above, applied to a source that is not candles: the
+# identity is semantic rather than a hash of the Parquet; it is bounded, here by
+# the row count the caller passes; and the specification that produced the
+# numbers is hashed with them, so two tables of identical columns aggregated
+# under different rules cannot collide.
+#
+# The timestamp normalisation is the reason this lives here rather than beside
+# the aggregator. Binance spot archives changed their epoch unit mid-history,
+# and `_canonical_chunk`'s `t8` path — `as_unit("ns").asi8` — is precisely the
+# fix that stopped the same candles hashing two ways under two pandas versions.
+# A trade source that re-derived its own timestamp canonicalisation would be one
+# more place for that bug to come back.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class TradeAggregateFingerprint:
+    """Identity of an hourly trade-aggregate table, and the span it covers.
+
+    One hash, not two. The candle fingerprint carries a second, weaker
+    ``full_table_hash`` because that file keeps growing past the seal as candles
+    arrive; a P3 trade snapshot is exported once, bounded before the seal, and
+    never appended to, so a second digest over "the whole file" would be the
+    same number under another name.
+    """
+
+    aggregate_hash: str
+    rows: int
+    start: str
+    end: str
+    columns: tuple[str, ...]
+
+    @property
+    def short_hash(self) -> str:
+        """First 16 hex digits, for logs and console lines. Never for identity."""
+        return self.aggregate_hash[:16]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fingerprint_schema": TRADE_AGGREGATE_SCHEMA,
+            "aggregate_hash": self.aggregate_hash,
+            "rows": self.rows,
+            "start": self.start,
+            "end": self.end,
+            "columns": list(self.columns),
+        }
+
+
+def _trade_header(
+    *,
+    exchange: str,
+    symbol: str,
+    market_type: str,
+    source_type: str,
+    aggregation_spec_hash: str,
+    rows: int,
+) -> dict[str, Any]:
+    """The specification half of a trade source's identity.
+
+    ``aggregation_spec_hash`` is what makes this more than a hash of numbers:
+    the same archives folded with a different size grid, a different aggressor
+    reading or a different bucket produce a different table that could otherwise
+    be presented as the same source.
+    """
+    return {
+        "exchange": _scope_value("exchange", exchange),
+        "symbol": _scope_value("pair", symbol),
+        "market_type": _scope_value("timeframe", market_type),
+        "source_type": _scope_value("timeframe", source_type),
+        "aggregation_spec_hash": aggregation_spec_hash,
+        "columns": [list(entry) for entry in AGGREGATE_COLUMN_KINDS],
+        "rows": rows,
+    }
+
+
+def trade_aggregate_digest(
+    values: Mapping[str, Any],
+    *,
+    exchange: str,
+    symbol: str,
+    market_type: str,
+    source_type: str,
+    aggregation_spec_hash: str,
+    rows: int,
+) -> str:
+    """Identity of the first ``rows`` rows of one hourly trade-aggregate table."""
+    if rows <= 0:
+        raise DataFingerprintError(
+            f"a trade source covers {rows} rows; there is nothing to identify"
+        )
+    missing = [name for name, _ in AGGREGATE_COLUMN_KINDS if name not in values]
+    if missing:
+        raise DataFingerprintError(
+            f"cannot fingerprint the trade source: column(s) {missing} are absent. The "
+            "identity is defined over every aggregated column, so a table missing one "
+            "of them has no identity under this schema"
+        )
+    header = _trade_header(
+        exchange=exchange,
+        symbol=symbol,
+        market_type=market_type,
+        source_type=source_type,
+        aggregation_spec_hash=aggregation_spec_hash,
+        rows=rows,
+    )
+    return _digest(TRADE_AGGREGATE_SCHEMA, header, AGGREGATE_COLUMN_KINDS, values, rows)
+
+
+def fingerprint_trade_aggregates(
+    frame: Any,
+    *,
+    exchange: str,
+    symbol: str,
+    market_type: str,
+    source_type: str,
+    aggregation_spec_hash: str,
+) -> TradeAggregateFingerprint:
+    """Digest an aggregate table and record the span the digest covers."""
+    dates = pd.to_datetime(pd.Index(np.asarray(frame["date"])), utc=True)
+    if len(dates) == 0:
+        raise DataFingerprintError("an empty trade-aggregate table has no identity")
+    if not dates.is_monotonic_increasing:
+        raise DataFingerprintError(
+            "trade-aggregate hours are not ascending, so the rows a digest covers are "
+            "not a prefix of them"
+        )
+    values = {name: frame[name] for name, _ in AGGREGATE_COLUMN_KINDS}
+    return TradeAggregateFingerprint(
+        aggregate_hash=trade_aggregate_digest(
+            values,
+            exchange=exchange,
+            symbol=symbol,
+            market_type=market_type,
+            source_type=source_type,
+            aggregation_spec_hash=aggregation_spec_hash,
+            rows=len(dates),
+        ),
+        rows=int(len(dates)),
+        start=dates[0].isoformat(),
+        end=dates[-1].isoformat(),
+        columns=tuple(name for name, _ in AGGREGATE_COLUMN_KINDS),
     )
