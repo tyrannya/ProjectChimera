@@ -163,6 +163,8 @@ a report of a result. Their `source runs present` column reads **pending** for e
 that reason: writing **yes** before the directories exist would manufacture provenance,
 which is the failure the rest of this file is about. It becomes **yes** when the nine
 cells and the comparison are committed, and the headline numbers are added here then.
+Each landed directory carries its own `STATUS.md` marker, as the v4 and P2a directories
+do.
 
 It is being produced under:
 

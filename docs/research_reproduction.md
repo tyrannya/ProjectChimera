@@ -100,9 +100,10 @@ exiting non-zero. The 23 checks cover:
 - that the rows present cover the last row the outer folds reach.
 
 **What a failure means.** Not "re-export and continue". The tool exists because
-a fresh clone inherits no proof — it has four files and a manifest asserting
-things about them, and the research entrypoints read the data and never the
-manifest. A rejection means the files and their claims have drifted apart
+a fresh clone inherits no proof — it has three files and a manifest asserting
+things about them, and every number a run produces comes from the files, not
+from the manifest's description of them. A rejection means the files and their
+claims have drifted apart
 (a rebuilt Parquet, a hand-edited manifest, a partial checkout, a merge that
 resurrected an older file), and any number produced from them would be a number
 about an unknown input. A seal-check failure is more serious still: it means the
@@ -197,13 +198,18 @@ roughly three times faster on four cores. It cannot change a single number:
 nothing is shared between cells except the input files.
 
 ```bash
+mkdir -p artifacts/p2b_logs
 for s in ohlcv14 smc_v1 ohlcv14_plus_smc_v1; do
   for m in logistic_regression lightgbm xgboost; do echo "$s $m"; done
 done | xargs -P 3 -n 2 sh -c '
   python -m nn.p2b --information-set "$1" --model "$2" \
       --out "artifacts/benchmark/btc_p2b_$1_$2" \
-      > "artifacts/benchmark/btc_p2b_$1_$2.log" 2>&1' _
+      > "artifacts/p2b_logs/$1_$2.log" 2>&1' _
 ```
+
+Logs go outside `artifacts/benchmark/` on purpose: that directory is the evidence
+index's row space, and a stray file in it is a directory a reader has to rule
+out.
 
 Leave one core free: three concurrent fits on a four-core machine keeps the
 machine responsive and avoids the memory spike of a fourth.
@@ -276,8 +282,9 @@ done
 make p2b-ablation MODEL=xgboost
 ```
 
-Six more wide cells is roughly another six hours of the long-pole cost for
-XGBoost; budget accordingly, or run the ablation against `lightgbm`.
+Six more wide cells is roughly another six hours of XGBoost time — about two at
+three-way parallelism. Budget accordingly, or run the ablation against
+`lightgbm`.
 
 ```bash
 make p2b-regimes        # descriptive: what the four outer periods were
@@ -326,9 +333,13 @@ Expect four folds, contiguous outer row ranges `[26518,31339)`, `[31339,36160)`,
 `sample_index_sha256` on every block. Outer periods should read 2023-03 → 2023-09,
 2023-09 → 2024-04, 2024-04 → 2024-10, 2024-10 → 2025-05.
 
-An empty block, an overlapping range, or a missing hash means the plan did not
-survive the data. The runner would normally have aborted first;
-if you are looking at a file, it did not.
+An empty block, an outer range that overlaps its neighbour, or a missing
+`sample_index_sha256` means the plan did not survive the data. None of the three
+can appear in a file `nn.p2b` wrote — `prove_alignment` raises on an empty
+block, and the planner refuses a step smaller than the outer size before any
+fold is built. Check anyway on an artifact whose production you did not watch:
+recording the evidence instead of asserting the conclusion is what makes that
+possible.
 
 ### 7.2 The cross-cell parity block
 

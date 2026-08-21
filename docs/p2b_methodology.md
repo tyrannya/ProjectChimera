@@ -25,9 +25,10 @@ fresh clone: [`research_reproduction.md`](research_reproduction.md).
 generation asked whether an MTST Transformer on OHLCV14 is economically viable
 and answered no. The obvious next move — a larger model, a different family — is
 the move P2a already made and ruled out. Given *exactly the same samples*,
-untuned logistic regression, LightGBM and XGBoost spanned a narrow band of mean
-outer net return either side of zero, and the strongest of them was a
-gradient-boosted tree rather than the Transformer. Whatever is binding, it is
+untuned logistic regression, LightGBM and XGBoost ran from clearly negative to
+marginally positive mean outer net return, the strongest of them was a
+gradient-boosted tree rather than the Transformer, and none of them turned
+OHLCV14 into a signal that paid for its own costs. Whatever is binding, it is
 not the model family; see `artifacts/benchmark/btc_p2a_comparison/` for that
 evidence.
 
