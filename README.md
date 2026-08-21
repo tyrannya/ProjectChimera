@@ -254,8 +254,68 @@ in one sentence rather than leaving the reader to notice.
 
 Which artifact generation is authoritative is recorded in
 [`artifacts/README.md`](artifacts/README.md), not inferred from directory names.
-The current BTC baseline is `artifacts/diagnostics/btc_regimes_v3/`, and its
+The current BTC baseline is `artifacts/diagnostics/btc_regimes_v4/`, and its
 evidence is negative.
+
+### 4b. Research: information sets (checkpoints P2b and P2c)
+
+P2a asked whether the *model family* changes what can be extracted from the
+frozen OHLCV14 feature set, and found that it barely does. That makes the next
+question an information question: is there measurable, causal structure in the
+price series that those fourteen columns do not carry?
+
+```bash
+make p2b-btc && make p2b-compare      # market structure
+make p2c-btc && make p2c-compare      # classical chart structure
+```
+
+Two checkpoints, three information sets each, against the same control.
+**P2b**: `ohlcv14` (14 columns), `smc_v1` (39 causal market-structure columns,
+[`docs/smc_v1.md`](docs/smc_v1.md)) and `ohlcv14_plus_smc_v1` (53).
+**P2c**: `ohlcv14`, `chart_structure_v1` (30 causal classical-pattern columns,
+[`docs/chart_structure_v1.md`](docs/chart_structure_v1.md)) and
+`ohlcv14_plus_chart_structure_v1` (44). Each set goes to the same three untuned
+models over the same four nested temporal folds. Everything except the feature
+columns is held at the values P2a ran under: the horizon, the costs, the fold
+geometry, the inner-only threshold rule, the model configurations and the sealed
+boundary.
+
+`--checkpoint` is a required input rather than something inferred from the arms,
+because `ohlcv14` is the control of both and cannot say which question a cell
+answers. Every artifact records the checkpoint and the question it belongs to,
+and `nn.p2b_compare` refuses to join cells that disagree about either.
+
+Unlike the steps above, these run from the **committed research snapshot** under
+`data/research/`, so a fresh clone reproduces them with no VPS, no private data
+and no access to the sealed block. The runner verifies that snapshot itself —
+all 23 checks, before a single model is fitted — so a snapshot whose manifest
+has stopped describing its files produces a named rejection and zero fits,
+whether it was launched through `make` or directly.
+
+The comparison that matters is one model, one fold, one sample set, three column
+sets — so the three arms have to be scored on *identical rows*. That is a
+property of how the views are built (they share the spine's dates, labels,
+returns and segment ids by object identity, and differ only in `features`), and
+it is proved rather than asserted: the alignment evidence recomputes the sample
+index per fold, and `nn.p2b_compare` refuses to aggregate cells whose baselines,
+economic references or per-fold sample-index hashes disagree. It also rebuilds
+every reported trading and classification number from the persisted predictions
+before reporting anything.
+
+The statistical unit is **four temporal periods**. There is no seed dimension:
+these estimators are deterministic given their inputs, and logistic regression
+takes no seed at all, so P2a's five seeds produced five identical copies of its
+logistic evidence rather than five observations.
+
+Two post-hoc analyses sit beside the canonical result and say so in their own
+output — `make p2b-ablation MODEL=xgboost` (what each market-structure family
+contributed given the others) and `make p2b-regimes` (what the four outer
+periods actually were). Neither selects anything, and no regime filter is fitted
+from either.
+
+See [`docs/p2b_methodology.md`](docs/p2b_methodology.md) for the full design and
+[`docs/research_reproduction.md`](docs/research_reproduction.md) for the exact
+command sequence from a fresh clone.
 
 ### 5. Serve the model
 
@@ -364,6 +424,11 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/risk_manager.md](docs/risk_manager.md) | Limits, sizing arithmetic, the kill switch |
 | [docs/dry_run.md](docs/dry_run.md) | Running dry-run, and what is verified vs. not |
 | [docs/engineering-audit.md](docs/engineering-audit.md) | What was broken before this rebuild |
+| [docs/smc_v1.md](docs/smc_v1.md) | The causal market-structure information set: 39 exact definitions |
+| [docs/chart_structure_v1.md](docs/chart_structure_v1.md) | The causal classical-pattern information set: 30 exact definitions |
+| [docs/p2b_methodology.md](docs/p2b_methodology.md) | Checkpoints P2b and P2c: does either structure family add information beyond OHLCV14? |
+| [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
+| [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, and what is next |
 
 ## Repository layout
 

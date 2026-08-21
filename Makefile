@@ -1,6 +1,9 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup lint format test smoke sample backfill features train \
-	research experiment walkforward wf-diagnostics benchmark benchmark-compare \
+.PHONY: help setup lint format test smoke sample backfill features \
+	verify-research-snapshot train research experiment walkforward \
+	wf-diagnostics benchmark benchmark-compare \
+	p2b-cell p2b-btc p2b-compare p2b-ablation p2b-regimes \
+	p2c-cell p2c-btc p2c-compare freeze-evidence \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
@@ -26,7 +29,7 @@ MODE     ?= test
 help:  ## Show this help
 	@echo "ProjectChimera — dry-run research platform"
 	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Common variables: EXCHANGE=$(EXCHANGE) PAIR=$(PAIR) TIMEFRAME=$(TIMEFRAME)"
@@ -54,6 +57,7 @@ smoke:  ## End-to-end smoke: data -> features -> training -> service -> risk
 
 check: ## Everything the Definition of Done requires
 	$(PYTHON) -m compileall -q .
+	$(PYTHON) -m tools.verify_research_snapshot
 	pytest
 	pre-commit run --all-files
 	docker compose config --quiet
@@ -69,6 +73,9 @@ backfill:  ## Download candles. Args: EXCHANGE PAIR TIMEFRAME START
 features:  ## Build a training dataset from downloaded candles
 	$(PYTHON) -m tools.build_features --candles $(CANDLES) --out $(DATASET) \
 		--exchange $(EXCHANGE) --pair $(PAIR) --timeframe $(TIMEFRAME)
+
+verify-research-snapshot:  ## Check the committed research snapshot: hashes, seal, coverage
+	$(PYTHON) -m tools.verify_research_snapshot
 
 train:  ## Train a model. Args: DATASET EPOCHS SEQ_LEN CONTRACT
 	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \
@@ -101,6 +108,77 @@ benchmark:  ## P2a: untuned simple models on MTST's own samples. Args: DATASET S
 benchmark-compare:  ## P2a vs the frozen MTST evidence. Args: BENCH="..." MTST="..."
 	$(PYTHON) -m nn.benchmark_compare --benchmark $(BENCH) --mtst $(MTST) \
 		--dataset $(DATASET) --out artifacts/benchmark/btc_p2a_comparison
+
+# --- Information-set checkpoints: P2b (market structure), P2c (chart structure)
+# These run from the committed research snapshot under data/research/, not from
+# a locally built dataset, so a fresh clone reproduces them with no VPS, no
+# private data and no access to the sealed block.
+#
+# `nn.p2b` verifies that snapshot itself — all 23 checks of
+# `tools.verify_research_snapshot` — before it fits anything, so the
+# `verify-research-snapshot` target below is a way to *see* the result, not the
+# thing that makes these targets safe. Running the module directly is equally
+# safe, which is the point: an integrity guarantee that depends on the operator
+# choosing the right make target is a convention, not a guarantee.
+#
+# `--checkpoint` is required. `ohlcv14` is the control of both checkpoints, so
+# the arms cannot say which research question a cell is answering and the cell
+# has to be told.
+P2B_SETS   ?= ohlcv14 smc_v1 ohlcv14_plus_smc_v1
+P2C_SETS   ?= ohlcv14 chart_structure_v1 ohlcv14_plus_chart_structure_v1
+P2B_MODELS ?= logistic_regression lightgbm xgboost
+P2B_DIR    ?= artifacts/benchmark
+# The nine cells are independent and each estimator is pinned to one thread
+# inside the runner, so running several cells at once is both reproducible and
+# roughly four times faster on a four-core machine. `p2b-btc` runs them in
+# sequence; see docs/research_reproduction.md for the parallel invocation.
+P2B_RUNS   = $(foreach s,$(P2B_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2b_$(s)_$(m)))
+P2C_RUNS   = $(foreach s,$(P2C_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2c_$(s)_$(m)))
+
+p2b-btc: verify-research-snapshot  ## P2b: all nine cells (3 information sets x 3 models x 4 folds)
+	@for s in $(P2B_SETS); do for m in $(P2B_MODELS); do \
+		echo "--- $$s x $$m ---"; \
+		$(PYTHON) -m nn.p2b --checkpoint P2b --information-set $$s --model $$m \
+			--out $(P2B_DIR)/btc_p2b_$${s}_$${m} || exit 1; \
+	done; done
+
+p2b-cell:  ## One P2b cell. Args: SET=ohlcv14 MODEL=xgboost
+	$(PYTHON) -m nn.p2b --checkpoint P2b --information-set $(SET) --model $(MODEL) \
+		--out $(P2B_DIR)/btc_p2b_$(SET)_$(MODEL)
+
+p2b-compare:  ## Join the P2b cells: parity proof, recomputation, deltas
+	$(PYTHON) -m nn.p2b_compare --runs $(P2B_RUNS) \
+		--out $(P2B_DIR)/btc_p2b_comparison
+
+p2c-btc: verify-research-snapshot  ## P2c: all nine cells (chart structure vs OHLCV14)
+	@for s in $(P2C_SETS); do for m in $(P2B_MODELS); do \
+		echo "--- $$s x $$m ---"; \
+		$(PYTHON) -m nn.p2b --checkpoint P2c --information-set $$s --model $$m \
+			--out $(P2B_DIR)/btc_p2c_$${s}_$${m} || exit 1; \
+	done; done
+
+p2c-cell:  ## One P2c cell. Args: SET=chart_structure_v1 MODEL=xgboost
+	$(PYTHON) -m nn.p2b --checkpoint P2c --information-set $(SET) --model $(MODEL) \
+		--out $(P2B_DIR)/btc_p2c_$(SET)_$(MODEL)
+
+p2c-compare:  ## Join the P2c cells: parity proof, recomputation, deltas
+	$(PYTHON) -m nn.p2b_compare --runs $(P2C_RUNS) \
+		--out $(P2B_DIR)/btc_p2c_comparison
+
+p2b-ablation:  ## Post-hoc: leave-one-family-out. Args: MODEL=xgboost
+	$(PYTHON) -m nn.p2b_ablation --full $(P2B_DIR)/btc_p2b_ohlcv14_plus_smc_v1_$(MODEL) \
+		--ablations $(P2B_DIR)/btc_p2b_ohlcv14_plus_smc_v1_minus_*_$(MODEL) \
+		--control $(P2B_DIR)/btc_p2b_ohlcv14_$(MODEL) \
+		--out $(P2B_DIR)/btc_p2b_ablation_$(MODEL)
+
+p2b-regimes:  ## Descriptive: what the four outer periods were
+	$(PYTHON) -m nn.p2b_regimes --runs $(P2B_RUNS) --out $(P2B_DIR)/btc_p2b_regimes
+
+# Covers primary evidence only — cells and their per-sample predictions.
+# Comparisons and ablation tables are derived: `tools.freeze_evidence` refuses
+# to hash them, and the test suite regenerates them and checks what they say.
+freeze-evidence:  ## Verify a frozen checksum manifest. Args: MANIFEST=artifacts/....txt
+	$(PYTHON) -m tools.freeze_evidence --verify $(MANIFEST)
 
 infer:  ## Serve the promoted model on port 3000
 	CHIMERA_MODELS_DIR=$(MODELS) uvicorn nn.infer_service:app --host 127.0.0.1 --port 3000

@@ -1,0 +1,57 @@
+{
+  "exchange": "binance",
+  "pair": "BTC/USDT",
+  "timeframe": "1h",
+  "rows": 45802,
+  "start": "2020-01-04T06:00:00+00:00",
+  "end": "2025-05-19T07:00:00+00:00",
+  "feature_names": [
+    "ret_1",
+    "log_ret_1",
+    "ret_close_open",
+    "hl_range",
+    "ema_fast_ratio",
+    "ema_slow_ratio",
+    "ema_cross",
+    "rsi_centered",
+    "macd_norm",
+    "macd_hist_norm",
+    "atr_norm",
+    "realized_vol",
+    "volume_change",
+    "volume_z"
+  ],
+  "feature_spec": {
+    "ema_fast": 12,
+    "ema_slow": 26,
+    "rsi_period": 14,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "atr_period": 14,
+    "vol_window": 24,
+    "volume_window": 24
+  },
+  "target_spec": {
+    "horizon": 6,
+    "fee_rate": 0.0005,
+    "slippage_rate": 0.0005,
+    "cost_threshold": 0.002
+  },
+  "class_balance": {
+    "SHORT": 17597,
+    "HOLD": 9308,
+    "LONG": 18897
+  },
+  "validation": {
+    "rows_in": 58130,
+    "rows_out": 58130,
+    "duplicates_removed": 0,
+    "reordered": false,
+    "missing_candles": 32,
+    "gap_count": 15,
+    "zero_volume_rows": 2,
+    "nan_rows_dropped": 0
+  },
+  "created_at": "2026-08-20T11:23:28.827402+00:00"
+}

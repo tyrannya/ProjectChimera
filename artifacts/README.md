@@ -17,11 +17,65 @@ The sealed test was not evaluated. That is the finding, not a defect to be corre
 by pointing somewhere else.
 
 **The current P2a model-family benchmark is
-[`benchmark/btc_p2a_comparison/`](benchmark/btc_p2a_comparison/).** It is a separate
-CURRENT result for the question "does model family change what can be extracted from
-the frozen OHLCV14 information set?" It does not replace v4 as the underlying BTC
-research baseline. P2a reuses the already-observed outer folds, so it is adaptive
-research evidence rather than pristine out-of-sample evidence.
+[`benchmark/btc_p2a_comparison/`](benchmark/btc_p2a_comparison/).** It answers a
+*different* question — "does model family change what can be extracted from the frozen
+OHLCV14 information set?" — and does not replace v4 as the underlying BTC research
+baseline. P2a reuses the already-observed outer folds, so it is adaptive research
+evidence rather than pristine out-of-sample evidence.
+
+**The current P2b information-set benchmark is
+[`benchmark/btc_p2b_comparison/`](benchmark/btc_p2b_comparison/).** It answers a third
+question — does causal *market* structure (`smc_v1`) add usable information beyond
+OHLCV14? — and its evidence is **negative**: across three models and two
+market-structure arms, not one of the six comparisons improved on the OHLCV14 control
+in more than two of four temporal folds, against a bar of three that was fixed before
+the numbers were read. For XGBoost, P2a's strongest family, adding market structure
+improved 1 of 4 periods. Two arms have a *positive mean* delta while improving only 1
+or 2 folds; the mean is not the finding. Like P2a it reuses already-observed outer
+folds and is adaptive research evidence.
+
+**The current P2c information-set benchmark is
+[`benchmark/btc_p2c_comparison/`](benchmark/btc_p2c_comparison/).** It answers a fourth
+question — does causal *classical chart* structure (`chart_structure_v1`) add usable
+information beyond OHLCV14? — and its evidence is **negative**: none of six comparisons
+improved on the control in more than two of four temporal folds, and every mean delta
+is negative. **More adaptive and more exploratory than any row above it.** Its spec and
+constants were fixed before any P2b outer number existed, but the family was chosen
+because P2b was the checkpoint in flight, and by the time P2c ran these four outer
+blocks had been read by v4, P2a, P2b, the P2b ablation and the P2b regime description.
+P2c generates hypotheses; it cannot confirm one.
+
+**None of these four replaces another.** They answer four different questions, so four
+rows are CURRENT at once and `status` is scoped per research question rather than
+across the index.
+
+### What the manifests cover, and what pins the rest
+
+`artifacts/*_SHA256SUMS.txt` freeze **primary** evidence: the cells and their
+per-sample outer predictions, which cannot be rebuilt without re-fitting a model. A
+byte change in one of those is a change in the research result, and
+`python -m tools.freeze_evidence --verify <manifest>` says so with no exemptions.
+
+The comparisons, the ablation table and the regime description are **derived**: each is
+recomputed from those cells by an aggregator, and each is *supposed* to change when the
+aggregator improves. Widening a recomputation from ten trading keys to twenty-three
+rewrites the file without touching a number the research reported. They declare
+`evidence_class: "derived"` in their own JSON, `tools.freeze_evidence` refuses to hash
+them, and what pins them instead is `tests/test_p2b_evidence.py`: the six fold counts
+per checkpoint, the verdicts, and the integrity counters are asserted directly, so a
+regenerated report that changed a finding fails and one that only improved its own
+prose does not.
+
+An earlier arrangement on this branch hashed both kinds together. Three manifests then
+failed their own `--verify`, a test excused the failures by matching `_comparison/` in
+the path, and this file explained that one manifest's comparison entry was *expected*
+to be wrong. None of that survives: there is no manifest entry in this repository that
+any test is allowed to see change.
+
+`btc_v4_SHA256SUMS.txt` and `btc_p2a_SHA256SUMS.txt` predate the distinction, were
+written by hand, and cover their aggregates as well as their source runs. They verify
+exactly as they always have and are **not** rewritten — a frozen manifest records what a
+past run produced. Nothing in this workflow regenerates a v4 or P2a artifact.
 
 ## Status table
 
@@ -43,6 +97,35 @@ one that shares its `research question`.
 | `walkforward/btc_nested_v4_seed_242` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 242) | n/a | current |
 | `walkforward/btc_nested_v4_seed_342` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 342) | n/a | current |
 | `walkforward/btc_nested_v4_seed_442` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 442) | n/a | current |
+| `benchmark/btc_p2c_comparison` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b_compare` | the nine `btc_p2c_*` cells | **yes** | current |
+| `benchmark/btc_p2c_ohlcv14_logistic_regression` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2c_ohlcv14_lightgbm` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x lightgbm) | n/a | current |
+| `benchmark/btc_p2c_ohlcv14_xgboost` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x xgboost) | n/a | current |
+| `benchmark/btc_p2c_chart_structure_v1_logistic_regression` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (chart_structure_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2c_chart_structure_v1_lightgbm` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (chart_structure_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p2c_chart_structure_v1_xgboost` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (chart_structure_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p2c_ohlcv14_plus_chart_structure_v1_logistic_regression` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_chart_structure_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2c_ohlcv14_plus_chart_structure_v1_lightgbm` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_chart_structure_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p2c_ohlcv14_plus_chart_structure_v1_xgboost` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_chart_structure_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_comparison` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b_compare` | `benchmark/btc_p2b_{ohlcv14,smc_v1,ohlcv14_plus_smc_v1}_{logistic_regression,lightgbm,xgboost}` | **yes** | current |
+| `benchmark/btc_p2b_ohlcv14_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ablation_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b_ablation` | the six `btc_p2b_ohlcv14_plus_smc_v1_minus_*_xgboost` arms plus the combined and control cells (post-hoc; nothing fitted) | **yes** | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_structure_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus structure x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_liquidity_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus liquidity x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_breaks_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus breaks x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_sweeps_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus sweeps x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_displacement_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus displacement x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_minus_fvg_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (combined minus fvg x xgboost) | n/a | current |
+| `benchmark/btc_p2b_repro_ohlcv14_plus_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | HISTORICAL | `nn.p2b` | itself (determinism re-run of the combined x xgboost cell) | n/a | current |
+| `benchmark/btc_p2b_regimes` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b_regimes` | the nine P2b cells (descriptive; nothing fitted) | **yes** | current |
 | `benchmark/btc_p2a_comparison` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark_compare` | `benchmark/btc_p2a_seed_{42,142,242,342,442}` (frozen v4 MTST read, not aggregated) | **yes** | current |
 | `benchmark/btc_p2a_seed_42` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 42) | n/a | current |
 | `benchmark/btc_p2a_seed_142` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 142) | n/a | current |
@@ -129,6 +212,41 @@ persisted per-sample predictions and all matched. The sealed test remained unope
 `artifacts/btc_p2a_SHA256SUMS.txt` freezes the generated P2a run and comparison evidence
 files committed with this checkpoint. The index documentation itself is intentionally
 outside that generated-output manifest.
+
+## Current P2b and P2c information-set evidence
+
+Both checkpoints ran three information sets x three untuned models x four temporal
+outer folds on one proven-identical sample universe, from the committed research
+snapshot under `data/research/` rather than from a locally built dataset. Every cell
+records the checkpoint it answers and the question that goes with it in its first two
+fields, and `nn.p2b_compare` refuses to join cells that disagree about either — so a
+glob wide enough to catch both checkpoints' cells fails closed rather than averaging
+twelve arms of two feature families into one table.
+
+Folds improved over the OHLCV14 control, out of four, against a predeclared bar of
+three:
+
+| model | P2b `smc_v1` | P2b `combined` | P2c `chart_v1` | P2c `combined` |
+| --- | --- | --- | --- | --- |
+| logistic regression | 0/4 | 2/4 | 1/4 | 0/4 |
+| LightGBM | 2/4 | 1/4 | 1/4 | 2/4 |
+| XGBoost | 1/4 | 1/4 | 1/4 | 1/4 |
+
+**A note on the file names.** Every cell directory holds `p2b.json`, `p2b.md` and
+`outer_predictions.parquet`, including P2c's — the names are the **runner's**
+(`nn.p2b`), not the checkpoint's, and they were kept rather than renamed because
+renaming eighteen directories buys a reader nothing the file itself does not already
+say. Each artifact states its `checkpoint` and its `question` in its first two fields,
+`nn.p2b_compare` refuses to join cells that disagree about either, and
+`tests/test_p2b_evidence.py` asserts that every `btc_p2c_*` file says P2c and asks the
+chart-structure question. The directory name and the JSON agree; only the file name is
+historical.
+
+`artifacts/btc_p2b_SHA256SUMS.txt` and `artifacts/btc_p2c_SHA256SUMS.txt` freeze the
+eighteen cells and their per-sample predictions;
+`artifacts/btc_p2b_ablation_SHA256SUMS.txt` freezes the six leave-one-family-out arms
+and the determinism re-run. The four aggregates those cells feed are derived and are
+pinned by `tests/test_p2b_evidence.py` instead — see the section above.
 
 ## What "pre-correction" means
 

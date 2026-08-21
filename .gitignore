@@ -27,7 +27,16 @@ htmlcov/
 coverage.xml
 
 # Data and model artifacts: reproducible from the pipeline, too large for git
-data/
+# Keep all runtime data ignored except the explicitly frozen research-only
+# snapshots below. Those snapshots contain no Styx rows.
+data/*
+!data/research/
+data/research/*
+!data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet
+!data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet
+!data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet.meta.json
+!data/research/btc_usdt_1h_gen1_snapshot_manifest.json
+
 artifacts/*
 # ...except the artifact index and per-directory status markers. Which research
 # generation is authoritative is documentation, not output: a reader who cannot

@@ -949,3 +949,73 @@ def test_the_regime_frame_never_sees_a_sealed_row(walk_forward_run, dataset):
     )
     stamps = pd.to_datetime(frame.frame["date"], utc=True)
     assert (stamps < CONTRACT.sealed_test_start).all()
+
+
+# --- timestamp resolution is not part of a research input's identity ---------
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+def test_the_same_candles_hash_alike_at_every_timestamp_resolution(unit):
+    """A Parquet writer's choice of time unit is an encoding, not a value.
+
+    This is the failure that reached CI: `asi8` reports the index's *own*
+    resolution, pandas 2 coerced everything to nanoseconds on the way in, and
+    pandas 3 preserves what the file stored. The same committed candles then
+    hashed to two different identities depending on which pandas read them —
+    so a research input's identity depended on the reader's library version,
+    which is the one thing a semantic fingerprint exists to rule out.
+    """
+    dates = pd.date_range("2021-03-04", periods=64, freq="1h", tz="UTC")
+    frame = pd.DataFrame(
+        {
+            "open": np.linspace(100.0, 110.0, 64),
+            "high": np.linspace(101.0, 111.0, 64),
+            "low": np.linspace(99.0, 109.0, 64),
+            "close": np.linspace(100.5, 110.5, 64),
+            "volume": np.linspace(10.0, 20.0, 64),
+        },
+        index=dates.as_unit(unit),
+    )
+    fingerprint = fingerprint_raw_input(
+        frame,
+        exchange="binance",
+        pair="BTC/USDT",
+        timeframe="1h",
+        visible_through=frame.index[-1],
+    )
+    # The nanosecond digest is the one every committed artifact was produced
+    # under, so it is the value the other three resolutions have to agree with.
+    reference = fingerprint_raw_input(
+        frame.set_index(pd.DatetimeIndex(frame.index).as_unit("ns")),
+        exchange="binance",
+        pair="BTC/USDT",
+        timeframe="1h",
+        visible_through=frame.index[-1],
+    )
+    assert fingerprint.raw_input_hash == reference.raw_input_hash
+
+
+def test_a_changed_price_still_changes_the_identity_after_the_resolution_fold():
+    """The fold must hide encoding differences only, never a value difference."""
+    dates = pd.date_range("2021-03-04", periods=16, freq="1h", tz="UTC")
+    frame = pd.DataFrame(
+        {
+            "open": np.full(16, 100.0),
+            "high": np.full(16, 101.0),
+            "low": np.full(16, 99.0),
+            "close": np.full(16, 100.5),
+            "volume": np.full(16, 10.0),
+        },
+        index=dates,
+    )
+    moved = frame.copy()
+    moved.iloc[7, moved.columns.get_loc("close")] = 100.5000001
+
+    def digest(f):
+        return fingerprint_raw_input(
+            f,
+            exchange="binance",
+            pair="BTC/USDT",
+            timeframe="1h",
+            visible_through=f.index[-1],
+        ).raw_input_hash
+
+    assert digest(frame) != digest(moved)
