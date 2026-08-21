@@ -232,6 +232,16 @@ three:
 | LightGBM | 2/4 | 1/4 | 1/4 | 2/4 |
 | XGBoost | 1/4 | 1/4 | 1/4 | 1/4 |
 
+**A note on the file names.** Every cell directory holds `p2b.json`, `p2b.md` and
+`outer_predictions.parquet`, including P2c's — the names are the **runner's**
+(`nn.p2b`), not the checkpoint's, and they were kept rather than renamed because
+renaming eighteen directories buys a reader nothing the file itself does not already
+say. Each artifact states its `checkpoint` and its `question` in its first two fields,
+`nn.p2b_compare` refuses to join cells that disagree about either, and
+`tests/test_p2b_evidence.py` asserts that every `btc_p2c_*` file says P2c and asks the
+chart-structure question. The directory name and the JSON agree; only the file name is
+historical.
+
 `artifacts/btc_p2b_SHA256SUMS.txt` and `artifacts/btc_p2c_SHA256SUMS.txt` freeze the
 eighteen cells and their per-sample predictions;
 `artifacts/btc_p2b_ablation_SHA256SUMS.txt` freezes the six leave-one-family-out arms
