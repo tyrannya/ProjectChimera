@@ -433,27 +433,36 @@ def test_a_manifest_entry_is_a_sha256_of_the_file_it_names():
 DOCS = ROOT / "docs"
 
 
-@pytest.mark.parametrize(
-    "document, checkpoint, family",
-    [
-        ("smc_v1.md", "P2b", "smc_v1"),
-        ("chart_structure_v1.md", "P2c", "chart_structure_v1"),
-    ],
+FEATURE_SPECS = (
+    ("smc_v1.md", "P2b", "smc_v1"),
+    ("chart_structure_v1.md", "P2c", "chart_structure_v1"),
+    ("microstructure_v1.md", "P3", "microstructure_v1"),
 )
+
+
+@pytest.mark.parametrize("document, checkpoint, family", FEATURE_SPECS)
 def test_each_feature_spec_names_its_own_checkpoint(document, checkpoint, family):
-    """Both specs use the same header line, and it has to name the right one.
+    """Every spec uses the same header line, and it has to name the right one.
 
     `chart_structure_v1.md` carried `Research checkpoint: **P2b**` — `smc_v1`'s
     checkpoint, with `smc_v1`'s question — through two checkpoints.
     """
     text = (DOCS / document).read_text()
-    other = "P2c" if checkpoint == "P2b" else "P2b"
-    header, _, rest = text.partition("Research checkpoint:")
+    _, _, rest = text.partition("Research checkpoint:")
     assert rest, f"{document} no longer states a research checkpoint"
     assert rest.lstrip().startswith(f"**{checkpoint}**"), rest[:80]
-    assert f"Research checkpoint: **{other}**" not in text
+    for other, *_ in ((c,) for _, c, _ in FEATURE_SPECS):
+        if other != checkpoint:
+            assert f"Research checkpoint: **{other}**" not in text
     # The question beside the header must be about this document's own family.
     assert family in rest[:400], rest[:400]
+
+
+def test_every_declared_information_family_has_a_committed_spec():
+    """A family that ran without a predeclaration is the failure this prevents."""
+    families = {family for _, _, family in FEATURE_SPECS}
+    for name, checkpoint in CHECKPOINTS.items():
+        assert checkpoint.family in families, f"{name} measures an undocumented family"
 
 
 def test_the_chart_spec_states_its_adaptive_status_rather_than_implying_none():
@@ -756,17 +765,42 @@ CELL_MANIFEST = {
 }
 ABLATION_MANIFEST = "btc_p2b_ablation_SHA256SUMS.txt"
 
+#: Checkpoints this repository declares but has produced **no evidence for**,
+#: and the manifest each one will be frozen under when it does.
+#:
+#: Declared rather than inferred, and for the same reason the rest of this
+#: section exists. A checkpoint with no cells is invisible to a coverage check
+#: built from directory listings: nothing is missing because nothing is
+#: expected. Naming it here means the repository has to say *why* a declared
+#: checkpoint has no evidence, and
+#: `test_an_unrun_checkpoint_has_no_evidence_directories` fails the moment one
+#: appears without being moved into `CELL_MANIFEST`.
+#:
+#: P3's trade source could not be acquired — outbound access to
+#: `data.binance.vision` was denied by the egress policy in force — so no P3
+#: cell has ever been fitted. See `docs/research_roadmap.md`.
+UNRUN_CHECKPOINTS = {"P3": "btc_p3_SHA256SUMS.txt"}
 
-def expected_primary() -> dict[str, str]:
-    """Directory name -> the manifest that must cover it, in full."""
+
+def expected_primary(cell_manifest: dict[str, str] | None = None) -> dict[str, str]:
+    """Directory name -> the manifest that must cover it, in full.
+
+    ``cell_manifest`` is a parameter so the inventory can be *exercised* for a
+    checkpoint that has not run yet — see
+    `test_the_inventory_already_knows_what_p3_will_owe`. Without that, the
+    machinery that will demand P3's nine cells would itself be untested until
+    the moment it was first relied on.
+    """
+    cell_manifest = CELL_MANIFEST if cell_manifest is None else cell_manifest
     expected: dict[str, str] = {}
-    for checkpoint, manifest in CELL_MANIFEST.items():
+    for checkpoint, manifest in cell_manifest.items():
         for arm in CHECKPOINTS[checkpoint].arms:
             for model in SIMPLE_MODEL_NAMES:
                 expected[f"btc_{checkpoint.lower()}_{arm}_{model}"] = manifest
-    for arm in ablation_set_names():
-        expected[f"btc_p2b_{arm}_xgboost"] = ABLATION_MANIFEST
-    expected["btc_p2b_repro_ohlcv14_plus_smc_v1_xgboost"] = ABLATION_MANIFEST
+    if "P2b" in cell_manifest:
+        for arm in ablation_set_names():
+            expected[f"btc_p2b_{arm}_xgboost"] = ABLATION_MANIFEST
+        expected["btc_p2b_repro_ohlcv14_plus_smc_v1_xgboost"] = ABLATION_MANIFEST
     return expected
 
 
@@ -805,6 +839,54 @@ def _committed_entries() -> dict[str, list[str]]:
         ]
         for manifest in MANIFESTS
     }
+
+
+def test_every_declared_checkpoint_is_frozen_or_declared_unrun():
+    """No checkpoint may be neither. That is how one would escape coverage."""
+    assert set(CHECKPOINTS) == set(CELL_MANIFEST) | set(UNRUN_CHECKPOINTS)
+    assert not set(CELL_MANIFEST) & set(UNRUN_CHECKPOINTS)
+
+
+@pytest.mark.parametrize("checkpoint", sorted(UNRUN_CHECKPOINTS))
+def test_an_unrun_checkpoint_has_no_evidence_directories(checkpoint):
+    """A checkpoint declared unrun must have produced nothing at all.
+
+    The moment a cell appears, this fails — and the fix is to move the
+    checkpoint into `CELL_MANIFEST`, which immediately demands all nine cells,
+    their manifest, and every file inside each directory. Evidence cannot
+    arrive quietly.
+    """
+    prefix = f"btc_{checkpoint.lower()}_"
+    strays = sorted(p.name for p in BENCHMARK.glob(f"{prefix}*"))
+    assert strays == [], (
+        f"{checkpoint} is declared unrun but {strays} exist. Move it into "
+        "CELL_MANIFEST and freeze its cells rather than leaving them uncovered."
+    )
+    assert not (ROOT / "artifacts" / UNRUN_CHECKPOINTS[checkpoint]).exists()
+
+
+def test_the_inventory_already_knows_what_p3_will_owe():
+    """The coverage machinery is exercised for P3 before P3 has any evidence.
+
+    Nine cells — three arms times three models — each covered exactly once by
+    `btc_p3_SHA256SUMS.txt` and by nothing else. Checked against a synthetic
+    coverage set, so it proves the inventory rather than the artifacts.
+    """
+    expected = expected_primary({"P3": UNRUN_CHECKPOINTS["P3"]})
+    assert len(expected) == 9
+    assert set(expected.values()) == {"btc_p3_SHA256SUMS.txt"}
+    assert "btc_p3_microstructure_v1_xgboost" in expected
+    assert "btc_p3_ohlcv14_plus_microstructure_v1_lightgbm" in expected
+    assert coverage_problems(expected, _synthetic_entries(expected)) == []
+
+    missing = _synthetic_entries(expected)
+    victim = "btc_p3_ohlcv14_xgboost"
+    missing["btc_p3_SHA256SUMS.txt"] = [
+        name for name in missing["btc_p3_SHA256SUMS.txt"] if f"/{victim}/" not in name
+    ]
+    assert coverage_problems(expected, missing) == [
+        f"{victim} is expected primary evidence and no manifest covers it"
+    ]
 
 
 def test_every_expected_primary_directory_is_covered_exactly_once():
