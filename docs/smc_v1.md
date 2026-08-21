@@ -434,3 +434,103 @@ def compute_smc_features_segmented(
     crosses a boundary.
     """
 ```
+
+---
+
+## 8. Order of operations within a candle
+
+Several rules in §3 can fire on the same candle, and which one wins changes the
+output. The order is therefore part of the specification rather than an artefact
+of how the loop happens to be written. At row `t`, in this sequence:
+
+1. **absorb** the pivot at index `t - PIVOT_RIGHT`, if any — updating
+   `last_sh`/`last_sl`, `active_sh`/`active_sl`, and firing `equal_high` /
+   `equal_low` (§3.4) with the level it creates
+2. **retire** equal-high and equal-low levels price has now traded through (§3.4)
+   and fill fair-value gaps price has now closed (§3.7)
+3. **create** a fair-value gap from `(t-2, t-1, t)` (§3.7)
+4. **break** — bullish tested first, then bearish against the updated state (§3.3)
+5. **sweep** (§3.5)
+6. **reclaim** a pending sweep (§3.5)
+7. **emit** row `t`'s 39 values
+
+Consequences that follow from this order and are part of the definition:
+
+- A pivot confirmed at `t` is immediately breakable and sweepable at `t`. This is
+  forced by §2 and is why a BOS often lands on the confirmation candle itself.
+- A level created at step 1 that this candle's high already exceeds is retired at
+  step 2 and is never reported active — which is what §3.4's "a level taken out
+  this candle is not reported as active on it" means.
+- A break at step 4 cancels a pending reclaim before step 6 can fire it.
+- A new sweep at step 5 replaces the pending sweep, so a reclaim guarded by
+  `s < t` cannot fire on a candle that is itself a fresh sweep on the same side.
+  On the committed BTC history this binds on 165 candles, about 13% of all
+  reclaims, so it is a materially observable choice rather than a formality.
+- `prev_sh` in §3.4 is `last_sh` — the newest previously confirmed swing high,
+  **including one that has already been broken**. §3.2 distinguishes `last_sh`
+  from `active_sh` precisely so this can be said.
+
+### 8.1 "else 0" is per quantity, not gated on the flag
+
+In §4 rows 2–5, the fallback applies to the quantity's *own* precondition:
+`smc_dist_swing_high_atr` and `smc_age_swing_high` need only `last_sh`, and the
+low pair needs only `last_sl`. `smc_structure_valid` (row 1) requires both, and
+so do rows 7–8. On the committed BTC history there are 222 rows where
+`smc_structure_valid == 0`, and on 92 of them exactly one side is confirmed and
+that side reports a real value while the flag reads 0. That is intended: gating
+all seven columns on the flag would discard a measurement that exists.
+
+### 8.2 Pivot detectability is not a function of the frame length
+
+§3.1's bound reads `3 <= i <= T-1-3`, which mentions `T`. It is safe only
+because that `3` is `PIVOT_RIGHT`: a pivot at `i > T-1-PIVOT_RIGHT` could not be
+*confirmed* inside the frame either, so the two readings coincide and append
+invariance holds. Read it as "detectable, and only ever consulted at
+`i + PIVOT_RIGHT`". An implementation that treats it as a property of the pivot
+rather than of confirmation can copy it into a two-pass design and silently
+break causality.
+
+---
+
+## 9. Known defects in `smc_v1`, deferred
+
+These were found by running the engine over the committed pre-Styx history
+**after** `smc_v1` had been frozen and the P2b benchmark had started. They are
+recorded here rather than fixed, because editing a predeclared feature
+specification part-way through the checkpoint it was declared for is exactly the
+move this repository exists to prevent. A fix is `smc_v2`'s job.
+
+All three make the features **weaker** than intended. None can leak future
+information, and none can manufacture a positive result.
+
+**(a) `smc_bars_since_*` cannot distinguish "never" from "just now".**
+`smc_bars_since_break`, `smc_bars_since_sweep_high` and
+`smc_bars_since_sweep_low` are `log1p(t - i)`, which is `0.0` on the event candle
+itself — the same value §4 uses for "this has not happened yet". Measured on the
+committed history: 3,485 zero rows for `smc_bars_since_break`, of which 3,151 are
+break candles and 334 are rows before the segment's first break. A model cannot
+tell the two states apart. §4 introduces availability flags precisely because
+`0.0` is a legal value, and these three columns then reintroduce the collision.
+`log1p(1 + t - i)` would fix it without a new column.
+
+**(b) `smc_range_width_atr` is signed, and "width" is the wrong word for it.**
+It goes negative when the newest confirmed swing high sits below the newest
+confirmed swing low — which happens after price runs past an old high without
+confirming a new one. 75 rows of the committed history are negative, reaching
+−4.62. The value is well defined and informative; the name is not. Row 8 guards
+`width <= 0` explicitly, so the case was known when row 7 was written.
+
+**(c) Equal-level distances have a very heavy tail.** §3.4 levels never expire,
+so `smc_eqh_dist_atr` reaches 181 ATR when a level from an earlier regime stays
+active until price finally trades through it. This follows from the same
+no-arbitrary-window reasoning as §3.5 and is deliberate, but these two columns
+are the ones a standardiser will struggle with, and a later version should
+consider a scale-bounded transform rather than a lookback parameter.
+
+**(d) The spec pins the hash recipe but not the JSON type of the integer
+constants.** `spec_hash()` hashes `dataclasses.asdict(spec)`, which keeps
+`atr_period`, `pivot_left` and `pivot_right` as `int` — so the canonical JSON
+contains `"atr_period":14`, not `14.0`, and an implementation that casts them to
+float to satisfy the `dict[str, float]` annotation in §7 gets a different hash.
+The reference value is
+`3421312fc8d8687e158b5dc269f65c76bfa6916ec4643f3063cf9473d8a36649`.
