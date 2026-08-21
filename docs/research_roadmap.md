@@ -50,36 +50,44 @@ That is what turned the next question into an information question.
 
 ---
 
-## In progress
-
 ### P2b — does causal market structure add information beyond OHLCV14?
 
-Three information sets (`ohlcv14`, `smc_v1`, `ohlcv14_plus_smc_v1`), three
-untuned models, four temporal folds, one sample universe. Design:
-[`p2b_methodology.md`](p2b_methodology.md). Feature definitions:
-[`smc_v1.md`](smc_v1.md).
+**No.** Three untuned models times three information sets (`ohlcv14`, `smc_v1`,
+`ohlcv14_plus_smc_v1`) over four temporal outer folds on one proven-identical
+sample universe. Not one of the six model-arm comparisons improved on the
+OHLCV14 control in more than **two of four** folds, against a bar of three fixed
+before any number was read. Evidence:
+[`artifacts/benchmark/btc_p2b_comparison/`](../artifacts/benchmark/btc_p2b_comparison/).
 
-Predeclared reading of the outcome, fixed before the numbers were seen:
+| model | `smc_v1` − control | `ohlcv14_plus_smc_v1` − control |
+| --- | --- | --- |
+| logistic regression | 0 of 4 | 2 of 4 |
+| LightGBM | 2 of 4 | 1 of 4 |
+| XGBoost | 1 of 4 | **1 of 4** |
 
-| folds improved | reading |
-| --- | --- |
-| 3 or 4 of 4 | evidence worth continuing on |
-| 2 of 4 | regime-dependent, inconclusive |
-| 0 or 1 of 4 | weak-to-negative |
+Three things about this result matter more than the numbers:
 
-**What happens next depends on which of those it is.**
+- **The mean would have lied.** `lightgbm x smc_v1` and `xgboost x smc_v1` both
+  have a *positive* mean delta while improving only two and one of four folds.
+  Pooling four periods would have reported them as gains. The count-the-folds
+  rule was predeclared for exactly this and it fired on real data.
+- **The control is not the weak link.** XGBoost on `ohlcv14` reproduced P2a's
+  frozen seed-42 evidence bit-for-bit — four fold returns, four thresholds —
+  from a different code path reading the committed snapshot rather than the
+  canonical dataset.
+- **The periods were all up.** All four outer blocks had positive total return
+  (+18.9%, +162.0%, +4.5%, +43.4%) at low directionality (efficiency ratio
+  0.012-0.055): choppy uptrends. Buy-and-hold beats every arm over these
+  windows, at full exposure, and is a reference rather than a competitor.
 
-- *Consistent improvement.* Continue with market-structure diagnostics and test
-  complementarity against the next causal family. Do not tune `smc_v1`'s
-  constants: they were predeclared, and searching them against these four outer
-  blocks would convert a result into a fit.
-- *Some periods only.* Describe the regime dependence
-  ([`p2b_regimes`](../artifacts/benchmark/)) and **do not fit a regime filter**.
-  A rule that trades market structure only in the periods where it won, fitted
-  on the four periods that revealed the win, fits four observations.
-- *No improvement.* Freeze the negative result and move to the next causal
-  family. The reusable machinery — the alignment layer, the parity proof, the
-  recomputation path — is the durable output either way.
+What survives is the machinery, which was always the more durable half: the
+alignment layer, the parity proof, the snapshot anchoring, the recomputation
+path and the source-digest identity are reusable by any later information set.
+
+**Do not respond to this by tuning `smc_v1`'s constants.** They were predeclared,
+and searching them against these four outer blocks would convert a negative
+result into a fitted one. `docs/smc_v1.md` §9 records the defects worth fixing in
+a future `smc_v2`; none of them is a threshold to search.
 
 ---
 
@@ -87,9 +95,12 @@ Predeclared reading of the outcome, fixed before the numbers were seen:
 
 ### P2c — does causal classical chart structure add information?
 
-Specification drafted: [`chart_structure_v1.md`](chart_structure_v1.md). The
-same three-arm design against the then-best information set, with the same
-folds, costs, target and threshold rule.
+Specified in [`chart_structure_v1.md`](chart_structure_v1.md) and implemented in
+`nn/chart_structure.py`, with 48 tests written from the spec without reading the
+engine. Not yet wired into any information set and not yet benchmarked.
+
+The same three-arm design, against `ohlcv14` — which P2b leaves as the best
+information set this repository has, by default rather than by merit.
 
 **P2c will be exploratory and adaptive, and must be labelled as such.** By the
 time it runs, the same four outer blocks will have been read many times. It can
