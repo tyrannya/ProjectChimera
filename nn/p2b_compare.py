@@ -51,7 +51,7 @@ import pandas as pd
 from chimera.contracts import TargetSpec
 from nn import evaluate as ev
 from nn.data_pipeline import load_dataset
-from nn.information_sets import COMBINED, OHLCV14, P2B_INFORMATION_SETS, SMC_V1
+from nn.information_sets import OHLCV14
 from nn.p2b import ARTIFACT_NAME, CHECKPOINT, PREDICTIONS_NAME
 from nn.regime import direction_attribution
 from nn.simple_models import SIMPLE_MODEL_NAMES
@@ -530,16 +530,28 @@ def build_deltas(matrix: dict[str, Any]) -> dict[str, Any]:
 def to_markdown(payload: dict[str, Any]) -> str:
     matrix, deltas = payload["matrix"], payload["deltas"]
     contract = payload["contract"]
-    sets = [s for s in P2B_INFORMATION_SETS if any(s in by for by in matrix.values())]
+    # Derived from the data, never from a checkpoint's arm list. Reading the
+    # arms from P2B_INFORMATION_SETS meant a P2c run — whose arms are
+    # chart_structure_v1 and ohlcv14_plus_chart_structure_v1 — rendered a
+    # document titled P2b containing only its control, with an empty
+    # incremental-value section: 12 of 36 cell-folds, and the answer nowhere on
+    # the page. The JSON was complete throughout, which is exactly why nobody
+    # would have caught it by checking that the run succeeded.
+    present = list(dict.fromkeys(k for by in matrix.values() for k in by))
+    sets = [CONTROL] + [s for s in present if s != CONTROL]
     models = [m for m in SIMPLE_MODEL_NAMES if m in matrix]
 
+    named = " or ".join(f"`{s}`" for s in sets if s != CONTROL) or "further columns"
     lines = [
-        "# P2b — does causal market structure add information beyond OHLCV14?",
+        f"# Information-set benchmark — do {named} add information beyond `{CONTROL}`?",
         "",
-        "Three information sets, three untuned models, four temporal outer folds, one",
-        "sample universe. `ohlcv14` is P2a's control re-run under this code path;",
-        "`smc_v1` is causal market structure alone (`docs/smc_v1.md`);",
-        "`ohlcv14_plus_smc_v1` is both.",
+        f"{len(sets)} information sets, {len(models)} untuned models, four temporal outer",
+        f"folds, one sample universe. `{CONTROL}` is the control, re-run under this code",
+        "path rather than copied. The other arms are:",
+        "",
+    ]
+    lines += [f"- `{s}`" for s in sets if s != CONTROL]
+    lines += [
         "",
         f"**Research contract:** `{contract['contract_id']}` "
         f"(generation {contract['research_generation']}), semantic identity",
@@ -641,8 +653,8 @@ def to_markdown(payload: dict[str, Any]) -> str:
         "",
     ]
     for model in models:
-        for set_name in (SMC_V1, COMBINED):
-            entry = deltas.get(model, {}).get(set_name)
+        for set_name in deltas.get(model, {}):
+            entry = deltas[model][set_name]
             if entry is None:
                 continue
             lines += [

@@ -470,7 +470,7 @@ def build_information_set_views(
     for position, name in enumerate(chart_feature_columns()):
         columns[name] = chart_values[:, position]
 
-    evidence = _join_evidence(spine, raw, raw_rows, columns)
+    evidence = _join_evidence(spine, raw, raw_rows, columns, timeframe)
     if evidence["matches_under_plus_one_shift"] or evidence["matches_under_minus_one_shift"]:
         raise ValueError(
             "the join check cannot tell a correct join from a shifted one on this data, "
@@ -511,6 +511,7 @@ def _join_evidence(
     raw: pd.DataFrame,
     raw_rows: np.ndarray,
     columns: dict[str, np.ndarray],
+    timeframe: str,
 ) -> dict[str, Any]:
     """Re-derive enough of the join, independently, to catch a shifted row.
 
@@ -531,10 +532,32 @@ def _join_evidence(
     A ``+1`` and a ``-1`` shift are both scored so the evidence records not just
     that the join matched but that it would not have matched if it were wrong.
     """
+    from chimera.features import _true_range, _wilder
+
     high = raw["high"].to_numpy(dtype=np.float64)[raw_rows]
     low = raw["low"].to_numpy(dtype=np.float64)[raw_rows]
     open_ = raw["open"].to_numpy(dtype=np.float64)[raw_rows]
     close = raw["close"].to_numpy(dtype=np.float64)[raw_rows]
+    # Whole-series quantities, indexed down afterwards: `chart_pole_atr` spans
+    # 60 candles back, so it cannot be rebuilt from the joined rows alone.
+    all_close = raw["close"].to_numpy(dtype=np.float64)
+    atr_den = np.empty(len(raw), dtype=np.float64)
+    close_lag = np.full(len(raw), np.nan)
+    close_full = np.full(len(raw), np.nan)
+    # Per segment, because the engine resets at a market-data gap and a
+    # re-derivation that did not would disagree by a real amount near every
+    # boundary — which is a difference in the reference, not in the join.
+    segments = _contiguous_segment_ids(raw["date"], timeframe).to_numpy()
+    for segment in np.unique(segments):
+        block = np.flatnonzero(segments == segment)
+        frame = raw.iloc[block]
+        closes = all_close[block]
+        atr = _wilder(_true_range(frame), 14).to_numpy(dtype=np.float64)
+        atr_den[block] = np.maximum(atr, 1e-12 * closes)
+        if len(block) > 60:
+            close_lag[block[60:]] = closes[:-60]
+        if len(block) > 20:
+            close_full[block[20:]] = closes[:-20]
     span = high - low
     expected = np.where(
         span > 0.0, np.abs(close - open_) / np.where(span > 0.0, span, 1.0), 0.0
@@ -549,20 +572,47 @@ def _join_evidence(
             "value is sitting on the wrong candle."
         )
 
-    control = feature_columns()[0]
-    if not np.array_equal(columns[control], spine[control].to_numpy(dtype=np.float64)):
-        raise ValueError(f"the {control!r} column does not match the research spine")
+    # A chart column too, on the same pattern. `chart_pole_atr` is the cheapest
+    # one to rebuild from source — two closes and the ATR — and P2c's arms
+    # contain no SMC column at all, so without this the join evidence for a
+    # chart run re-derived nothing that run actually used. Rolling all 30 chart
+    # columns one candle forward left the old check reporting `matches: true`.
+    pole = (close_full[raw_rows] - close_lag[raw_rows]) / atr_den[raw_rows]
+    joined_pole = columns["chart_pole_atr"]
+    # Rows too early in their segment to have a 60-candle lag are `nan` in the
+    # re-derivation and a declared default in the engine; they are not evidence
+    # either way and are excluded rather than fudged with a tolerance.
+    known = np.isfinite(pole)
+    if not np.allclose(joined_pole[known], pole[known], rtol=0.0, atol=1e-9):
+        worst = int(np.nanargmax(np.abs(joined_pole - pole)))
+        raise ValueError(
+            f"the chart-structure join is wrong: chart_pole_atr at research row {worst} "
+            f"is {joined_pole[worst]!r} but the raw candles there give {pole[worst]!r}"
+        )
+
+    def chart_shifted_matches(offset: int) -> bool:
+        rolled = np.roll(pole, offset)
+        both = known & np.isfinite(rolled)
+        return bool(np.allclose(joined_pole[both], rolled[both], rtol=0.0, atol=1e-9))
 
     def shifted_matches(offset: int) -> bool:
         rolled = np.roll(expected, offset)
         return bool(np.allclose(joined[1:-1], rolled[1:-1], rtol=0.0, atol=1e-12))
 
     return {
-        "recomputed": ["smc_body_ratio from the raw candles", f"{control} from the spine"],
+        "recomputed": [
+            "smc_body_ratio from the raw candles",
+            "chart_pole_atr from the raw candles",
+        ],
+        "not_evidence": (
+            "an OHLCV14 column was previously compared against the spine column it was "
+            "copied from, which could not fail; dropped rather than kept as decoration"
+        ),
         "rows": int(len(raw_rows)),
         "matches": True,
-        "matches_under_plus_one_shift": shifted_matches(1),
-        "matches_under_minus_one_shift": shifted_matches(-1),
+        "matches_under_plus_one_shift": shifted_matches(1) or chart_shifted_matches(1),
+        "matches_under_minus_one_shift": shifted_matches(-1) or chart_shifted_matches(-1),
+        "chart_rows_compared": int(known.sum()),
         "raw_rows_first": int(raw_rows[0]),
         "raw_rows_last": int(raw_rows[-1]),
         "raw_candles_seen_by_the_engine": int(raw_rows[-1]) + 1,
