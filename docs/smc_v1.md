@@ -496,8 +496,13 @@ break causality.
 
 ### 8.3 The engine drifted from this list once, and was brought back
 
-§8 was written down at commit `a7a25d2`, before any P2b cell ran: the earliest
-cell in `artifacts/benchmark/` recorded revision `c840627`, half an hour later.
+§8 was written down at commit `a7a25d2` (01:09:36 UTC), before any P2b cell ran.
+The chronology is in git rather than in the artifacts as they stand today, which
+have since been regenerated: the P2b cells **as first committed**, at `685764b`,
+record runner revisions `c840627` (01:39:48) and `f5b409f` (01:48:27) — thirty
+and thirty-nine minutes after §8 landed. `git show
+685764b:artifacts/benchmark/btc_p2b_smc_v1_xgboost/p2b.json` is the check.
+
 The engine, committed before §8 existed, created the fair-value gap **after**
 the reclaim rather than at step 3, and nobody noticed for the length of two
 checkpoints — the loop reads plausibly in either order and every behavioural

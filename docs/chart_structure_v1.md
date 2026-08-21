@@ -10,10 +10,14 @@ What git supports, and no more:
 
 - This document was committed at `b2aae3f` (01:24:46 UTC) and the engine at
   `96abd9b` (01:38:12) — **before any P2b outer-validation number existed.** The
-  earliest P2b cell in `artifacts/benchmark/` records revision `c840627`
-  (01:39:48), so no outer result was available to read when the constants of
-  §1.3 were fixed. That is a real guarantee and it is the reason a search over
-  those constants is impossible here.
+  chronology is in git rather than in the artifacts as they stand today, which
+  have since been regenerated: the P2b cells **as first committed**, at
+  `685764b`, record runner revisions `c840627` (01:39:48) and `f5b409f`
+  (01:48:27), so no outer result was available to read when the constants of
+  §1.3 were fixed. `git show
+  685764b:artifacts/benchmark/btc_p2b_smc_v1_xgboost/p2b.json` is the check.
+  That is a real guarantee and it is the reason a search over those constants is
+  impossible here.
 - It is nevertheless **adaptive**, and more so than P2b. This family exists
   because `smc_v1` was the checkpoint in flight and a second family was wanted;
   the choice of *what to measure next* was made inside a research programme whose
