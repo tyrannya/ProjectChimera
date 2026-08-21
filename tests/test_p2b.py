@@ -43,6 +43,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import nn.chart_structure
+import nn.smc
 from chimera.contracts import TargetSpec
 from chimera.features import FeatureSpec, feature_columns
 from nn import evaluate as ev
@@ -340,6 +342,51 @@ def test_a_non_finite_market_structure_value_fails_closed(spine, raw_candles, mo
     assert "non-finite market-structure value" in message
     assert smc_feature_columns()[0] in message
     assert "docs/smc_v1.md" in message and "§5" in message
+
+
+def test_a_market_structure_matrix_rolled_one_candle_forward_fails_closed(
+    spine, raw_candles, monkeypatch
+):
+    """A one-row look-ahead on all 39 SMC columns at once.
+
+    The most damaging join mistake and the most plausible one. Every column is
+    finite, every shape is right, the fold plan is untouched and the arms still
+    score identical rows — so the sample-universe parity proof passes, and every
+    cell inherits the leak identically so the cross-cell checks pass too. The
+    only thing that can say no is a column re-derived from the raw candles.
+    """
+    frame, ds_meta = spine
+    honest = nn.smc.compute_smc_features_segmented
+
+    def rolled(candles, timeframe, spec):
+        out = honest(candles, timeframe, spec)
+        return out.shift(-1).ffill()
+
+    monkeypatch.setattr("nn.information_sets.compute_smc_features_segmented", rolled)
+    with pytest.raises(ValueError, match="the market-structure join is wrong"):
+        build_information_set_views(frame, ds_meta, raw_candles, names=(SMC_V1,))
+
+
+def test_a_chart_structure_matrix_rolled_one_candle_forward_fails_closed(
+    spine, raw_candles, monkeypatch
+):
+    """The same look-ahead on all 30 chart columns.
+
+    This is the one the join evidence used to miss entirely. It re-derived an
+    SMC column, and a P2c arm contains no SMC column at all — so for a P2c run
+    it checked nothing that run used, and rolling all 30 chart columns forward
+    left it reporting `matches: true`.
+    """
+    frame, ds_meta = spine
+    honest = nn.chart_structure.compute_chart_features_segmented
+
+    def rolled(candles, timeframe, spec):
+        out = honest(candles, timeframe, spec)
+        return out.shift(-1).ffill()
+
+    monkeypatch.setattr("nn.information_sets.compute_chart_features_segmented", rolled)
+    with pytest.raises(ValueError, match="the chart-structure join is wrong"):
+        build_information_set_views(frame, ds_meta, raw_candles, names=(CHART_V1,))
 
 
 # --------------------------------------------------------------------------- #
@@ -748,12 +795,14 @@ def test_the_selected_threshold_comes_from_the_inner_block(aligned, cell):
 # --------------------------------------------------------------------------- #
 # E. nn.p2b_compare
 # --------------------------------------------------------------------------- #
-def _fake_cell(information_set: str, model: str, checkpoint: str = "P2b") -> dict[str, Any]:
+def _fake_cell(
+    information_set_name: str, model: str, checkpoint: str = "P2b"
+) -> dict[str, Any]:
     """A cell shaped like an artifact, small enough to read at a glance."""
     payload = {
         "checkpoint": checkpoint,
         "question": CHECKPOINTS[checkpoint].question,
-        "information_set": information_set,
+        "information_set": information_set_name,
         "model": model,
         "outer_predictions": p2b.PREDICTIONS_NAME,
         "contract": {"contract_id": "btc-usdt-1h-gen1", "contract_hash": "dca6"},
@@ -762,6 +811,9 @@ def _fake_cell(information_set: str, model: str, checkpoint: str = "P2b") -> dic
         "threshold_selection": {"block": "inner_validation", "min_trades": 10},
         "snapshot": {"rows": 45802, "contains_styx": False},
         "feature_spec": {"combined_spec_hash": "0f0f"},
+        "information_parity": {
+            "feature_names": list(information_set(information_set_name).columns)
+        },
         "alignment": {
             "folds": [
                 {"fold": 0, "outer_validation": {"samples": 4750, "sample_index_sha256": "aa"}}
@@ -785,8 +837,8 @@ def _fake_cell(information_set: str, model: str, checkpoint: str = "P2b") -> dic
         ],
     }
     return {
-        "dir": Path("/nonexistent") / f"{information_set}_{model}",
-        "information_set": information_set,
+        "dir": Path("/nonexistent") / f"{information_set_name}_{model}",
+        "information_set": information_set_name,
         "model": model,
         "payload": payload,
         "predictions": pd.DataFrame(),
@@ -1144,6 +1196,28 @@ def test_load_cell_refuses_a_cell_that_names_another_predictions_file(tmp_path):
     run_dir = _write_artifact(tmp_path / "renamed", payload)
     with pytest.raises(p2b_compare.ComparisonError, match="declares its predictions as"):
         p2b_compare.load_cell(run_dir)
+
+
+def test_load_cell_refuses_a_cell_whose_arm_and_columns_disagree(tmp_path):
+    """A cell relabelled from one arm to another keeps its own columns.
+
+    Nothing else in the comparison notices: the checkpoint matches, the parity
+    checks are about the *rows*, and the delta would be filed under an
+    information set that never ran.
+    """
+    payload = _fake_cell(SMC_V1, "logistic_regression")["payload"]
+    payload["information_parity"] = {"feature_names": list(ohlcv14_set().columns)}
+    run_dir = _write_artifact(tmp_path / "relabelled", payload)
+    with pytest.raises(p2b_compare.ComparisonError, match="says it ran 'smc_v1'"):
+        p2b_compare.load_cell(run_dir)
+
+
+def test_load_cell_accepts_a_cell_whose_arm_and_columns_agree(tmp_path, monkeypatch):
+    payload = _fake_cell(SMC_V1, "logistic_regression")["payload"]
+    payload["information_parity"] = {"feature_names": list(smc_v1_set().columns)}
+    run_dir = _write_artifact(tmp_path / "honest", payload)
+    monkeypatch.setattr(p2b_compare.pd, "read_parquet", lambda path: pd.DataFrame())
+    assert p2b_compare.load_cell(run_dir)["information_set"] == SMC_V1
 
 
 def test_load_cell_refuses_an_artifact_from_an_unknown_checkpoint(tmp_path):

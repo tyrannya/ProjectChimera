@@ -52,7 +52,7 @@ import pandas as pd
 from chimera.contracts import TargetSpec
 from nn import evaluate as ev
 from nn.data_pipeline import load_dataset
-from nn.information_sets import CHECKPOINTS, Checkpoint, OHLCV14
+from nn.information_sets import CHECKPOINTS, Checkpoint, OHLCV14, information_set
 from nn.p2b import ARTIFACT_NAME, PREDICTIONS_NAME
 from nn.regime import direction_attribution
 from nn.simple_models import SIMPLE_MODEL_NAMES
@@ -131,6 +131,21 @@ def load_cell(run_dir: Path) -> dict[str, Any]:
         raise ComparisonError(
             f"{artifact_path} declares its predictions as {declared!r}; refusing to pair "
             "it with a file it does not name"
+        )
+    # The arm name and the columns the run actually flattened must agree. A cell
+    # relabelled from one arm to another keeps its own `feature_names`, and
+    # nothing else in the comparison would notice: the checkpoint check would
+    # pass, the parity check would pass, and the deltas would be attributed to
+    # an information set that never ran.
+    arm = payload["information_set"]
+    used = list((payload.get("information_parity") or {}).get("feature_names") or [])
+    expected = list(information_set(arm).columns)
+    if used != expected:
+        raise ComparisonError(
+            f"{artifact_path} says it ran {arm!r} but flattened {len(used)} columns "
+            f"starting {used[:3]}, where {arm!r} is {len(expected)} columns starting "
+            f"{expected[:3]}. The arm a cell is filed under and the columns it saw are "
+            "the same claim."
         )
     predictions = pd.read_parquet(run_dir / PREDICTIONS_NAME)
     return {

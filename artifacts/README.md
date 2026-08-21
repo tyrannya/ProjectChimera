@@ -68,9 +68,9 @@ prose does not.
 
 An earlier arrangement on this branch hashed both kinds together. Three manifests then
 failed their own `--verify`, a test excused the failures by matching `_comparison/` in
-the path, and this file called the resulting entries "stale by design". None of that
-survives: there is no manifest entry in this repository that any test is allowed to see
-change.
+the path, and this file explained that one manifest's comparison entry was *expected*
+to be wrong. None of that survives: there is no manifest entry in this repository that
+any test is allowed to see change.
 
 `btc_v4_SHA256SUMS.txt` and `btc_p2a_SHA256SUMS.txt` predate the distinction, were
 written by hand, and cover their aggregates as well as their source runs. They verify
