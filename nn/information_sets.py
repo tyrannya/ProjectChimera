@@ -1,8 +1,9 @@
 """Information sets, and the proof that two of them were compared fairly.
 
 Research checkpoint P2b asks whether causal market structure adds information
-beyond OHLCV14. That question only has an answer if the only thing that differs
-between the two arms is the *information*. Everything else — which rows are
+beyond OHLCV14; P2c asks the same of causal classical chart structure. Either
+question only has an answer if the only thing that differs between the arms is
+the *information*. Everything else — which rows are
 scored, what the label is, where the folds fall, what a trade costs — has to be
 identical, and "identical" has to be checked rather than intended.
 
@@ -80,8 +81,8 @@ class AlignmentError(AssertionError):
 class InformationSet:
     """A named feature column list, plus the families an ablation can remove.
 
-    ``families`` is not decoration: the P2b robustness study leaves one family
-    out at a time, and a family that is not declared here cannot be ablated —
+    ``families`` is not decoration: the leave-one-family-out robustness study
+    drops one at a time, and a family that is not declared here cannot be ablated —
     which is the point, because choosing the groups after seeing which columns
     mattered would make the ablation a search.
     """
@@ -168,7 +169,7 @@ P2C_INFORMATION_SETS = (OHLCV14, CHART_V1, OHLCV14_PLUS_CHART)
 #: Separator between the combined set and the family an ablation removed.
 ABLATION_PREFIX = f"{COMBINED}_minus_"
 
-#: The families the P2b ablation may remove, in report order. Fixed here rather
+#: The families the ablation may remove, in report order. Fixed here rather
 #: than derived from whatever columns turned out to matter: an ablation whose
 #: groups were chosen after seeing the result is a search wearing a diagnostic's
 #: name.
@@ -176,7 +177,7 @@ ABLATABLE_FAMILIES = tuple(SMC_FEATURE_FAMILIES)
 
 
 def information_set(name: str) -> InformationSet:
-    """Any of the three P2b arms, or one leave-one-family-out ablation of the combined arm."""
+    """Any checkpoint's three arms, or one ablation of P2b's combined arm."""
     builders = {
         OHLCV14: ohlcv14_set,
         SMC_V1: smc_v1_set,
@@ -794,7 +795,7 @@ def _check_segment_contiguity(
 def feature_spec_identity(
     smc_spec: SMCSpec, ds_meta: DatasetMetadata, chart_spec: ChartSpec | None = None
 ) -> dict[str, Any]:
-    """What produced the columns, recorded in every P2b artifact.
+    """What produced the columns, recorded in every information-set artifact.
 
     Both halves, because both can change independently: the OHLCV14 window
     lengths come from the dataset that was built months ago, and the market

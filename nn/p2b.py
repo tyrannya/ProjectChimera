@@ -1,42 +1,62 @@
-"""P2b: does causal market structure add information beyond OHLCV14?
+"""One information-set cell: does a feature family add information beyond OHLCV14?
 
-    python -m nn.p2b --information-set ohlcv14_plus_smc_v1 --model xgboost \
-        --out artifacts/benchmark/btc_p2b_ohlcv14_plus_smc_v1_xgboost
+    python -m nn.p2b --checkpoint P2b --information-set ohlcv14_plus_smc_v1 \
+        --model xgboost --out artifacts/benchmark/btc_p2b_ohlcv14_plus_smc_v1_xgboost
+    python -m nn.p2b --checkpoint P2c --information-set chart_structure_v1 \
+        --model xgboost --out artifacts/benchmark/btc_p2c_chart_structure_v1_xgboost
 
 **The question.** P2a answered "does the model family change what can be
 extracted from OHLCV14?" and found that it barely does: the best of four
 families managed a mean outer net return near zero over four temporal periods.
 That result makes the next question an *information* question, not an
-architecture one. P2b changes the feature columns and holds everything else —
-the models, the folds, the labels, the costs, the threshold rule, the sealed
-boundary — at the values P2a ran under.
+architecture one. This runner changes the feature columns and holds everything
+else — the models, the folds, the labels, the costs, the threshold rule, the
+sealed boundary — at the values P2a ran under.
 
-**Three arms.** ``ohlcv14`` is P2a's control, re-run here rather than copied so
-the comparison is between two live numbers produced by one code path.
-``smc_v1`` is causal market structure alone (``docs/smc_v1.md``).
-``ohlcv14_plus_smc_v1`` is both. The comparison that matters is one model, one
-fold, one sample set, three column sets.
+**Two checkpoints, one runner.** P2b measures causal market structure
+(``docs/smc_v1.md``); P2c measures causal classical chart structure
+(``docs/chart_structure_v1.md``). Each has three arms: the OHLCV14 control,
+re-run here rather than copied so the comparison is between two live numbers
+produced by one code path; the family alone; and both. The comparison that
+matters is one model, one fold, one sample set, three column sets.
+
+**``--checkpoint`` is required, and is not inferred from the arm.** ``ohlcv14``
+is the control of both checkpoints, so the columns cannot say which research
+question a cell is answering. This was a module constant once, and a P2c run
+therefore wrote nine cells and a comparison that all identified as P2b and all
+stated P2b's market-structure question over chart-structure columns — every
+number correct, every identity wrong, and nothing in a position to notice. A run
+that will not say which question it is answering is refused before it answers
+one, and so is an arm that does not belong to the checkpoint named.
 
 **One cell per run.** A run covers one information set and one model across all
 four folds, because the deterministic estimators here are single-threaded and
 nine independent cells finish far sooner on four cores than one process would.
 Splitting the work cannot change it: nothing is shared between cells except the
-input data, and :mod:`nn.p2b_compare` refuses to aggregate cells whose baselines,
-economic references or sample-index hashes disagree — which is a direct,
-data-level proof that every cell scored the same rows.
+input data, and :mod:`nn.p2b_compare` refuses to aggregate cells whose
+checkpoints, baselines, economic references or sample-index hashes disagree —
+which is a direct, data-level proof that every cell scored the same rows.
 
 **Where the rows come from.** The committed research snapshot under
-``data/research/``, not a locally built dataset. The snapshot is a *prefix* of
-the canonical processed dataset, truncated at the last row any outer block can
-reach, so it cannot resolve the sealed boundary itself — by design, since it
-contains no sealed row to resolve against. The fold geometry therefore comes
-from the manifest's record of the canonical research region, and every planned
-row is asserted to fall inside the snapshot before anything is fitted.
+``data/research/``, not a locally built dataset, and **it is verified here
+before anything is fitted**. :func:`load_snapshot` runs the whole of
+:func:`tools.verify_research_snapshot.verify_snapshot` — the same 23 checks
+``make check`` runs, one shared implementation — so a snapshot whose manifest has
+stopped describing its files produces a named rejection and zero model fits, by
+this path or any other. An integrity guarantee that holds only when the operator
+remembers a ``make`` target is a convention, not a guarantee.
 
-**These are research folds.** P2b was designed after P2a's outer results had
-been seen, so its outer blocks are adaptive research evidence and not a pristine
-out-of-sample test. The sealed block is not planned over, fitted on, selected on
-or scored, and remains unopened.
+The snapshot is a *prefix* of the canonical processed dataset, truncated at the
+last row any outer block can reach, so it cannot resolve the sealed boundary
+itself — by design, since it contains no sealed row to resolve against. The fold
+geometry therefore comes from the manifest's record of the canonical research
+region, and every planned row is asserted to fall inside the snapshot before
+anything is fitted.
+
+**These are research folds.** P2b was designed after P2a's outer results had been
+seen and P2c after P2b's, so their outer blocks are adaptive research evidence
+and not a pristine out-of-sample test. The sealed block is not planned over,
+fitted on, selected on or scored, and remains unopened.
 """
 
 from __future__ import annotations
