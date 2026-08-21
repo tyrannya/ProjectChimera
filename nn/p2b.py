@@ -68,6 +68,7 @@ from nn.data_pipeline import load_dataset
 from nn.information_sets import (
     OHLCV14,
     P2B_INFORMATION_SETS,
+    P2C_INFORMATION_SETS,
     ablation_set_names,
     AlignedResearchSamples,
     build_information_set_views,
@@ -664,7 +665,9 @@ def build_argparser() -> argparse.ArgumentParser:
         # information set: each is the combined arm with one declared family
         # removed, and what they produce is post-hoc diagnostic evidence rather
         # than canonical P2b evidence.
-        choices=list(P2B_INFORMATION_SETS) + ablation_set_names(),
+        choices=sorted(
+            set(P2B_INFORMATION_SETS) | set(P2C_INFORMATION_SETS) | set(ablation_set_names())
+        ),
         required=True,
     )
     parser.add_argument("--model", choices=list(SIMPLE_MODEL_NAMES), required=True)
@@ -756,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
             "research_generation": contract.research_generation,
             "sealed_test_start": contract.sealed_test_start.isoformat(),
         },
-        "feature_spec": feature_spec_identity(aligned.smc_spec, ds_meta),
+        "feature_spec": feature_spec_identity(aligned.smc_spec, ds_meta, aligned.chart_spec),
         "code": code_revision(),
         "config": {
             "seed": args.seed,

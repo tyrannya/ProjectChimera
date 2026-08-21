@@ -43,6 +43,13 @@ import pandas as pd
 from chimera.features import feature_columns
 from nn.data_pipeline import DatasetMetadata, _contiguous_segment_ids
 from nn.dataset import sample_indices
+from nn.chart_structure import (
+    CHART_FEATURE_FAMILIES,
+    CHART_SPEC_VERSION,
+    ChartSpec,
+    chart_feature_columns,
+    compute_chart_features_segmented,
+)
 from nn.smc import (
     SMC_FEATURE_FAMILIES,
     SMC_SPEC_VERSION,
@@ -59,6 +66,10 @@ OHLCV14 = "ohlcv14"
 SMC_V1 = "smc_v1"
 #: Both, concatenated in that order.
 COMBINED = "ohlcv14_plus_smc_v1"
+#: Causal classical chart structure alone (docs/chart_structure_v1.md).
+CHART_V1 = "chart_structure_v1"
+#: OHLCV14 plus chart structure — P2c's combined arm.
+OHLCV14_PLUS_CHART = "ohlcv14_plus_chart_structure_v1"
 
 
 class AlignmentError(AssertionError):
@@ -115,6 +126,24 @@ def smc_v1_set() -> InformationSet:
     )
 
 
+def chart_v1_set() -> InformationSet:
+    return InformationSet(
+        name=CHART_V1,
+        columns=tuple(chart_feature_columns()),
+        families={k: tuple(v) for k, v in CHART_FEATURE_FAMILIES.items()},
+    )
+
+
+def ohlcv14_plus_chart_set() -> InformationSet:
+    ohlcv = ohlcv14_set()
+    chart = chart_v1_set()
+    return InformationSet(
+        name=OHLCV14_PLUS_CHART,
+        columns=ohlcv.columns + chart.columns,
+        families={**ohlcv.families, **chart.families},
+    )
+
+
 def combined_set() -> InformationSet:
     ohlcv = ohlcv14_set()
     smc = smc_v1_set()
@@ -127,6 +156,13 @@ def combined_set() -> InformationSet:
 
 #: The three arms of P2b, in report order. Predeclared.
 P2B_INFORMATION_SETS = (OHLCV14, SMC_V1, COMBINED)
+
+#: The three arms of P2c, in report order. The control is `ohlcv14` rather than
+#: P2b's combined arm: P2b found that market structure did not improve on
+#: OHLCV14, so OHLCV14 remains the best information set this repository has — by
+#: default rather than by merit, which is exactly why the next family is worth
+#: measuring against it.
+P2C_INFORMATION_SETS = (OHLCV14, CHART_V1, OHLCV14_PLUS_CHART)
 
 
 #: Separator between the combined set and the family an ablation removed.
@@ -141,7 +177,13 @@ ABLATABLE_FAMILIES = tuple(SMC_FEATURE_FAMILIES)
 
 def information_set(name: str) -> InformationSet:
     """Any of the three P2b arms, or one leave-one-family-out ablation of the combined arm."""
-    builders = {OHLCV14: ohlcv14_set, SMC_V1: smc_v1_set, COMBINED: combined_set}
+    builders = {
+        OHLCV14: ohlcv14_set,
+        SMC_V1: smc_v1_set,
+        COMBINED: combined_set,
+        CHART_V1: chart_v1_set,
+        OHLCV14_PLUS_CHART: ohlcv14_plus_chart_set,
+    }
     if name in builders:
         return builders[name]()
     if name.startswith(ABLATION_PREFIX):
@@ -172,6 +214,7 @@ class AlignedResearchSamples:
     spine_dates: np.ndarray
     spine_targets: np.ndarray
     smc_spec: SMCSpec
+    chart_spec: ChartSpec
     #: Rows the common-validity mask kept. All of them, or construction failed.
     n_rows: int
     #: The column each view was assembled from, by name. Kept so the alignment
@@ -323,6 +366,7 @@ def build_information_set_views(
     names: Sequence[str] = P2B_INFORMATION_SETS,
     *,
     smc_spec: SMCSpec | None = None,
+    chart_spec: ChartSpec | None = None,
     extra_sets: Mapping[str, InformationSet] | None = None,
 ) -> AlignedResearchSamples:
     """Build one aligned view per named information set.
@@ -340,6 +384,7 @@ def build_information_set_views(
     segment whose rows are not contiguous in the raw candles.
     """
     smc_spec = smc_spec or SMCSpec()
+    chart_spec = chart_spec or ChartSpec()
     timeframe = ds_meta.timeframe or "1h"
 
     spine = spine.reset_index(drop=True)
@@ -412,6 +457,19 @@ def build_information_set_views(
     for position, name in enumerate(smc_feature_columns()):
         columns[name] = smc_values[:, position]
 
+    chart = compute_chart_features_segmented(raw, timeframe, chart_spec)
+    chart_values = chart[chart_feature_columns()].to_numpy(dtype=np.float64)[raw_rows]
+    if not np.isfinite(chart_values).all():
+        bad = np.argwhere(~np.isfinite(chart_values))
+        column = chart_feature_columns()[int(bad[0][1])]
+        raise ValueError(
+            f"{len(bad)} non-finite chart-structure value(s), first in column "
+            f"{column!r} at research row {int(bad[0][0])}. chart_structure_v1 guarantees a "
+            "finite value on every row (docs/chart_structure_v1.md §5)."
+        )
+    for position, name in enumerate(chart_feature_columns()):
+        columns[name] = chart_values[:, position]
+
     evidence = _join_evidence(spine, raw, raw_rows, columns)
     if evidence["matches_under_plus_one_shift"] or evidence["matches_under_minus_one_shift"]:
         raise ValueError(
@@ -441,6 +499,7 @@ def build_information_set_views(
         spine_dates=base["dates"],
         spine_targets=base["targets"],
         smc_spec=smc_spec,
+        chart_spec=chart_spec,
         n_rows=len(spine),
         columns=columns,
         join_evidence=evidence,
@@ -586,15 +645,22 @@ def _check_segment_contiguity(
         )
 
 
-def feature_spec_identity(smc_spec: SMCSpec, ds_meta: DatasetMetadata) -> dict[str, Any]:
+def feature_spec_identity(
+    smc_spec: SMCSpec, ds_meta: DatasetMetadata, chart_spec: ChartSpec | None = None
+) -> dict[str, Any]:
     """What produced the columns, recorded in every P2b artifact.
 
     Both halves, because both can change independently: the OHLCV14 window
     lengths come from the dataset that was built months ago, and the market
     structure constants come from the spec this run was written against.
     """
+    chart_spec = chart_spec or ChartSpec()
     return {
         "ohlcv14_feature_spec": dict(ds_meta.feature_spec),
+        "chart_spec_version": CHART_SPEC_VERSION,
+        "chart_spec": chart_spec.to_dict(),
+        "chart_spec_hash": chart_spec.spec_hash(),
+        "chart_feature_families": {k: list(v) for k, v in CHART_FEATURE_FAMILIES.items()},
         "smc_spec_version": SMC_SPEC_VERSION,
         "smc_spec": smc_spec.to_dict(),
         "smc_spec_hash": smc_spec.spec_hash(),
@@ -605,6 +671,8 @@ def feature_spec_identity(smc_spec: SMCSpec, ds_meta: DatasetMetadata) -> dict[s
                     "ohlcv14": dict(ds_meta.feature_spec),
                     "smc": smc_spec.to_dict(),
                     "smc_version": SMC_SPEC_VERSION,
+                    "chart": chart_spec.to_dict(),
+                    "chart_version": CHART_SPEC_VERSION,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
