@@ -1,6 +1,5 @@
 {
   "checkpoint": "P2c",
-  "checkpoint_identity": "recovered from the arms; these cells predate the field in which a cell states its own research question, and all of them are labelled 'P2b'",
   "question": "does causal chart_structure_v1, alone or combined with OHLCV14, add usable information beyond OHLCV14?",
   "evidence_class": "derived",
   "derived_from": [
@@ -232,12 +231,14 @@
     "join_evidence": {
       "recomputed": [
         "smc_body_ratio from the raw candles",
-        "ret_1 from the spine"
+        "chart_pole_atr from the raw candles"
       ],
+      "not_evidence": "an OHLCV14 column was previously compared against the spine column it was copied from, which could not fail; dropped rather than kept as decoration",
       "rows": 45802,
       "matches": true,
       "matches_under_plus_one_shift": false,
       "matches_under_minus_one_shift": false,
+      "chart_rows_compared": 45802,
       "raw_rows_first": 78,
       "raw_rows_last": 47135,
       "raw_candles_seen_by_the_engine": 47136
@@ -446,9 +447,13 @@
       "CASH and buy-and-hold economic references"
     ],
     "code": {
-      "source_digest": "6ef66ebf74dfe4aa1c50b52ffc461616d9259cd5c2e40f3df70306435d82ecea",
+      "source_digest": "7540b413b5467a9fe03a0d71b3581a5d5703d3ef5d27a108f4ac31fb28cccfca",
       "revisions": [
-        "9efc777b53688889420ae02c04d4e55a7860a464"
+        "16a1e79b72be68f129eaf26c436a6b985143356b",
+        "1cada7807531ef8ea68a3defdaa05736bbd64884",
+        "1d849fbb199cc0ff81e92c7f9971a0b6558d6102",
+        "1fa77bfdd9ef3118627bc234e3b1f2944d0d19c8",
+        "fe2d64cf2045e5e1a32180ee3932faf944786076"
       ],
       "note": "one source digest across every cell. The revision list may hold more than one entry when documentation was committed between cells; that moves HEAD without changing a line any cell executed"
     },

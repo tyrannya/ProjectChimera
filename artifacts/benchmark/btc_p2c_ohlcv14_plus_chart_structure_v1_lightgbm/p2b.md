@@ -1,4 +1,6 @@
-# P2b cell — lightgbm on `ohlcv14_plus_chart_structure_v1`
+# P2c cell — lightgbm on `ohlcv14_plus_chart_structure_v1`
+
+**Question:** does causal chart_structure_v1, alone or combined with OHLCV14, add usable information beyond OHLCV14?
 
 One information set, one model, 4 temporal folds.
 Each row is a `64 x 44` window flattened to
