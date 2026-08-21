@@ -23,6 +23,15 @@ the frozen OHLCV14 information set?" It does not replace v4 as the underlying BT
 research baseline. P2a reuses the already-observed outer folds, so it is adaptive
 research evidence rather than pristine out-of-sample evidence.
 
+**The current P2b information-set benchmark is
+[`benchmark/btc_p2b_comparison/`](benchmark/btc_p2b_comparison/).** It is a third
+CURRENT result, for the question "does causal market structure add information beyond
+OHLCV14?" It replaces neither of the above: P2b holds the model family fixed and
+varies the feature columns, which is the question P2a's finding produced. **Its runs
+are in flight and no number from it is stated anywhere in this file.** Like P2a, it
+reuses the already-observed outer folds and is adaptive research evidence rather than
+pristine out-of-sample evidence.
+
 ## Status table
 
 `status` is one of **CURRENT** (the authoritative result for its question),
@@ -49,6 +58,16 @@ one that shares its `research question`.
 | `benchmark/btc_p2a_seed_242` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 242) | n/a | current |
 | `benchmark/btc_p2a_seed_342` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 342) | n/a | current |
 | `benchmark/btc_p2a_seed_442` | P2a | `btc_p2a_model_family_benchmark` | CURRENT | `nn.benchmark` | itself (seed 442) | n/a | current |
+| `benchmark/btc_p2b_comparison` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b_compare` | `benchmark/btc_p2b_{ohlcv14,smc_v1,ohlcv14_plus_smc_v1}_{logistic_regression,lightgbm,xgboost}` | **pending** | current |
+| `benchmark/btc_p2b_ohlcv14_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (smc_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_logistic_regression` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_lightgbm` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p2b_ohlcv14_plus_smc_v1_xgboost` | P2b | `btc_p2b_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_smc_v1 x xgboost) | n/a | current |
 | `diagnostics/btc_regimes_v3` | v3 | `btc_ohlcv14_mtst_baseline` | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v3_seed_{42,142,242,342,442}` | **no** | pre-correction |
 | `diagnostics/btc_regimes_v2` | v2 | `btc_ohlcv14_mtst_baseline` | SUPERSEDED | `nn.wf_diagnostics` | `walkforward/btc_nested_v2_seed_{42,142,242,342,442}` | **no** | pre-correction |
 | `walkforward/btc_nested_v1` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 42) | n/a | pre-correction |
@@ -129,6 +148,58 @@ persisted per-sample predictions and all matched. The sealed test remained unope
 `artifacts/btc_p2a_SHA256SUMS.txt` freezes the generated P2a run and comparison evidence
 files committed with this checkpoint. The index documentation itself is intentionally
 outside that generated-output manifest.
+
+## Current P2b information-set evidence
+
+P2b asks whether causal market structure adds information beyond OHLCV14. It changes
+the feature columns and holds everything else at the values P2a ran under: the models,
+the folds, the labels, the costs, the threshold rule and the sealed boundary. Three
+information sets — `ohlcv14` (14 columns), `smc_v1` (39) and `ohlcv14_plus_smc_v1`
+(53) — times three untuned models is nine cells, each covering four temporal folds.
+
+**No number from P2b is stated here, because the runs are still in flight.** The rows
+above are a declaration of where the evidence will land and under what provenance, not
+a report of a result. Their `source runs present` column reads **pending** for exactly
+that reason: writing **yes** before the directories exist would manufacture provenance,
+which is the failure the rest of this file is about. It becomes **yes** when the nine
+cells and the comparison are committed, and the headline numbers are added here then.
+
+It is being produced under:
+
+- research contract: `btc-usdt-1h-gen1`
+- contract hash: `dca6d0a891a257197a7c8aecec04fdba0a0b3009cfe93c5f3a397d458ab4a1de`
+- Styx anchor: `2025-08-27T23:00:00+00:00`
+- resolved sealed row: `48217` (from the snapshot manifest's canonical reference; the
+  committed snapshot deliberately holds no sealed row and cannot resolve it)
+- research snapshot: `data/research/btc_usdt_1h_gen1_*`, raw semantic hash
+  `c62de8d92a1eb80397d17ff89e480005d381525ec14c5f6519efddbc2cbe86ed`, processed
+  semantic prefix hash
+  `d5738f0cc5c0927e91425dd9ab6ef1fa44bda45d07ca15a729167a7de45f7545`, 45,802 rows,
+  `contains_styx: false`
+- feature spec: `smc_v1`, spec hash
+  `3421312fc8d8687e158b5dc269f65c76bfa6916ec4643f3063cf9473d8a36649`
+- run seed: `42` (fold seed `42 + fold`); native thread pools pinned to 1
+- four outer folds per cell, over the same rows v4 and P2a reported on
+- sealed test evaluated: **false**
+
+Unlike v4 and P2a, P2b runs from the committed research snapshot rather than a locally
+built dataset, so its cells are reproducible from a fresh clone with no VPS, no private
+data and no access to the sealed block. Each cell preserves `p2b.json`, `p2b.md` and
+`outer_predictions.parquet`; the comparison proves the nine cells scored the same rows
+before aggregating and rebuilds every reported trading and classification number from
+those persisted predictions.
+
+The statistical unit is **four temporal periods**. There is no seed dimension: these
+estimators are deterministic given their inputs and logistic regression takes no seed
+at all, which is the lesson P2a's five identical seed directories taught. The reading
+of the outcome — 3 or 4 of 4 folds improved is evidence worth continuing on, 2 of 4 is
+regime-dependent and inconclusive, 0 or 1 is weak-to-negative — was fixed before any
+number was read and is recorded in `nn.p2b_compare.VERDICTS`. P2b was designed after
+P2a's outer results had been seen, so its outer blocks are adaptive research evidence
+rather than a pristine out-of-sample test.
+
+Design: [`../docs/p2b_methodology.md`](../docs/p2b_methodology.md). Reproduction:
+[`../docs/research_reproduction.md`](../docs/research_reproduction.md).
 
 ## What "pre-correction" means
 

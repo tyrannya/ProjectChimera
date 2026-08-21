@@ -151,14 +151,16 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
     for cell in cells[1:]:
         payload = cell["payload"]
-        mine = (payload.get("code") or {}).get("revision")
-        theirs = (ref.get("code") or {}).get("revision")
+        mine = (payload.get("code") or {}).get("source_digest")
+        theirs = (ref.get("code") or {}).get("source_digest")
         if mine != theirs:
             raise ComparisonError(
-                f"{described(cell)} was built at revision {mine} and "
-                f"{described(reference)} at {theirs}. Every other identity a cell "
-                "records describes the data or the definitions, so cells from two "
-                "revisions of the runner would otherwise join without a word."
+                f"{described(cell)} ran source digest {mine} and "
+                f"{described(reference)} ran {theirs}. Every other identity a cell "
+                "records describes the data or the definitions, so two revisions of "
+                "the runner would otherwise join without a word. The digest covers "
+                "every repository module the process imported, so a documentation "
+                "commit does not split a batch and an uncommitted edit does not hide."
             )
         for key in ("contract", "sizes", "target", "threshold_selection", "snapshot"):
             if payload[key] != ref[key]:
@@ -211,6 +213,21 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "majority and momentum baseline outer reports",
             "CASH and buy-and-hold economic references",
         ],
+        "code": {
+            "source_digest": (cells[0]["payload"].get("code") or {}).get("source_digest"),
+            "revisions": sorted(
+                {
+                    (c["payload"].get("code") or {}).get("revision")
+                    for c in cells
+                    if (c["payload"].get("code") or {}).get("revision")
+                }
+            ),
+            "note": (
+                "one source digest across every cell. The revision list may hold more "
+                "than one entry when documentation was committed between cells; that "
+                "moves HEAD without changing a line any cell executed"
+            ),
+        },
         "conclusion": (
             "every cell scored the same outer rows; a difference between two cells can "
             "only be the information set or the model"

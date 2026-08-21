@@ -469,6 +469,10 @@ Consequences that follow from this order and are part of the definition:
 - `prev_sh` in §3.4 is `last_sh` — the newest previously confirmed swing high,
   **including one that has already been broken**. §3.2 distinguishes `last_sh`
   from `active_sh` precisely so this can be said.
+- When both directions break on one candle, `smc_break_magnitude_atr` reports
+  the **bearish** value: step 4 writes the bullish magnitude and the bearish
+  test then overwrites it. Dormant — no such candle exists in the committed
+  history — but declared, because a rule that has never fired is still a rule.
 
 ### 8.1 "else 0" is per quantity, not gated on the flag
 
@@ -512,6 +516,16 @@ break candles and 334 are rows before the segment's first break. A model cannot
 tell the two states apart. §4 introduces availability flags precisely because
 `0.0` is a legal value, and these three columns then reintroduce the collision.
 `log1p(1 + t - i)` would fix it without a new column.
+
+Measured again on the 45,802 rows P2b actually scores, rather than on the full
+raw history: `smc_bars_since_break` has 2,912 zeros, every one of them an event
+candle and none of them "never happened"; `smc_bars_since_sweep_high` has 1,546,
+likewise all event candles; `smc_bars_since_sweep_low` has 1,683, of which 127
+genuinely mean "no low sweep has occurred in this segment". So the collision
+fires on 127 research rows. On the event candles the ambiguity is resolvable
+from elsewhere in the same row — `smc_bos_*`, `smc_choch_*` and `smc_sweep_*`
+are 1 exactly then — which is why this degrades three columns rather than
+corrupting them.
 
 **(b) `smc_range_width_atr` is signed, and "width" is the wrong word for it.**
 It goes negative when the newest confirmed swing high sits below the newest

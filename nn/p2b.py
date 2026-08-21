@@ -44,8 +44,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import hashlib
 import statistics
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -160,12 +162,39 @@ def code_revision() -> dict[str, Any]:
 
     head = git("rev-parse", "HEAD")
     status = git("status", "--porcelain")
+
+    # The digest, not the revision, is what `nn.p2b_compare` compares. A commit
+    # that touches only documentation moves HEAD without changing a line any
+    # cell executes, and refusing to join cells across it would split a batch
+    # for no reason; a dirty working tree moves no revision at all while
+    # changing everything. Hashing the repository source each process actually
+    # imported answers the question both of those get wrong — what code ran.
+    sources: dict[str, str] = {}
+    for name, module in sorted(sys.modules.items()):
+        path = getattr(module, "__file__", None)
+        if not path:
+            continue
+        resolved = Path(path).resolve()
+        # `is_file()` guards against a module whose `__file__` is a bare name —
+        # a few libraries set one — which resolves against the working directory
+        # and lands inside the repository without existing there.
+        if root in resolved.parents and resolved.suffix == ".py" and resolved.is_file():
+            sources[str(resolved.relative_to(root))] = hashlib.sha256(
+                resolved.read_bytes()
+            ).hexdigest()
+    digest = hashlib.sha256(
+        json.dumps(sources, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
     return {
         "revision": head,
         "dirty": None if status is None else bool(status.strip()),
+        "source_digest": digest,
+        "source_files": len(sources),
         "note": (
-            "cells whose revision differs were built by different code and are not "
-            "joined by nn.p2b_compare"
+            "source_digest covers every repository module this process imported and is "
+            "what nn.p2b_compare requires cells to agree on; revision and dirty are "
+            "recorded beside it because neither one alone says what code ran"
         ),
     }
 

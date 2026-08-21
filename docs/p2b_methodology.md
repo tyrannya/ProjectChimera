@@ -292,13 +292,26 @@ difference: it is enough to select a different point off the 0.02-spaced
 threshold grid, and therefore to report a materially different net return for
 the same data, the same code and the same seed.
 
-So `nn.p2b` pins native pools to `FIT_THREADS = 1` with `threadpoolctl` around
-every fit, every `predict_proba` and every frozen scoring call. LightGBM and
-XGBoost were already pinned at `n_jobs=1` in their predeclared configurations
-for the same reason; this closes the remaining hole. The observed pool state —
-every pool's API, thread count and library version — is recorded in each
-artifact's provenance, so the claim can be checked against the run rather than
-trusted.
+So `nn.p2b` pins native pools to `FIT_THREADS = 1` with `threadpoolctl`, once,
+around the whole cell. LightGBM and XGBoost were already pinned at `n_jobs=1` in
+their predeclared configurations for the same reason; this closes the remaining
+hole.
+
+**Where the pin is entered matters, and the first version got it wrong.**
+`threadpool_limits` can only limit pools that are already loaded when it is
+entered, and `SimpleModelSpec.build` imports its library lazily. Entering the
+limit and *then* fitting therefore left scipy's OpenBLAS and scikit-learn's
+libgomp at four threads on fold 0 — the import had not happened yet — and pinned
+on folds 1 to 3, where it had. Fold 0 ran under a thread configuration no other
+fold in the run used, and the pool snapshot written into the artifact named
+neither library. An adversarial review caught it; measured on this build the
+probabilities were bit-identical either way, so it was a broken guard rather
+than a broken number, but a guard that cannot be checked is not one.
+
+The estimator's library is now loaded once before the pin is entered, so all
+four native pools are pinned for every fold. The observed pool state — every
+pool's API, thread count and library version — is recorded in each artifact's
+provenance, so the claim can be checked against the run rather than trusted.
 
 This is a correctness setting, not a performance one, and it is why the nine
 cells are run as nine processes rather than one threaded one: parallelism across
