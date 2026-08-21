@@ -470,3 +470,28 @@ directory and a new manifest under a new name, and which directory is
 authoritative for which question is recorded in
 [`../artifacts/README.md`](../artifacts/README.md) rather than inferred from
 directory names.
+
+### Indexing it
+
+`artifacts/README.md` is the index of which artifact is authoritative for which
+question, and P2b is **not in it yet, on purpose**. The index's first line says
+everything under `artifacts/` is a record of a run that has already happened, and
+`tests/test_reporting_integrity.py` enforces that: a CURRENT aggregate must be
+backed by committed source runs, and
+`test_the_index_names_exactly_one_current_generation_per_research_question`
+compares the set of questions carrying a CURRENT generation against a
+hard-coded `{btc_ohlcv14_mtst_baseline: v4, btc_p2a_model_family_benchmark: P2a}`.
+Declaring where evidence will land is not recording that it did.
+
+So the rows go in when the directories do, in the same commit as the evidence.
+The P2b research question is `btc_p2b_information_set_benchmark`, and it is a
+*third* question — P2a's and v4's rows keep their own CURRENT status, because
+CURRENT is unique per question and P2b supersedes neither. Ten rows: one per
+cell, `produced by nn.p2b`, `source runs: itself (<set> x <model>)`,
+`source runs present: n/a`; and one for
+`benchmark/btc_p2b_comparison`, `produced by nn.p2b_compare`, naming the nine
+cells, `source runs present: yes`. All ten `metric semantics: current`. That
+commit also has to add the new question to the test's expected mapping and to
+its `CURRENT_*` path sets — the index and the guard move together, or the guard
+is not guarding this question.
+
