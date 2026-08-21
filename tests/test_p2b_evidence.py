@@ -44,25 +44,11 @@ BENCHMARK = ROOT / "artifacts" / "benchmark"
 
 #: Every checksum manifest this repository stands behind, discovered rather than
 #: listed. A checkpoint that freezes new evidence is covered the moment its
-#: manifest lands, instead of when someone remembers to add a name here.
+#: manifest lands, instead of when someone remembers to add a name here — and
+#: `test_the_repository_has_the_manifests_these_tests_think_it_has` names the
+#: expected set once, so a manifest that vanished cannot take its own
+#: verification quietly with it.
 MANIFESTS = tuple(sorted(path.name for path in (ROOT / "artifacts").glob("*_SHA256SUMS.txt")))
-
-#: Manifests written before a manifest covered primary evidence only, and the
-#: primary-only manifest that replaced each. They are kept byte for byte and
-#: renamed rather than edited: a manifest is the repository's own statement
-#: about what a past run produced, so the answer to one that covered the wrong
-#: kind of file is a successor, never a rewrite — `tools.freeze_evidence`
-#: refuses to overwrite one for the same reason. The `.superseded.txt` suffix is
-#: what keeps a manifest nobody should expect to verify out of `MANIFESTS`,
-#: because a checksum file that fails on purpose teaches a reader to shrug at
-#: one that fails for real. `None` means there was nothing to succeed —
-#: `btc_p2b_recheck` covered a comparison and nothing else.
-SUPERSEDED = {
-    "btc_p2b_SHA256SUMS.superseded.txt": "btc_p2b_cells_SHA256SUMS.txt",
-    "btc_p2b_ablation_SHA256SUMS.superseded.txt": ("btc_p2b_ablation_cells_SHA256SUMS.txt"),
-    "btc_p2b_recheck_SHA256SUMS.superseded.txt": None,
-    "btc_p2c_SHA256SUMS.superseded.txt": "btc_p2c_cells_SHA256SUMS.txt",
-}
 
 #: The two comparison directories this branch regenerates. Derived by
 #: declaration, and asserted to be so below rather than assumed.
@@ -274,29 +260,19 @@ def test_each_checkpoints_artifacts_identify_as_that_checkpoint():
             .read_text()
             .startswith(f"# {checkpoint} —")
         )
-        # And says where that identity came from, because a reader who opens
-        # the nine cells behind it will find "P2b" written in every one.
-        assert "recovered from the arms" in comparison["checkpoint_identity"]
         for arm in arms:
             for model in ("logistic_regression", "lightgbm", "xgboost"):
                 cell = json.loads(
                     (BENCHMARK / f"{prefix}_{arm}_{model}" / "p2b.json").read_text()
                 )
-                # The arm is the trustworthy field, and `load_cell` checks it
-                # against the columns the cell actually flattened.
+                # Both fields, because either alone can be right while the other
+                # is wrong: `load_cell` checks the arm against the columns the
+                # cell actually flattened, and the checkpoint against the
+                # question it states.
                 assert cell["information_set"] == arm
-                # The label is not. Every committed cell predates the field in
-                # which a cell states its own question, so all twenty-five say
-                # "P2b" — including the nine that ran chart structure. They are
-                # deliberately not relabelled: editing a frozen artifact to say
-                # something it did not say manufactures provenance, and
-                # re-running them to correct a string would replace the primary
-                # evidence the manifests exist to pin. The report above is
-                # titled correctly because `nn.p2b_compare` reads the arms
-                # instead. If someone ever does correct these cells, this fails
-                # and the change gets discussed rather than absorbed.
-                assert cell["checkpoint"] == "P2b", f"{prefix}_{arm}_{model}"
-                assert "question" not in cell
+                assert cell["checkpoint"] == checkpoint, f"{prefix}_{arm}_{model}"
+                assert cell["question"] == question
+                assert cell["evidence_class"] == PRIMARY
 
 
 def test_the_p2b_question_and_the_p2c_question_are_not_the_same_question():
@@ -412,8 +388,8 @@ def test_the_committed_predictions_are_the_bytes_the_manifests_pin():
     covered = {
         name
         for manifest in (
-            "btc_p2b_cells_SHA256SUMS.txt",
-            "btc_p2c_cells_SHA256SUMS.txt",
+            "btc_p2b_SHA256SUMS.txt",
+            "btc_p2c_SHA256SUMS.txt",
         )
         for _, name in freeze_evidence.manifest_entries(ROOT / "artifacts" / manifest)
     }
@@ -439,7 +415,7 @@ def test_a_manifest_entry_is_a_sha256_of_the_file_it_names():
     `check` could be wrong in the same direction as `freeze` and both tests
     above would still pass. This one hashes a file directly.
     """
-    manifest = ROOT / "artifacts" / "btc_p2b_cells_SHA256SUMS.txt"
+    manifest = ROOT / "artifacts" / "btc_p2b_SHA256SUMS.txt"
     expected, name = freeze_evidence.manifest_entries(manifest)[0]
     assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == expected
 
@@ -522,63 +498,20 @@ def test_the_repository_has_the_manifests_these_tests_think_it_has():
     """
     assert MANIFESTS == (
         "btc_p2a_SHA256SUMS.txt",
-        "btc_p2b_ablation_cells_SHA256SUMS.txt",
-        "btc_p2b_cells_SHA256SUMS.txt",
-        "btc_p2c_cells_SHA256SUMS.txt",
+        "btc_p2b_SHA256SUMS.txt",
+        "btc_p2b_ablation_SHA256SUMS.txt",
+        "btc_p2c_SHA256SUMS.txt",
         "btc_v4_SHA256SUMS.txt",
     )
-    for retired in SUPERSEDED:
-        assert (ROOT / "artifacts" / retired).is_file(), (
-            f"{retired} was retired, not deleted; it is the record of what its "
-            "checkpoint froze and the repository keeps it"
-        )
 
 
-@pytest.mark.parametrize("retired,successor", sorted(SUPERSEDED.items()))
-def test_a_reissued_manifest_changed_no_digest_it_inherited(retired, successor):
-    """Re-issuing a manifest dropped derived entries and did nothing else.
+def test_no_manifest_was_left_behind_under_another_name():
+    """The four branch-only manifests were re-cut, not archived beside the new ones.
 
-    This is what makes the supersession safe to trust. Narrowing a manifest is
-    exactly the shape of laundering a result — drop the row that stopped
-    matching, keep the file, call it frozen — so a successor is required to be a
-    strict projection of what it replaced: every path they share carries the
-    same digest, nothing was added, and every entry that went away lives in a
-    directory that declares itself derived.
-
-    A successor that re-froze a moved primary file fails here, and so does one
-    that quietly dropped a cell.
+    A `*.superseded.txt` next to a live manifest is a checksum file nobody
+    expects to verify, which is the habit this branch exists to break. These
+    four never reached `main`, so re-cutting them rewrites no history and there
+    is nothing to keep a copy of.
     """
-    old = {
-        name: digest
-        for digest, name in freeze_evidence.manifest_entries(ROOT / "artifacts" / retired)
-    }
-    new = (
-        {
-            name: digest
-            for digest, name in freeze_evidence.manifest_entries(
-                ROOT / "artifacts" / successor
-            )
-        }
-        if successor
-        else {}
-    )
-    assert old, f"{retired} is empty"
-
-    rehashed = [name for name in old.keys() & new.keys() if old[name] != new[name]]
-    assert not rehashed, (
-        f"{successor} records a different digest than {retired} for {rehashed}. A "
-        "successor may narrow what a manifest covers; it may not restate what a "
-        "covered file hashed to."
-    )
-    assert not new.keys() - old.keys(), (
-        f"{successor} covers files {retired} did not: "
-        f"{sorted(new.keys() - old.keys())}. New evidence gets its own manifest "
-        "rather than being folded into a re-issue."
-    )
-    for name in sorted(old.keys() - new.keys()):
-        directory = (ROOT / name).parent
-        assert freeze_evidence.evidence_class_of(directory) == DERIVED, (
-            f"{retired} covered {name} and {successor} does not, but "
-            f"{directory.name} does not declare itself {DERIVED}. Only derived "
-            "evidence may be dropped from a re-issued manifest."
-        )
+    stragglers = sorted(p.name for p in (ROOT / "artifacts").glob("*SHA256SUMS*"))
+    assert stragglers == sorted(MANIFESTS), stragglers

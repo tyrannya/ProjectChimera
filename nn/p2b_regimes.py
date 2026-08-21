@@ -45,7 +45,6 @@ from nn.p2b_compare import (
     ComparisonError,
     checkpoint_of,
     fold_row,
-    identity_source,
     load_cell,
 )
 from tools.freeze_evidence import DERIVED
@@ -271,7 +270,6 @@ def main(argv: list[str] | None = None) -> int:
     observations = build_observations(periods, deltas_by_model)
     payload = {
         "checkpoint": "P2b-regimes",
-        "checkpoint_identity": identity_source(cells),
         "evidence_class": DERIVED,
         "status": "descriptive; nothing fitted, no regime filter derived",
         "sealed_test": False,
