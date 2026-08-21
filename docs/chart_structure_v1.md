@@ -382,7 +382,7 @@ and is not a tuned constant.
 Position within the channel is the standardised current residual:
 
 ```
-chan_pos(t) = r[t] / sigma(t)                  0 when sigma(t) <= 1e-9 * atr_den[t]
+chan_pos(t) = r[t] / sigma(t)      0 when sigma(t) <= max(1e-9*atr_den[t], 1e-12*c[t])
 ```
 
 The guard is a **relative threshold, not `sigma == 0`**. `sigma` is a computed
@@ -393,6 +393,15 @@ bounded by `sqrt(w-1)` and indistinguishable from a real reading. Nine rows of
 the committed pre-Styx history do exactly this under an exact guard. The
 threshold is relative to ATR because `sigma` is a price-scale quantity and
 `1e-9` ATR is not a channel.
+
+**Two floors, not one.** `atr_den` itself floors at `1e-12 * c` (§1.1), so on a
+stretch where ATR has decayed toward that floor the composed threshold reaches
+`1e-21 * c` — about five orders *below* the ULP of `c`, which is where the noise
+actually lives. An ATR-relative test alone therefore cannot fire in the one
+regime it exists for: on 200 real candles followed by 300 frozen ones, 216 of
+the frozen rows still emitted a nonzero standardised residual. The absolute
+`1e-12 * c` floor closes it. Neither floor changes any row of the committed
+history.
 
 `r[t]` is one of the `w_l` residuals that `sigma` is computed from, and for a
 mean-zero set of `w` numbers `max|r_i| / sqrt(mean r^2) <= sqrt(w-1)`. So
@@ -604,7 +613,7 @@ Column order is fixed and is part of the spec. `V` marks an availability flag.
 | 11 | `chart_trend_slope_atr` | `b(t) / atr_den[t]`, §3.4 |
 | 12 | `chart_trend_r2` | `R2(t)` ∈ [0,1]; `0` when `sum (c-cbar)^2 == 0` |
 | 13 | `chart_channel_disp_atr` | `sigma(t) / atr_den[t]` |
-| 14 | `chart_channel_pos` | `r[t] / sigma(t)`; `0` when `sigma(t) <= 1e-9 * atr_den[t]`; bounded by `sqrt(w_l - 1)` |
+| 14 | `chart_channel_pos` | `r[t] / sigma(t)`; `0` when `sigma(t) <= max(1e-9*atr_den[t], 1e-12*c[t])`; bounded by `sqrt(w_l - 1)` |
 
 ### D. volatility (2)
 
@@ -703,7 +712,11 @@ against a reference level that is at most `WIN_LONG` bars old (17–20) or at mo
 one pivot spacing old (22–28). On the committed pre-Styx history consecutive
 confirmed swing points are a median of 9 bars apart and never more than 46, so
 the level a family-F column references is at most 49 bars old. `smc_v1` §9(c)
-reports a 181-ATR distance because its equal-level references never expire; that
+`smc_v1` §9(c) reports a 181-ATR distance because its equal-level references
+never expire. Columns 17-20 genuinely cannot do that, because their reference is
+re-derived from the window every row. **Columns 22-28 can**, and §9(f) records
+it: their pivot reference has no window bound, so a collapsed `atr_den` makes the
+ratio arbitrarily large
 tail cannot occur here, and no clip constant is needed to prevent it.
 
 **Warm-up** is not a NaN problem but is a real one: the first candles of a
@@ -950,3 +963,27 @@ BTC history is a separate problem with its own scale-stationarity failure modes,
 and solving it badly inside this family would contaminate a measurement that is
 otherwise purely geometric. `ohlcv14` carries `volume_change` and `volume_z`;
 whether that is enough is a question for a later checkpoint.
+
+**(f) Columns 22-28 are not bounded, and §5's argument does not cover them.**
+Their numerator references a pivot pair with no window bound, so it can be
+arbitrarily old, while the denominator is the current `atr_den`. On a
+synthetic frame that passes `validate_ohlcv` — real candles followed by a long
+frozen stretch, then one tick — `chart_dt_neckline_atr` reaches **360,430 ATR**,
+three orders past the 181-ATR tail §5 claims cannot occur here. Latent on the
+committed history, where the smallest `ATR/close` is 7.9e-4 against a break
+point near 2e-7. Recorded rather than clipped: a clip constant would be a tuned
+constant, which §1.3 forbids, and the honest fix is a floor on `atr_den` that
+cannot fall below a real price scale. Deferred to `chart_structure_v2`.
+
+**(g) `chart_slope_asymmetry` is three-valued in practice, not the continuous
+axis §3.3 describes.** `(s_hi + s_lo) / (|s_hi| + |s_lo|)` is exactly ±1
+whenever the two slopes share a sign, which over a 60-bar window is almost
+always: measured on the 49,551 committed pre-Styx rows it is exactly ±1 on
+**95.83%** of them and below 0.5 in absolute value on 2.04%. §3.3's claim that
+"a not-quite-ascending triangle reads 0.7 rather than flipping between two
+categories" is wrong as written — it does flip. It also correlates 0.985 with
+`sign(chart_trend_slope_atr)`, so a flat-highs/rising-lows ascending triangle
+and a plain uptrend both read +1.0, which is the distinction §3.3's own table
+says the column draws. It costs 64 of the 1,920 model inputs the §1.4 budget is
+fighting over and should probably be replaced in `chart_structure_v2` by
+something that separates those two states.

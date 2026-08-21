@@ -15,7 +15,7 @@ plain aggregator would not:
     survives being split across nine processes precisely because nothing but the
     data could make these agree.
 
-*it recomputes every reported number from the persisted predictions*
+*it recomputes, from the persisted predictions, every number that can be*
     ``outer_predictions.parquet`` holds the probability, the selected action,
     the threshold and the realised future return of every scored sample. The
     trading and classification metrics are recomputed from those columns through
@@ -337,6 +337,8 @@ def recompute_cell(cell: dict[str, Any]) -> list[dict[str, Any]]:
             "turnover",
             "max_drawdown",
             "per_trade_sharpe",
+            "avg_trade",
+            "cost_per_trade",
         ):
             got, want = trading[key], reported["trading"][key]
             if got is None or want is None:
@@ -344,20 +346,71 @@ def recompute_cell(cell: dict[str, Any]) -> list[dict[str, Any]]:
                     mismatches.append(f"trading.{key}: recomputed {got!r}, reported {want!r}")
             elif not np.isclose(float(got), float(want), rtol=1e-9, atol=1e-9):
                 mismatches.append(f"trading.{key}: recomputed {got}, reported {want}")
-        for key in ("macro_f1", "accuracy", "directional_accuracy", "coverage"):
+        for key in (
+            "macro_f1",
+            "accuracy",
+            "directional_accuracy",
+            "coverage",
+            "calibration_error",
+        ):
             if not np.isclose(classification[key], reported["classification"][key], atol=1e-9):
                 mismatches.append(
                     f"classification.{key}: recomputed {classification[key]}, "
                     f"reported {reported['classification'][key]}"
                 )
+        for key in (
+            "class_distribution",
+            "predicted_distribution",
+            "per_class",
+            "confusion_matrix",
+            "n_samples",
+            "threshold",
+        ):
+            if classification[key] != reported["classification"][key]:
+                mismatches.append(f"classification.{key} disagrees with the predictions")
         findings.append(
             {
                 "fold": fold,
                 "samples": len(rows),
                 "recomputed_from": PREDICTIONS_NAME,
+                "recomputed_keys": {
+                    "trading": [
+                        "n_trades",
+                        "net_return",
+                        "gross_return",
+                        "total_costs",
+                        "win_rate",
+                        "profit_factor",
+                        "exposure",
+                        "turnover",
+                        "max_drawdown",
+                        "per_trade_sharpe",
+                        "avg_trade",
+                        "cost_per_trade",
+                    ],
+                    "classification": [
+                        "macro_f1",
+                        "accuracy",
+                        "directional_accuracy",
+                        "coverage",
+                        "calibration_error",
+                        "class_distribution",
+                        "predicted_distribution",
+                        "per_class",
+                        "confusion_matrix",
+                        "n_samples",
+                        "threshold",
+                    ],
+                },
+                # Named, not omitted. A recomputation that covers ten of eighteen
+                # keys and reports "0 mismatches" invites a reader to believe it
+                # covered all eighteen.
                 "not_recomputed": [
-                    "annualised_sharpe and candle_max_drawdown need the candle price path, "
-                    "which the prediction file does not carry"
+                    "trading.annualised_sharpe, trading.candle_max_drawdown and "
+                    "trading.elapsed_intervals need the candle price path, which the "
+                    "prediction file does not carry",
+                    "trading.sharpe_basis, trading.per_trade_sharpe_reason and "
+                    "trading.annualised_sharpe_reason are prose, not measurements",
                 ],
                 "mismatches": mismatches,
             }
@@ -797,6 +850,7 @@ def main(argv: list[str] | None = None) -> int:
             "cells_checked": len(cells),
             "folds_checked": sum(len(v) for v in recomputed.values()),
             "mismatches": len(mismatches),
+            "recomputed_keys": recomputed[next(iter(recomputed))][0]["recomputed_keys"],
             "not_recomputed": recomputed[next(iter(recomputed))][0]["not_recomputed"],
             "per_cell": recomputed,
         },

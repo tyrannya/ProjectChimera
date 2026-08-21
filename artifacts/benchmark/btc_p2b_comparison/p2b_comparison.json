@@ -395,8 +395,38 @@
     "cells_checked": 9,
     "folds_checked": 36,
     "mismatches": 0,
+    "recomputed_keys": {
+      "trading": [
+        "n_trades",
+        "net_return",
+        "gross_return",
+        "total_costs",
+        "win_rate",
+        "profit_factor",
+        "exposure",
+        "turnover",
+        "max_drawdown",
+        "per_trade_sharpe",
+        "avg_trade",
+        "cost_per_trade"
+      ],
+      "classification": [
+        "macro_f1",
+        "accuracy",
+        "directional_accuracy",
+        "coverage",
+        "calibration_error",
+        "class_distribution",
+        "predicted_distribution",
+        "per_class",
+        "confusion_matrix",
+        "n_samples",
+        "threshold"
+      ]
+    },
     "not_recomputed": [
-      "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+      "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+      "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
     ],
     "per_cell": {
       "ohlcv14::lightgbm": [
@@ -404,8 +434,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -413,8 +473,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -422,8 +512,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -431,8 +551,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }
@@ -442,8 +592,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -451,8 +631,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -460,8 +670,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -469,8 +709,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }
@@ -480,8 +750,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -489,8 +789,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -498,8 +828,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -507,8 +867,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }
@@ -518,8 +908,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -527,8 +947,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -536,8 +986,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -545,8 +1025,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }
@@ -556,8 +1066,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -565,8 +1105,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -574,8 +1144,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -583,8 +1183,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }
@@ -594,8 +1224,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -603,8 +1263,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -612,8 +1302,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -621,8 +1341,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }
@@ -632,8 +1382,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -641,8 +1421,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -650,8 +1460,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -659,8 +1499,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }
@@ -670,8 +1540,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -679,8 +1579,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -688,8 +1618,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -697,8 +1657,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }
@@ -708,8 +1698,38 @@
           "fold": 0,
           "samples": 4683,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -717,8 +1737,38 @@
           "fold": 1,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -726,8 +1776,38 @@
           "fold": 2,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         },
@@ -735,8 +1815,38 @@
           "fold": 3,
           "samples": 4752,
           "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
           "not_recomputed": [
-            "annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry"
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
           ],
           "mismatches": []
         }

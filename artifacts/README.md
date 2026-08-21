@@ -33,6 +33,17 @@ the frozen OHLCV14 information set?" It does not replace v4 as the underlying BT
 research baseline. P2a reuses the already-observed outer folds, so it is adaptive
 research evidence rather than pristine out-of-sample evidence.
 
+`artifacts/btc_p2b_SHA256SUMS.txt` froze the nine cells, their predictions, the
+comparison and the regime description at the moment P2b was answered.
+`artifacts/btc_p2b_recheck_SHA256SUMS.txt` freezes the comparison a second time,
+after its recomputation was widened from ten trading keys to twelve and from four
+classification keys to eleven. **No number in the result changed** — the same
+nine cells, the same fold counts, the same verdicts — only the breadth of what
+the comparison verifies about them. The first manifest is left exactly as it was,
+because a frozen manifest records what a past run produced and is never rewritten;
+the comparison's own entry in it is therefore stale by design, and this is the
+note that says so.
+
 ## Status table
 
 `status` is one of **CURRENT** (the authoritative result for its question),

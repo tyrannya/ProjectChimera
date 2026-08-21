@@ -460,14 +460,20 @@ holding `p2b.json`, `p2b.md` and `outer_predictions.parquet`, and one join at
 The join is not a concatenation. Before it reports anything, `nn.p2b_compare`
 proves the cells scored the same rows and ran the same code (§5), checks every
 scored row's timestamp, label and realised return against the committed snapshot
-at the row index the cell recorded, and then **rebuilds every reported trading
-and classification number from the persisted per-sample predictions**, through
-`nn.evaluate`. Any disagreement stops it; nothing is written. A report that
-contradicts its own predictions is a report about nothing, and there is no way
-to notice that by reading it. The annualised Sharpe and the candle-level
-drawdown are the declared exceptions: they need the candle price path, which the
-prediction file does not carry, and they are listed as not recomputed rather
-than silently skipped.
+at the row index the cell recorded, and then **rebuilds twelve trading and
+eleven classification numbers from the persisted per-sample predictions**,
+through `nn.evaluate`. Any disagreement stops it; nothing is written. A report
+that contradicts its own predictions is a report about nothing, and there is no
+way to notice that by reading it.
+
+What is *not* rebuilt is listed in the artifact rather than left to inference:
+the annualised Sharpe, the candle-level drawdown and the elapsed interval count
+need the candle price path, which the prediction file does not carry, and three
+further fields are prose rather than measurements. An earlier version of this
+document claimed *every* reported number was rebuilt; it checked ten of eighteen
+trading keys and four of eleven classification keys, and a recomputation that
+reports "0 mismatches" over a subset invites the reader to believe it covered
+the whole. The key lists are now written into every comparison artifact.
 
 Which of those directories is authoritative for which question is recorded in
 [`../artifacts/README.md`](../artifacts/README.md), not inferred from directory

@@ -39,7 +39,8 @@ every cell scored the same outer rows; a difference between two cells can only b
 Every reported trading and classification number was rebuilt from the 9 cells'
 persisted `outer_predictions.parquet` files: **36 cell-folds checked, 0 mismatches**.
 
-- not recomputed: annualised_sharpe and candle_max_drawdown need the candle price path, which the prediction file does not carry
+- not recomputed: trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry
+- not recomputed: trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements
 
 ## Per-fold outer validation
 

@@ -268,7 +268,16 @@ def compute_chart_features(df: pd.DataFrame, spec: ChartSpec | None = None) -> p
     # real reading. Nine rows of the committed pre-Styx history do exactly this
     # under an exact guard. The threshold is relative to ATR because sigma is a
     # price-scale quantity and 1e-9 ATR is not a channel.
-    degenerate = channel_disp > 1e-9 * atr_den
+    # Two floors, not one. `1e-9 * atr_den` is the ATR-scale test — but `atr_den`
+    # itself floors at `1e-12 * c`, so on a stretch where ATR has decayed toward
+    # that floor the composed threshold reaches `1e-21 * c`, roughly five orders
+    # BELOW the ULP of `c`. The guard then cannot fire in the one regime it
+    # exists for: 216 of 300 frozen candles after a real BTC prefix still emitted
+    # a nonzero standardised residual under the ATR-only test. The absolute floor
+    # sits ~4 orders above float noise and ~8 below the smallest real
+    # `channel_disp` on the committed history, so it closes the hole without
+    # touching a single existing row.
+    degenerate = channel_disp > np.maximum(1e-9 * atr_den, 1e-12 * c)
     np.divide(resid[:, -1], channel_disp, out=channel_pos, where=degenerate)
 
     # §3.5. Neither ratio is ATR-normalised: both are ratios of like to like.
