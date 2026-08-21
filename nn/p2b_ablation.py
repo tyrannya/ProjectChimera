@@ -44,6 +44,7 @@ from nn.p2b_compare import (
     ComparisonError,
     check_cells_agree,
     checkpoint_of,
+    identity_source,
     fold_row,
     load_cell,
     recompute_cell,
@@ -341,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "checkpoint": f"{checkpoint.name}-robustness",
         "of_checkpoint": checkpoint.name,
+        "checkpoint_identity": identity_source(cells),
         "evidence_class": DERIVED,
         "status": "post-hoc descriptive diagnostic; not canonical P2b evidence",
         "question": (

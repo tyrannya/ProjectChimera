@@ -507,9 +507,9 @@ blocks designed after earlier results on those same blocks had been seen. See
 ## 8. Freezing what you produced
 
 ```bash
-python -m tools.freeze_evidence --out artifacts/btc_p2b_SHA256SUMS.txt \
-    artifacts/benchmark/btc_p2b_{ohlcv14,smc_v1,ohlcv14_plus_smc_v1}_*
-make freeze-evidence MANIFEST=artifacts/btc_p2b_SHA256SUMS.txt
+python -m tools.freeze_evidence --out artifacts/btc_p2b_cells_SHA256SUMS.txt \
+    artifacts/benchmark/btc_p2b_{ohlcv14,smc_v1,ohlcv14_plus_smc_v1}_{logistic_regression,lightgbm,xgboost}
+make freeze-evidence MANIFEST=artifacts/btc_p2b_cells_SHA256SUMS.txt
 ```
 
 The first command records a SHA-256 for every file it is given; the second
@@ -527,9 +527,11 @@ $ python -m tools.freeze_evidence --out artifacts/demo.txt artifacts/benchmark/b
 refusing to freeze derived evidence: artifacts/benchmark/btc_p2b_comparison, ...
 ```
 
-Note the glob in the working command: it names the nine cells and excludes the
-comparison, the ablation table and the regime description, each of which
-declares `evidence_class: "derived"` in its own JSON. What pins those instead is
+Note the glob in the working command: it names the nine cells by arm *and*
+model, which excludes both the derived directories and the ablation arms — those
+belong to their own checkpoint's manifest. The comparison, the ablation table
+and the regime description each declare `evidence_class: "derived"` in their own
+JSON. What pins those instead is
 `tests/test_p2b_evidence.py`, which asserts their fold counts, verdicts and
 integrity counters directly.
 
@@ -540,6 +542,15 @@ checkpoint that needs new numbers gets a new artifact directory and a new
 manifest under a new name, and which directory is authoritative for which
 question is recorded in [`../artifacts/README.md`](../artifacts/README.md)
 rather than inferred from directory names.
+
+The same applies to a manifest that covered the wrong *kind* of file. The four
+written before this distinction existed are kept unedited under a
+`.superseded.txt` suffix, and each successor is required to be a strict
+projection of what it replaced: the same digest for every path they share,
+nothing added, and nothing dropped that is not derived. Narrowing a manifest is
+the exact shape of laundering a result — drop the row that stopped matching,
+keep the file, call it frozen — so `tests/test_p2b_evidence.py` checks that
+property rather than trusting it. Across all four, no digest changed.
 
 ### Indexing it
 

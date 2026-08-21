@@ -41,7 +41,13 @@ from chimera.contracts import CLASS_ORDER
 from nn.data_pipeline import load_dataset
 from nn.information_sets import COMBINED, OHLCV14, SMC_V1
 from nn.p2b import DEFAULT_MANIFEST, plan_from_manifest
-from nn.p2b_compare import ComparisonError, checkpoint_of, fold_row, load_cell
+from nn.p2b_compare import (
+    ComparisonError,
+    checkpoint_of,
+    fold_row,
+    identity_source,
+    load_cell,
+)
 from tools.freeze_evidence import DERIVED
 
 logger = logging.getLogger(__name__)
@@ -265,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     observations = build_observations(periods, deltas_by_model)
     payload = {
         "checkpoint": "P2b-regimes",
+        "checkpoint_identity": identity_source(cells),
         "evidence_class": DERIVED,
         "status": "descriptive; nothing fitted, no regime filter derived",
         "sealed_test": False,

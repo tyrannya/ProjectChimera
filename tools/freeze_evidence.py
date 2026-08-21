@@ -1,8 +1,8 @@
 """Freeze a checkpoint's primary artifacts behind a checksum manifest, or verify one.
 
-    python -m tools.freeze_evidence --out artifacts/btc_p2b_SHA256SUMS.txt \
-        artifacts/benchmark/btc_p2b_*
-    python -m tools.freeze_evidence --verify artifacts/btc_p2b_SHA256SUMS.txt
+    python -m tools.freeze_evidence --out artifacts/btc_p2b_cells_SHA256SUMS.txt \
+        artifacts/benchmark/btc_p2b_{ohlcv14,smc_v1,ohlcv14_plus_smc_v1}_*
+    python -m tools.freeze_evidence --verify artifacts/btc_p2b_cells_SHA256SUMS.txt
 
 The repository already keeps ``artifacts/btc_v4_SHA256SUMS.txt`` and
 ``artifacts/btc_p2a_SHA256SUMS.txt``, and a test asserts every covered file
