@@ -146,28 +146,118 @@ spends its budget on.
 
 ---
 
-## Next
+## In flight
 
-### Microstructure-lite
+### P3 — does trade-level microstructure add information beyond OHLCV14?
 
-Both market structure and classical chart structure disappointed, so the next
-family is not another transformation of the same OHLCV bars. Every family so far
-is a function of five numbers per hour, and there is a limit to how much
-independent information those can hold. The next genuinely *new* information
-would be:
+**Unanswered. The machinery is built and tested; the data could not be
+acquired.**
 
-- trade-level history: trade intensity, aggressive-volume imbalance
-- volume-at-price structure: high- and low-volume nodes
-- price displacement per unit of volume; absorption
-- breakout quality measured against participation rather than range
-- market-time context
+Both structure families disappointed, and every family so far is a function of
+the same five numbers per hour. So P3 does not transform those numbers again: it
+changes the *source*. `microstructure_v1`
+([`microstructure_v1.md`](microstructure_v1.md)) is 32 causal columns computed
+from individual executions — Binance's public spot `aggTrades` archive — folded
+into hourly sufficient statistics: trade intensity, aggressive-flow imbalance,
+trade size against a trailing distribution, arrival burstiness, price
+displacement per unit of traded volume, absorption-*like* quantities, the
+intra-hour distribution of activity, and an eight-bin approximation of volume at
+price.
 
-and later, if that pays: funding, basis, open interest, L1/L2 depth, order-flow
-imbalance, multi-timeframe context.
+The design is the same three-arm design P2b and P2c used, against the same
+control, with everything except the columns held at the values P2a ran under:
 
-**None of those datasets exist in this repository, and none should be fabricated
-to make a roadmap look complete.** Acquiring them is its own piece of work, with
-its own contract and its own sealed boundary.
+| arm | columns |
+| --- | --- |
+| `ohlcv14` | 14 |
+| `microstructure_v1` | 32 |
+| `ohlcv14_plus_microstructure_v1` | 46 |
+
+Three untuned models, four temporal outer folds, the same target, costs,
+threshold rule and sealed boundary. The continuation bar is predeclared and is a
+count of folds, not a mean: 3 of 4 or better is worth continuing on, 2 of 4 is
+inconclusive, 0–1 of 4 is negative.
+
+**What stopped it.** The trade source has to be fetched from
+`data.binance.vision`, and outbound access to that host — and to
+`api.binance.com` — is denied by the egress policy of the environment this
+checkpoint was developed in. No archive could be downloaded, so **no P3 cell has
+been fitted, no P3 number exists, and `artifacts/` contains no P3 evidence.**
+Nothing was substituted for the missing data: a P3 result computed from
+synthetic trades would be a fabricated research finding, and this repository has
+two negative checkpoints precisely because it does not do that.
+
+**What is built and tested anyway**, because it is the durable half and it is
+what the acquisition needs to exist first:
+
+- `tools/export_trade_snapshot.py` — streams the official archives one period at
+  a time, folding each into hourly rows and deleting it before requesting the
+  next, so a five-year acquisition needs one archive of disk rather than a
+  billion rows of it. `--plan` lists what it would fetch without touching the
+  network; `--probe` measures a couple of real archives and projects the whole
+  acquisition from measurements rather than from an estimate.
+- `nn/trade_aggregates.py` — the aggregation, the aggressor rule, the size and
+  volume-at-price histograms, and the per-archive epoch-unit resolution. Binance
+  spot archives carry milliseconds up to 2024 and microseconds from 2025-01-01;
+  the unit is resolved by requiring every timestamp inside the archive's own
+  calendar period, and an archive that fits no unit or two is refused rather
+  than read under a guess. Everything downstream is int64 UTC nanoseconds.
+- `tools/verify_trade_snapshot.py` — 27 checks, fail-closed, recomputing every
+  claim the manifest makes. `nn.p2b` runs it in the only function that loads the
+  trade source, so a corrupt snapshot produces zero model fits by any path.
+- `nn/microstructure.py` and the alignment layer — the join is proved by
+  re-deriving two columns from the source two different ways, and a matrix
+  rolled one hour forward is rejected.
+- The leakage battery in `tests/test_p3_leakage.py`: append invariance, future
+  mutation invariance, the half-open hour boundary, gap resets, order invariance
+  within an hour, duplicate rejection, the rolled matrix, the future-quantile
+  attack, a Styx breach stopping the run before any fit, and semantic-identity
+  falsification — each with a positive control beside it.
+
+**What the acquisition costs, so far as can be stated without running it.** The
+window is 2019-12-01 to 2025-05-19T08:00 — one month of warm-up before the
+research spine, ending at the hour after its last candle, which is over three
+months before Styx. That is 84 archives (65 monthly, 19 daily). No archive that
+could contain a sealed trade is ever requested, so the seal is a property of the
+plan rather than of a filter applied afterwards. The committed snapshot is the
+hourly aggregate, which is 472 canonical bytes per hour and does not grow with
+trade count; the raw trades are read once and discarded. At the observed Parquet
+compression that is roughly 13 MB for the full window — which is larger than the
+512 KiB `check-added-large-files` limit in `.pre-commit-config.yaml`, so how this
+repository stores a research source of that size is a decision for whoever runs
+the acquisition, not one this branch should make in advance.
+
+**The estimate of one to two billion trades and 50–150 GB is provisional and is
+not this repository's measurement.** `make trade-probe` exists to replace it
+with one.
+
+---
+
+## Next, once P3 has an answer
+
+If P3 is positive, the first thing to establish is whether the gain survives
+without `ms_log_trade_count`, the one non-stationary column in the family
+([`microstructure_v1.md`](microstructure_v1.md) §6) — as a description of where
+the signal sat, not as a new arm to select.
+
+If P3 is negative, the next genuinely new source is **funding, open interest and
+basis**, not order-book/OFI. Two reasons, and they are about what the evidence
+would mean rather than about which is more interesting:
+
+- **P3 would already have tested the fine-grained-flow hypothesis.** Trade flow
+  and L1/L2 order-flow imbalance are the same family of claim at two
+  resolutions. A negative P3 makes it likely that an OFI checkpoint on the same
+  four blocks would answer the same way, at several times the acquisition cost —
+  L2 reconstruction needs full-depth updates, not a daily archive.
+- **Funding, OI and basis are a different *kind* of information.** They are
+  positioning and cost-of-carry, published at low frequency, cheap to acquire
+  from the same public archive, and they say something about the state of
+  leveraged participants that neither candles nor executions can. That
+  independence is what makes it a real second experiment rather than a finer
+  version of the first.
+
+Order book and OFI stay on the list; they belong after a positioning checkpoint,
+and they need their own contract and their own acquisition work.
 
 ---
 

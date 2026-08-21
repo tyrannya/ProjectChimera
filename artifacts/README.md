@@ -45,6 +45,16 @@ because P2b was the checkpoint in flight, and by the time P2c ran these four out
 blocks had been read by v4, P2a, P2b, the P2b ablation and the P2b regime description.
 P2c generates hypotheses; it cannot confirm one.
 
+**There is no P3 evidence here, and that is a fact rather than an omission.**
+Checkpoint P3 asks whether causal trade-level microstructure adds information
+beyond OHLCV14. Its feature spec, engine, snapshot exporter, fail-closed
+verifier, runner and leakage tests are all committed, but its source — Binance's
+public spot `aggTrades` archive — could not be fetched from the environment the
+checkpoint was developed in, so **not one P3 cell has been fitted**. No number
+was substituted for the missing data. When P3 runs it gets its own manifest,
+`btc_p3_SHA256SUMS.txt`, and the inventory in `tests/test_p2b_evidence.py`
+already knows the nine cells it will owe.
+
 **None of these four replaces another.** They answer four different questions, so four
 rows are CURRENT at once and `status` is scoped per research question rather than
 across the index.

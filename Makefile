@@ -4,6 +4,8 @@
 	wf-diagnostics benchmark benchmark-compare \
 	p2b-cell p2b-btc p2b-compare p2b-ablation p2b-regimes \
 	p2c-cell p2c-btc p2c-compare freeze-evidence \
+	trade-plan trade-probe trade-snapshot verify-trade-snapshot \
+	p3-cell p3-btc p3-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
@@ -126,6 +128,7 @@ benchmark-compare:  ## P2a vs the frozen MTST evidence. Args: BENCH="..." MTST="
 # has to be told.
 P2B_SETS   ?= ohlcv14 smc_v1 ohlcv14_plus_smc_v1
 P2C_SETS   ?= ohlcv14 chart_structure_v1 ohlcv14_plus_chart_structure_v1
+P3_SETS    ?= ohlcv14 microstructure_v1 ohlcv14_plus_microstructure_v1
 P2B_MODELS ?= logistic_regression lightgbm xgboost
 P2B_DIR    ?= artifacts/benchmark
 # The nine cells are independent and each estimator is pinned to one thread
@@ -134,6 +137,11 @@ P2B_DIR    ?= artifacts/benchmark
 # sequence; see docs/research_reproduction.md for the parallel invocation.
 P2B_RUNS   = $(foreach s,$(P2B_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2b_$(s)_$(m)))
 P2C_RUNS   = $(foreach s,$(P2C_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2c_$(s)_$(m)))
+P3_RUNS    = $(foreach s,$(P3_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p3_$(s)_$(m)))
+# Where `trade-snapshot` stages one archive at a time. Point it at a large disk:
+# the archives are deleted as they are folded, but one of them has to fit.
+TRADE_WORKDIR ?= /tmp/chimera-trades
+PROBE_MONTHS  ?= 2
 
 p2b-btc: verify-research-snapshot  ## P2b: all nine cells (3 information sets x 3 models x 4 folds)
 	@for s in $(P2B_SETS); do for m in $(P2B_MODELS); do \
@@ -173,6 +181,50 @@ p2b-ablation:  ## Post-hoc: leave-one-family-out. Args: MODEL=xgboost
 
 p2b-regimes:  ## Descriptive: what the four outer periods were
 	$(PYTHON) -m nn.p2b_regimes --runs $(P2B_RUNS) --out $(P2B_DIR)/btc_p2b_regimes
+
+# --- P3: trade-level microstructure ----------------------------------------
+# P3's source is not the hourly candle. `trade-snapshot` streams Binance's
+# public spot aggTrades archive month by month, folds each one into hourly
+# sufficient statistics and deletes it before requesting the next, so a five-year
+# acquisition needs one archive of disk rather than a billion rows of it.
+#
+# Run `trade-plan` (no network) and then `trade-probe` (two real archives) before
+# committing to the bulk download: the probe reports compressed bytes, extracted
+# rows and the epoch unit actually in use, and projects the whole acquisition
+# from measurements rather than from an estimate.
+#
+# The acquisition window is derived from the committed OHLCV snapshot and closes
+# at the last hour the research spine reaches — over three months before Styx —
+# so no archive that could contain a sealed trade is ever requested.
+trade-plan:  ## List the aggTrades archives the acquisition would fetch. No network.
+	$(PYTHON) -m tools.export_trade_snapshot --plan
+
+trade-probe:  ## Measure real archives and project the full acquisition. Args: PROBE_MONTHS=2
+	$(PYTHON) -m tools.export_trade_snapshot --probe --months $(PROBE_MONTHS)
+
+trade-snapshot:  ## Acquire the P3 trade source and export the hourly snapshot
+	$(PYTHON) -m tools.export_trade_snapshot --workdir $(TRADE_WORKDIR)
+
+verify-trade-snapshot:  ## Check the committed trade snapshot: hashes, seal, coverage
+	$(PYTHON) -m tools.verify_trade_snapshot
+
+# As with P2b and P2c, `nn.p2b` verifies both snapshots itself before it fits
+# anything. These targets are a way to see the result, not the thing that makes
+# them safe.
+p3-btc: verify-research-snapshot verify-trade-snapshot  ## P3: all nine cells (microstructure vs OHLCV14)
+	@for s in $(P3_SETS); do for m in $(P2B_MODELS); do \
+		echo "--- $$s x $$m ---"; \
+		$(PYTHON) -m nn.p2b --checkpoint P3 --information-set $$s --model $$m \
+			--out $(P2B_DIR)/btc_p3_$${s}_$${m} || exit 1; \
+	done; done
+
+p3-cell:  ## One P3 cell. Args: SET=microstructure_v1 MODEL=xgboost
+	$(PYTHON) -m nn.p2b --checkpoint P3 --information-set $(SET) --model $(MODEL) \
+		--out $(P2B_DIR)/btc_p3_$(SET)_$(MODEL)
+
+p3-compare:  ## Join the P3 cells: parity proof, recomputation, deltas
+	$(PYTHON) -m nn.p2b_compare --runs $(P3_RUNS) \
+		--out $(P2B_DIR)/btc_p3_comparison
 
 # Covers primary evidence only — cells and their per-sample predictions.
 # Comparisons and ablation tables are derived: `tools.freeze_evidence` refuses
