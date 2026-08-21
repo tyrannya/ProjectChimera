@@ -66,12 +66,15 @@ from nn.benchmark import (
 )
 from nn.data_pipeline import load_dataset
 from nn.information_sets import (
+    CHECKPOINTS,
+    Checkpoint,
     OHLCV14,
     P2B_INFORMATION_SETS,
     P2C_INFORMATION_SETS,
     ablation_set_names,
     AlignedResearchSamples,
     build_information_set_views,
+    checkpoint as load_checkpoint,
     feature_spec_identity,
 )
 from nn.research_contract import ContractScopeError, ResearchContract, load_contract
@@ -91,10 +94,9 @@ from nn.train import (
     score_frozen_split,
 )
 from nn.walkforward import FoldPlan, REFERENCES_KEY, SUMMARY_METRICS, plan_nested_folds, spread
+from tools.freeze_evidence import PRIMARY
 
 logger = logging.getLogger(__name__)
-
-CHECKPOINT = "P2b"
 
 #: Deliberately not ``benchmark.json``: a P2b cell is not a P2a run, and a tool
 #: that reads one must not silently accept the other.
@@ -603,7 +605,9 @@ def to_markdown(payload: dict[str, Any]) -> str:
     parity = payload["information_parity"]
     model = payload["model"]
     lines = [
-        f"# P2b cell — {model} on `{payload['information_set']}`",
+        f"# {payload['checkpoint']} cell — {model} on `{payload['information_set']}`",
+        "",
+        f"**Question:** {payload['question']}",
         "",
         f"One information set, one model, {payload['summary']['folds']} temporal folds.",
         f"Each row is a `{parity['seq_len']} x {parity['n_features']}` window flattened to",
@@ -660,6 +664,17 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument(
+        # Required, and not inferred from the information set: `ohlcv14` is the
+        # control of both checkpoints, so the arms cannot name the question on
+        # their own. A run that will not say which question it is answering
+        # cannot be allowed to answer one — that is how nine P2c cells came to
+        # call themselves P2b.
+        "--checkpoint",
+        choices=sorted(CHECKPOINTS),
+        required=True,
+        help="which research question this cell answers",
+    )
+    parser.add_argument(
         "--information-set",
         # The six ablation arms are accepted here too. They are not a fourth
         # information set: each is the combined arm with one declared family
@@ -682,6 +697,20 @@ def build_argparser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     args = build_argparser().parse_args(argv)
+
+    checkpoint: Checkpoint = load_checkpoint(args.checkpoint)
+    if not checkpoint.accepts(args.information_set):
+        raise SystemExit(
+            f"{args.information_set!r} is not an arm of {checkpoint.name}. Its arms are "
+            f"{list(checkpoint.arms)}"
+            + (
+                f" plus {list(checkpoint.diagnostic_arms)}"
+                if checkpoint.diagnostic_arms
+                else ""
+            )
+            + ". A cell that ran one checkpoint's columns under another checkpoint's "
+            "name would be evidence about neither."
+        )
 
     spine, ds_meta, raw, manifest = load_snapshot(args.manifest)
     contract: ResearchContract = load_contract(args.research_contract)
@@ -708,9 +737,10 @@ def main(argv: list[str] | None = None) -> int:
 
     spec = next(s for s in SIMPLE_MODELS if s.name == args.model)
     logger.warning(
-        "P2b %s x %s. %d folds over rows [0, %d) of the canonical research region; the "
+        "%s %s x %s. %d folds over rows [0, %d) of the canonical research region; the "
         "snapshot holds rows [0, %d). Outer blocks: %s. The sealed block starts at %s "
         "and is NOT planned over, trained on, selected on, or evaluated.",
+        checkpoint.name,
         args.information_set,
         args.model,
         len(folds),
@@ -735,11 +765,14 @@ def main(argv: list[str] | None = None) -> int:
     predictions_path = write_predictions(out_dir, predictions, sizes["research_rows"])
 
     payload = {
-        "checkpoint": CHECKPOINT,
+        "checkpoint": checkpoint.name,
+        "question": checkpoint.question,
+        "evidence_class": PRIMARY,
         "purpose": (
-            "does causal market structure add information beyond OHLCV14? One cell: one "
-            "information set, one model, four temporal folds"
+            f"one {checkpoint.name} cell: one information set, one model, "
+            f"{len(folds)} temporal folds"
         ),
+        "canonical_arm": args.information_set in checkpoint.arms,
         "information_set": args.information_set,
         "model": args.model,
         "dataset": ds_meta.to_dict(),
@@ -782,6 +815,7 @@ def main(argv: list[str] | None = None) -> int:
             "applied_to_outer_validation": "the already-selected value, unchanged",
         },
         "tuning": "none (predeclared fixed configurations, reused from P2a)",
+        "adaptive_status": checkpoint.adaptive_status,
         "folds": records,
         "summary": summarise(records, args.model),
     }

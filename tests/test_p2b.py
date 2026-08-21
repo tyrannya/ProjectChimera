@@ -50,8 +50,11 @@ from nn.data_pipeline import build_dataset
 from nn.dataset import Split, sample_indices
 from nn.information_sets import (
     ABLATABLE_FAMILIES,
+    CHART_V1,
+    CHECKPOINTS,
     COMBINED,
     OHLCV14,
+    OHLCV14_PLUS_CHART,
     P2B_INFORMATION_SETS,
     SMC_V1,
     AlignmentError,
@@ -603,10 +606,11 @@ def test_the_selected_threshold_comes_from_the_inner_block(aligned, cell):
 # --------------------------------------------------------------------------- #
 # E. nn.p2b_compare
 # --------------------------------------------------------------------------- #
-def _fake_cell(information_set: str, model: str) -> dict[str, Any]:
+def _fake_cell(information_set: str, model: str, checkpoint: str = "P2b") -> dict[str, Any]:
     """A cell shaped like an artifact, small enough to read at a glance."""
     payload = {
-        "checkpoint": p2b.CHECKPOINT,
+        "checkpoint": checkpoint,
+        "question": CHECKPOINTS[checkpoint].question,
         "information_set": information_set,
         "model": model,
         "outer_predictions": p2b.PREDICTIONS_NAME,
@@ -813,9 +817,130 @@ def test_load_cell_refuses_a_cell_that_names_another_predictions_file(tmp_path):
         p2b_compare.load_cell(run_dir)
 
 
-def test_load_cell_refuses_an_artifact_from_another_checkpoint(tmp_path):
+def test_load_cell_refuses_an_artifact_from_an_unknown_checkpoint(tmp_path):
     payload = _fake_cell(OHLCV14, "logistic_regression")["payload"]
     payload["checkpoint"] = "P2a"
     run_dir = _write_artifact(tmp_path / "p2a", payload)
-    with pytest.raises(p2b_compare.ComparisonError, match="is checkpoint 'P2a', not P2b"):
+    with pytest.raises(p2b_compare.ComparisonError, match="is checkpoint 'P2a'"):
         p2b_compare.load_cell(run_dir)
+
+
+# --------------------------------------------------------------------------- #
+# F. checkpoint identity
+#
+# The failure these exist for shipped: `nn.p2b` held `CHECKPOINT = "P2b"` as a
+# module constant, so a P2c run wrote nine cells and a comparison that all said
+# "P2b" and all stated P2b's market-structure question, over chart-structure
+# columns. Every number was P2c's and every identity was P2b's, which is a shape
+# of error no amount of green CI can show you.
+# --------------------------------------------------------------------------- #
+def test_a_checkpoint_states_its_own_question():
+    assert CHECKPOINTS["P2b"].question == (
+        "does causal smc_v1, alone or combined with OHLCV14, add usable information "
+        "beyond OHLCV14?"
+    )
+    assert CHECKPOINTS["P2c"].question == (
+        "does causal chart_structure_v1, alone or combined with OHLCV14, add usable "
+        "information beyond OHLCV14?"
+    )
+    assert CHECKPOINTS["P2b"].question != CHECKPOINTS["P2c"].question
+
+
+def test_a_checkpoint_accepts_only_its_own_arms():
+    p2b_cp, p2c_cp = CHECKPOINTS["P2b"], CHECKPOINTS["P2c"]
+    assert p2b_cp.accepts(SMC_V1) and p2b_cp.accepts(COMBINED)
+    assert p2b_cp.accepts(f"{COMBINED}_minus_fvg")
+    assert not p2b_cp.accepts(CHART_V1)
+    assert p2c_cp.accepts(CHART_V1) and p2c_cp.accepts(OHLCV14_PLUS_CHART)
+    assert not p2c_cp.accepts(SMC_V1)
+    assert not p2c_cp.accepts(f"{COMBINED}_minus_fvg")
+    # The control belongs to both, which is why the checkpoint cannot be
+    # inferred from the arm and has to be declared.
+    assert p2b_cp.accepts(OHLCV14) and p2c_cp.accepts(OHLCV14)
+
+
+def test_the_runner_refuses_an_arm_that_is_not_the_checkpoints():
+    """`--checkpoint P2c --information-set smc_v1` is the mislabelled cell."""
+    argv = [
+        "--checkpoint",
+        "P2c",
+        "--information-set",
+        SMC_V1,
+        "--model",
+        "logistic_regression",
+        "--out",
+        "/nonexistent",
+    ]
+    with pytest.raises(SystemExit, match="is not an arm of P2c"):
+        p2b.main(argv)
+
+
+def test_the_runner_will_not_run_without_being_told_which_question_it_answers():
+    with pytest.raises(SystemExit):
+        p2b.main(
+            [
+                "--information-set",
+                OHLCV14,
+                "--model",
+                "logistic_regression",
+                "--out",
+                "/nonexistent",
+            ]
+        )
+
+
+def test_a_comparison_refuses_cells_from_two_checkpoints():
+    """The aggregation that was possible before the checkpoint became an input.
+
+    Six cells, three of each checkpoint, every one internally consistent. A
+    plain aggregator produces one table of twelve arms across two feature
+    families and calls it an answer.
+    """
+    cells = [
+        _fake_cell(OHLCV14, "logistic_regression", "P2b"),
+        _fake_cell(SMC_V1, "logistic_regression", "P2b"),
+        _fake_cell(CHART_V1, "lightgbm", "P2c"),
+        _fake_cell(OHLCV14_PLUS_CHART, "lightgbm", "P2c"),
+    ]
+    with pytest.raises(
+        p2b_compare.ComparisonError, match="answer different research questions"
+    ):
+        p2b_compare.checkpoint_of(cells)
+
+
+def test_a_comparison_refuses_a_cell_relabelled_into_the_wrong_checkpoint():
+    """A label check alone would pass this: every cell says P2c."""
+    cells = [
+        _fake_cell(OHLCV14, "logistic_regression", "P2c"),
+        _fake_cell(SMC_V1, "logistic_regression", "P2c"),
+    ]
+    with pytest.raises(p2b_compare.ComparisonError, match="are not arms of P2c"):
+        p2b_compare.checkpoint_of(cells)
+
+
+def test_a_comparison_refuses_a_cell_whose_question_is_not_its_checkpoints():
+    cells = [
+        _fake_cell(OHLCV14, "logistic_regression", "P2c"),
+        _fake_cell(CHART_V1, "logistic_regression", "P2c"),
+    ]
+    cells[1]["payload"]["question"] = CHECKPOINTS["P2b"].question
+    with pytest.raises(p2b_compare.ComparisonError, match="but its cells state"):
+        p2b_compare.checkpoint_of(cells)
+
+
+def test_a_comparison_refuses_arms_with_no_control_to_measure_against():
+    cells = [
+        _fake_cell(CHART_V1, "lightgbm", "P2c"),
+        _fake_cell(OHLCV14_PLUS_CHART, "lightgbm", "P2c"),
+    ]
+    with pytest.raises(p2b_compare.ComparisonError, match="no 'ohlcv14' cell present"):
+        p2b_compare.checkpoint_of(cells)
+
+
+def test_a_comparison_accepts_one_checkpoints_own_cells():
+    for name, arms in (
+        ("P2b", (OHLCV14, SMC_V1, COMBINED)),
+        ("P2c", (OHLCV14, CHART_V1, OHLCV14_PLUS_CHART)),
+    ):
+        cells = [_fake_cell(arm, "xgboost", name) for arm in arms]
+        assert p2b_compare.checkpoint_of(cells).name == name

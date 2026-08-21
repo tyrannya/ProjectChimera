@@ -200,6 +200,102 @@ def ablation_set_names() -> list[str]:
 
 
 @dataclass(frozen=True)
+class Checkpoint:
+    """Which research question a run is answering, as data rather than as prose.
+
+    Named after the checkpoint in ``docs/research_roadmap.md``. Everything a
+    reader needs to tell two checkpoints apart hangs off this: the family under
+    test, the arms that are allowed to appear, the question the artifact states,
+    and how adaptive the evidence is.
+
+    It exists because the runner was a module constant. ``nn.p2b`` hard-coded
+    ``CHECKPOINT = "P2b"`` and a purpose string naming market structure, so a P2c
+    run — different family, different question, different adaptive status —
+    wrote nine artifacts and a comparison that all called themselves P2b and
+    asked about ``smc_v1``. Nothing failed: the numbers were P2c's throughout and
+    only the identity was wrong, which is the kind of error a green run cannot
+    surface. Making the identity an input means a cell must say which question it
+    is answering before it may answer one.
+    """
+
+    name: str
+    #: The information family under test. The control is not it.
+    family: str
+    control: str
+    #: The three arms, in report order: control, family alone, both.
+    arms: tuple[str, ...]
+    #: Extra arms this checkpoint accepts that are not canonical evidence.
+    diagnostic_arms: tuple[str, ...] = ()
+    #: What had already been read when this checkpoint was designed.
+    adaptive_status: str = ""
+
+    def __post_init__(self) -> None:
+        if self.control not in self.arms:
+            raise ValueError(f"{self.name}'s control {self.control!r} is not one of its arms")
+        if self.family in (self.control, ""):
+            raise ValueError(f"{self.name} has no family under test distinct from its control")
+
+    @property
+    def question(self) -> str:
+        """The question every artifact of this checkpoint states, generated once.
+
+        Generated rather than written per artifact, because the two P2b strings
+        that existed before this — one in the cell runner, one in the comparison
+        — disagreed with each other in wording and with P2c's arms entirely.
+        """
+        control = self.control.upper()
+        return (
+            f"does causal {self.family}, alone or combined with {control}, add usable "
+            f"information beyond {control}?"
+        )
+
+    def accepts(self, information_set: str) -> bool:
+        return information_set in self.arms or information_set in self.diagnostic_arms
+
+
+#: P2b. Declared before any P2b cell ran; adaptive with respect to P2a.
+P2B = Checkpoint(
+    name="P2b",
+    family=SMC_V1,
+    control=OHLCV14,
+    arms=P2B_INFORMATION_SETS,
+    diagnostic_arms=tuple(ablation_set_names()),
+    adaptive_status=(
+        "P2b was designed after P2a's outer results had been seen, so its outer blocks "
+        "are adaptive research evidence rather than a pristine out-of-sample test"
+    ),
+)
+
+#: P2c. Designed after P2b's outer results had been seen, which makes it more
+#: adaptive than P2b and not a confirmation of anything.
+P2C = Checkpoint(
+    name="P2c",
+    family=CHART_V1,
+    control=OHLCV14,
+    arms=P2C_INFORMATION_SETS,
+    adaptive_status=(
+        "P2c was designed after P2b's outer results had been seen, and by the time it "
+        "ran these four outer blocks had already been read by v4, P2a, P2b, the P2b "
+        "ablation and the P2b regime description. Its constants were fixed before its "
+        "own outer results were read, but the family was chosen because the previous "
+        "one failed, so this is exploratory adaptive evidence: it generates hypotheses "
+        "and cannot confirm one"
+    ),
+)
+
+#: Every checkpoint this runner can execute, by name.
+CHECKPOINTS: dict[str, Checkpoint] = {c.name: c for c in (P2B, P2C)}
+
+
+def checkpoint(name: str) -> Checkpoint:
+    """Look one up, or say which names exist rather than raise a bare KeyError."""
+    try:
+        return CHECKPOINTS[name]
+    except KeyError:
+        raise KeyError(f"unknown checkpoint {name!r}; known: {sorted(CHECKPOINTS)}") from None
+
+
+@dataclass(frozen=True)
 class AlignedResearchSamples:
     """One :class:`ResearchData` per information set over one shared row spine.
 

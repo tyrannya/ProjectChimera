@@ -51,11 +51,12 @@ import pandas as pd
 from chimera.contracts import TargetSpec
 from nn import evaluate as ev
 from nn.data_pipeline import load_dataset
-from nn.information_sets import OHLCV14
-from nn.p2b import ARTIFACT_NAME, CHECKPOINT, PREDICTIONS_NAME
+from nn.information_sets import CHECKPOINTS, Checkpoint, OHLCV14
+from nn.p2b import ARTIFACT_NAME, PREDICTIONS_NAME
 from nn.regime import direction_attribution
 from nn.simple_models import SIMPLE_MODEL_NAMES
 from nn.walkforward import REFERENCES_KEY
+from tools.freeze_evidence import DERIVED
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +115,15 @@ def load_cell(run_dir: Path) -> dict[str, Any]:
     if not artifact_path.is_file():
         raise ComparisonError(f"{run_dir} has no {ARTIFACT_NAME}; it is not a P2b cell")
     payload = json.loads(artifact_path.read_text())
-    if payload.get("checkpoint") != CHECKPOINT:
+    # Which checkpoint this is comes from the cell, and the cells must then agree
+    # — see `checkpoint_of`. What is refused here is a cell that names no
+    # checkpoint this runner knows how to ask about, because there is nothing
+    # for the others to agree *with*.
+    named = payload.get("checkpoint")
+    if named not in CHECKPOINTS:
         raise ComparisonError(
-            f"{artifact_path} is checkpoint {payload.get('checkpoint')!r}, not {CHECKPOINT}"
+            f"{artifact_path} is checkpoint {named!r}; this joins cells of "
+            f"{sorted(CHECKPOINTS)}"
         )
     declared = payload.get("outer_predictions")
     if declared != PREDICTIONS_NAME:
@@ -132,6 +139,62 @@ def load_cell(run_dir: Path) -> dict[str, Any]:
         "payload": payload,
         "predictions": predictions,
     }
+
+
+def checkpoint_of(cells: Sequence[dict[str, Any]]) -> Checkpoint:
+    """The one research question these cells answer, or a refusal.
+
+    A comparison is an answer to a question, and cells that asked different
+    questions have no common answer to give. Before this existed the checkpoint
+    was a constant in :mod:`nn.p2b`, so both checkpoints wrote ``"P2b"`` and
+    every cell trivially agreed: nine P2c artifacts and their comparison all
+    identified as P2b market-structure research, and a glob wide enough to catch
+    both checkpoints' cells would have averaged twelve arms of two different
+    families into one table without a word.
+
+    Three things are required, not one. The cells must name the same checkpoint;
+    that name must be a checkpoint this repository declares; and every arm
+    present must belong to it — so a P2b cell relabelled ``"P2c"`` by hand is
+    still refused, because ``smc_v1`` is not one of P2c's arms.
+    """
+    named = sorted({c["payload"]["checkpoint"] for c in cells})
+    if len(named) != 1:
+        by_checkpoint = {
+            name: sorted(
+                f"{c['information_set']} x {c['model']}"
+                for c in cells
+                if c["payload"]["checkpoint"] == name
+            )
+            for name in named
+        }
+        raise ComparisonError(
+            "these cells answer different research questions and cannot be joined into "
+            f"one comparison: {json.dumps(by_checkpoint, indent=2)}"
+        )
+    checkpoint = CHECKPOINTS[named[0]]
+
+    foreign = sorted(
+        {c["information_set"] for c in cells if not checkpoint.accepts(c["information_set"])}
+    )
+    if foreign:
+        raise ComparisonError(
+            f"{foreign} are not arms of {checkpoint.name}, whose arms are "
+            f"{list(checkpoint.arms)}. A cell that carries the right checkpoint label and "
+            "the wrong columns is the one corruption a label check alone cannot see."
+        )
+    if not any(c["information_set"] == checkpoint.control for c in cells):
+        raise ComparisonError(
+            f"no {checkpoint.control!r} cell present; every delta below is taken against "
+            "the control and there is nothing to take one against"
+        )
+    stated = sorted({c["payload"].get("question") for c in cells})
+    if stated != [checkpoint.question]:
+        raise ComparisonError(
+            f"{checkpoint.name} asks {checkpoint.question!r} but its cells state "
+            f"{stated!r}. The question a cell prints and the checkpoint it claims must "
+            "be the same statement, or one of the two is decoration."
+        )
+    return checkpoint
 
 
 def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -206,6 +269,7 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "research contract and its hash",
             "snapshot identity and semantic hashes",
             "fold sizes and periods",
+            "the research checkpoint each cell says it answers",
             "per-fold sample-index hashes from the alignment proof",
             "label horizon and costs",
             "threshold grid, objective and trade floor",
@@ -543,7 +607,9 @@ def to_markdown(payload: dict[str, Any]) -> str:
 
     named = " or ".join(f"`{s}`" for s in sets if s != CONTROL) or "further columns"
     lines = [
-        f"# Information-set benchmark — do {named} add information beyond `{CONTROL}`?",
+        f"# {payload['checkpoint']} — do {named} add information beyond `{CONTROL}`?",
+        "",
+        f"**Research question:** {payload['question']}",
         "",
         f"{len(sets)} information sets, {len(models)} untuned models, four temporal outer",
         f"folds, one sample universe. `{CONTROL}` is the control, re-run under this code",
@@ -566,8 +632,7 @@ def to_markdown(payload: dict[str, Any]) -> str:
         "anywhere below:",
         "a second seed would copy this evidence rather than add to it.",
         "",
-        "**Adaptive status:** P2b was designed after P2a's outer results had been seen. Its",
-        "outer blocks are adaptive research evidence, not a pristine out-of-sample test.",
+        f"**Adaptive status:** {payload['adaptive_status']}.",
         "",
         "## Sample-universe parity",
         "",
@@ -774,11 +839,12 @@ def main(argv: list[str] | None = None) -> int:
 
     cells = [load_cell(Path(d)) for d in sorted(args.runs)]
     if not cells:
-        raise ComparisonError("no P2b cells to compare")
+        raise ComparisonError("no cells to compare")
     seen = {(c["information_set"], c["model"]) for c in cells}
     if len(seen) != len(cells):
         raise ComparisonError("two cells cover the same information set and model")
-    logger.info("comparing %d cells: %s", len(cells), sorted(seen))
+    checkpoint = checkpoint_of(cells)
+    logger.info("comparing %d %s cells: %s", len(cells), checkpoint.name, sorted(seen))
 
     parity = check_cells_agree(cells)
 
@@ -815,12 +881,11 @@ def main(argv: list[str] | None = None) -> int:
     deltas = build_deltas(matrix)
 
     payload = {
-        "checkpoint": CHECKPOINT,
-        "question": (
-            "does causal market structure (smc_v1) add usable information beyond the "
-            "OHLCV14 information set?"
-        ),
-        "control": CONTROL,
+        "checkpoint": checkpoint.name,
+        "question": checkpoint.question,
+        "evidence_class": DERIVED,
+        "derived_from": [str(c["dir"]) for c in cells],
+        "control": checkpoint.control,
         "contract": cells[0]["payload"]["contract"],
         "snapshot": cells[0]["payload"]["snapshot"],
         "feature_spec": cells[0]["payload"]["feature_spec"],
@@ -842,10 +907,7 @@ def main(argv: list[str] | None = None) -> int:
             "selected threshold together. 'Three of four' is therefore fewer than "
             "four independent draws, and the verdict rule should be read that way"
         ),
-        "adaptive_status": (
-            "P2b was designed after P2a's outer results had been seen, so its outer blocks "
-            "are adaptive research evidence rather than a pristine out-of-sample test"
-        ),
+        "adaptive_status": checkpoint.adaptive_status,
         "verdict_rule": VERDICTS,
         "parity": parity,
         "snapshot_anchoring": {
