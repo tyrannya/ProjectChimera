@@ -50,6 +50,7 @@ from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
+from threadpoolctl import threadpool_info, threadpool_limits
 
 from nn import evaluate as ev
 from nn.benchmark import (
@@ -67,7 +68,6 @@ from nn.information_sets import (
     AlignedResearchSamples,
     build_information_set_views,
     feature_spec_identity,
-    information_set,
 )
 from nn.research_contract import ContractScopeError, ResearchContract, load_contract
 from nn.simple_models import (
@@ -78,7 +78,13 @@ from nn.simple_models import (
     fit_simple_model,
     flattened_column_names,
 )
-from nn.train import ResearchData, prepare_research_windows, resolve_device, score_frozen_split
+from nn.train import (
+    BASELINE_DECISION_THRESHOLD,
+    ResearchData,
+    prepare_research_windows,
+    resolve_device,
+    score_frozen_split,
+)
 from nn.walkforward import FoldPlan, REFERENCES_KEY, SUMMARY_METRICS, plan_nested_folds, spread
 
 logger = logging.getLogger(__name__)
@@ -89,6 +95,9 @@ CHECKPOINT = "P2b"
 #: that reads one must not silently accept the other.
 ARTIFACT_NAME = "p2b.json"
 PREDICTIONS_NAME = "outer_predictions.parquet"
+
+#: Whose columns the rule floors and economic references are computed from.
+CONTROL_SET = OHLCV14
 
 DEFAULT_MANIFEST = Path("data/research/btc_usdt_1h_gen1_snapshot_manifest.json")
 
@@ -104,11 +113,47 @@ SEED = 42
 MIN_TRADES = 10
 
 
+#: Native threads allowed while a model is fitted.
+#:
+#: Not a performance setting. ``LogisticRegression``'s lbfgs solver reduces
+#: through multi-threaded BLAS, and a floating-point reduction whose order
+#: depends on the thread count is not reproducible: measured on this dataset,
+#: fold 0's outer probabilities move by up to 0.025 between a one-thread and a
+#: four-thread fit, which is enough to select a different threshold off the grid
+#: and report a materially different net return. LightGBM and XGBoost are
+#: already pinned to ``n_jobs=1`` in :mod:`nn.simple_models` for the same
+#: reason; this closes the remaining hole, and the observed pool state is
+#: recorded in every artifact so the claim can be checked rather than trusted.
+FIT_THREADS = 1
+
+
+def threadpool_record() -> dict[str, Any]:
+    """The native thread pools actually in force, for the artifact."""
+    return {
+        "limit_applied": FIT_THREADS,
+        "reason": (
+            "BLAS reductions are order-dependent, so a multi-threaded lbfgs fit is not "
+            "reproducible across machines with different core counts"
+        ),
+        "pools": [
+            {
+                "user_api": pool.get("user_api"),
+                "internal_api": pool.get("internal_api"),
+                "num_threads": pool.get("num_threads"),
+                "version": pool.get("version"),
+            }
+            for pool in threadpool_info()
+        ],
+    }
+
+
 class SnapshotError(SystemExit):
     """The research snapshot cannot support the run that was asked for."""
 
 
-def load_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, Any, pd.DataFrame, dict[str, Any]]:
+def load_snapshot(
+    manifest_path: Path,
+) -> tuple[pd.DataFrame, Any, pd.DataFrame, dict[str, Any]]:
     """Read the committed research snapshot: processed spine, raw candles, manifest.
 
     Integrity of the files themselves is `tools.verify_research_snapshot`'s job
@@ -134,7 +179,9 @@ def load_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, Any, pd.DataFrame,
     return spine, ds_meta, raw, manifest
 
 
-def plan_from_manifest(manifest: dict[str, Any], rows_available: int) -> tuple[list[FoldPlan], dict[str, int]]:
+def plan_from_manifest(
+    manifest: dict[str, Any], rows_available: int
+) -> tuple[list[FoldPlan], dict[str, int]]:
     """The four folds, planned over the canonical research region.
 
     ``research_rows`` is the number of rows the canonical dataset had before the
@@ -176,6 +223,38 @@ def plan_from_manifest(manifest: dict[str, Any], rows_available: int) -> tuple[l
     return folds, sizes
 
 
+def score_baselines(
+    control: ResearchData,
+    prepared: Any,
+    outer: Any,
+    seq_len: int,
+    baselines: dict[str, Any],
+    device: Any,
+) -> Any:
+    """The rule floors and the economic references, on the control view's columns.
+
+    Goes through :func:`nn.train.score_frozen_split` rather than scoring the
+    baselines by hand, so the floors are built by the same windowing, market
+    context and report construction the model's own number is. ``proba_of`` is
+    required by that signature and is handed the momentum baseline at the
+    baseline threshold, which recomputes ``momentum_baseline`` with identical
+    arguments and overwrites it with itself — the cheapest way to satisfy the
+    signature without introducing a second scoring path.
+    """
+    momentum = baselines["momentum_baseline"]
+    return score_frozen_split(
+        control,
+        prepared.scaler,
+        outer,
+        seq_len,
+        baselines=baselines,
+        threshold=BASELINE_DECISION_THRESHOLD,
+        device=device,
+        proba_of=momentum.predict_proba,
+        model_name="momentum_baseline",
+    )
+
+
 def run_cell(
     aligned: AlignedResearchSamples,
     set_name: str,
@@ -194,16 +273,27 @@ def run_cell(
     this report cannot be a difference in how the samples were built.
     """
     data: ResearchData = aligned.views[set_name]
+    # The rule floors are scored on the control view, never on the view under
+    # test. `MomentumBaseline` reads `ema_cross`, which the `smc_v1` arm does not
+    # contain — but that is the smaller half of the reason. The larger one is
+    # that a floor which changed with the information set would stop being a
+    # floor: the baselines and the economic references are the data-level proof
+    # that nine separately-run cells scored the same rows, and that proof only
+    # works while every cell computes them from the same columns.
+    control: ResearchData = aligned.views[CONTROL_SET]
     device = resolve_device("cpu")
     grid = threshold_grid()
 
     records: list[dict[str, Any]] = []
     frames: list[pd.DataFrame] = []
+    with threadpool_limits(limits=FIT_THREADS):
+        threads = threadpool_record()
 
     for fold, plan in enumerate(folds):
         fold_seed = seed + fold
         prepared = prepare_research_windows(data, plan.train, plan.inner, seq_len)
-        baselines = fit_baselines(data, prepared.y_train)
+        control_prepared = prepare_research_windows(control, plan.train, plan.inner, seq_len)
+        baselines = fit_baselines(control, control_prepared.y_train)
         inner_return = data.future_return[prepared.idx_val]
 
         logger.info(
@@ -216,9 +306,9 @@ def run_cell(
             seq_len * len(data.feature_names),
             fold_seed,
         )
-        fitted = fit_simple_model(spec, prepared.X_train, prepared.y_train, seed=fold_seed)
-
-        inner_proba = fitted.predict_proba(prepared.X_val)
+        with threadpool_limits(limits=FIT_THREADS):
+            fitted = fit_simple_model(spec, prepared.X_train, prepared.y_train, seed=fold_seed)
+            inner_proba = fitted.predict_proba(prepared.X_val)
         threshold, threshold_report = ev.select_threshold(
             inner_proba,
             inner_return,
@@ -230,21 +320,31 @@ def run_cell(
 
         # Frozen from here. `score_frozen_split` fits nothing, and `plan.outer`
         # reaches this call and no other in the whole module.
-        scored = score_frozen_split(
-            data,
-            prepared.scaler,
-            plan.outer,
-            seq_len,
-            baselines=baselines,
-            threshold=threshold,
-            device=device,
-            proba_of=fitted.predict_proba,
-            model_name=spec.name,
-        )
+        with threadpool_limits(limits=FIT_THREADS):
+            scored = score_frozen_split(
+                data,
+                prepared.scaler,
+                plan.outer,
+                seq_len,
+                baselines={},
+                threshold=threshold,
+                device=device,
+                proba_of=fitted.predict_proba,
+                model_name=spec.name,
+            )
+            floors = score_baselines(
+                control, control_prepared, plan.outer, seq_len, baselines, device
+            )
 
         outer = {spec.name: scored.reports[spec.name]}
-        outer.update({name: scored.reports[name] for name in BASELINE_NAMES})
-        outer[REFERENCES_KEY] = scored.economic_references
+        outer.update({name: floors.reports[name] for name in BASELINE_NAMES})
+        outer[REFERENCES_KEY] = floors.economic_references
+        if not np.array_equal(floors.idx, scored.idx):
+            raise AssertionError(
+                f"fold {fold}: the rule floors scored {len(floors.idx)} rows and "
+                f"{spec.name} scored {len(scored.idx)}; the control view and the "
+                f"{set_name} view are not selecting the same samples"
+            )
 
         records.append(
             {
@@ -262,7 +362,7 @@ def run_cell(
                     "outer_validation": data.period(plan.outer),
                 },
                 "model": {
-                    "provenance": fitted.provenance(),
+                    "provenance": {**fitted.provenance(), "threading": threads},
                     "selection": {
                         "block": "inner_validation",
                         "threshold": threshold,
@@ -275,9 +375,7 @@ def run_cell(
                 "outer_validation": outer,
             }
         )
-        frames.append(
-            outer_predictions(spec.name, fold, fold_seed, data, scored, threshold)
-        )
+        frames.append(outer_predictions(spec.name, fold, fold_seed, data, scored, threshold))
 
     predictions = pd.concat(frames, ignore_index=True)
     predictions.insert(0, "information_set", set_name)
@@ -408,15 +506,16 @@ def to_markdown(payload: dict[str, Any]) -> str:
             f"| {trade['max_drawdown']:.4f} | {trade['exposure']:.4f} "
             f"| {cls['macro_f1']:.4f} | {cls['directional_accuracy']:.4f} |"
         )
-    net = payload["summary"]["per_model"][model]["net_return"]
+    stats = payload["summary"]["per_model"][model]
+    net = stats["net_return"]
     lines += [
         "",
         "## Across the four temporal folds",
         "",
         f"- net return: mean {net['mean']:+.6f}, std {ev.number(net['std'], '.6f')}, "
-        f"min {net['min']:+.6f}, max {net['max']:+.6f}",
-        f"- positive in **{payload['summary']['per_model'][model]['positive_net_return_folds']}"
-        f" of {payload['summary']['folds']}** temporal folds",
+        f"min {net['min']:+.6f}, median {net['median']:+.6f}, max {net['max']:+.6f}",
+        f"- positive in **{stats['positive_net_return_folds']} of "
+        f"{payload['summary']['folds']}** temporal folds",
         "",
         "The statistical unit is the temporal period. These estimators are deterministic,",
         "so repeating the run under another seed would copy this evidence, not add to it.",
@@ -428,9 +527,7 @@ def to_markdown(payload: dict[str, Any]) -> str:
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument(
-        "--information-set", choices=list(P2B_INFORMATION_SETS), required=True
-    )
+    parser.add_argument("--information-set", choices=list(P2B_INFORMATION_SETS), required=True)
     parser.add_argument("--model", choices=list(SIMPLE_MODEL_NAMES), required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--research-contract", default="btc-usdt-1h-gen1")

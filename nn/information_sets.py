@@ -42,7 +42,7 @@ import pandas as pd
 
 from chimera.features import feature_columns
 from nn.data_pipeline import DatasetMetadata, _contiguous_segment_ids
-from nn.dataset import Split, sample_indices
+from nn.dataset import sample_indices
 from nn.smc import (
     SMC_FEATURE_FAMILIES,
     SMC_SPEC_VERSION,
@@ -371,9 +371,7 @@ def _spine_arrays(spine: pd.DataFrame, ds_meta: DatasetMetadata) -> dict[str, An
     from nn.data_pipeline import timeframe_to_minutes
 
     segment_ids = (
-        spine["segment_id"].to_numpy(dtype=np.int64)
-        if "segment_id" in spine.columns
-        else None
+        spine["segment_id"].to_numpy(dtype=np.int64) if "segment_id" in spine.columns else None
     )
     if segment_ids is None:
         raise ValueError(
@@ -418,7 +416,8 @@ def _check_segment_contiguity(
             "market-structure state would bridge a gap the windowing does not know about."
         )
     raw_segments = _contiguous_segment_ids(raw_dates, timeframe).to_numpy()
-    crossing = np.flatnonzero(same_segment & (raw_segments[raw_rows][1:] != raw_segments[raw_rows][:-1]))
+    aligned_segments = raw_segments[raw_rows]
+    crossing = np.flatnonzero(same_segment & (aligned_segments[1:] != aligned_segments[:-1]))
     if crossing.size:
         row = int(crossing[0])
         raise ValueError(
