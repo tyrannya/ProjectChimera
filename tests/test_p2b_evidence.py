@@ -19,64 +19,126 @@ Neither test needs a dataset, a fit or a network. Both read committed files.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from tools.freeze_evidence import DERIVED, check, evidence_class_of, manifest_entries
+
 ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK = ROOT / "artifacts" / "benchmark"
 
-#: Every checksum manifest in the repository. A new checkpoint adds its own here
-#: at freeze time, which is the moment its numbers stop being allowed to move.
-MANIFESTS = (
-    "btc_v4_SHA256SUMS.txt",
-    "btc_p2a_SHA256SUMS.txt",
-    "btc_p2b_SHA256SUMS.txt",
-    "btc_p2b_ablation_SHA256SUMS.txt",
-    "btc_p2b_recheck_SHA256SUMS.txt",
-    "btc_p2c_SHA256SUMS.txt",
-)
+#: Every checksum manifest this repository stands behind, discovered rather than
+#: listed. A checkpoint that freezes new evidence is covered the moment its
+#: manifest lands, instead of when someone remembers to add a name here.
+MANIFESTS = sorted(path.name for path in (ROOT / "artifacts").glob("*_SHA256SUMS.txt"))
+
+#: Manifests written before a manifest covered primary evidence only, and the
+#: primary-only manifest that replaced each. They are kept byte for byte and
+#: renamed rather than edited: a manifest is the repository's own statement
+#: about what a past run produced, so the answer to one that covered the wrong
+#: kind of file is a successor, never a rewrite. The `.superseded.txt` suffix is
+#: what keeps a manifest nobody should expect to verify out of the set below,
+#: because a checksum file that fails on purpose teaches a reader to shrug at
+#: one that fails for real. `None` means there was nothing to succeed —
+#: `btc_p2b_recheck` covered a comparison and nothing else.
+SUPERSEDED = {
+    "btc_p2b_SHA256SUMS.superseded.txt": "btc_p2b_cells_SHA256SUMS.txt",
+    "btc_p2b_ablation_SHA256SUMS.superseded.txt": ("btc_p2b_ablation_cells_SHA256SUMS.txt"),
+    "btc_p2b_recheck_SHA256SUMS.superseded.txt": None,
+    "btc_p2c_SHA256SUMS.superseded.txt": "btc_p2c_cells_SHA256SUMS.txt",
+}
+
+
+def test_the_repository_has_the_manifests_these_tests_think_it_has():
+    """Discovery is convenient and silent; a deleted manifest would just vanish.
+
+    Globbing means a new checkpoint is covered automatically. It also means a
+    manifest that disappeared would take its own verification with it and no
+    test would fail, so the set is named once, here.
+    """
+    assert MANIFESTS == [
+        "btc_p2a_SHA256SUMS.txt",
+        "btc_p2b_ablation_cells_SHA256SUMS.txt",
+        "btc_p2b_cells_SHA256SUMS.txt",
+        "btc_p2c_cells_SHA256SUMS.txt",
+        "btc_v4_SHA256SUMS.txt",
+    ]
+    for retired in SUPERSEDED:
+        assert (ROOT / "artifacts" / retired).is_file(), (
+            f"{retired} was retired, not deleted; it is the record of what its "
+            "checkpoint froze and the repository keeps it"
+        )
 
 
 @pytest.mark.parametrize("manifest", MANIFESTS)
-def test_frozen_evidence_still_hashes_to_its_manifest(manifest, capsys):
-    """Every *primary* file a freeze covers is byte-identical to what was frozen.
+def test_frozen_evidence_still_hashes_to_its_manifest(manifest):
+    """Every file a manifest covers is byte-identical to what was frozen.
 
-    Comparison directories are deliberately exempt, and the exemption is the
-    point rather than a concession. A comparison is *derived*: `nn.p2b_compare`
-    regenerates it from the cells whenever the reporter improves, and it was
-    regenerated twice tonight — once when the recomputation widened from ten
-    trading keys to twenty-three, once when the report stopped hard-coding P2b's
-    arm names and started naming the arms actually present. Hashing a
-    regenerable artifact alongside primary evidence guarantees a stale manifest
-    and teaches a reader to ignore the failure.
+    No exemption, of any kind. `tools.freeze_evidence.check` is the single
+    implementation the CLI and this test share, so "frozen" cannot come to mean
+    one thing under `make freeze-evidence` and another here.
 
-    So the hashes pin what cannot be rebuilt — the cells, their per-sample
-    predictions, the regime description — and the comparison's *content* is
-    pinned instead by the verdict tests below, which assert the six fold counts
-    directly. A regenerated comparison that changed a finding fails those; a
-    regenerated comparison that only improved its own prose does not.
+    That is only enforceable because a manifest covers primary evidence alone —
+    cells and their per-sample outer predictions, which cannot be rebuilt
+    without re-fitting. An earlier arrangement hashed the comparisons alongside
+    them, so improving a reporter broke three manifests at once and this test
+    excused the breakage by matching `_comparison/` in the path, which is a
+    checksum that means "frozen unless it is not". What pins a derived report
+    instead is the rest of this file: its fold counts and verdicts are asserted
+    directly, so a regenerated report that changed a finding fails and one that
+    only improved its own prose does not.
     """
-    path = ROOT / "artifacts" / manifest
-    assert path.is_file(), f"{manifest} is missing"
-    entries = [
-        line.split(maxsplit=1) for line in path.read_text().splitlines() if line.strip()
-    ]
-    assert entries, f"{manifest} is empty"
-    stale = 0
-    for expected, name in entries:
-        name = name.strip()
-        target = ROOT / name
-        assert target.is_file(), f"{name} is missing from the frozen evidence"
-        if hashlib.sha256(target.read_bytes()).hexdigest() != expected:
-            assert "_comparison/" in name, f"{name} no longer matches {manifest}"
-            stale += 1
-    # A manifest whose every entry is a regenerated comparison would pass
-    # vacuously; each must still cover something that cannot be rebuilt.
-    assert stale < len(entries), f"{manifest} covers nothing but derived artifacts"
-    capsys.readouterr()
+    problems = check(ROOT / "artifacts" / manifest)
+    assert problems == [], f"{manifest} no longer describes the repository:\n" + "\n".join(
+        problems
+    )
+
+
+@pytest.mark.parametrize("retired,successor", sorted(SUPERSEDED.items()))
+def test_a_reissued_manifest_changed_no_digest_it_inherited(retired, successor):
+    """Re-issuing a manifest dropped derived entries and did nothing else.
+
+    This is the check that makes the supersession safe to trust. Narrowing a
+    manifest is exactly the shape of laundering a result — drop the row that
+    stopped matching, keep the file, call it frozen — so a successor is required
+    to be a strict projection of what it replaced: every path they share carries
+    the same digest, nothing was added, and every entry that went away lives in
+    a directory that now declares itself `derived`.
+
+    A successor that re-froze a moved primary file fails here, and so does one
+    that quietly dropped a cell.
+    """
+    old = dict(
+        (name, digest) for digest, name in manifest_entries(ROOT / "artifacts" / retired)
+    )
+    new = (
+        dict(
+            (name, digest) for digest, name in manifest_entries(ROOT / "artifacts" / successor)
+        )
+        if successor
+        else {}
+    )
+    assert old, f"{retired} is empty"
+
+    rehashed = [name for name in old.keys() & new.keys() if old[name] != new[name]]
+    assert not rehashed, (
+        f"{successor} records a different digest than {retired} for {rehashed}. A "
+        "successor may narrow what a manifest covers; it may not restate what a "
+        "covered file hashed to."
+    )
+    assert not new.keys() - old.keys(), (
+        f"{successor} covers files {retired} did not: {sorted(new.keys() - old.keys())}. "
+        "New evidence gets its own manifest rather than being folded into a re-issue."
+    )
+    for name in sorted(old.keys() - new.keys()):
+        directory = (ROOT / name).parent
+        assert evidence_class_of(directory) == DERIVED, (
+            f"{retired} covered {name} and {successor} does not, but "
+            f"{directory.name} does not declare itself {DERIVED}. Only derived "
+            "evidence may be dropped from a re-issued manifest."
+        )
 
 
 def test_the_p2c_comparison_reports_a_negative_result():

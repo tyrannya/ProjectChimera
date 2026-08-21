@@ -72,6 +72,19 @@ the path, and this file explained that one manifest's comparison entry was *expe
 to be wrong. None of that survives: there is no manifest entry in this repository that
 any test is allowed to see change.
 
+The four manifests written under the old arrangement are kept byte for byte, renamed to
+`*_SHA256SUMS.superseded.txt`. A manifest is the repository's own statement about what a
+past run produced, so the answer to one that covered the wrong kind of file is a
+successor, never a rewrite — `btc_p2b_` is succeeded by `btc_p2b_cells_`, `btc_p2c_` by
+`btc_p2c_cells_`, `btc_p2b_ablation_` by `btc_p2b_ablation_cells_`, and
+`btc_p2b_recheck_SHA256SUMS.txt` by nothing, because it covered a comparison and nothing
+else. The suffix is what keeps them out of `artifacts/*_SHA256SUMS.txt`: a checksum file
+that fails `--verify` on purpose teaches a reader to shrug at one that fails for real. Narrowing a manifest is also the exact shape of
+laundering a result, so `tests/test_p2b_evidence.py` requires each successor to be a
+strict projection of what it replaced: every path they share carries the same digest,
+nothing was added, and every dropped entry lives in a directory that declares itself
+derived. Across all four, no digest changed.
+
 `btc_v4_SHA256SUMS.txt` and `btc_p2a_SHA256SUMS.txt` predate the distinction, were
 written by hand, and cover their aggregates as well as their source runs. They verify
 exactly as they always have and are **not** rewritten — a frozen manifest records what a
@@ -232,11 +245,29 @@ three:
 | LightGBM | 2/4 | 1/4 | 1/4 | 2/4 |
 | XGBoost | 1/4 | 1/4 | 1/4 | 1/4 |
 
-`artifacts/btc_p2b_SHA256SUMS.txt` and `artifacts/btc_p2c_SHA256SUMS.txt` freeze the
-eighteen cells and their per-sample predictions;
-`artifacts/btc_p2b_ablation_SHA256SUMS.txt` freezes the six leave-one-family-out arms
-and the determinism re-run. The four aggregates those cells feed are derived and are
+`artifacts/btc_p2b_cells_SHA256SUMS.txt` and `artifacts/btc_p2c_cells_SHA256SUMS.txt`
+freeze the eighteen cells and their per-sample predictions;
+`artifacts/btc_p2b_ablation_cells_SHA256SUMS.txt` freezes the six leave-one-family-out
+arms and the determinism re-run. The four aggregates those cells feed are derived and are
 pinned by `tests/test_p2b_evidence.py` instead — see the section above.
+
+### What the committed cells say they are
+
+All twenty-five committed P2b and P2c cells were produced before a cell stated which
+research question it was answering, so every one of them carries `checkpoint: "P2b"`
+and no `question` — including the nine that ran chart structure for P2c. The numbers in
+those nine are P2c's and only the identity is wrong, which is the kind of error a green
+run cannot surface.
+
+They are **not** relabelled here. Rewriting a frozen artifact to say something it did
+not say is how provenance gets manufactured, and re-running them to correct a string
+would replace the frozen evidence the manifests pin. Instead `nn.p2b_compare` refuses to
+read that generation's label at all and identifies those cells by their arms, which
+`load_cell` has already checked against the columns each cell actually flattened. That
+is why `artifacts/benchmark/btc_p2c_comparison` is titled P2c although every cell behind
+it says P2b, and why it records `checkpoint_identity` saying where its identity came
+from. Cells of both checkpoints globbed together are accounted for by neither and are
+refused — a failure the shared label could never have produced.
 
 ## What "pre-correction" means
 
