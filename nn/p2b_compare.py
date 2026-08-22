@@ -266,17 +266,26 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
     for cell in cells[1:]:
         payload = cell["payload"]
-        mine = (payload.get("code") or {}).get("source_digest")
-        theirs = (ref.get("code") or {}).get("source_digest")
+        mine_code = payload.get("code") or {}
+        theirs_code = ref.get("code") or {}
+        mine = mine_code.get("source_digest")
+        theirs = theirs_code.get("source_digest")
         if mine != theirs:
-            raise ComparisonError(
-                f"{described(cell)} ran source digest {mine} and "
-                f"{described(reference)} ran {theirs}. Every other identity a cell "
-                "records describes the data or the definitions, so two revisions of "
-                "the runner would otherwise join without a word. The digest covers "
-                "every repository module the process imported, so a documentation "
-                "commit does not split a batch and an uncommitted edit does not hide."
+            same_clean_revision = bool(
+                mine
+                and theirs
+                and mine_code.get("revision")
+                and mine_code.get("revision") == theirs_code.get("revision")
+                and mine_code.get("dirty") is False
+                and theirs_code.get("dirty") is False
             )
+            if not same_clean_revision:
+                raise ComparisonError(
+                    f"{described(cell)} ran source digest {mine} and "
+                    f"{described(reference)} ran {theirs}; differing import-graph "
+                    "digests may join only when both cells came from the same clean "
+                    "repository revision."
+                )
         # `.get`, not `[...]`: `trade_snapshot` and `microstructure_spec` exist
         # only for a checkpoint whose evidence is defined against the trade
         # source, and a P2b cell that has neither must still compare equal to
@@ -347,7 +356,24 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "CASH and buy-and-hold economic references",
         ],
         "code": {
-            "source_digest": (cells[0]["payload"].get("code") or {}).get("source_digest"),
+            "source_digest": (
+                next(iter({
+                    (c["payload"].get("code") or {}).get("source_digest")
+                    for c in cells
+                }))
+                if len({
+                    (c["payload"].get("code") or {}).get("source_digest")
+                    for c in cells
+                }) == 1
+                else None
+            ),
+            "source_digests": sorted(
+                {
+                    (c["payload"].get("code") or {}).get("source_digest")
+                    for c in cells
+                    if (c["payload"].get("code") or {}).get("source_digest")
+                }
+            ),
             "revisions": sorted(
                 {
                     (c["payload"].get("code") or {}).get("revision")
@@ -356,9 +382,9 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 }
             ),
             "note": (
-                "one source digest across every cell. The revision list may hold more "
-                "than one entry when documentation was committed between cells; that "
-                "moves HEAD without changing a line any cell executed"
+                "source digests may differ across model-specific import graphs. "
+                "A differing digest is accepted only when every compared cell comes "
+                "from the same clean repository revision."
             ),
         },
         "conclusion": (

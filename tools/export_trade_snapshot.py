@@ -303,9 +303,38 @@ def download_archive(archive: Archive, dest: Path, *, timeout: int = 300) -> dic
     ``sha256`` is what this run actually read, which is the number a later
     reader can reproduce.
     """
-    payload = _get(archive.url, timeout)
-    dest.write_bytes(payload)
-    digest = hashlib.sha256(payload).hexdigest()
+    last: Exception | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            digest_obj = hashlib.sha256()
+            byte_count = 0
+            with urllib.request.urlopen(archive.url, timeout=timeout) as response, dest.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    digest_obj.update(chunk)
+                    byte_count += len(chunk)
+            last = None
+            break
+        except urllib.error.HTTPError as exc:
+            dest.unlink(missing_ok=True)
+            if exc.code == 404:
+                raise TradeExportError(f"{archive.url} returned 404") from exc
+            last = exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            dest.unlink(missing_ok=True)
+            last = exc
+        if attempt < len(BACKOFF_SECONDS):
+            time.sleep(BACKOFF_SECONDS[attempt])
+
+    if last is not None:
+        raise TradeExportError(
+            f"{archive.url} failed after {MAX_ATTEMPTS} attempts: {last}"
+        )
+
+    digest = digest_obj.hexdigest()
 
     published: str | None = None
     try:
@@ -325,7 +354,7 @@ def download_archive(archive: Archive, dest: Path, *, timeout: int = 300) -> dic
         "kind": archive.kind,
         "period_start": archive.period_start.isoformat(),
         "period_end": archive.period_end.isoformat(),
-        "bytes": len(payload),
+        "bytes": byte_count,
         "sha256": digest,
         "published_sha256": published,
         "checksum_verified": bool(published),
@@ -334,12 +363,17 @@ def download_archive(archive: Archive, dest: Path, *, timeout: int = 300) -> dic
 
 def _member(zf: zipfile.ZipFile, archive_name: str) -> str:
     names = [name for name in zf.namelist() if not name.endswith("/")]
-    if len(names) != 1:
-        raise TradeExportError(
-            f"{archive_name} holds {len(names)} files ({names[:4]}); this tool expects "
-            "exactly one CSV per archive and will not guess which one is the trades"
-        )
-    return names[0]
+    if len(names) == 1:
+        return names[0]
+
+    expected = archive_name.removesuffix(".zip") + ".csv"
+    if expected in names:
+        return expected
+
+    raise TradeExportError(
+        f"{archive_name} holds {len(names)} files ({names[:4]}); expected canonical "
+        f"root member {expected!r} and will not guess which one is the trades"
+    )
 
 
 def _has_header(first_line: str) -> bool:
