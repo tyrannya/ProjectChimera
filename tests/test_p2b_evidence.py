@@ -51,13 +51,14 @@ BENCHMARK = ROOT / "artifacts" / "benchmark"
 #: verification quietly with it.
 MANIFESTS = tuple(sorted(path.name for path in (ROOT / "artifacts").glob("*_SHA256SUMS.txt")))
 
-#: The two comparison directories this branch regenerates. Derived by
+#: The comparison directories this branch regenerates. Derived by
 #: declaration, and asserted to be so below rather than assumed.
 DERIVED_DIRS = (
     BENCHMARK / "btc_p2b_comparison",
     BENCHMARK / "btc_p2c_comparison",
     BENCHMARK / "btc_p2b_ablation_xgboost",
     BENCHMARK / "btc_p2b_regimes",
+    BENCHMARK / "btc_p3_comparison",
 )
 
 
@@ -250,6 +251,11 @@ def test_each_checkpoints_artifacts_identify_as_that_checkpoint():
             "btc_p2c",
             ("ohlcv14", "chart_structure_v1", "ohlcv14_plus_chart_structure_v1"),
         ),
+        (
+            "P3",
+            "btc_p3",
+            ("ohlcv14", "microstructure_v1", "ohlcv14_plus_microstructure_v1"),
+        ),
     ):
         question = CHECKPOINTS[checkpoint].question
         comparison = _comparison(f"{prefix}_comparison")
@@ -285,7 +291,9 @@ def test_the_p2b_question_and_the_p2c_question_are_not_the_same_question():
     assert "chart_structure_v1" in _comparison("btc_p2c_comparison")["question"]
 
 
-@pytest.mark.parametrize("name", ["btc_p2b_comparison", "btc_p2c_comparison"])
+@pytest.mark.parametrize(
+    "name", ["btc_p2b_comparison", "btc_p2c_comparison", "btc_p3_comparison"]
+)
 def test_every_persisted_row_is_a_planned_row(name):
     """The counters that say the scored sample is the planned sample.
 
@@ -315,15 +323,19 @@ def test_every_persisted_row_is_a_planned_row(name):
 
 
 def test_both_information_set_checkpoints_reproduce_the_same_frozen_control():
-    """P2b and P2c each re-ran the OHLCV14 control, and it is P2a's.
+    """P2b, P2c and P3 each re-ran the OHLCV14 control, and it is P2a's.
 
-    Both must equal P2a's frozen seed-42 XGBoost evidence, and therefore each
-    other. If adding a feature family ever perturbs the control's sample
+    All three must equal P2a's frozen seed-42 XGBoost evidence, and therefore
+    each other. If adding a feature family ever perturbs the control's sample
     universe, this is what notices.
     """
     p2a = json.loads((BENCHMARK / "btc_p2a_seed_42" / "benchmark.json").read_text())
     frozen = [f["outer_validation"]["xgboost"] for f in p2a["folds"]]
-    for checkpoint in ("btc_p2b_ohlcv14_xgboost", "btc_p2c_ohlcv14_xgboost"):
+    for checkpoint in (
+        "btc_p2b_ohlcv14_xgboost",
+        "btc_p2c_ohlcv14_xgboost",
+        "btc_p3_ohlcv14_xgboost",
+    ):
         cell = json.loads((BENCHMARK / checkpoint / "p2b.json").read_text())
         assert [f["outer_validation"]["xgboost"] for f in cell["folds"]] == frozen
 
@@ -384,6 +396,36 @@ def test_the_p2c_comparison_reports_a_negative_result():
     assert all(v < 3 for v in expected.values())
 
 
+def test_the_p3_comparison_reports_a_negative_result():
+    """P3's frozen verdict. Same reasoning as the P2b and P2c pins above.
+
+    Not a test of the machinery — a test of the *finding*. P3 answered no, and
+    the six fold counts below are what that means. If a later change to the
+    comparison moves any of them, the result changed, and that has to be a
+    deliberate act with its own evidence rather than a diff nobody read.
+    """
+    payload = _comparison("btc_p3_comparison")
+    assert payload["sealed_test"] is False
+    assert payload["independent_recompute"]["mismatches"] == 0
+    assert payload["snapshot_anchoring"]["problems"] == 0
+
+    expected = {
+        ("logistic_regression", "microstructure_v1"): 1,
+        ("logistic_regression", "ohlcv14_plus_microstructure_v1"): 2,
+        ("lightgbm", "microstructure_v1"): 1,
+        ("lightgbm", "ohlcv14_plus_microstructure_v1"): 2,
+        ("xgboost", "microstructure_v1"): 2,
+        ("xgboost", "ohlcv14_plus_microstructure_v1"): 1,
+    }
+    for (model, arm), folds in expected.items():
+        assert payload["deltas"][model][arm]["net_return_improved_folds"] == folds
+
+    # The predeclared bar is three of four. Nothing reached it, which is the
+    # finding; asserting it here stops "P3 was positive" from ever being true
+    # of this directory without someone changing this line.
+    assert all(v < 3 for v in expected.values())
+
+
 def test_the_committed_predictions_are_the_bytes_the_manifests_pin():
     """A cell's parquet is primary evidence and is covered, not merely present."""
     covered = {
@@ -391,6 +433,7 @@ def test_the_committed_predictions_are_the_bytes_the_manifests_pin():
         for manifest in (
             "btc_p2b_SHA256SUMS.txt",
             "btc_p2c_SHA256SUMS.txt",
+            "btc_p3_SHA256SUMS.txt",
         )
         for _, name in freeze_evidence.manifest_entries(ROOT / "artifacts" / manifest)
     }
@@ -399,6 +442,10 @@ def test_the_committed_predictions_are_the_bytes_the_manifests_pin():
         (
             "btc_p2c",
             ("ohlcv14", "chart_structure_v1", "ohlcv14_plus_chart_structure_v1"),
+        ),
+        (
+            "btc_p3",
+            ("ohlcv14", "microstructure_v1", "ohlcv14_plus_microstructure_v1"),
         ),
     ):
         for arm in arms:
@@ -511,6 +558,7 @@ def test_the_repository_has_the_manifests_these_tests_think_it_has():
         "btc_p2b_SHA256SUMS.txt",
         "btc_p2b_ablation_SHA256SUMS.txt",
         "btc_p2c_SHA256SUMS.txt",
+        "btc_p3_SHA256SUMS.txt",
         "btc_v4_SHA256SUMS.txt",
     )
 
@@ -762,6 +810,7 @@ def test_a_regime_delta_attributed_to_the_wrong_arm_is_reported():
 CELL_MANIFEST = {
     "P2b": "btc_p2b_SHA256SUMS.txt",
     "P2c": "btc_p2c_SHA256SUMS.txt",
+    "P3": "btc_p3_SHA256SUMS.txt",
 }
 ABLATION_MANIFEST = "btc_p2b_ablation_SHA256SUMS.txt"
 
@@ -775,32 +824,19 @@ ABLATION_MANIFEST = "btc_p2b_ablation_SHA256SUMS.txt"
 #: checkpoint has no evidence, and
 #: `test_an_unrun_checkpoint_has_no_evidence_directories` fails the moment one
 #: appears without being moved into `CELL_MANIFEST`.
-#:
-#: P3's trade source could not be acquired — outbound access to
-#: `data.binance.vision` was denied by the egress policy in force — so no P3
-#: cell has ever been fitted. See `docs/research_roadmap.md`.
-UNRUN_CHECKPOINTS = {"P3": "btc_p3_SHA256SUMS.txt"}
+UNRUN_CHECKPOINTS: dict[str, str] = {}
 
 
-def expected_primary(cell_manifest: dict[str, str] | None = None) -> dict[str, str]:
-    """Directory name -> the manifest that must cover it, in full.
-
-    ``cell_manifest`` is a parameter so the inventory can be *exercised* for a
-    checkpoint that has not run yet — see
-    `test_the_inventory_already_knows_what_p3_will_owe`. Without that, the
-    machinery that will demand P3's nine cells would itself be untested until
-    the moment it was first relied on.
-    """
-    cell_manifest = CELL_MANIFEST if cell_manifest is None else cell_manifest
+def expected_primary() -> dict[str, str]:
+    """Directory name -> the manifest that must cover it, in full."""
     expected: dict[str, str] = {}
-    for checkpoint, manifest in cell_manifest.items():
+    for checkpoint, manifest in CELL_MANIFEST.items():
         for arm in CHECKPOINTS[checkpoint].arms:
             for model in SIMPLE_MODEL_NAMES:
                 expected[f"btc_{checkpoint.lower()}_{arm}_{model}"] = manifest
-    if "P2b" in cell_manifest:
-        for arm in ablation_set_names():
-            expected[f"btc_p2b_{arm}_xgboost"] = ABLATION_MANIFEST
-        expected["btc_p2b_repro_ohlcv14_plus_smc_v1_xgboost"] = ABLATION_MANIFEST
+    for arm in ablation_set_names():
+        expected[f"btc_p2b_{arm}_xgboost"] = ABLATION_MANIFEST
+    expected["btc_p2b_repro_ohlcv14_plus_smc_v1_xgboost"] = ABLATION_MANIFEST
     return expected
 
 
@@ -863,30 +899,6 @@ def test_an_unrun_checkpoint_has_no_evidence_directories(checkpoint):
         "CELL_MANIFEST and freeze its cells rather than leaving them uncovered."
     )
     assert not (ROOT / "artifacts" / UNRUN_CHECKPOINTS[checkpoint]).exists()
-
-
-def test_the_inventory_already_knows_what_p3_will_owe():
-    """The coverage machinery is exercised for P3 before P3 has any evidence.
-
-    Nine cells — three arms times three models — each covered exactly once by
-    `btc_p3_SHA256SUMS.txt` and by nothing else. Checked against a synthetic
-    coverage set, so it proves the inventory rather than the artifacts.
-    """
-    expected = expected_primary({"P3": UNRUN_CHECKPOINTS["P3"]})
-    assert len(expected) == 9
-    assert set(expected.values()) == {"btc_p3_SHA256SUMS.txt"}
-    assert "btc_p3_microstructure_v1_xgboost" in expected
-    assert "btc_p3_ohlcv14_plus_microstructure_v1_lightgbm" in expected
-    assert coverage_problems(expected, _synthetic_entries(expected)) == []
-
-    missing = _synthetic_entries(expected)
-    victim = "btc_p3_ohlcv14_xgboost"
-    missing["btc_p3_SHA256SUMS.txt"] = [
-        name for name in missing["btc_p3_SHA256SUMS.txt"] if f"/{victim}/" not in name
-    ]
-    assert coverage_problems(expected, missing) == [
-        f"{victim} is expected primary evidence and no manifest covers it"
-    ]
 
 
 def test_every_expected_primary_directory_is_covered_exactly_once():
@@ -986,14 +998,17 @@ def test_a_cell_covered_by_the_wrong_manifest_is_reported():
 def test_the_inventory_grows_with_the_checkpoint_definitions():
     """It is derived from `nn.information_sets`, not from a directory listing.
 
-    Nine cells per checkpoint plus six ablation arms and the determinism re-run.
-    If a checkpoint gained an arm this would require a cell for it, which is the
-    point of deriving it from the declaration rather than from what exists.
+    Nine cells per checkpoint, three checkpoints, plus six ablation arms and
+    the determinism re-run. If a checkpoint gained an arm this would require
+    a cell for it, which is the point of deriving it from the declaration
+    rather than from what exists.
     """
     expected = expected_primary()
-    assert len(expected) == 9 + 9 + 6 + 1
+    assert len(expected) == 9 + 9 + 9 + 6 + 1
     assert sum(1 for m in expected.values() if m == "btc_p2b_SHA256SUMS.txt") == 9
     assert sum(1 for m in expected.values() if m == "btc_p2c_SHA256SUMS.txt") == 9
+    assert sum(1 for m in expected.values() if m == "btc_p3_SHA256SUMS.txt") == 9
     assert sum(1 for m in expected.values() if m == ABLATION_MANIFEST) == 7
     assert "btc_p2c_chart_structure_v1_xgboost" in expected
     assert "btc_p2b_ohlcv14_plus_smc_v1_minus_fvg_xgboost" in expected
+    assert "btc_p3_microstructure_v1_xgboost" in expected

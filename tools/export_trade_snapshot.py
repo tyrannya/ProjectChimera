@@ -308,7 +308,10 @@ def download_archive(archive: Archive, dest: Path, *, timeout: int = 300) -> dic
         try:
             digest_obj = hashlib.sha256()
             byte_count = 0
-            with urllib.request.urlopen(archive.url, timeout=timeout) as response, dest.open("wb") as handle:
+            with (
+                urllib.request.urlopen(archive.url, timeout=timeout) as response,
+                dest.open("wb") as handle,
+            ):
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk:
@@ -330,9 +333,7 @@ def download_archive(archive: Archive, dest: Path, *, timeout: int = 300) -> dic
             time.sleep(BACKOFF_SECONDS[attempt])
 
     if last is not None:
-        raise TradeExportError(
-            f"{archive.url} failed after {MAX_ATTEMPTS} attempts: {last}"
-        )
+        raise TradeExportError(f"{archive.url} failed after {MAX_ATTEMPTS} attempts: {last}")
 
     digest = digest_obj.hexdigest()
 

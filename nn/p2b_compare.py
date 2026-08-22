@@ -357,14 +357,13 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
         ],
         "code": {
             "source_digest": (
-                next(iter({
-                    (c["payload"].get("code") or {}).get("source_digest")
-                    for c in cells
-                }))
-                if len({
-                    (c["payload"].get("code") or {}).get("source_digest")
-                    for c in cells
-                }) == 1
+                next(
+                    iter(
+                        {(c["payload"].get("code") or {}).get("source_digest") for c in cells}
+                    )
+                )
+                if len({(c["payload"].get("code") or {}).get("source_digest") for c in cells})
+                == 1
                 else None
             ),
             "source_digests": sorted(
