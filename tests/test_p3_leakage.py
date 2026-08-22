@@ -394,6 +394,45 @@ def test_a_cell_with_no_trade_source_cannot_join_one_that_has_it():
         check_cells_agree([_cell(OHLCV14), stripped])
 
 
+def test_model_specific_source_digests_accept_same_clean_revision():
+    control = _cell(OHLCV14)
+    other = _cell(MICROSTRUCTURE_V1)
+    revision = "1" * 40
+    control["payload"]["code"].update({"revision": revision, "dirty": False})
+    other["payload"]["code"].update(
+        {"source_digest": "e" * 64, "revision": revision, "dirty": False}
+    )
+
+    agreement = check_cells_agree([control, other])
+    assert agreement["code"]["source_digest"] is None
+    assert agreement["code"]["source_digests"] == ["a" * 64, "e" * 64]
+
+
+def test_different_source_digests_refuse_different_revisions():
+    control = _cell(OHLCV14)
+    other = _cell(MICROSTRUCTURE_V1)
+    control["payload"]["code"].update({"revision": "1" * 40, "dirty": False})
+    other["payload"]["code"].update(
+        {"source_digest": "e" * 64, "revision": "2" * 40, "dirty": False}
+    )
+
+    with pytest.raises(ComparisonError, match="same clean"):
+        check_cells_agree([control, other])
+
+
+def test_different_source_digests_refuse_dirty_cells():
+    control = _cell(OHLCV14)
+    other = _cell(MICROSTRUCTURE_V1)
+    revision = "1" * 40
+    control["payload"]["code"].update({"revision": revision, "dirty": False})
+    other["payload"]["code"].update(
+        {"source_digest": "e" * 64, "revision": revision, "dirty": True}
+    )
+
+    with pytest.raises(ComparisonError, match="same clean"):
+        check_cells_agree([control, other])
+
+
 def test_the_microstructure_identity_records_both_halves():
     identity = microstructure_spec_identity(
         MicrostructureSpec(), {"semantic_hash": "b" * 64, "venue": "binance"}
