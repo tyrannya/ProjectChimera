@@ -66,3 +66,17 @@ ray_results/
 # Databases
 *.sqlite
 *.db
+
+# Frozen P3 trade source and primary evidence.
+!data/research/btc_usdt_1h_gen1_trade_snapshot_manifest.json
+!data/research/btc_usdt_1h_gen1_trades_hourly_pre_styx.parquet
+!artifacts/benchmark/btc_p3_evidence.txt
+!artifacts/benchmark/btc_p3_microstructure_v1_lightgbm/*
+!artifacts/benchmark/btc_p3_microstructure_v1_logistic_regression/*
+!artifacts/benchmark/btc_p3_microstructure_v1_xgboost/*
+!artifacts/benchmark/btc_p3_ohlcv14_lightgbm/*
+!artifacts/benchmark/btc_p3_ohlcv14_logistic_regression/*
+!artifacts/benchmark/btc_p3_ohlcv14_xgboost/*
+!artifacts/benchmark/btc_p3_ohlcv14_plus_microstructure_v1_lightgbm/*
+!artifacts/benchmark/btc_p3_ohlcv14_plus_microstructure_v1_logistic_regression/*
+!artifacts/benchmark/btc_p3_ohlcv14_plus_microstructure_v1_xgboost/*
