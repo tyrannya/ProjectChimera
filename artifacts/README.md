@@ -45,19 +45,21 @@ because P2b was the checkpoint in flight, and by the time P2c ran these four out
 blocks had been read by v4, P2a, P2b, the P2b ablation and the P2b regime description.
 P2c generates hypotheses; it cannot confirm one.
 
-**There is no P3 evidence here, and that is a fact rather than an omission.**
-Checkpoint P3 asks whether causal trade-level microstructure adds information
-beyond OHLCV14. Its feature spec, engine, snapshot exporter, fail-closed
-verifier, runner and leakage tests are all committed, but its source — Binance's
-public spot `aggTrades` archive — could not be fetched from the environment the
-checkpoint was developed in, so **not one P3 cell has been fitted**. No number
-was substituted for the missing data. When P3 runs it gets its own manifest,
-`btc_p3_SHA256SUMS.txt`, and the inventory in `tests/test_p2b_evidence.py`
-already knows the nine cells it will owe.
+**The current P3 information-set benchmark is
+[`benchmark/btc_p3_comparison/`](benchmark/btc_p3_comparison/).** It answers a fifth
+question — does causal trade-level microstructure (`microstructure_v1`) add usable
+information beyond OHLCV14? — and its evidence is **negative**: across three models
+and two microstructure arms, not one of the six comparisons improved on the OHLCV14
+control in more than two of four temporal folds, against a bar of three that was fixed
+before the numbers were read. Two of the six (model, arm) combinations have a
+*positive mean* delta while improving only 1 or 2 folds; the mean is not the finding.
+Its nine source cells are frozen under
+[`btc_p3_SHA256SUMS.txt`](btc_p3_SHA256SUMS.txt). Like P2b and P2c it reuses
+already-observed outer folds and is adaptive research evidence.
 
-**None of these four replaces another.** They answer four different questions, so four
-rows are CURRENT at once and `status` is scoped per research question rather than
-across the index.
+**None of these five replaces another.** They answer five different questions, so
+five rows are CURRENT at once and `status` is scoped per research question rather
+than across the index.
 
 ### What the manifests cover, and what pins the rest
 
@@ -107,6 +109,16 @@ one that shares its `research question`.
 | `walkforward/btc_nested_v4_seed_242` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 242) | n/a | current |
 | `walkforward/btc_nested_v4_seed_342` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 342) | n/a | current |
 | `walkforward/btc_nested_v4_seed_442` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 442) | n/a | current |
+| `benchmark/btc_p3_comparison` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b_compare` | the nine `btc_p3_*` cells | **yes** | current |
+| `benchmark/btc_p3_ohlcv14_logistic_regression` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x logistic_regression) | n/a | current |
+| `benchmark/btc_p3_ohlcv14_lightgbm` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x lightgbm) | n/a | current |
+| `benchmark/btc_p3_ohlcv14_xgboost` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x xgboost) | n/a | current |
+| `benchmark/btc_p3_microstructure_v1_logistic_regression` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (microstructure_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p3_microstructure_v1_lightgbm` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (microstructure_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p3_microstructure_v1_xgboost` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (microstructure_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p3_ohlcv14_plus_microstructure_v1_logistic_regression` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_microstructure_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p3_ohlcv14_plus_microstructure_v1_lightgbm` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_microstructure_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p3_ohlcv14_plus_microstructure_v1_xgboost` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_microstructure_v1 x xgboost) | n/a | current |
 | `benchmark/btc_p2c_comparison` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b_compare` | the nine `btc_p2c_*` cells | **yes** | current |
 | `benchmark/btc_p2c_ohlcv14_logistic_regression` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x logistic_regression) | n/a | current |
 | `benchmark/btc_p2c_ohlcv14_lightgbm` | P2c | `btc_p2c_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x lightgbm) | n/a | current |

@@ -20,7 +20,9 @@ broken in exactly one way. Each is paired with the positive control that the
 unbroken snapshot verifies, because a guard that always failed would satisfy the
 corruption test on its own.
 
-No network, no fit, and no committed evidence is read or written.
+No network, no fit, and no committed evidence is written. One test reads the
+committed trade snapshot — the rest exercise the verifier against a synthetic
+tree instead.
 """
 
 from __future__ import annotations
@@ -56,6 +58,7 @@ from tools.export_trade_snapshot import (
 )
 from tools.make_sample_data import generate_trades
 from tools.verify_trade_snapshot import (
+    DEFAULT_MANIFEST,
     TradeSnapshotVerificationError,
     verify_trade_snapshot,
 )
@@ -616,16 +619,19 @@ def test_a_sealed_hour_is_refused_before_any_digest_is_recomputed(tree):
     assert "withheld" in str(excinfo.value)
 
 
-def test_the_committed_repository_ships_no_trade_snapshot_yet():
-    """P3's source has not been acquired, and nothing may pretend otherwise.
+def test_the_committed_trade_snapshot_is_present_and_verifies():
+    """P3's real source, checked the same way a fresh clone would check it.
 
-    The egress policy in force when this branch was written denies
-    `data.binance.vision`, so no trade archive could be fetched and no P3
-    evidence exists. This asserts the absence rather than leaving it implied: a
-    synthetic table copied into `data/research/` would be a fabricated research
-    source, and the first thing to notice it should be a test.
+    Every fail-closed rejection above is exercised against a synthetic tree so
+    it never has to touch what is actually committed. This is the one test
+    that does: it calls the same `verify_trade_snapshot` against its own
+    default manifest path — `data/research/btc_usdt_1h_gen1_trade_snapshot_manifest.json`
+    — rather than reimplementing any part of the check here. A manifest that
+    went missing, or a committed snapshot that drifted from what it claims,
+    fails this the same way it would fail a fresh clone.
     """
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[1]
-    assert not (root / "data" / "research" / MANIFEST_NAME).exists()
+    assert (
+        DEFAULT_MANIFEST.is_file()
+    ), f"no committed trade snapshot manifest at {DEFAULT_MANIFEST}"
+    results = verify_trade_snapshot()
+    assert len(results) == 27

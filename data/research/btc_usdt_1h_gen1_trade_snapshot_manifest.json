@@ -1,0 +1,1887 @@
+{
+  "snapshot_schema": "chimera.trade-snapshot/1",
+  "contract": {
+    "contract_schema": "chimera.research-contract/1",
+    "contract_id": "btc-usdt-1h-gen1",
+    "contract_hash": "dca6d0a891a257197a7c8aecec04fdba0a0b3009cfe93c5f3a397d458ab4a1de",
+    "research_generation": 1,
+    "domain": "directional-classification",
+    "scope": {
+      "exchange": "binance",
+      "pair": "BTC/USDT",
+      "timeframe": "1h"
+    },
+    "sealed_test_start": "2025-08-27T23:00:00+00:00"
+  },
+  "contains_styx": false,
+  "styx_instant": "2025-08-27T23:00:00+00:00",
+  "source": {
+    "venue": "binance",
+    "market_type": "spot",
+    "symbol": "BTCUSDT",
+    "pair": "BTC/USDT",
+    "source_type": "aggTrades",
+    "provider": "binance-public-data",
+    "base_url": "https://data.binance.vision",
+    "url_templates": {
+      "monthly": "{base}/data/{market}/monthly/{source}/{symbol}/{symbol}-{source}-{year:04d}-{month:02d}.zip",
+      "daily": "{base}/data/{market}/daily/{source}/{symbol}/{symbol}-{source}-{year:04d}-{month:02d}-{day:02d}.zip"
+    },
+    "checksum_suffix": ".CHECKSUM",
+    "raw_schema": [
+      "agg_trade_id",
+      "price",
+      "quantity",
+      "first_trade_id",
+      "last_trade_id",
+      "transact_time",
+      "is_buyer_maker",
+      "is_best_match"
+    ],
+    "identity_column": "agg_trade_id",
+    "ordering_rule": "strictly increasing agg_trade_id; timestamps non-decreasing but not unique, since many aggressed orders share a millisecond",
+    "duplicate_rule": "an agg_trade_id at or below the previous one is a duplicate",
+    "aggressor_semantics": "is_buyer_maker=false is an aggressive BUY (the taker bought); is_buyer_maker=true is an aggressive SELL",
+    "uses_buyer_maker": true,
+    "representation_choice": "aggTrades only. aggTrades and trades describe the same executions at two granularities, so mixing them double-counts every aggregated order and no deduplication rule can undo it from the archives alone.",
+    "known_limitations": [
+      "aggTrades folds consecutive same-price fills of one taker order into one row, so trade-size statistics are statistics of aggressed orders rather than of individual fills",
+      "the aggressor side is the exchange's own is_buyer_maker flag; there is no independent way to verify it from the archive",
+      "an hour in which BTCUSDT recorded no trade has no row at all, and is reported in coverage.missing_intervals rather than filled with zeros",
+      "the public archive is republished from time to time; the per-archive sha256 recorded here is what this acquisition read",
+      "spot only; no futures, funding, open interest, basis, liquidation or order-book data is present, by design for this checkpoint"
+    ]
+  },
+  "acquisition": {
+    "acquired_at": "2026-08-22T00:22:27.222112Z",
+    "requested_from": "2019-12-01T00:00:00+00:00",
+    "requested_through": "2025-05-19T08:00:00+00:00",
+    "archive_count": 84,
+    "raw_bytes_total": 48754150282,
+    "raw_rows_total": 3380059234,
+    "checksums_verified": 84,
+    "epoch_units_seen": [
+      "ms",
+      "us"
+    ],
+    "archives": [
+      {
+        "name": "BTCUSDT-aggTrades-2019-12.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2019-12.zip",
+        "kind": "monthly",
+        "period_start": "2019-12-01T00:00:00+00:00",
+        "period_end": "2020-01-01T00:00:00+00:00",
+        "bytes": 156496420,
+        "sha256": "aa6f89fe47f4bbdaec3262c1fd3325cb6a92d7c11b7aec515111b6a8ffb9418b",
+        "published_sha256": "aa6f89fe47f4bbdaec3262c1fd3325cb6a92d7c11b7aec515111b6a8ffb9418b",
+        "checksum_verified": true,
+        "rows_admitted": 10256201,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-01.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-01.zip",
+        "kind": "monthly",
+        "period_start": "2020-01-01T00:00:00+00:00",
+        "period_end": "2020-02-01T00:00:00+00:00",
+        "bytes": 214923676,
+        "sha256": "ea2f0aa850fb08b5c8124d2f8080c03689c30cdadf797363fc74b506b92a8d8b",
+        "published_sha256": "ea2f0aa850fb08b5c8124d2f8080c03689c30cdadf797363fc74b506b92a8d8b",
+        "checksum_verified": true,
+        "rows_admitted": 14051798,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-02.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-02.zip",
+        "kind": "monthly",
+        "period_start": "2020-02-01T00:00:00+00:00",
+        "period_end": "2020-03-01T00:00:00+00:00",
+        "bytes": 257304829,
+        "sha256": "f7f56e2d26261d7c6ce97859c7064ad650b106602db28c59365de8a315c9bc99",
+        "published_sha256": "f7f56e2d26261d7c6ce97859c7064ad650b106602db28c59365de8a315c9bc99",
+        "checksum_verified": true,
+        "rows_admitted": 16955884,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-03.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-03.zip",
+        "kind": "monthly",
+        "period_start": "2020-03-01T00:00:00+00:00",
+        "period_end": "2020-04-01T00:00:00+00:00",
+        "bytes": 394451403,
+        "sha256": "cd4ea1f7795a35b6c8e7e4e3c7a1050b22f09eb907cec04510eb4bc8730481f3",
+        "published_sha256": "cd4ea1f7795a35b6c8e7e4e3c7a1050b22f09eb907cec04510eb4bc8730481f3",
+        "checksum_verified": true,
+        "rows_admitted": 26606652,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-04.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-04.zip",
+        "kind": "monthly",
+        "period_start": "2020-04-01T00:00:00+00:00",
+        "period_end": "2020-05-01T00:00:00+00:00",
+        "bytes": 308144501,
+        "sha256": "94048b161517f2299b22e90a8a736f77f7c88e76b44c7e5d886884ba05f19935",
+        "published_sha256": "94048b161517f2299b22e90a8a736f77f7c88e76b44c7e5d886884ba05f19935",
+        "checksum_verified": true,
+        "rows_admitted": 20836980,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-05.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-05.zip",
+        "kind": "monthly",
+        "period_start": "2020-05-01T00:00:00+00:00",
+        "period_end": "2020-06-01T00:00:00+00:00",
+        "bytes": 358364065,
+        "sha256": "aa3fd6cfd761c4c74e22777eb95b8718424566705572a4970894be3d79c839dd",
+        "published_sha256": "aa3fd6cfd761c4c74e22777eb95b8718424566705572a4970894be3d79c839dd",
+        "checksum_verified": true,
+        "rows_admitted": 24442379,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-06.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-06.zip",
+        "kind": "monthly",
+        "period_start": "2020-06-01T00:00:00+00:00",
+        "period_end": "2020-07-01T00:00:00+00:00",
+        "bytes": 221733819,
+        "sha256": "ecf7ff0737dde7cb331f54579c276ddec1e7b1361733a4c8650580055375fbf1",
+        "published_sha256": "ecf7ff0737dde7cb331f54579c276ddec1e7b1361733a4c8650580055375fbf1",
+        "checksum_verified": true,
+        "rows_admitted": 15087596,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-07.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-07.zip",
+        "kind": "monthly",
+        "period_start": "2020-07-01T00:00:00+00:00",
+        "period_end": "2020-08-01T00:00:00+00:00",
+        "bytes": 277117854,
+        "sha256": "65c948cf3d564bea39ec17a07f6c408164fa1286c4b6fc830e24f3ee0d528f4e",
+        "published_sha256": "65c948cf3d564bea39ec17a07f6c408164fa1286c4b6fc830e24f3ee0d528f4e",
+        "checksum_verified": true,
+        "rows_admitted": 19098848,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-08.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-08.zip",
+        "kind": "monthly",
+        "period_start": "2020-08-01T00:00:00+00:00",
+        "period_end": "2020-09-01T00:00:00+00:00",
+        "bytes": 387525281,
+        "sha256": "ae9e76d34ef90179fa5548b308bb5acb922bd013a9e8dfee599241e2e6824cf7",
+        "published_sha256": "ae9e76d34ef90179fa5548b308bb5acb922bd013a9e8dfee599241e2e6824cf7",
+        "checksum_verified": true,
+        "rows_admitted": 26957400,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-09.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-09.zip",
+        "kind": "monthly",
+        "period_start": "2020-09-01T00:00:00+00:00",
+        "period_end": "2020-10-01T00:00:00+00:00",
+        "bytes": 326073370,
+        "sha256": "8a5e42ca83492dfcee4e4ad3d2d03a0f7eccc8906b23bf6b0f47b270a645e4fb",
+        "published_sha256": "8a5e42ca83492dfcee4e4ad3d2d03a0f7eccc8906b23bf6b0f47b270a645e4fb",
+        "checksum_verified": true,
+        "rows_admitted": 22845286,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-10.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-10.zip",
+        "kind": "monthly",
+        "period_start": "2020-10-01T00:00:00+00:00",
+        "period_end": "2020-11-01T00:00:00+00:00",
+        "bytes": 267408909,
+        "sha256": "dfe4ce8ec1ef04ddeec888ec34b56f6bd05f902359718604f9cfd1f011f7303a",
+        "published_sha256": "dfe4ce8ec1ef04ddeec888ec34b56f6bd05f902359718604f9cfd1f011f7303a",
+        "checksum_verified": true,
+        "rows_admitted": 18687970,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-11.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-11.zip",
+        "kind": "monthly",
+        "period_start": "2020-11-01T00:00:00+00:00",
+        "period_end": "2020-12-01T00:00:00+00:00",
+        "bytes": 506462233,
+        "sha256": "6ffc17890013df71dc9e8ab1e44fe687207bf1bdb58ba925ec31e33a272b4716",
+        "published_sha256": "6ffc17890013df71dc9e8ab1e44fe687207bf1bdb58ba925ec31e33a272b4716",
+        "checksum_verified": true,
+        "rows_admitted": 35600521,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2020-12.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2020-12.zip",
+        "kind": "monthly",
+        "period_start": "2020-12-01T00:00:00+00:00",
+        "period_end": "2021-01-01T00:00:00+00:00",
+        "bytes": 585162605,
+        "sha256": "1a90fdd37ea9635af11641826f828a714e7d3f39c1b7416f63ec0e65212b88e1",
+        "published_sha256": "1a90fdd37ea9635af11641826f828a714e7d3f39c1b7416f63ec0e65212b88e1",
+        "checksum_verified": true,
+        "rows_admitted": 38931795,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-01.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-01.zip",
+        "kind": "monthly",
+        "period_start": "2021-01-01T00:00:00+00:00",
+        "period_end": "2021-02-01T00:00:00+00:00",
+        "bytes": 1004319450,
+        "sha256": "36ec7f23cea403ecd040b01b6eb4562dc035466fa269599edd76f6270e2dbbed",
+        "published_sha256": "36ec7f23cea403ecd040b01b6eb4562dc035466fa269599edd76f6270e2dbbed",
+        "checksum_verified": true,
+        "rows_admitted": 65179182,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-02.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-02.zip",
+        "kind": "monthly",
+        "period_start": "2021-02-01T00:00:00+00:00",
+        "period_end": "2021-03-01T00:00:00+00:00",
+        "bytes": 901070030,
+        "sha256": "8c8cbb14c061c3b7dc9acd3965c5b3c6a2d671ef8a5cc61c3c77026271e9a739",
+        "published_sha256": "8c8cbb14c061c3b7dc9acd3965c5b3c6a2d671ef8a5cc61c3c77026271e9a739",
+        "checksum_verified": true,
+        "rows_admitted": 58129842,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-03.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-03.zip",
+        "kind": "monthly",
+        "period_start": "2021-03-01T00:00:00+00:00",
+        "period_end": "2021-04-01T00:00:00+00:00",
+        "bytes": 827846806,
+        "sha256": "e80a1b3ccddd210f850c5bc480bba7733f79d3762ac24a4508ad29c1f62daa3f",
+        "published_sha256": "e80a1b3ccddd210f850c5bc480bba7733f79d3762ac24a4508ad29c1f62daa3f",
+        "checksum_verified": true,
+        "rows_admitted": 53880141,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-04.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-04.zip",
+        "kind": "monthly",
+        "period_start": "2021-04-01T00:00:00+00:00",
+        "period_end": "2021-05-01T00:00:00+00:00",
+        "bytes": 784690641,
+        "sha256": "cde7e2fb3647143b994337f474c22ce4af7b8b17e5944e7f7714d6d5078199c8",
+        "published_sha256": "cde7e2fb3647143b994337f474c22ce4af7b8b17e5944e7f7714d6d5078199c8",
+        "checksum_verified": true,
+        "rows_admitted": 53646773,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-05.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-05.zip",
+        "kind": "monthly",
+        "period_start": "2021-05-01T00:00:00+00:00",
+        "period_end": "2021-06-01T00:00:00+00:00",
+        "bytes": 1119069626,
+        "sha256": "19f2b095ccffba90c9be84a0864d845cb859e2d83a7e3a173caefb5d1861c945",
+        "published_sha256": "19f2b095ccffba90c9be84a0864d845cb859e2d83a7e3a173caefb5d1861c945",
+        "checksum_verified": true,
+        "rows_admitted": 72943848,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-06.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-06.zip",
+        "kind": "monthly",
+        "period_start": "2021-06-01T00:00:00+00:00",
+        "period_end": "2021-07-01T00:00:00+00:00",
+        "bytes": 713347281,
+        "sha256": "ad9eb0eed3c49fed631942bad159bc365b58eed580e82b29c31db26be40675a5",
+        "published_sha256": "ad9eb0eed3c49fed631942bad159bc365b58eed580e82b29c31db26be40675a5",
+        "checksum_verified": true,
+        "rows_admitted": 46694748,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-07.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-07.zip",
+        "kind": "monthly",
+        "period_start": "2021-07-01T00:00:00+00:00",
+        "period_end": "2021-08-01T00:00:00+00:00",
+        "bytes": 492306386,
+        "sha256": "150a7815fae5378edc42b3f2d26bf4697d529b19b4f552fc11c68629341df42b",
+        "published_sha256": "150a7815fae5378edc42b3f2d26bf4697d529b19b4f552fc11c68629341df42b",
+        "checksum_verified": true,
+        "rows_admitted": 32459575,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-08.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-08.zip",
+        "kind": "monthly",
+        "period_start": "2021-08-01T00:00:00+00:00",
+        "period_end": "2021-09-01T00:00:00+00:00",
+        "bytes": 574367420,
+        "sha256": "94587b981b05fc2228b85493691df7934e2f648521b0ab049b8d1b1225e55216",
+        "published_sha256": "94587b981b05fc2228b85493691df7934e2f648521b0ab049b8d1b1225e55216",
+        "checksum_verified": true,
+        "rows_admitted": 37822262,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-09.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-09.zip",
+        "kind": "monthly",
+        "period_start": "2021-09-01T00:00:00+00:00",
+        "period_end": "2021-10-01T00:00:00+00:00",
+        "bytes": 500555801,
+        "sha256": "b786adc7f362c594d08b65967bafae892f3eec4c2232391af35cb3ffdf0e1ab9",
+        "published_sha256": "b786adc7f362c594d08b65967bafae892f3eec4c2232391af35cb3ffdf0e1ab9",
+        "checksum_verified": true,
+        "rows_admitted": 33326399,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-10.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-10.zip",
+        "kind": "monthly",
+        "period_start": "2021-10-01T00:00:00+00:00",
+        "period_end": "2021-11-01T00:00:00+00:00",
+        "bytes": 593247533,
+        "sha256": "0416f8fe93439f9fcf03fe9a2ccae872677fe15800657f6d5edfbb03c6e398bf",
+        "published_sha256": "0416f8fe93439f9fcf03fe9a2ccae872677fe15800657f6d5edfbb03c6e398bf",
+        "checksum_verified": true,
+        "rows_admitted": 40189640,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-11.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-11.zip",
+        "kind": "monthly",
+        "period_start": "2021-11-01T00:00:00+00:00",
+        "period_end": "2021-12-01T00:00:00+00:00",
+        "bytes": 566323681,
+        "sha256": "ce8dfe87129f78efb5047f4d764454970362aff04229857b14ded6fc91f4be76",
+        "published_sha256": "ce8dfe87129f78efb5047f4d764454970362aff04229857b14ded6fc91f4be76",
+        "checksum_verified": true,
+        "rows_admitted": 37933998,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2021-12.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2021-12.zip",
+        "kind": "monthly",
+        "period_start": "2021-12-01T00:00:00+00:00",
+        "period_end": "2022-01-01T00:00:00+00:00",
+        "bytes": 970678033,
+        "sha256": "2ff67048929833d8db2ec32df829d2594052c31799d694486d997bc85b89d42c",
+        "published_sha256": "2ff67048929833d8db2ec32df829d2594052c31799d694486d997bc85b89d42c",
+        "checksum_verified": true,
+        "rows_admitted": 32269900,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-01.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-01.zip",
+        "kind": "monthly",
+        "period_start": "2022-01-01T00:00:00+00:00",
+        "period_end": "2022-02-01T00:00:00+00:00",
+        "bytes": 443094740,
+        "sha256": "89ab10f323b53d5d8c4de40ec6833b93f37ebd9be8f520688d4f080be3dec001",
+        "published_sha256": "89ab10f323b53d5d8c4de40ec6833b93f37ebd9be8f520688d4f080be3dec001",
+        "checksum_verified": true,
+        "rows_admitted": 29368436,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-02.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-02.zip",
+        "kind": "monthly",
+        "period_start": "2022-02-01T00:00:00+00:00",
+        "period_end": "2022-03-01T00:00:00+00:00",
+        "bytes": 382097433,
+        "sha256": "84074272816323f4af4c45ef48ce550429fd12b5af98d0c95a7731daf6e6d89c",
+        "published_sha256": "84074272816323f4af4c45ef48ce550429fd12b5af98d0c95a7731daf6e6d89c",
+        "checksum_verified": true,
+        "rows_admitted": 25626736,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-03.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-03.zip",
+        "kind": "monthly",
+        "period_start": "2022-03-01T00:00:00+00:00",
+        "period_end": "2022-04-01T00:00:00+00:00",
+        "bytes": 418697157,
+        "sha256": "c970b71594351b1e5feb97796a0c234f5d11aaa157b4a63abb51b2170ffed6d2",
+        "published_sha256": "c970b71594351b1e5feb97796a0c234f5d11aaa157b4a63abb51b2170ffed6d2",
+        "checksum_verified": true,
+        "rows_admitted": 28174549,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-04.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-04.zip",
+        "kind": "monthly",
+        "period_start": "2022-04-01T00:00:00+00:00",
+        "period_end": "2022-05-01T00:00:00+00:00",
+        "bytes": 360485100,
+        "sha256": "2d215b317ace4a4f2ff74ad33d9dd71c46865f9e4e02817efd1bed088d639f72",
+        "published_sha256": "2d215b317ace4a4f2ff74ad33d9dd71c46865f9e4e02817efd1bed088d639f72",
+        "checksum_verified": true,
+        "rows_admitted": 24560288,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-05.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-05.zip",
+        "kind": "monthly",
+        "period_start": "2022-05-01T00:00:00+00:00",
+        "period_end": "2022-06-01T00:00:00+00:00",
+        "bytes": 529004310,
+        "sha256": "d907f8858c7f161f9067515c7897cc3177dd2cb83f83cb8f392be033066ae479",
+        "published_sha256": "d907f8858c7f161f9067515c7897cc3177dd2cb83f83cb8f392be033066ae479",
+        "checksum_verified": true,
+        "rows_admitted": 36300396,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-06.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-06.zip",
+        "kind": "monthly",
+        "period_start": "2022-06-01T00:00:00+00:00",
+        "period_end": "2022-07-01T00:00:00+00:00",
+        "bytes": 477803237,
+        "sha256": "b3975ceb7666d9d27d8f29760c6ff7b5e385373101f8afce81e508db1299bc05",
+        "published_sha256": "b3975ceb7666d9d27d8f29760c6ff7b5e385373101f8afce81e508db1299bc05",
+        "checksum_verified": true,
+        "rows_admitted": 31874307,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-07.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-07.zip",
+        "kind": "monthly",
+        "period_start": "2022-07-01T00:00:00+00:00",
+        "period_end": "2022-08-01T00:00:00+00:00",
+        "bytes": 1530382626,
+        "sha256": "cb0f3a5a4a0a63f3440642c9bbda229e30f40dacdbf05e943213f29368353207",
+        "published_sha256": "cb0f3a5a4a0a63f3440642c9bbda229e30f40dacdbf05e943213f29368353207",
+        "checksum_verified": true,
+        "rows_admitted": 105740044,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-08.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-08.zip",
+        "kind": "monthly",
+        "period_start": "2022-08-01T00:00:00+00:00",
+        "period_end": "2022-09-01T00:00:00+00:00",
+        "bytes": 2238736907,
+        "sha256": "6469d05e76327f92debc71ea22ef56d31f418ad8eac8897647c02d4e13b8d22d",
+        "published_sha256": "6469d05e76327f92debc71ea22ef56d31f418ad8eac8897647c02d4e13b8d22d",
+        "checksum_verified": true,
+        "rows_admitted": 156020522,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-09.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-09.zip",
+        "kind": "monthly",
+        "period_start": "2022-09-01T00:00:00+00:00",
+        "period_end": "2022-10-01T00:00:00+00:00",
+        "bytes": 2254775142,
+        "sha256": "3de2f4dcf73c7e59c8e18ba8f75876761d15e76db1742d0a25f84620c7313c53",
+        "published_sha256": "3de2f4dcf73c7e59c8e18ba8f75876761d15e76db1742d0a25f84620c7313c53",
+        "checksum_verified": true,
+        "rows_admitted": 155843013,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-10.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-10.zip",
+        "kind": "monthly",
+        "period_start": "2022-10-01T00:00:00+00:00",
+        "period_end": "2022-11-01T00:00:00+00:00",
+        "bytes": 1897220182,
+        "sha256": "f933409fc7a9a987c366928de0f9b1ef0b99bf65170f5e58bcde6c9b0334b0d4",
+        "published_sha256": "f933409fc7a9a987c366928de0f9b1ef0b99bf65170f5e58bcde6c9b0334b0d4",
+        "checksum_verified": true,
+        "rows_admitted": 131919107,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-11.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-11.zip",
+        "kind": "monthly",
+        "period_start": "2022-11-01T00:00:00+00:00",
+        "period_end": "2022-12-01T00:00:00+00:00",
+        "bytes": 2460042801,
+        "sha256": "09d3c20e467b50921172986ae41615eb97043354eca24c7a4785fe14720f8ac5",
+        "published_sha256": "09d3c20e467b50921172986ae41615eb97043354eca24c7a4785fe14720f8ac5",
+        "checksum_verified": true,
+        "rows_admitted": 171900348,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2022-12.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2022-12.zip",
+        "kind": "monthly",
+        "period_start": "2022-12-01T00:00:00+00:00",
+        "period_end": "2023-01-01T00:00:00+00:00",
+        "bytes": 1582989803,
+        "sha256": "18816b904549e62c485a29b56ecf0c4b139cf2a7379efc74d8ed7caa717219ab",
+        "published_sha256": "18816b904549e62c485a29b56ecf0c4b139cf2a7379efc74d8ed7caa717219ab",
+        "checksum_verified": true,
+        "rows_admitted": 110419414,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-01.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-01.zip",
+        "kind": "monthly",
+        "period_start": "2023-01-01T00:00:00+00:00",
+        "period_end": "2023-02-01T00:00:00+00:00",
+        "bytes": 2278512445,
+        "sha256": "183a1a7b76a6fd451d057a9f543ee6537ef245a95a987076a4fec1202419a4e9",
+        "published_sha256": "183a1a7b76a6fd451d057a9f543ee6537ef245a95a987076a4fec1202419a4e9",
+        "checksum_verified": true,
+        "rows_admitted": 160129079,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-02.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-02.zip",
+        "kind": "monthly",
+        "period_start": "2023-02-01T00:00:00+00:00",
+        "period_end": "2023-03-01T00:00:00+00:00",
+        "bytes": 2624704281,
+        "sha256": "e774176a49181dcc260fcc1fab23a4fbdd19d8420732634ee6deb9f9e1afd7f1",
+        "published_sha256": "e774176a49181dcc260fcc1fab23a4fbdd19d8420732634ee6deb9f9e1afd7f1",
+        "checksum_verified": true,
+        "rows_admitted": 187399566,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-03.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-03.zip",
+        "kind": "monthly",
+        "period_start": "2023-03-01T00:00:00+00:00",
+        "period_end": "2023-04-01T00:00:00+00:00",
+        "bytes": 2658089884,
+        "sha256": "7cf72c122904abccc2d6cd3fe2614b94b89c6d747653eb8eaae8bedde6c4e224",
+        "published_sha256": "7cf72c122904abccc2d6cd3fe2614b94b89c6d747653eb8eaae8bedde6c4e224",
+        "checksum_verified": true,
+        "rows_admitted": 190227841,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-04.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-04.zip",
+        "kind": "monthly",
+        "period_start": "2023-04-01T00:00:00+00:00",
+        "period_end": "2023-05-01T00:00:00+00:00",
+        "bytes": 392591107,
+        "sha256": "957181967871816db30c674c2f445b7d887f766c9fc272add0fde1c2213c771a",
+        "published_sha256": "957181967871816db30c674c2f445b7d887f766c9fc272add0fde1c2213c771a",
+        "checksum_verified": true,
+        "rows_admitted": 27414124,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-05.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-05.zip",
+        "kind": "monthly",
+        "period_start": "2023-05-01T00:00:00+00:00",
+        "period_end": "2023-06-01T00:00:00+00:00",
+        "bytes": 327821304,
+        "sha256": "10b783ee0fa015dba06074808c1665c0551392370c746b21631892b235fc7096",
+        "published_sha256": "10b783ee0fa015dba06074808c1665c0551392370c746b21631892b235fc7096",
+        "checksum_verified": true,
+        "rows_admitted": 22835695,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-06.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-06.zip",
+        "kind": "monthly",
+        "period_start": "2023-06-01T00:00:00+00:00",
+        "period_end": "2023-07-01T00:00:00+00:00",
+        "bytes": 317893465,
+        "sha256": "2fc41412732f3d00f0404c7ea1649e46ed0295d167bd5a2bc0099fef02be5394",
+        "published_sha256": "2fc41412732f3d00f0404c7ea1649e46ed0295d167bd5a2bc0099fef02be5394",
+        "checksum_verified": true,
+        "rows_admitted": 22321691,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-07.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-07.zip",
+        "kind": "monthly",
+        "period_start": "2023-07-01T00:00:00+00:00",
+        "period_end": "2023-08-01T00:00:00+00:00",
+        "bytes": 230203311,
+        "sha256": "46d1c77edc0381446a88947d31c78ff434010f1459ebef516451494ec1992f56",
+        "published_sha256": "46d1c77edc0381446a88947d31c78ff434010f1459ebef516451494ec1992f56",
+        "checksum_verified": true,
+        "rows_admitted": 16197332,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-08.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-08.zip",
+        "kind": "monthly",
+        "period_start": "2023-08-01T00:00:00+00:00",
+        "period_end": "2023-09-01T00:00:00+00:00",
+        "bytes": 221084986,
+        "sha256": "9a1cb942fdec911bde0783794c12b4bd05565440ed663d38780da9e9348fd4a4",
+        "published_sha256": "9a1cb942fdec911bde0783794c12b4bd05565440ed663d38780da9e9348fd4a4",
+        "checksum_verified": true,
+        "rows_admitted": 15369604,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-09.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-09.zip",
+        "kind": "monthly",
+        "period_start": "2023-09-01T00:00:00+00:00",
+        "period_end": "2023-10-01T00:00:00+00:00",
+        "bytes": 227441546,
+        "sha256": "339d011e9c41fa9b40ad965a5656fa921337158b48da5d21d28f7a6fec037fef",
+        "published_sha256": "339d011e9c41fa9b40ad965a5656fa921337158b48da5d21d28f7a6fec037fef",
+        "checksum_verified": true,
+        "rows_admitted": 16038511,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-10.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-10.zip",
+        "kind": "monthly",
+        "period_start": "2023-10-01T00:00:00+00:00",
+        "period_end": "2023-11-01T00:00:00+00:00",
+        "bytes": 422423079,
+        "sha256": "4086f8b319f950ee1d568b6b86c92ec07c93f12372c411120447541528541528",
+        "published_sha256": "4086f8b319f950ee1d568b6b86c92ec07c93f12372c411120447541528541528",
+        "checksum_verified": true,
+        "rows_admitted": 30835274,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-11.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-11.zip",
+        "kind": "monthly",
+        "period_start": "2023-11-01T00:00:00+00:00",
+        "period_end": "2023-12-01T00:00:00+00:00",
+        "bytes": 404195156,
+        "sha256": "ac67c2b049babf2546a3df5a0de481345c7671550b7a7ce2c2284c76c1d76aaa",
+        "published_sha256": "ac67c2b049babf2546a3df5a0de481345c7671550b7a7ce2c2284c76c1d76aaa",
+        "checksum_verified": true,
+        "rows_admitted": 28835542,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2023-12.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2023-12.zip",
+        "kind": "monthly",
+        "period_start": "2023-12-01T00:00:00+00:00",
+        "period_end": "2024-01-01T00:00:00+00:00",
+        "bytes": 483390162,
+        "sha256": "a5a890bdf2cc349435f61bb134c7726fef1dd9d88bea7356716d5975f2ee5ce7",
+        "published_sha256": "a5a890bdf2cc349435f61bb134c7726fef1dd9d88bea7356716d5975f2ee5ce7",
+        "checksum_verified": true,
+        "rows_admitted": 35370512,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-01.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01.zip",
+        "kind": "monthly",
+        "period_start": "2024-01-01T00:00:00+00:00",
+        "period_end": "2024-02-01T00:00:00+00:00",
+        "bytes": 566954365,
+        "sha256": "6713db84b8836aec43bb52471735b2e057ed2cd8b571d7bdc81672826d8c8a19",
+        "published_sha256": "6713db84b8836aec43bb52471735b2e057ed2cd8b571d7bdc81672826d8c8a19",
+        "checksum_verified": true,
+        "rows_admitted": 41962464,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-02.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-02.zip",
+        "kind": "monthly",
+        "period_start": "2024-02-01T00:00:00+00:00",
+        "period_end": "2024-03-01T00:00:00+00:00",
+        "bytes": 504930291,
+        "sha256": "5134af82d946b46c2be160f71d94e3ef5b0f4e8565b4211869169092ea7e5ca5",
+        "published_sha256": "5134af82d946b46c2be160f71d94e3ef5b0f4e8565b4211869169092ea7e5ca5",
+        "checksum_verified": true,
+        "rows_admitted": 37492760,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-03.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-03.zip",
+        "kind": "monthly",
+        "period_start": "2024-03-01T00:00:00+00:00",
+        "period_end": "2024-04-01T00:00:00+00:00",
+        "bytes": 812423059,
+        "sha256": "a8422806f8ea1b32ca01500690d7e40e1a6b9192a5e63bc33a46cecaedd3e621",
+        "published_sha256": "a8422806f8ea1b32ca01500690d7e40e1a6b9192a5e63bc33a46cecaedd3e621",
+        "checksum_verified": true,
+        "rows_admitted": 59681084,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-04.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-04.zip",
+        "kind": "monthly",
+        "period_start": "2024-04-01T00:00:00+00:00",
+        "period_end": "2024-05-01T00:00:00+00:00",
+        "bytes": 598656631,
+        "sha256": "2ec052570a4665e386c55b607856f5c6650e2212bd5b4a216836edf8effca4d8",
+        "published_sha256": "2ec052570a4665e386c55b607856f5c6650e2212bd5b4a216836edf8effca4d8",
+        "checksum_verified": true,
+        "rows_admitted": 44987078,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-05.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-05.zip",
+        "kind": "monthly",
+        "period_start": "2024-05-01T00:00:00+00:00",
+        "period_end": "2024-06-01T00:00:00+00:00",
+        "bytes": 428790217,
+        "sha256": "ddca1ae99be8085ee0698c8fc7aa76bcc64be1bc8e4f9b79cf07216d214d5069",
+        "published_sha256": "ddca1ae99be8085ee0698c8fc7aa76bcc64be1bc8e4f9b79cf07216d214d5069",
+        "checksum_verified": true,
+        "rows_admitted": 32019547,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-06.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-06.zip",
+        "kind": "monthly",
+        "period_start": "2024-06-01T00:00:00+00:00",
+        "period_end": "2024-07-01T00:00:00+00:00",
+        "bytes": 353905374,
+        "sha256": "9d1974850dfc5545156c1b95462cb6103962f609b65d156d605914395d8c7036",
+        "published_sha256": "9d1974850dfc5545156c1b95462cb6103962f609b65d156d605914395d8c7036",
+        "checksum_verified": true,
+        "rows_admitted": 27774325,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-07.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-07.zip",
+        "kind": "monthly",
+        "period_start": "2024-07-01T00:00:00+00:00",
+        "period_end": "2024-08-01T00:00:00+00:00",
+        "bytes": 508450051,
+        "sha256": "dc8bce722672a68c4659ff30dc41842b89416e53a735ec99b66bcf72459a2cf1",
+        "published_sha256": "dc8bce722672a68c4659ff30dc41842b89416e53a735ec99b66bcf72459a2cf1",
+        "checksum_verified": true,
+        "rows_admitted": 41090257,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-08.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-08.zip",
+        "kind": "monthly",
+        "period_start": "2024-08-01T00:00:00+00:00",
+        "period_end": "2024-09-01T00:00:00+00:00",
+        "bytes": 549860689,
+        "sha256": "7907ddfba9109ad94668945f66b28cbb84f35fb1a7ad64e1c23f2132be777789",
+        "published_sha256": "7907ddfba9109ad94668945f66b28cbb84f35fb1a7ad64e1c23f2132be777789",
+        "checksum_verified": true,
+        "rows_admitted": 42379037,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-09.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-09.zip",
+        "kind": "monthly",
+        "period_start": "2024-09-01T00:00:00+00:00",
+        "period_end": "2024-10-01T00:00:00+00:00",
+        "bytes": 476263781,
+        "sha256": "89a543b1d3fd1c6461f6c775a2e698a9339826fe01e5fac1807cf0016878eb18",
+        "published_sha256": "89a543b1d3fd1c6461f6c775a2e698a9339826fe01e5fac1807cf0016878eb18",
+        "checksum_verified": true,
+        "rows_admitted": 37976350,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-10.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-10.zip",
+        "kind": "monthly",
+        "period_start": "2024-10-01T00:00:00+00:00",
+        "period_end": "2024-11-01T00:00:00+00:00",
+        "bytes": 521055221,
+        "sha256": "f06a5b527b26c44c434ebffda790aad0caca9ef3830521fb8b563864ddf75952",
+        "published_sha256": "f06a5b527b26c44c434ebffda790aad0caca9ef3830521fb8b563864ddf75952",
+        "checksum_verified": true,
+        "rows_admitted": 40739704,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-11.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-11.zip",
+        "kind": "monthly",
+        "period_start": "2024-11-01T00:00:00+00:00",
+        "period_end": "2024-12-01T00:00:00+00:00",
+        "bytes": 942421554,
+        "sha256": "548cb1ae70d1a51f1e7fb180c114cc619bb9f96bf40fb6b0cabede880526c22e",
+        "published_sha256": "548cb1ae70d1a51f1e7fb180c114cc619bb9f96bf40fb6b0cabede880526c22e",
+        "checksum_verified": true,
+        "rows_admitted": 76065857,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2024-12.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-12.zip",
+        "kind": "monthly",
+        "period_start": "2024-12-01T00:00:00+00:00",
+        "period_end": "2025-01-01T00:00:00+00:00",
+        "bytes": 865044678,
+        "sha256": "2293764f3dee1c4b4a396c81bc24ac58ce9b211fcf8c4a77faf0840a65280116",
+        "published_sha256": "2293764f3dee1c4b4a396c81bc24ac58ce9b211fcf8c4a77faf0840a65280116",
+        "checksum_verified": true,
+        "rows_admitted": 68875820,
+        "epoch_units": [
+          "ms"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-01.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-01.zip",
+        "kind": "monthly",
+        "period_start": "2025-01-01T00:00:00+00:00",
+        "period_end": "2025-02-01T00:00:00+00:00",
+        "bytes": 756026457,
+        "sha256": "c1f82956a09ed8bdde59a85202a175f561a50bc86240ca9803366be671a330f4",
+        "published_sha256": "c1f82956a09ed8bdde59a85202a175f561a50bc86240ca9803366be671a330f4",
+        "checksum_verified": true,
+        "rows_admitted": 50938081,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-02.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-02.zip",
+        "kind": "monthly",
+        "period_start": "2025-02-01T00:00:00+00:00",
+        "period_end": "2025-03-01T00:00:00+00:00",
+        "bytes": 707091719,
+        "sha256": "ae405ceb2f05f96e325d72f5fdb0691066b1d4846d8c3c4d42887bdfb96376fe",
+        "published_sha256": "ae405ceb2f05f96e325d72f5fdb0691066b1d4846d8c3c4d42887bdfb96376fe",
+        "checksum_verified": true,
+        "rows_admitted": 48342373,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-03.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-03.zip",
+        "kind": "monthly",
+        "period_start": "2025-03-01T00:00:00+00:00",
+        "period_end": "2025-04-01T00:00:00+00:00",
+        "bytes": 814623840,
+        "sha256": "6416235374838bb2061f7a92f694e3310e3e7a6678dcd2047c28ac416ba7830b",
+        "published_sha256": "6416235374838bb2061f7a92f694e3310e3e7a6678dcd2047c28ac416ba7830b",
+        "checksum_verified": true,
+        "rows_admitted": 55880780,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-04.zip",
+        "url": "https://data.binance.vision/data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-04.zip",
+        "kind": "monthly",
+        "period_start": "2025-04-01T00:00:00+00:00",
+        "period_end": "2025-05-01T00:00:00+00:00",
+        "bytes": 589194834,
+        "sha256": "306b71fea83af10dab521d3db5c916a140bcda5c77324b63a869130203583eca",
+        "published_sha256": "306b71fea83af10dab521d3db5c916a140bcda5c77324b63a869130203583eca",
+        "checksum_verified": true,
+        "rows_admitted": 39896727,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-01.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-01.zip",
+        "kind": "daily",
+        "period_start": "2025-05-01T00:00:00+00:00",
+        "period_end": "2025-05-02T00:00:00+00:00",
+        "bytes": 14006443,
+        "sha256": "968246c3c416d10617e47bac61791082bc164d1d6ae84d9f9f26426c6c93ee9e",
+        "published_sha256": "968246c3c416d10617e47bac61791082bc164d1d6ae84d9f9f26426c6c93ee9e",
+        "checksum_verified": true,
+        "rows_admitted": 943218,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-02.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-02.zip",
+        "kind": "daily",
+        "period_start": "2025-05-02T00:00:00+00:00",
+        "period_end": "2025-05-03T00:00:00+00:00",
+        "bytes": 12558495,
+        "sha256": "b9c763383b7975a3c4e66d0b7dfcb0a388864b0564d3221426ba5ac4cb308eb6",
+        "published_sha256": "b9c763383b7975a3c4e66d0b7dfcb0a388864b0564d3221426ba5ac4cb308eb6",
+        "checksum_verified": true,
+        "rows_admitted": 844121,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-03.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-03.zip",
+        "kind": "daily",
+        "period_start": "2025-05-03T00:00:00+00:00",
+        "period_end": "2025-05-04T00:00:00+00:00",
+        "bytes": 7146803,
+        "sha256": "db44ed5ae27d923cd0aaca6abed2617698b2ceb55af78be5513e4702cdd77949",
+        "published_sha256": "db44ed5ae27d923cd0aaca6abed2617698b2ceb55af78be5513e4702cdd77949",
+        "checksum_verified": true,
+        "rows_admitted": 466241,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-04.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-04.zip",
+        "kind": "daily",
+        "period_start": "2025-05-04T00:00:00+00:00",
+        "period_end": "2025-05-05T00:00:00+00:00",
+        "bytes": 8812132,
+        "sha256": "5bc2a6cffc9a40cfd6a864e3faa54ea650d7fee4a53581cfab144286421bba08",
+        "published_sha256": "5bc2a6cffc9a40cfd6a864e3faa54ea650d7fee4a53581cfab144286421bba08",
+        "checksum_verified": true,
+        "rows_admitted": 587913,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-05.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-05.zip",
+        "kind": "daily",
+        "period_start": "2025-05-05T00:00:00+00:00",
+        "period_end": "2025-05-06T00:00:00+00:00",
+        "bytes": 12195909,
+        "sha256": "46972b2c1b94d1756a4d81353b70da08a1060f6c03aae9ca5f8b744fe6baf6ce",
+        "published_sha256": "46972b2c1b94d1756a4d81353b70da08a1060f6c03aae9ca5f8b744fe6baf6ce",
+        "checksum_verified": true,
+        "rows_admitted": 817730,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-06.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-06.zip",
+        "kind": "daily",
+        "period_start": "2025-05-06T00:00:00+00:00",
+        "period_end": "2025-05-07T00:00:00+00:00",
+        "bytes": 11866948,
+        "sha256": "62c8688c3e57216df597981c0807a42b9d15e97d8aa872a15895818390211601",
+        "published_sha256": "62c8688c3e57216df597981c0807a42b9d15e97d8aa872a15895818390211601",
+        "checksum_verified": true,
+        "rows_admitted": 793323,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-07.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-07.zip",
+        "kind": "daily",
+        "period_start": "2025-05-07T00:00:00+00:00",
+        "period_end": "2025-05-08T00:00:00+00:00",
+        "bytes": 13044544,
+        "sha256": "588396bc309daf4379cdff517bf9e36abc7442c70bf7032fc072eebe5b4ad08b",
+        "published_sha256": "588396bc309daf4379cdff517bf9e36abc7442c70bf7032fc072eebe5b4ad08b",
+        "checksum_verified": true,
+        "rows_admitted": 872211,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-08.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-08.zip",
+        "kind": "daily",
+        "period_start": "2025-05-08T00:00:00+00:00",
+        "period_end": "2025-05-09T00:00:00+00:00",
+        "bytes": 23164980,
+        "sha256": "88d76dd8fa12834e343d7cdb39a1564b61b082eca6dcc7434a78f456f4b8f3db",
+        "published_sha256": "88d76dd8fa12834e343d7cdb39a1564b61b082eca6dcc7434a78f456f4b8f3db",
+        "checksum_verified": true,
+        "rows_admitted": 1551619,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-09.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-09.zip",
+        "kind": "daily",
+        "period_start": "2025-05-09T00:00:00+00:00",
+        "period_end": "2025-05-10T00:00:00+00:00",
+        "bytes": 20437903,
+        "sha256": "b6c61e7ed54614195f7d1112d219d15230d9f1aa1273ad35ec79335f0654fb4e",
+        "published_sha256": "b6c61e7ed54614195f7d1112d219d15230d9f1aa1273ad35ec79335f0654fb4e",
+        "checksum_verified": true,
+        "rows_admitted": 1369756,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-10.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-10.zip",
+        "kind": "daily",
+        "period_start": "2025-05-10T00:00:00+00:00",
+        "period_end": "2025-05-11T00:00:00+00:00",
+        "bytes": 11380200,
+        "sha256": "3f15d2e75794899bcff54ee3bfbce9f072206dc6ecd1fbf3cf94218706731c0e",
+        "published_sha256": "3f15d2e75794899bcff54ee3bfbce9f072206dc6ecd1fbf3cf94218706731c0e",
+        "checksum_verified": true,
+        "rows_admitted": 750987,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-11.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-11.zip",
+        "kind": "daily",
+        "period_start": "2025-05-11T00:00:00+00:00",
+        "period_end": "2025-05-12T00:00:00+00:00",
+        "bytes": 14511751,
+        "sha256": "8e6bdb8626ab839118365203aa0c750f21884ec27174406af88942b0db79c7e8",
+        "published_sha256": "8e6bdb8626ab839118365203aa0c750f21884ec27174406af88942b0db79c7e8",
+        "checksum_verified": true,
+        "rows_admitted": 972289,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-12.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-12.zip",
+        "kind": "daily",
+        "period_start": "2025-05-12T00:00:00+00:00",
+        "period_end": "2025-05-13T00:00:00+00:00",
+        "bytes": 23495896,
+        "sha256": "3b01a63b67c6ec677f90b1dcad136d460813a826ecdfa9d090bf3f9113a4db5b",
+        "published_sha256": "3b01a63b67c6ec677f90b1dcad136d460813a826ecdfa9d090bf3f9113a4db5b",
+        "checksum_verified": true,
+        "rows_admitted": 1583664,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-13.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-13.zip",
+        "kind": "daily",
+        "period_start": "2025-05-13T00:00:00+00:00",
+        "period_end": "2025-05-14T00:00:00+00:00",
+        "bytes": 16385055,
+        "sha256": "904190ef9582d0eace0ee90786caca1bf19fca308af788e7e0acca475c5021ef",
+        "published_sha256": "904190ef9582d0eace0ee90786caca1bf19fca308af788e7e0acca475c5021ef",
+        "checksum_verified": true,
+        "rows_admitted": 1096642,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-14.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-14.zip",
+        "kind": "daily",
+        "period_start": "2025-05-14T00:00:00+00:00",
+        "period_end": "2025-05-15T00:00:00+00:00",
+        "bytes": 13355192,
+        "sha256": "de917e88c589fe898a0d3d28e2f68095d5dc5a96e6288211a0e867a17d29075c",
+        "published_sha256": "de917e88c589fe898a0d3d28e2f68095d5dc5a96e6288211a0e867a17d29075c",
+        "checksum_verified": true,
+        "rows_admitted": 895663,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-15.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-15.zip",
+        "kind": "daily",
+        "period_start": "2025-05-15T00:00:00+00:00",
+        "period_end": "2025-05-16T00:00:00+00:00",
+        "bytes": 18106425,
+        "sha256": "979ae928643f390061b3369e830e4b036f7ac4d39406c73fe0b39be12380d6f6",
+        "published_sha256": "979ae928643f390061b3369e830e4b036f7ac4d39406c73fe0b39be12380d6f6",
+        "checksum_verified": true,
+        "rows_admitted": 1221599,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-16.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-16.zip",
+        "kind": "daily",
+        "period_start": "2025-05-16T00:00:00+00:00",
+        "period_end": "2025-05-17T00:00:00+00:00",
+        "bytes": 14635588,
+        "sha256": "46a69609bbdf22979e3b14a9616e21f6a87ca8d15942b8be8bec2aa8d2c0925e",
+        "published_sha256": "46a69609bbdf22979e3b14a9616e21f6a87ca8d15942b8be8bec2aa8d2c0925e",
+        "checksum_verified": true,
+        "rows_admitted": 985097,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-17.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-17.zip",
+        "kind": "daily",
+        "period_start": "2025-05-17T00:00:00+00:00",
+        "period_end": "2025-05-18T00:00:00+00:00",
+        "bytes": 12643553,
+        "sha256": "b45579afb94c43f8d89052fb4147aafe44e5f8d7c27da6b7adce7b6869d3bff1",
+        "published_sha256": "b45579afb94c43f8d89052fb4147aafe44e5f8d7c27da6b7adce7b6869d3bff1",
+        "checksum_verified": true,
+        "rows_admitted": 853175,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-18.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-18.zip",
+        "kind": "daily",
+        "period_start": "2025-05-18T00:00:00+00:00",
+        "period_end": "2025-05-19T00:00:00+00:00",
+        "bytes": 17073442,
+        "sha256": "d5256338d4dc2f72f3195241b71f678d7686150daeb044d8b9fb502749b07a1d",
+        "published_sha256": "d5256338d4dc2f72f3195241b71f678d7686150daeb044d8b9fb502749b07a1d",
+        "checksum_verified": true,
+        "rows_admitted": 1155135,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": null
+      },
+      {
+        "name": "BTCUSDT-aggTrades-2025-05-19.zip",
+        "url": "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-05-19.zip",
+        "kind": "daily",
+        "period_start": "2025-05-19T00:00:00+00:00",
+        "period_end": "2025-05-20T00:00:00+00:00",
+        "bytes": 20964445,
+        "sha256": "a46206e4dd682fffaecfe81c404924b0a634406e667bf179b3510109bb97b3e6",
+        "published_sha256": "a46206e4dd682fffaecfe81c404924b0a634406e667bf179b3510109bb97b3e6",
+        "checksum_verified": true,
+        "rows_admitted": 639058,
+        "epoch_units": [
+          "us"
+        ],
+        "rows_dropped_past_window": 784141
+      }
+    ]
+  },
+  "aggregation": {
+    "aggregate_schema": "chimera.trade-aggregate/1",
+    "bucket_ns": 3600000000000,
+    "bucket_convention": "row 'date' is the hour's OPEN instant; the row aggregates every trade with timestamp in [date, date + 1h), which is exactly the trades that produced the OHLCV candle carrying the same 'date'",
+    "timezone": "UTC",
+    "epoch_representation": "int64 nanoseconds since 1970-01-01T00:00:00Z",
+    "aggressor_rule": "is_buyer_maker=false is an aggressive BUY (the taker bought); is_buyer_maker=true is an aggressive SELL",
+    "price_dtype": "IEEE-754 float64 parsed from the archive's decimal text",
+    "qty_dtype": "IEEE-754 float64 parsed from the archive's decimal text",
+    "identity_column": "agg_trade_id",
+    "ordering_rule": "strictly increasing agg_trade_id; timestamps non-decreasing but not unique, since many aggressed orders share a millisecond",
+    "duplicate_rule": "an agg_trade_id at or below the previous one is a duplicate",
+    "size_bin_edges": [
+      0.0001,
+      0.00031622776601683794,
+      0.001,
+      0.0031622776601683794,
+      0.01,
+      0.03162277660168379,
+      0.1,
+      0.31622776601683794,
+      1.0,
+      3.1622776601683795,
+      10.0
+    ],
+    "size_bins": 12,
+    "price_bins": 8,
+    "price_bin_rule": "8 equal-width bins spanning [low_price, high_price] of the hour itself; a degenerate hour with one traded price puts all of its quantity in bin 0",
+    "quarters": 4,
+    "seconds_per_bucket": 3600,
+    "columns": [
+      [
+        "date",
+        "t8"
+      ],
+      [
+        "n_trades",
+        "i8"
+      ],
+      [
+        "buy_trades",
+        "i8"
+      ],
+      [
+        "qty",
+        "f8"
+      ],
+      [
+        "buy_qty",
+        "f8"
+      ],
+      [
+        "notional",
+        "f8"
+      ],
+      [
+        "buy_notional",
+        "f8"
+      ],
+      [
+        "first_price",
+        "f8"
+      ],
+      [
+        "last_price",
+        "f8"
+      ],
+      [
+        "high_price",
+        "f8"
+      ],
+      [
+        "low_price",
+        "f8"
+      ],
+      [
+        "active_seconds",
+        "i8"
+      ],
+      [
+        "second_count_sq_sum",
+        "i8"
+      ],
+      [
+        "max_second_trades",
+        "i8"
+      ],
+      [
+        "max_empty_run_seconds",
+        "i8"
+      ],
+      [
+        "q0_trades",
+        "i8"
+      ],
+      [
+        "q1_trades",
+        "i8"
+      ],
+      [
+        "q2_trades",
+        "i8"
+      ],
+      [
+        "q3_trades",
+        "i8"
+      ],
+      [
+        "q0_qty",
+        "f8"
+      ],
+      [
+        "q1_qty",
+        "f8"
+      ],
+      [
+        "q2_qty",
+        "f8"
+      ],
+      [
+        "q3_qty",
+        "f8"
+      ],
+      [
+        "q0_buy_qty",
+        "f8"
+      ],
+      [
+        "q1_buy_qty",
+        "f8"
+      ],
+      [
+        "q2_buy_qty",
+        "f8"
+      ],
+      [
+        "q3_buy_qty",
+        "f8"
+      ],
+      [
+        "size_count_0",
+        "i8"
+      ],
+      [
+        "size_count_1",
+        "i8"
+      ],
+      [
+        "size_count_2",
+        "i8"
+      ],
+      [
+        "size_count_3",
+        "i8"
+      ],
+      [
+        "size_count_4",
+        "i8"
+      ],
+      [
+        "size_count_5",
+        "i8"
+      ],
+      [
+        "size_count_6",
+        "i8"
+      ],
+      [
+        "size_count_7",
+        "i8"
+      ],
+      [
+        "size_count_8",
+        "i8"
+      ],
+      [
+        "size_count_9",
+        "i8"
+      ],
+      [
+        "size_count_10",
+        "i8"
+      ],
+      [
+        "size_count_11",
+        "i8"
+      ],
+      [
+        "size_qty_0",
+        "f8"
+      ],
+      [
+        "size_qty_1",
+        "f8"
+      ],
+      [
+        "size_qty_2",
+        "f8"
+      ],
+      [
+        "size_qty_3",
+        "f8"
+      ],
+      [
+        "size_qty_4",
+        "f8"
+      ],
+      [
+        "size_qty_5",
+        "f8"
+      ],
+      [
+        "size_qty_6",
+        "f8"
+      ],
+      [
+        "size_qty_7",
+        "f8"
+      ],
+      [
+        "size_qty_8",
+        "f8"
+      ],
+      [
+        "size_qty_9",
+        "f8"
+      ],
+      [
+        "size_qty_10",
+        "f8"
+      ],
+      [
+        "size_qty_11",
+        "f8"
+      ],
+      [
+        "price_qty_0",
+        "f8"
+      ],
+      [
+        "price_qty_1",
+        "f8"
+      ],
+      [
+        "price_qty_2",
+        "f8"
+      ],
+      [
+        "price_qty_3",
+        "f8"
+      ],
+      [
+        "price_qty_4",
+        "f8"
+      ],
+      [
+        "price_qty_5",
+        "f8"
+      ],
+      [
+        "price_qty_6",
+        "f8"
+      ],
+      [
+        "price_qty_7",
+        "f8"
+      ]
+    ],
+    "aggregation_spec_hash": "766089f9e86708ee7c1467cd1e1d99c944a23dae630c5304be19b6b3690504df"
+  },
+  "trade_stream": {
+    "trades": 3380059234,
+    "buy_trades": 1673864390,
+    "duplicate_ids": 0,
+    "timestamp_regressions": 0,
+    "invalid_rows": 0,
+    "nonpositive_price": 0,
+    "nonpositive_qty": 0,
+    "first_timestamp": "2019-12-01T00:00:01.194000+00:00",
+    "last_timestamp": "2025-05-19T07:59:59.878054+00:00",
+    "first_trade_id": 192202342,
+    "last_trade_id": 3572261575,
+    "strictly_sorted": true
+  },
+  "aggregate": {
+    "path": "data/research/btc_usdt_1h_gen1_trades_hourly_pre_styx.parquet",
+    "rows": 47878,
+    "start": "2019-12-01T00:00:00+00:00",
+    "end": "2025-05-19T07:00:00+00:00",
+    "semantic_hash": "ade99424a9e94aa1a9ca21a27e37b597dea670c3d9f775e1321fe620baff9c8c",
+    "sha256": "67a54de6c204ecce2018f8a45c0a9883b0d1cf3494ab76c2c7b2c0749122899e",
+    "columns": [
+      "date",
+      "n_trades",
+      "buy_trades",
+      "qty",
+      "buy_qty",
+      "notional",
+      "buy_notional",
+      "first_price",
+      "last_price",
+      "high_price",
+      "low_price",
+      "active_seconds",
+      "second_count_sq_sum",
+      "max_second_trades",
+      "max_empty_run_seconds",
+      "q0_trades",
+      "q1_trades",
+      "q2_trades",
+      "q3_trades",
+      "q0_qty",
+      "q1_qty",
+      "q2_qty",
+      "q3_qty",
+      "q0_buy_qty",
+      "q1_buy_qty",
+      "q2_buy_qty",
+      "q3_buy_qty",
+      "size_count_0",
+      "size_count_1",
+      "size_count_2",
+      "size_count_3",
+      "size_count_4",
+      "size_count_5",
+      "size_count_6",
+      "size_count_7",
+      "size_count_8",
+      "size_count_9",
+      "size_count_10",
+      "size_count_11",
+      "size_qty_0",
+      "size_qty_1",
+      "size_qty_2",
+      "size_qty_3",
+      "size_qty_4",
+      "size_qty_5",
+      "size_qty_6",
+      "size_qty_7",
+      "size_qty_8",
+      "size_qty_9",
+      "size_qty_10",
+      "size_qty_11",
+      "price_qty_0",
+      "price_qty_1",
+      "price_qty_2",
+      "price_qty_3",
+      "price_qty_4",
+      "price_qty_5",
+      "price_qty_6",
+      "price_qty_7"
+    ]
+  },
+  "coverage": {
+    "first_hour": "2019-12-01T00:00:00+00:00",
+    "last_hour": "2025-05-19T07:00:00+00:00",
+    "hours_in_span": 47912,
+    "hours_present": 47878,
+    "hours_missing": 34,
+    "missing_intervals": [
+      {
+        "start": "2020-02-09T02:00:00+00:00",
+        "end": "2020-02-09T02:00:00+00:00",
+        "hours": 1
+      },
+      {
+        "start": "2020-02-19T12:00:00+00:00",
+        "end": "2020-02-19T16:00:00+00:00",
+        "hours": 5
+      },
+      {
+        "start": "2020-03-04T10:00:00+00:00",
+        "end": "2020-03-04T10:00:00+00:00",
+        "hours": 1
+      },
+      {
+        "start": "2020-04-25T02:00:00+00:00",
+        "end": "2020-04-25T03:00:00+00:00",
+        "hours": 2
+      },
+      {
+        "start": "2020-06-28T02:00:00+00:00",
+        "end": "2020-06-28T04:00:00+00:00",
+        "hours": 3
+      },
+      {
+        "start": "2020-11-30T06:00:00+00:00",
+        "end": "2020-11-30T06:00:00+00:00",
+        "hours": 1
+      },
+      {
+        "start": "2020-12-21T14:00:00+00:00",
+        "end": "2020-12-21T17:00:00+00:00",
+        "hours": 4
+      },
+      {
+        "start": "2020-12-25T02:00:00+00:00",
+        "end": "2020-12-25T02:00:00+00:00",
+        "hours": 1
+      },
+      {
+        "start": "2021-02-11T03:00:00+00:00",
+        "end": "2021-02-11T04:00:00+00:00",
+        "hours": 2
+      },
+      {
+        "start": "2021-03-06T02:00:00+00:00",
+        "end": "2021-03-06T02:00:00+00:00",
+        "hours": 1
+      },
+      {
+        "start": "2021-04-20T02:00:00+00:00",
+        "end": "2021-04-20T03:00:00+00:00",
+        "hours": 2
+      },
+      {
+        "start": "2021-04-25T05:00:00+00:00",
+        "end": "2021-04-25T07:00:00+00:00",
+        "hours": 3
+      },
+      {
+        "start": "2021-08-13T02:00:00+00:00",
+        "end": "2021-08-13T05:00:00+00:00",
+        "hours": 4
+      },
+      {
+        "start": "2021-09-29T07:00:00+00:00",
+        "end": "2021-09-29T08:00:00+00:00",
+        "hours": 2
+      },
+      {
+        "start": "2023-03-24T12:00:00+00:00",
+        "end": "2023-03-24T13:00:00+00:00",
+        "hours": 2
+      }
+    ]
+  },
+  "alignment": {
+    "ohlcv_manifest": "data/research/btc_usdt_1h_gen1_snapshot_manifest.json",
+    "warmup_hours_requested": 822,
+    "ohlcv_raw_semantic_hash": "c62de8d92a1eb80397d17ff89e480005d381525ec14c5f6519efddbc2cbe86ed",
+    "ohlcv_processed_semantic_prefix_hash": "d5738f0cc5c0927e91425dd9ab6ef1fa44bda45d07ca15a729167a7de45f7545",
+    "ohlcv_contract_hash": "dca6d0a891a257197a7c8aecec04fdba0a0b3009cfe93c5f3a397d458ab4a1de",
+    "spine_rows": 45802,
+    "spine_start": "2020-01-04T06:00:00+00:00",
+    "spine_end": "2025-05-19T07:00:00+00:00",
+    "spine_hours_covered": 45802,
+    "spine_hours_missing": 0,
+    "missing_spine_hours": [],
+    "warmup_hours_before_spine": 822,
+    "trailing_hours_after_spine": 0
+  },
+  "normalisation": {
+    "canonical_timezone": "UTC",
+    "epoch_representation": "int64 nanoseconds since 1970-01-01T00:00:00Z",
+    "epoch_units_resolved_per_archive": true,
+    "price_dtype": "float64",
+    "qty_dtype": "float64",
+    "notes": [
+      "source epochs are milliseconds in Binance spot archives up to 2024 and microseconds from 2025-01-01; the unit is resolved per archive by requiring every timestamp inside that archive's own calendar period, and an archive that fits no unit or two units is refused",
+      "every timestamp is int64 UTC nanoseconds before it is bucketed, stored or fingerprinted, so the semantic identity cannot depend on the unit the source happened to publish or on the reader's storage resolution",
+      "counts are int64 and money/size are float64; a count has an exact answer and must not be recorded as a float"
+    ]
+  },
+  "safety_checks": {
+    "acquisition_bounded_before_styx": true,
+    "aggregate_strictly_before_styx": true,
+    "spine_fully_covered": true,
+    "no_duplicate_trade_ids": true,
+    "no_timestamp_regressions": true,
+    "no_invalid_rows": true,
+    "styx_rows_exported": 0
+  }
+}
