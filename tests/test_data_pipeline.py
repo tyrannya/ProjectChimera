@@ -164,7 +164,18 @@ def test_dataset_target_matches_its_own_future_return(candles):
 
 def test_build_dataset_rejects_too_little_history(small_candles):
     with pytest.raises(DataValidationError, match="no rows survived"):
-        build_dataset(small_candles.iloc[:60], FeatureSpec(), TargetSpec())
+        build_dataset(small_candles.iloc[:60], FeatureSpec(), TargetSpec(), timeframe="1h")
+
+
+def test_build_dataset_refuses_to_guess_where_the_gaps_are(small_candles):
+    """An absent timeframe used to mean "these candles are uninterrupted".
+
+    It is the one answer nobody can give without knowing the candle interval,
+    and a dataset built under it carries `segment_id = 0` across every outage —
+    so every gap check downstream sees a contiguous series that is not one.
+    """
+    with pytest.raises(DataValidationError, match="without a timeframe"):
+        build_dataset(small_candles, FeatureSpec(), TargetSpec())
 
 
 def test_build_dataset_rejects_empty_input():

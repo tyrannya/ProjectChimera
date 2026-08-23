@@ -62,11 +62,23 @@ def _contiguous_segment_ids(dates: pd.Series, timeframe: str) -> pd.Series:
     requested candle. Features, targets and sequence windows must never bridge
     such a boundary: doing so would silently turn a multi-hour outage into one
     apparent one-hour transition.
+
+    **An empty timeframe is refused, not treated as "one segment".** It used to
+    return all-zero ids, which says "these candles are uninterrupted" — the one
+    answer nobody is entitled to give without knowing the candle interval. A
+    dataset built that way carries `segment_id = 0` on every row across every
+    outage, so a window straddling a two-day gap looks contiguous to every gap
+    check downstream, and its sidecar records `timeframe: ""` which
+    `nn.train.load_research_data` then reads as 1h for annualisation.
     """
+    if not timeframe:
+        raise DataValidationError(
+            "cannot decide where the market-data gaps are without a timeframe. Pass the "
+            "candle interval (for example timeframe='1h'); an absent one used to be read "
+            "as 'no gaps exist', which is a claim about the data rather than a default."
+        )
     if len(dates) == 0:
         return pd.Series(dtype="int64", index=dates.index)
-    if not timeframe:
-        return pd.Series(np.zeros(len(dates), dtype=np.int64), index=dates.index)
 
     step = pd.Timedelta(minutes=timeframe_to_minutes(timeframe))
     parsed = pd.to_datetime(dates, utc=True)
@@ -195,17 +207,144 @@ def compute_future_return(close: pd.Series, horizon: int) -> pd.Series:
     return close.shift(-horizon) / close - 1.0
 
 
-def compute_target(close: pd.Series, spec: TargetSpec) -> pd.Series:
-    """Cost-aware SHORT/HOLD/LONG labels. See :class:`TargetSpec`."""
-    future_return = compute_future_return(close, spec.horizon)
-    threshold = spec.cost_threshold
+def label_from_future_return(future_return: pd.Series, spec: TargetSpec) -> pd.Series:
+    """The cost-aware SHORT/HOLD/LONG rule, applied to a return series.
 
-    labels = pd.Series(np.nan, index=close.index, dtype="float64")
+    Split out of :func:`compute_target` so that the rule has exactly one
+    definition: :func:`check_label_consistency` re-applies it to a dataset's
+    *stored* returns, and a second copy of three comparisons written there could
+    drift from the one that produced the labels it is checking.
+    """
+    threshold = spec.cost_threshold
+    labels = pd.Series(np.nan, index=future_return.index, dtype="float64")
     known = future_return.notna()
     labels[known & (future_return > threshold)] = LONG_IDX
     labels[known & (future_return < -threshold)] = SHORT_IDX
     labels[known & (future_return.abs() <= threshold)] = HOLD_IDX
     return labels
+
+
+def compute_target(close: pd.Series, spec: TargetSpec) -> pd.Series:
+    """Cost-aware SHORT/HOLD/LONG labels. See :class:`TargetSpec`."""
+    return label_from_future_return(compute_future_return(close, spec.horizon), spec)
+
+
+#: Relative tolerance when a stored ``future_return`` is checked against the
+#: close path it claims to describe. Both sides are the same float64 arithmetic
+#: on the same prices, so the honest difference is zero; this leaves room for a
+#: Parquet writer that normalised a value without leaving room for a horizon
+#: that is off by one candle, which moves an hourly return by whole percent.
+LABEL_RTOL = 1e-9
+
+
+class LabelHorizonError(DataValidationError):
+    """A dataset's stored labels contradict the target spec beside them."""
+
+
+def check_label_consistency(
+    frame: pd.DataFrame, metadata: "DatasetMetadata"
+) -> dict[str, Any]:
+    """Prove a built dataset's labels were produced at the horizon it declares.
+
+    A dataset is two things that have to agree: the columns, and the sidecar
+    that says what they mean. Nothing made them agree. ``future_return`` and
+    ``target`` could encode a six-candle horizon while the sidecar declared one,
+    and every downstream consumer would believe the sidecar — including
+    :func:`nn.dataset.build_windows`, which trims a window's tail by the
+    declared horizon so a sample cannot see the candle its own label is taken
+    from. Under-declaring the horizon shrinks that trim, and the last five
+    candles of each label's own window land back in the features. The snapshot
+    path is closed against this already, because the committed manifest's
+    semantic hash is taken over the target spec *and* the label columns
+    together; the general dataset entrypoints had nothing.
+
+    Both checks below are the contract's own definitions, called rather than
+    restated: :func:`compute_target` for the cost-aware rule and
+    :func:`compute_future_return` for the horizon, over the segments
+    :func:`_contiguous_segment_ids` resolves. A near-duplicate of either one
+    written here could drift from the definition it is supposed to be checking.
+
+    Returns what was checked, for the caller to record. Raises
+    :class:`LabelHorizonError` when the columns and the sidecar disagree.
+    """
+    spec = TargetSpec.from_dict(metadata.target_spec)
+    horizon = spec.horizon
+    missing = [
+        c for c in ("date", "close", "future_return", "target") if c not in frame.columns
+    ]
+    if missing:
+        raise LabelHorizonError(
+            f"cannot check the label horizon: column(s) {missing} are absent. The "
+            "declared target spec describes columns this dataset does not carry."
+        )
+
+    stored_return = frame["future_return"].to_numpy(dtype=np.float64)
+    threshold = spec.cost_threshold
+    expected = label_from_future_return(
+        pd.Series(stored_return, dtype="float64"), spec
+    ).to_numpy()
+    if np.isnan(expected).any():
+        raise LabelHorizonError(
+            f"{int(np.isnan(expected).sum())} row(s) store no future_return, so their "
+            "target cannot be checked and was never honestly labelled."
+        )
+    expected_target = expected.astype(np.int64)
+    stored_target = frame["target"].to_numpy(dtype=np.int64)
+    disagree = expected_target != stored_target
+    wrong_labels = int(disagree.sum())
+    if wrong_labels:
+        first = int(np.argmax(disagree))
+        raise LabelHorizonError(
+            f"{wrong_labels} of {len(frame)} rows carry a target that the declared cost "
+            f"threshold {threshold:.6f} does not produce from their own future_return "
+            f"(first at row {first}). The labels and the target spec beside them were "
+            "not produced together."
+        )
+
+    dates = pd.to_datetime(frame["date"], utc=True)
+    segments = _contiguous_segment_ids(dates, metadata.timeframe).to_numpy()
+    close = frame["close"].to_numpy(dtype=np.float64)
+
+    checked = 0
+    for segment in np.unique(segments):
+        rows = np.flatnonzero(segments == segment)
+        if len(rows) <= horizon:
+            continue
+        head, tail = rows[:-horizon], rows[horizon:]
+        expected = close[tail] / close[head] - 1.0
+        actual = stored_return[head]
+        bad = ~np.isclose(actual, expected, rtol=LABEL_RTOL, atol=LABEL_RTOL)
+        if bad.any():
+            row = int(head[np.argmax(bad)])
+            raise LabelHorizonError(
+                f"{int(bad.sum())} row(s) store a future_return that is not the return "
+                f"over the next {horizon} candles of their own close path (first at row "
+                f"{row}: stored {stored_return[row]:+.8f}, the declared horizon gives "
+                f"{expected[int(np.argmax(bad))]:+.8f}). The stored labels were produced "
+                "at a different horizon than the sidecar declares, and every consumer "
+                "trims windows by the sidecar's value."
+            )
+        checked += len(head)
+
+    if checked == 0:
+        raise LabelHorizonError(
+            f"no row of this dataset is far enough from the end of its own contiguous "
+            f"segment to check a {horizon}-candle horizon against the close path, so the "
+            "declared horizon cannot be established. Supply a longer history."
+        )
+
+    return {
+        "declared_horizon": horizon,
+        "cost_threshold": threshold,
+        "rows": len(frame),
+        "rows_checked_against_close_path": checked,
+        "segments": int(len(np.unique(segments))),
+        "note": (
+            "every row's target is the cost-aware rule applied to its own stored "
+            "future_return, and every row far enough from the end of its segment stores "
+            "the return over the next declared-horizon candles of its own close path"
+        ),
+    }
 
 
 @dataclass

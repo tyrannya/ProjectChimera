@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup lint format test smoke sample backfill features \
-	verify-research-snapshot train research experiment walkforward \
+	verify-research-snapshot verify-research-state train research experiment walkforward \
 	wf-diagnostics benchmark benchmark-compare \
 	p2b-cell p2b-btc p2b-compare p2b-ablation p2b-regimes \
 	p2c-cell p2c-btc p2c-compare freeze-evidence \
@@ -60,6 +60,8 @@ smoke:  ## End-to-end smoke: data -> features -> training -> service -> risk
 check: ## Everything the Definition of Done requires
 	$(PYTHON) -m compileall -q .
 	$(PYTHON) -m tools.verify_research_snapshot
+	$(PYTHON) -m tools.verify_trade_snapshot
+	$(PYTHON) -m tools.verify_research_state
 	pytest
 	pre-commit run --all-files
 	docker compose config --quiet
@@ -78,6 +80,9 @@ features:  ## Build a training dataset from downloaded candles
 
 verify-research-snapshot:  ## Check the committed research snapshot: hashes, seal, coverage
 	$(PYTHON) -m tools.verify_research_snapshot
+
+verify-research-state:  ## Check the front-door documents against the committed evidence
+	$(PYTHON) -m tools.verify_research_state
 
 train:  ## Train a model. Args: DATASET EPOCHS SEQ_LEN CONTRACT
 	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \

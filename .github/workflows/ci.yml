@@ -62,6 +62,16 @@ jobs:
       - name: Show resolved versions
         run: pip list
 
+      - name: Verify the committed research data and the documents that describe it
+        # Three fail-closed checks that do not need a model fit: the OHLCV
+        # snapshot, the P3 trade source (including its value-level agreement with
+        # the candle history), and that no front-door document declares a
+        # checkpoint unrun while its evidence is committed here.
+        run: |
+          python -m tools.verify_research_snapshot
+          python -m tools.verify_trade_snapshot
+          python -m tools.verify_research_state
+
       - name: Run the test suite
         run: pytest -q --maxfail=1
 

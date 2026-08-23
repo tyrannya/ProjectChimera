@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -50,15 +51,19 @@ from nn.trade_aggregates import (
     check_table,
     coverage_report,
     resolve_epoch_unit,
+    scale_to_nanoseconds,
 )
 from tools.export_trade_snapshot import (
     MANIFEST_NAME,
     _has_header,
+    _sha256,
     plan_archives,
 )
 from tools.make_sample_data import generate_trades
 from tools.verify_trade_snapshot import (
     DEFAULT_MANIFEST,
+    PRICE_RTOL,
+    QUANTITY_RTOL,
     TradeSnapshotVerificationError,
     verify_trade_snapshot,
 )
@@ -619,6 +624,177 @@ def test_a_sealed_hour_is_refused_before_any_digest_is_recomputed(tree):
     assert "withheld" in str(excinfo.value)
 
 
+# --------------------------------------------------------------------------- #
+# The two sources, compared by value
+#
+# Everything above binds the trade table to the candles by *identity* — the same
+# contract, the same manifest hash, the same hours — and none of it looks at a
+# price. A table aggregated one hour out of step, or read under the wrong epoch
+# unit, or built from a different symbol, satisfies every one of those bindings.
+# --------------------------------------------------------------------------- #
+def _shift_the_aggregate(tree: Path, hours: int) -> None:
+    """Move every aggregate row's hour without touching a value."""
+    payload = json.loads(tree.read_text())
+    root = tree.parents[2]
+    path = root / payload["aggregate"]["path"]
+    frame = pd.read_parquet(path)
+    frame["date"] = pd.to_datetime(frame["date"], utc=True) + pd.Timedelta(hours=hours)
+    frame.to_parquet(path, index=False)
+
+
+def test_an_aggregate_shifted_by_one_hour_is_refused(tree):
+    """Every row internally perfect; every row describing the wrong hour."""
+    _shift_the_aggregate(tree, hours=1)
+    with pytest.raises(TradeSnapshotVerificationError) as excinfo:
+        verify_trade_snapshot(tree)
+    # The shift breaks a hash first, which is the correct order; what this pins
+    # is that it is refused at all, and `cross_source_values` below is what
+    # catches the case where the hashes were rewritten to match.
+    assert excinfo.value.check in {
+        "aggregate_sha256",
+        "aggregate_span",
+        "aggregate_semantic_hash",
+        "spine_coverage",
+        "cross_source_values",
+    }
+
+
+def _rescale_every_price(frame, factor):
+    """A table describing a different instrument: internally perfect, wrong market."""
+    for column in ("first_price", "last_price", "high_price", "low_price"):
+        frame[column] = frame[column] * factor
+    return frame
+
+
+def _rescale_quantity(frame, factor):
+    """A table missing part of its trade stream: prices right, volume wrong."""
+    frame["qty"] = frame["qty"] * factor
+    return frame
+
+
+def _roll_the_prices(frame, _factor):
+    """Every hour's prices taken from the hour before it."""
+    for column in ("first_price", "last_price", "high_price", "low_price"):
+        frame[column] = frame[column].shift(1).bfill()
+    return frame
+
+
+@pytest.mark.parametrize(
+    "mutate,factor",
+    [
+        (_rescale_every_price, 1.02),
+        (_rescale_quantity, 1.5),
+        (_roll_the_prices, None),
+    ],
+)
+def test_an_aggregation_of_another_market_is_refused_by_value(tree, mutate, factor):
+    """Internally consistent, correctly hashed, and describing something else.
+
+    Each mutation leaves the table passing `check_table` — prices stay ordered,
+    counts stay counts — and every hash is rewritten to match, so nothing above
+    `cross_source_values` has anything to object to.
+    """
+    payload = json.loads(tree.read_text())
+    root = tree.parents[2]
+    path = root / payload["aggregate"]["path"]
+    frame = mutate(pd.read_parquet(path), factor)
+    frame.to_parquet(path, index=False)
+
+    payload["aggregate"]["sha256"] = _sha256(path)
+    payload["aggregate"]["semantic_hash"] = fingerprint_trade_aggregates(
+        frame,
+        exchange=payload["source"]["venue"],
+        market_type=payload["source"]["market_type"],
+        symbol=payload["source"]["symbol"],
+        source_type=payload["source"]["source_type"],
+        aggregation_spec_hash=aggregation_spec_hash(),
+    ).aggregate_hash
+    tree.write_text(json.dumps(payload, indent=2))
+
+    with pytest.raises(TradeSnapshotVerificationError) as excinfo:
+        verify_trade_snapshot(tree)
+    assert excinfo.value.check == "cross_source_values"
+
+
+def test_the_unbroken_fixture_passes_the_value_comparison(tree):
+    """Falsifies the four above: the comparison is not simply always-refuse."""
+    results = verify_trade_snapshot(tree)
+    values = next(r for r in results if r.name == "cross_source_values")
+    assert "hours agree with the candle history" in values.detail
+
+
+def test_the_tolerances_are_measured_rather_than_generous():
+    """A tolerance wide enough to admit a corrupt source is not a tolerance.
+
+    One basis point on price and ten on quantity: two orders of magnitude
+    looser than the worst disagreement observed on the committed source, and
+    four orders tighter than anything a real corruption produces.
+    """
+    assert PRICE_RTOL == 1e-4
+    assert QUANTITY_RTOL == 1e-3
+
+
+# --------------------------------------------------------------------------- #
+# Malformed epoch input is this module's own refusal, not pandas' bounds error
+# --------------------------------------------------------------------------- #
+def test_an_archive_mixing_two_epoch_units_raises_a_domain_error():
+    """The reported span used to be formatted with `pd.Timestamp` unconditionally.
+
+    One candidate unit is always wrong by three or six orders of magnitude —
+    that is what the report is *for* — so a nanosecond value rendered as
+    milliseconds raised `OutOfBoundsDatetime` from inside the error path, and a
+    malformed archive surfaced as a pandas bounds error about a value the caller
+    never supplied.
+    """
+    start = pd.Timestamp("2025-05-01", tz="UTC")
+    end = pd.Timestamp("2025-06-01", tz="UTC")
+    with pytest.raises(TradeAggregationError, match="no supported epoch unit"):
+        resolve_epoch_unit(
+            int(start.value) // 1_000_000,  # milliseconds
+            int(end.value) - 1,  # nanoseconds
+            period_start=start,
+            period_end=end,
+        )
+
+
+def test_the_domain_error_says_which_values_are_not_instants():
+    start = pd.Timestamp("2025-05-01", tz="UTC")
+    end = pd.Timestamp("2025-06-01", tz="UTC")
+    with pytest.raises(TradeAggregationError) as excinfo:
+        resolve_epoch_unit(
+            int(start.value) // 1_000_000,
+            int(end.value) - 1,
+            period_start=start,
+            period_end=end,
+        )
+    assert "not a representable instant" in str(excinfo.value)
+
+
+def test_scaling_to_nanoseconds_fails_closed_instead_of_wrapping():
+    """`raw * scale` on int64 is silent modular arithmetic.
+
+    Nanosecond values read as milliseconds wrap to arbitrary instants, some of
+    which land back inside the archive's declared period and would then pass the
+    range check the exporter applies afterwards.
+    """
+    nanoseconds = np.array([int(pd.Timestamp("2025-05-01", tz="UTC").value)], dtype=np.int64)
+    with pytest.raises(TradeAggregationError, match="does not fit in int64"):
+        scale_to_nanoseconds(nanoseconds, "ms")
+
+
+def test_scaling_to_nanoseconds_accepts_a_unit_that_fits():
+    milliseconds = np.array(
+        [int(pd.Timestamp("2025-05-01", tz="UTC").value) // 1_000_000], dtype=np.int64
+    )
+    scaled = scale_to_nanoseconds(milliseconds, "ms")
+    assert int(scaled[0]) == int(pd.Timestamp("2025-05-01", tz="UTC").value)
+
+
+def test_an_unsupported_unit_name_is_a_domain_error():
+    with pytest.raises(TradeAggregationError, match="not a supported epoch unit"):
+        scale_to_nanoseconds(np.array([1], dtype=np.int64), "s")
+
+
 def test_the_committed_trade_snapshot_is_present_and_verifies():
     """P3's real source, checked the same way a fresh clone would check it.
 
@@ -634,4 +810,6 @@ def test_the_committed_trade_snapshot_is_present_and_verifies():
         DEFAULT_MANIFEST.is_file()
     ), f"no committed trade snapshot manifest at {DEFAULT_MANIFEST}"
     results = verify_trade_snapshot()
-    assert len(results) == 27
+    assert len(results) == 28
+    values = next(r for r in results if r.name == "cross_source_values")
+    assert "47134 hours" in values.detail

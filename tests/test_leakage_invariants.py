@@ -30,6 +30,13 @@ C. **A window's inputs never overlap its own label row.** The label for row
    not against the index arithmetic that produced it.
 D. **The fold plan cannot reach the sealed block.** A geometry one row too long
    must raise rather than borrow that row from the sealed side of Styx.
+E. **A dataset cannot lie to C about its own horizon.** C holds because every
+   consumer trims a window's tail by ``target_spec.horizon`` — a number read
+   from the *sidecar*. Nothing made the sidecar and the stored labels agree, so
+   a table labelled at horizon 6 under a sidecar declaring 1 satisfies C's
+   arithmetic while putting five candles of each label's own window back into
+   the features. ``nn.p2b``'s committed-snapshot path is closed against this by
+   its manifest's semantic hash; the general dataset entrypoints were not.
 
 The synthetic dataset is ``tests/test_p2b.py``'s — same generator, same seed,
 same two folds — so a difference between the two files is a difference in what
@@ -50,7 +57,13 @@ from chimera.contracts import TargetSpec
 from chimera.features import FeatureSpec
 from nn import evaluate as ev
 from nn import p2b
-from nn.data_pipeline import build_dataset
+from nn import train
+from nn.data_pipeline import (
+    LabelHorizonError,
+    build_dataset,
+    check_label_consistency,
+    save_dataset,
+)
 from nn.dataset import Split, StandardScaler, build_windows, sample_indices
 from nn.information_sets import OHLCV14, build_information_set_views
 from nn.simple_models import LOGISTIC_REGRESSION
@@ -361,3 +374,132 @@ def test_the_committed_manifest_geometry_lands_exactly_on_45802(real_manifest):
     # than having the plan shrunk to fit what happens to be present.
     with pytest.raises(p2b.SnapshotError, match="holds only 45801"):
         p2b.plan_from_manifest(real_manifest, 45801)
+
+
+# --------------------------------------------------------------------------- #
+# E. a dataset cannot lie about its own horizon
+#
+# The counterexample is deliberately the dangerous direction: labels built over
+# six candles, a sidecar declaring one. Every window then reaches five candles
+# into the span its own label is taken from, and every check in section C still
+# passes, because C measures the tensor against the horizon the sidecar names.
+# --------------------------------------------------------------------------- #
+def _dataset_with_a_lying_sidecar(tmp_path, raw_candles, declared: int):
+    """A correctly built horizon-6 dataset whose sidecar declares ``declared``."""
+    frame, ds_meta = build_dataset(
+        raw_candles,
+        FeatureSpec(),
+        TargetSpec(horizon=HORIZON),
+        exchange="synthetic",
+        pair="SYNTH/USDT",
+        timeframe="1h",
+    )
+    ds_meta = dataclasses.replace(
+        ds_meta, target_spec={**ds_meta.target_spec, "horizon": declared}
+    )
+    path = tmp_path / "lying.parquet"
+    save_dataset(path, frame, ds_meta)
+    return path
+
+
+def test_the_loader_refuses_labels_built_at_another_horizon(tmp_path, raw_candles):
+    path = _dataset_with_a_lying_sidecar(tmp_path, raw_candles, declared=1)
+    with pytest.raises(SystemExit, match="different horizon"):
+        train.load_research_data(path)
+
+
+def test_the_loader_refuses_an_over_declared_horizon_too(tmp_path, raw_candles):
+    """The other direction is not leakage, but it is still a broken dataset."""
+    path = _dataset_with_a_lying_sidecar(tmp_path, raw_candles, declared=HORIZON + 1)
+    with pytest.raises(SystemExit, match="different horizon"):
+        train.load_research_data(path)
+
+
+def test_the_loader_accepts_the_dataset_the_same_builder_produced(tmp_path, raw_candles):
+    """Falsifies the two above: the check is not simply always-refuse."""
+    path = _dataset_with_a_lying_sidecar(tmp_path, raw_candles, declared=HORIZON)
+    data = train.load_research_data(path)
+    assert data.target_spec.horizon == HORIZON
+
+
+def test_the_loader_refuses_a_target_the_declared_cost_threshold_cannot_produce(
+    tmp_path, raw_candles
+):
+    """The label and the return it is supposed to be derived from, relabelled apart."""
+    frame, ds_meta = build_dataset(
+        raw_candles,
+        FeatureSpec(),
+        TargetSpec(horizon=HORIZON),
+        exchange="synthetic",
+        pair="SYNTH/USDT",
+        timeframe="1h",
+    )
+    frame = frame.copy()
+    frame.loc[7, "target"] = (int(frame.loc[7, "target"]) + 1) % 3
+    path = tmp_path / "relabelled.parquet"
+    save_dataset(path, frame, ds_meta)
+    with pytest.raises(SystemExit, match="cost threshold"):
+        train.load_research_data(path)
+
+
+def test_the_check_reports_what_it_actually_compared(tmp_path, raw_candles):
+    """A checker that silently checked nothing would pass every test above."""
+    frame, ds_meta = build_dataset(
+        raw_candles,
+        FeatureSpec(),
+        TargetSpec(horizon=HORIZON),
+        exchange="synthetic",
+        pair="SYNTH/USDT",
+        timeframe="1h",
+    )
+    report = check_label_consistency(frame, ds_meta)
+    assert report["declared_horizon"] == HORIZON
+    assert (
+        report["rows_checked_against_close_path"] >= len(frame) - HORIZON * report["segments"]
+    )
+    assert report["rows_checked_against_close_path"] > 0
+
+
+def test_a_history_too_short_to_check_the_horizon_is_refused(raw_candles):
+    """Fail closed: an unverifiable horizon is not a verified one."""
+    frame, ds_meta = build_dataset(
+        raw_candles,
+        FeatureSpec(),
+        TargetSpec(horizon=HORIZON),
+        exchange="synthetic",
+        pair="SYNTH/USDT",
+        timeframe="1h",
+    )
+    with pytest.raises(LabelHorizonError, match="cannot be established"):
+        check_label_consistency(frame.iloc[:HORIZON].reset_index(drop=True), ds_meta)
+
+
+def test_every_research_entrypoint_loads_through_the_vouching_loader():
+    """`research_data_from_frame` exists for tests, and must stay that way.
+
+    It assembles without checking, which is exactly what a research entrypoint
+    must never do. Named here rather than left to convention, because the
+    failure it prevents is a one-line import change that nothing else notices.
+    """
+    root = Path(__file__).resolve().parent.parent / "nn"
+    for module in ("train.py", "experiment.py", "walkforward.py", "benchmark.py"):
+        source = (root / module).read_text()
+        assert "load_research_data(args.dataset)" in source, module
+        assert "research_data_from_frame" not in source or module == "train.py", module
+
+
+def test_a_dataset_that_declares_no_timeframe_is_refused_by_the_loader(tmp_path, raw_candles):
+    """It cannot say where its gaps are, so it cannot be checked or trusted."""
+    frame, ds_meta = build_dataset(
+        raw_candles,
+        FeatureSpec(),
+        TargetSpec(horizon=HORIZON),
+        exchange="synthetic",
+        pair="SYNTH/USDT",
+        timeframe="1h",
+    )
+    stripped = dataclasses.replace(ds_meta, timeframe="")
+    path = tmp_path / "no_timeframe.parquet"
+    save_dataset(path, frame, stripped)
+    with pytest.raises(SystemExit, match="without a timeframe"):
+        train.load_research_data(path)

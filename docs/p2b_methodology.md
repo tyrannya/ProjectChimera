@@ -346,7 +346,7 @@ comparison artifact carries this caveat in its own payload.
 
 ---
 
-## 8. Reproducibility: the native thread count is part of the experiment
+## 8. Reproducibility: what is pinned, what is recorded, and what is not claimed
 
 `LogisticRegression`'s `lbfgs` solver reduces through multi-threaded BLAS, and a
 floating-point reduction whose order depends on the thread count is not
@@ -360,6 +360,68 @@ So `nn.p2b` pins native pools to `FIT_THREADS = 1` with `threadpoolctl`, once,
 around the whole cell. LightGBM and XGBoost were already pinned at `n_jobs=1` in
 their predeclared configurations for the same reason; this closes the remaining
 hole.
+
+**It closes that hole and no other, and this section used to imply otherwise.**
+The thread count is one input to a BLAS reduction's order; the BLAS *build*, the
+BLAS *version*, and the numpy and scipy built against them are others, and
+pinning the first does not fix any of the rest.
+
+An independent audit found this, and it reproduces. Re-running the frozen
+`btc_p3_ohlcv14_logistic_regression` cell — same runner, same committed
+snapshot, same seed, same `FIT_THREADS = 1` pin, same predeclared configuration —
+in a different numerical environment gives:
+
+| fold | frozen net return | re-run net return | frozen threshold | re-run threshold | frozen trades | re-run trades |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | −0.019651 | −0.006932 | 0.62 | 0.62 | 30 | 28 |
+| 1 | +0.055412 | +0.066156 | 0.66 | 0.66 | 9 | 11 |
+| 2 | +0.158958 | +0.130769 | 0.56 | 0.56 | 72 | 75 |
+| 3 | −0.070168 | −0.157307 | 0.62 | **0.56** | 31 | **110** |
+
+Fold 3 is the one that matters: the inner block selected a different point off
+the 0.02-spaced grid, and the arm went from 31 trades to 110 and from −7.0% to
+−15.7%. The other three moved without crossing a grid point.
+
+**And the two environments ran the same scikit-learn.** The frozen cell records
+`library_version: 1.9.0`; so does the re-run. Every difference above is in the
+layers underneath it — the numpy, scipy and OpenBLAS builds — which the old
+provenance block did not record at all. That is precisely the case where a
+single `library_version` field is worse than useless: it looks like an answer.
+
+Nothing about the result is surprising once stated — two OpenBLAS builds are
+entitled to order a reduction differently, and a probability that moves in the
+third decimal crosses a 0.02-spaced grid point — but a reader of the old text
+would have expected bit-identical numbers, so:
+
+> **This repository does not claim that a research cell reproduces bit-for-bit
+> across numerical environments, and for `logistic_regression` there is evidence
+> that it does not.**
+
+What it does claim, and what the artifacts support:
+
+| claim | status |
+| --- | --- |
+| the same cell re-run in the *same* environment reproduces bit-for-bit | demonstrated — `artifacts/benchmark/btc_p2b_repro_ohlcv14_plus_smc_v1_xgboost/` is that control |
+| the `xgboost × ohlcv14` control reproduces P2a's frozen seed-42 evidence — four fold returns and four thresholds — across two runners, two data paths and two checkpoints | demonstrated, in P2b, P2c and P3 alike |
+| a `logistic_regression` cell reproduces across numerical environments | **not** demonstrated; evidence exists against it |
+
+The cross-generation parity assertion is therefore kept where the repository
+earns it — the tree-model control — and is not extended to a family whose
+arithmetic has been shown to move.
+
+**So the environment is recorded.** Every cell produced from this remediation
+onward carries a `numerics` block: interpreter version and
+implementation, the versions of numpy, scipy, scikit-learn, pandas, LightGBM and
+XGBoost, every BLAS/OpenMP pool actually loaded with its library file and
+version, and the platform and CPU. `nn.p2b_compare` requires every cell in one
+comparison to share it, or for none of them to record one — a cell that predates
+the block and a cell that carries one belong to different research generations
+and are refused rather than averaged. The block is a diagnostic: it does not
+make a run reproducible, it makes a disagreement attributable.
+
+The historical cells carry no such block and are **not** re-run to acquire one.
+They are what those environments produced, and re-running them to make the
+record tidier would replace the evidence with a different measurement.
 
 **Where the pin is entered matters, and the first version got it wrong.**
 `threadpool_limits` can only limit pools that are already loaded when it is

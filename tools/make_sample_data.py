@@ -109,6 +109,71 @@ def generate_candles(
     )
 
 
+def trades_reproducing(
+    candles: pd.DataFrame,
+    *,
+    seed: int = 11,
+    trades_per_hour: int = 24,
+    skip_hours: tuple[int, ...] = (),
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Synthetic trades that aggregate back to ``candles``, hour for hour.
+
+    :func:`generate_trades` draws its own price path, so a fixture built from
+    both generators holds two recordings of two different markets. That was
+    invisible while nothing compared them; it stopped being invisible when
+    ``tools.verify_trade_snapshot`` gained ``cross_source_values``, and a
+    fixture that cannot pass a check cannot exercise it.
+
+    Each hour emits at least four trades: the first at the candle's ``open``,
+    the second at its ``high``, the third at its ``low``, the last at its
+    ``close``, and any remainder drawn inside ``[low, high]``. Quantities are
+    log-uniform weights rescaled to sum to the candle's ``volume``. The
+    aggregator's ``first_price``, ``high_price``, ``low_price``, ``last_price``
+    and ``qty`` therefore reproduce the candle exactly, up to the float error of
+    one rescaled sum.
+
+    ``skip_hours`` omits whole hours by position, as in :func:`generate_trades`:
+    an hour with no trade has no aggregate row, which is what starts a segment.
+    """
+    if trades_per_hour < 4:
+        raise ValueError("an hour needs four trades to place its open, high, low and close")
+    rng = np.random.default_rng(seed)
+    dates = pd.DatetimeIndex(pd.to_datetime(candles["date"], utc=True))
+    if any(int(stamp.value) % 3_600_000_000_000 for stamp in dates):
+        raise ValueError("synthetic trades are placed inside whole UTC hours")
+
+    skipped = set(skip_hours)
+    stamps: list[np.ndarray] = []
+    prices: list[np.ndarray] = []
+    quantities: list[np.ndarray] = []
+    for position in range(len(dates)):
+        if position in skipped:
+            continue
+        row = candles.iloc[position]
+        count = int(rng.integers(4, trades_per_hour * 2 + 1))
+        hour = int(dates[position].value)
+        stamps.append(hour + np.linspace(0, 3_500_000_000_000, count, dtype=np.int64))
+
+        price = np.empty(count, dtype=np.float64)
+        price[0] = float(row["open"])
+        price[1] = float(row["high"])
+        price[2] = float(row["low"])
+        price[-1] = float(row["close"])
+        if count > 4:
+            price[3:-1] = rng.uniform(float(row["low"]), float(row["high"]), size=count - 4)
+        prices.append(price)
+
+        weights = 10.0 ** rng.uniform(-3.0, 1.0, size=count)
+        quantities.append(float(row["volume"]) * weights / weights.sum())
+
+    ts = np.concatenate(stamps).astype(np.int64)
+    price = np.concatenate(prices)
+    qty = np.concatenate(quantities)
+    buyer_maker = rng.random(len(ts)) < 0.5
+    agg_id = np.arange(1, len(ts) + 1, dtype=np.int64)
+    return ts, price, qty, buyer_maker, agg_id
+
+
 def generate_trades(
     hours: int = 240,
     *,

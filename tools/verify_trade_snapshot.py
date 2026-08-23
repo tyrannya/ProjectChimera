@@ -32,6 +32,23 @@ semantic hash *and* that the OHLCV snapshot the manifest was exported against is
 the one committed here — and then that every spine hour actually has a row. A
 trade table that is internally perfect and covers a different five years is the
 failure this last check exists for.
+
+**And then the two sources are compared by value.** Everything above binds the
+trade table to the candles by *identity*: the same contract, the same manifest,
+the same hours. None of it looks at a price. Two independent recordings of the
+same market — Binance's hourly klines and its ``aggTrades`` archive — must agree
+about what happened in each hour, and on the committed data they do: the hourly
+high and low agree exactly on all 47,134 shared hours, and the open, close and
+traded quantity agree to within 1.2e-06 and 5.5e-05 relative on the two hours
+where they differ at all. :func:`cross_source_consistency` holds them to
+tolerances two orders of magnitude looser than that, which is still tight enough
+that an aggregation off by one hour, read under the wrong epoch unit, or built
+from a different symbol fails closed rather than passing as noise.
+
+These are **integrity checks, not research inputs.** Nothing here is exported,
+joined to a feature, or reported as a measurement; the tolerances exist to
+reject a corrupt source, and widening or narrowing them against a research
+result would make them one.
 """
 
 from __future__ import annotations
@@ -42,6 +59,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from nn.data_fingerprint import fingerprint_trade_aggregates
@@ -149,6 +167,113 @@ class CheckResult:
 
     name: str
     detail: str
+
+
+#: How far a trade-derived hourly price may sit from the candle's own, relative.
+#:
+#: Measured, not chosen: on the committed source the hourly high and low agree
+#: *exactly* on every shared hour, and the open and close differ on one hour each
+#: by 7.9e-07 and 1.2e-06 relative. One basis point is roughly two orders of
+#: magnitude looser than the worst observed disagreement and still four orders
+#: tighter than any real corruption — an hour-shifted join, an archive read under
+#: the wrong epoch unit, or a different symbol moves an hourly BTC price by
+#: whole percent, not by a basis point.
+PRICE_RTOL = 1e-4
+
+#: The same, for traded quantity. Looser than the price tolerance because the
+#: two sources sum a different set of floating-point addends in a different
+#: order: the worst observed disagreement is 5.5e-05 relative on two hours of
+#: 47,134, and 0.1% leaves room for that without admitting a missing archive
+#: chunk, which moves an hour's volume by far more.
+QUANTITY_RTOL = 1e-3
+
+#: The share of trade hours inside the candle span that must have a candle to
+#: compare against. Below this the two sources are not describing the same
+#: history and the comparison would be a spot check rather than a check.
+MIN_CROSS_SOURCE_COVERAGE = 0.95
+
+#: Which aggregate column is which candle column. The aggregate's names are
+#: deliberately not `open`/`close`: they are the first and last *trade* price of
+#: the hour, which is what a Binance kline's open and close are defined as.
+CROSS_SOURCE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("first_price", "open", "price"),
+    ("last_price", "close", "price"),
+    ("high_price", "high", "price"),
+    ("low_price", "low", "price"),
+    ("qty", "volume", "quantity"),
+)
+
+
+def cross_source_consistency(
+    aggregates: pd.DataFrame, candles: pd.DataFrame
+) -> dict[str, Any]:
+    """Compare the trade aggregation with the candle history, hour by hour.
+
+    Two independent recordings of one market. The aggregate's `first_price`,
+    `last_price`, `high_price`, `low_price` and `qty` are, by Binance's own
+    definitions, the same quantities a kline's `open`, `close`, `high`, `low`
+    and `volume` are — so on every hour both sources cover they have to agree.
+    Nothing above this check looks at a price at all: the manifest binds the two
+    sources by contract, hash and hour, and a table that was aggregated from the
+    wrong symbol, shifted by an hour, or read under the wrong epoch unit
+    satisfies every one of those bindings.
+
+    Raises :class:`TradeSnapshotVerificationError` on the first column whose
+    disagreement exceeds its tolerance, naming the hour and both values.
+    """
+    hours = pd.to_datetime(aggregates["date"], utc=True)
+    candle_hours = pd.to_datetime(candles["date"], utc=True)
+    span = (hours >= candle_hours.min()) & (hours <= candle_hours.max())
+    comparable = int(span.sum())
+    if comparable == 0:
+        raise TradeSnapshotVerificationError(
+            "cross_source_values",
+            "no trade hour falls inside the candle history's span, so the two sources "
+            "cannot be compared by value at all",
+        )
+
+    left = aggregates.loc[span.to_numpy()].copy()
+    left["date"] = hours[span.to_numpy()].to_numpy()
+    right = candles.copy()
+    right["date"] = candle_hours.to_numpy()
+    joined = left.merge(right, on="date", how="inner", suffixes=("_trades", "_candles"))
+    matched = len(joined)
+    if matched < MIN_CROSS_SOURCE_COVERAGE * comparable:
+        raise TradeSnapshotVerificationError(
+            "cross_source_values",
+            f"only {matched} of {comparable} trade hours inside the candle span have a "
+            f"candle to compare against (floor {MIN_CROSS_SOURCE_COVERAGE:.0%}). The two "
+            "sources are not describing the same history",
+        )
+
+    worst: dict[str, float] = {}
+    for aggregate_column, candle_column, kind in CROSS_SOURCE_COLUMNS:
+        tolerance = PRICE_RTOL if kind == "price" else QUANTITY_RTOL
+        mine = joined[aggregate_column].to_numpy(dtype=float)
+        theirs = joined[candle_column].to_numpy(dtype=float)
+        scale = np.maximum(np.abs(theirs), np.finfo(float).tiny)
+        relative = np.abs(mine - theirs) / scale
+        worst[aggregate_column] = float(np.nanmax(relative)) if matched else 0.0
+        breaches = np.flatnonzero(relative > tolerance)
+        if len(breaches):
+            row = int(breaches[0])
+            raise TradeSnapshotVerificationError(
+                "cross_source_values",
+                f"{len(breaches)} of {matched} hours disagree by more than "
+                f"{tolerance:g} between the trade aggregation's {aggregate_column!r} and "
+                f"the candle history's {candle_column!r} (first at "
+                f"{joined['date'].iloc[row]}: trades {mine[row]!r}, candles "
+                f"{theirs[row]!r}). These are two recordings of one market and they do "
+                "not describe the same hours",
+            )
+
+    return {
+        "hours_compared": matched,
+        "hours_in_candle_span": comparable,
+        "price_rtol": PRICE_RTOL,
+        "quantity_rtol": QUANTITY_RTOL,
+        "worst_relative_difference": {k: round(v, 12) for k, v in worst.items()},
+    }
 
 
 def _utc(text: str) -> pd.Timestamp:
@@ -542,6 +667,14 @@ def verify_trade_snapshot(
             f"missing={alignment['spine_hours_missing']}, spine={len(spine_hours)}",
         )
     held("spine_coverage", f"all {len(spine_hours)} spine hours have a trade row")
+
+    candles = pd.read_parquet(root / ohlcv["raw_pre_styx"]["path"])
+    values = cross_source_consistency(frame, candles)
+    held(
+        "cross_source_values",
+        f"{values['hours_compared']} hours agree with the candle history within "
+        f"{PRICE_RTOL:g} on price and {QUANTITY_RTOL:g} on quantity",
+    )
 
     return results
 
