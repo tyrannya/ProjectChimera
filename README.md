@@ -276,6 +276,7 @@ fail until every front-door document is reconciled with it.
 | `P2b` | `btc_p2b_information_set_benchmark` | **answered** |
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
+| `P4` | `btc_p4_derivatives_positioning_benchmark` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -318,6 +319,11 @@ number was read. The evidence is in
 and does not license is [`docs/research_roadmap.md`](docs/research_roadmap.md)'s
 subject; the short version is that it is evidence against another hand-designed
 transformation of the same hourly bars, not a proof about a space.
+
+The next checkpoint, **P4**, is preregistered and has not been run:
+[`docs/p4_preregistration.md`](docs/p4_preregistration.md) fixes its question,
+arms, sources, sample universe, decision rule and stopping rule before any P4
+data is acquired.
 
 `--checkpoint` is a required input rather than something inferred from the arms,
 because `ohlcv14` is the control of all three and cannot say which question a
@@ -467,6 +473,7 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/chart_structure_v1.md](docs/chart_structure_v1.md) | The causal classical-pattern information set: 30 exact definitions |
 | [docs/microstructure_v1.md](docs/microstructure_v1.md) | The causal trade-flow information set: 32 exact definitions (checkpoint P3) |
 | [docs/p2b_methodology.md](docs/p2b_methodology.md) | Checkpoints P2b, P2c and P3: does any of those families add information beyond OHLCV14? |
+| [docs/p4_preregistration.md](docs/p4_preregistration.md) | Checkpoint P4, preregistered before its data exists: derivatives positioning and carry |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
 | [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, and what is next |
 

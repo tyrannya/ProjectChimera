@@ -41,6 +41,7 @@ committed and its evidence is not.
 | `P2b` | `btc_p2b_information_set_benchmark` | **answered** |
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
+| `P4` | `btc_p4_derivatives_positioning_benchmark` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -236,6 +237,39 @@ that multi-timeframe information is useless. None of those was tested. Three
 families, three untuned model families and one label at one horizon, measured
 over four adaptive folds of one asset on one exchange, is not a proof about a
 space. It is a reason to change what the next checkpoint spends its budget on.
+
+---
+
+## Preregistered, not yet run
+
+### P4 — does derivatives positioning and carry add information beyond OHLCV14?
+
+Preregistered in full at [`p4_preregistration.md`](p4_preregistration.md),
+before any P4 data has been acquired and before any P4 number exists. The short
+version: funding rate, open interest and futures basis are the first information
+this programme would read that is *not* a function of the spot trade tape at
+all — they are the positioning and cost-of-carry of leveraged participants,
+published on their own schedule, and independent of both the candle and the
+execution stream in a way `smc_v1`, `chart_structure_v1` and `microstructure_v1`
+were not.
+
+Two constraints the preregistration is built around, and which it does not
+pretend away:
+
+- **The four outer blocks are burned.** Six checkpoints have read them. They
+  cannot confirm anything, and splitting them into more folds would manufacture
+  independence rather than find it.
+- **The only unobserved pre-Styx region is rows 45,802–48,211** — 2,409 candles,
+  `2025-05-19T08:00` to about `2025-08-27T16:00`, roughly half of one outer fold.
+  It ends at 48,211 and not at the research region's own end of 48,217 because a
+  6-candle label taken any later would close on a sealed price. It has never
+  been scored, and the committed research snapshot is truncated at 45,802 so
+  nothing in the P2b/P2c/P3 path could read it — but it was never *sealed*
+  either, which is precisely why the preregistration classifies P4 as unable to
+  produce confirmatory evidence.
+
+Styx does not move, is not opened, and is not available to rescue an ambiguous
+P4 result.
 
 ---
 

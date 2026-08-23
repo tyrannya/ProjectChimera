@@ -32,6 +32,7 @@ definitions: [`smc_v1.md`](smc_v1.md),
 | `P2b` | `btc_p2b_information_set_benchmark` | **answered** |
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
+| `P4` | `btc_p4_derivatives_positioning_benchmark` | **preregistered** |
 
 <!-- research-state:end -->
 
