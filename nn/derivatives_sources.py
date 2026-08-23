@@ -1,0 +1,630 @@
+"""The shape of P4's derivatives source, and the rules for reading it.
+
+``docs/p4_preregistration.md`` §3 fixes *which* archives P4 reads and *how* their
+columns may be interpreted; :mod:`nn.p4_preregistration` is the machine-readable
+copy of that. This module is the schema half of the acquisition: the hourly table
+the exporter writes, the archive-path arithmetic, the funding column allow-list
+resolved against a real header, and the bounded parse of an open-interest
+snapshot instant.
+
+**Nothing here touches the network.** ``--plan`` is required to be networkless,
+so everything a plan needs — which archives, which periods, which paths — is
+computed here from the preregistration and a calendar, and
+:mod:`tools.export_derivatives_snapshot` adds HTTP on top of it. That split is
+also what makes the refusals testable: a funding header this repository must
+refuse can be handed to :func:`resolve_funding_columns` directly, which is not
+true of anything that has to download a ZIP first.
+
+**Why the exported table looks like this.** The eight ``derivatives_v1`` columns
+are not stored here. Storing them would put the feature windows — the numbers
+§5 fixes and forbids re-choosing — inside the *source*, where a re-export could
+move them without moving the feature-spec hash. What is stored is the hourly
+point-in-time observation each feature is a function of: the funding settlement
+visible at the hour, the last open-interest snapshot at or before it, the
+perpetual close, and, for each of the three, how stale the observation is. The
+engine in :mod:`nn.derivatives` turns those into features, and the staleness
+bounds of §3.4 are applied twice — once here, so the source never carries a
+carry-forward it is not allowed to make, and once in the engine, which is where
+the sample universe is decided.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any, Iterator, Mapping, Sequence
+
+import numpy as np
+import pandas as pd
+
+from nn.p4_preregistration import DATA_SOURCES, FUNDING_CSV_COLUMN_POLICY, MAX_STALENESS_HOURS
+from nn.trade_aggregates import resolve_epoch_unit, scale_to_nanoseconds
+
+#: Names the meaning of the exported hourly table. A file under another schema
+#: is a different document and is refused rather than read with defaults.
+DERIVATIVES_SOURCE_SCHEMA = "chimera.derivatives-hourly/1"
+
+HOUR_NS = 3_600_000_000_000
+
+BASE_URL = "https://data.binance.vision"
+PROVIDER = "binance-public-data"
+VENUE = "binance"
+MARKET_TYPE = "um"
+SYMBOL = "BTCUSDT"
+PAIR = "BTC/USDT"
+CHECKSUM_SUFFIX = ".CHECKSUM"
+
+#: The three fields acquired from the public archive. Spot is the fourth source
+#: of §3 and is not acquired at all: it is the committed candle history.
+FUNDING = "funding_rate"
+OPEN_INTEREST = "open_interest"
+PERPETUAL = "perpetual_price"
+ACQUIRED_FIELDS: tuple[str, ...] = (FUNDING, OPEN_INTEREST, PERPETUAL)
+
+FUNDING_TEMPLATE = (
+    "{base}/data/futures/um/monthly/fundingRate/{symbol}/"
+    "{symbol}-fundingRate-{year:04d}-{month:02d}.zip"
+)
+#: **Daily**, and deliberately so. ``docs/p4_preregistration.md`` §3.0a records
+#: that the first version of the preregistration named a monthly metrics path
+#: Binance does not publish, and corrected it before any probe. There is no
+#: monthly metrics archive to fall back to and none is constructed here.
+METRICS_TEMPLATE = (
+    "{base}/data/futures/um/daily/metrics/{symbol}/"
+    "{symbol}-metrics-{year:04d}-{month:02d}-{day:02d}.zip"
+)
+KLINE_TEMPLATE = (
+    "{base}/data/futures/um/monthly/klines/{symbol}/1h/"
+    "{symbol}-1h-{year:04d}-{month:02d}.zip"
+)
+
+#: The earliest UTC day §3.0a intends to request from the metrics archive. An
+#: intent, not a measurement: the probe establishes the real first available day
+#: and a later one narrows the universe rather than being worked around.
+EARLIEST_METRICS_DAY = "2020-09-01"
+
+#: USD-M kline archives carry twelve columns. Checked against the width of the
+#: first row: the spot archive's layout differs, and reading one as the other
+#: shifts every field.
+KLINE_COLUMNS: tuple[str, ...] = (
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_volume",
+    "count",
+    "taker_buy_volume",
+    "taker_buy_quote_volume",
+    "ignore",
+)
+
+#: The metrics columns §3.0a names, and nothing else is read from that archive.
+#: A file without all three has no open interest in it under this schema.
+METRICS_REQUIRED_COLUMNS: tuple[str, ...] = (
+    "create_time",
+    "sum_open_interest",
+    "sum_open_interest_value",
+)
+
+#: The hourly point-in-time table the exporter writes, with the canonical kind
+#: :mod:`nn.data_fingerprint` hashes each column under.
+#:
+#: Availability is a flag and staleness is an integer age rather than a nullable
+#: instant, because a semantic fingerprint has no representation for "missing":
+#: ``t8`` refuses a NaT and ``f8`` folds every NaN together. A row that has no
+#: observation says so in ``*_available`` and carries a declared zero, and the
+#: verifier checks that pairing rather than trusting it.
+DERIVATIVES_COLUMN_KINDS: tuple[tuple[str, str], ...] = (
+    ("date", "t8"),
+    ("funding_settled", "i8"),
+    ("funding_settled_rate", "f8"),
+    ("funding_visible_count", "i8"),
+    ("funding_available", "i8"),
+    ("funding_last_rate", "f8"),
+    ("funding_age_ns", "i8"),
+    ("oi_available", "i8"),
+    ("oi_contracts", "f8"),
+    ("oi_notional", "f8"),
+    ("oi_age_ns", "i8"),
+    ("perp_available", "i8"),
+    ("perp_close", "f8"),
+    ("perp_age_ns", "i8"),
+)
+
+DERIVATIVES_COLUMNS: tuple[str, ...] = tuple(name for name, _ in DERIVATIVES_COLUMN_KINDS)
+
+#: What an unavailable observation carries, so that "no observation" is one
+#: value rather than whatever the writer happened to leave behind.
+UNAVAILABLE_AGE_NS = -1
+
+#: Rows parsed from one archive member at a time. A daily metrics archive holds
+#: 288 rows and a monthly funding archive about 93, so this only ever bounds the
+#: kline archives — but the exporter must not depend on which of its three
+#: sources happens to be small.
+CSV_CHUNK_ROWS = 500_000
+
+
+class DerivativesSourceError(ValueError):
+    """A derivatives archive cannot be read as the source P4 preregistered."""
+
+
+def staleness_bound_ns(field: str) -> int:
+    """The §3.4 carry-forward bound for one field, in nanoseconds."""
+    try:
+        hours = MAX_STALENESS_HOURS[field]
+    except KeyError as exc:
+        raise DerivativesSourceError(
+            f"{field!r} has no preregistered staleness bound; the fields with one are "
+            f"{sorted(MAX_STALENESS_HOURS)}"
+        ) from exc
+    return int(hours) * HOUR_NS
+
+
+def preregistered_source(field: str) -> Mapping[str, Any]:
+    """The ``DATA_SOURCES`` entry for one field, or a named refusal."""
+    for source in DATA_SOURCES:
+        if source["field"] == field:
+            return source
+    raise DerivativesSourceError(
+        f"{field!r} is not a preregistered P4 data source; the sources are "
+        f"{[s['field'] for s in DATA_SOURCES]}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# archives
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Archive:
+    """One period of one public archive, and the calendar window it is named for.
+
+    ``period_start``/``period_end`` are not decoration: every timestamp the
+    archive yields must fall inside them, which is what lets an epoch unit be
+    *resolved* rather than guessed (:func:`nn.trade_aggregates.resolve_epoch_unit`)
+    and what turns a mislabelled archive into a refusal.
+    """
+
+    field: str
+    name: str
+    url: str
+    checksum_url: str
+    period_start: pd.Timestamp
+    period_end: pd.Timestamp
+    kind: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "field": self.field,
+            "name": self.name,
+            "url": self.url,
+            "kind": self.kind,
+            "period_start": self.period_start.isoformat(),
+            "period_end": self.period_end.isoformat(),
+        }
+
+
+def _archive(
+    field: str, url: str, start: pd.Timestamp, end: pd.Timestamp, kind: str
+) -> Archive:
+    return Archive(
+        field=field,
+        name=url.rsplit("/", 1)[-1],
+        url=url,
+        checksum_url=url + CHECKSUM_SUFFIX,
+        period_start=start,
+        period_end=end,
+        kind=kind,
+    )
+
+
+def funding_archive(year: int, month: int) -> Archive:
+    start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
+    return _archive(
+        FUNDING,
+        FUNDING_TEMPLATE.format(base=BASE_URL, symbol=SYMBOL, year=year, month=month),
+        start,
+        start + pd.offsets.MonthBegin(1),
+        "monthly",
+    )
+
+
+def kline_archive(year: int, month: int) -> Archive:
+    start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
+    return _archive(
+        PERPETUAL,
+        KLINE_TEMPLATE.format(base=BASE_URL, symbol=SYMBOL, year=year, month=month),
+        start,
+        start + pd.offsets.MonthBegin(1),
+        "monthly",
+    )
+
+
+def metrics_archive(day: pd.Timestamp) -> Archive:
+    day = pd.Timestamp(day).tz_convert("UTC").normalize()
+    return _archive(
+        OPEN_INTEREST,
+        METRICS_TEMPLATE.format(
+            base=BASE_URL, symbol=SYMBOL, year=day.year, month=day.month, day=day.day
+        ),
+        day,
+        day + pd.Timedelta(days=1),
+        "daily",
+    )
+
+
+def _utc_day(value: Any) -> pd.Timestamp:
+    """One UTC midnight, however the caller spelled it.
+
+    ``pd.Timestamp(x, tz="UTC")`` refuses an already-aware input, and both forms
+    reach here: a probe hands back an aware instant and the preregistration
+    hands back a date string.
+    """
+    stamp = pd.Timestamp(value)
+    stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+    return stamp.normalize()
+
+
+def _months(start: pd.Timestamp, end: pd.Timestamp) -> Iterator[pd.Timestamp]:
+    cursor = pd.Timestamp(start).tz_convert("UTC").normalize().replace(day=1)
+    end = pd.Timestamp(end).tz_convert("UTC")
+    while cursor < end:
+        yield cursor
+        cursor = cursor + pd.offsets.MonthBegin(1)
+
+
+def plan_archives(
+    field: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    oi_first_day: pd.Timestamp | None = None,
+) -> list[Archive]:
+    """Every archive of ``field`` covering ``[start, end)``. No network.
+
+    Monthly for funding and klines, because Binance publishes them that way and
+    the whole history is a few dozen requests. **Daily for open interest**, one
+    UTC day per archive, because §3.0a establishes that no monthly metrics
+    archive exists: a plan that named one would be a plan to fetch nothing.
+
+    ``oi_first_day`` clips the open-interest plan at the earliest day the source
+    is intended — or, after a probe, known — to publish. A day before it is not
+    requested, and the rows it would have covered leave the sample universe like
+    any other absent day rather than being sought from somewhere else.
+    """
+    start = pd.Timestamp(start).tz_convert("UTC")
+    end = pd.Timestamp(end).tz_convert("UTC")
+    if end <= start:
+        raise DerivativesSourceError(
+            f"the acquisition window [{start.isoformat()}, {end.isoformat()}) is empty"
+        )
+    if field == FUNDING:
+        return [funding_archive(m.year, m.month) for m in _months(start, end)]
+    if field == PERPETUAL:
+        return [kline_archive(m.year, m.month) for m in _months(start, end)]
+    if field == OPEN_INTEREST:
+        floor = _utc_day(oi_first_day if oi_first_day is not None else EARLIEST_METRICS_DAY)
+        first = max(start.normalize(), floor)
+        days = pd.date_range(first, end - pd.Timedelta(nanoseconds=1), freq="D", tz="UTC")
+        return [metrics_archive(day) for day in days]
+    raise DerivativesSourceError(
+        f"{field!r} is not an acquired P4 field; the acquired fields are "
+        f"{list(ACQUIRED_FIELDS)}"
+    )
+
+
+def canonical_member(names: Sequence[str], archive_name: str) -> str:
+    """The one CSV inside an archive, or a refusal that will not guess.
+
+    Two rules, and no third: exactly one non-directory member is the member, and
+    otherwise the member must be the archive's own name with ``.csv`` for
+    ``.zip`` **at the root**. Anything else — two candidates, a nested copy, a
+    member whose name only ends the right way — is ambiguous, and an acquisition
+    that picked one would be reporting a source nobody can reproduce.
+    """
+    files = [name for name in names if not name.endswith("/")]
+    if not files:
+        raise DerivativesSourceError(f"{archive_name} holds no files")
+    if len(files) == 1:
+        only = files[0]
+        if "/" in only:
+            raise DerivativesSourceError(
+                f"{archive_name} holds one member {only!r}, which is nested rather than "
+                "at the archive root. A nested member is not the canonical layout and is "
+                "refused rather than read as though it were."
+            )
+        return only
+    expected = archive_name.removesuffix(".zip") + ".csv"
+    if expected in files:
+        return expected
+    raise DerivativesSourceError(
+        f"{archive_name} holds {len(files)} members ({sorted(files)[:4]}); expected the "
+        f"canonical root member {expected!r} and will not guess which one is the data"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# funding: the column allow-list of §3.0b
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class FundingLayout:
+    """How one funding archive's columns map onto the two canonical fields."""
+
+    layout: str
+    settlement_instant: str | int
+    realised_funding_rate: str | int
+    headerless: bool
+    columns: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "layout": self.layout,
+            "settlement_instant": self.settlement_instant,
+            "realised_funding_rate": self.realised_funding_rate,
+            "headerless": self.headerless,
+            "observed_columns": list(self.columns),
+        }
+
+
+def _looks_like_header(fields: Sequence[str]) -> bool:
+    """True when the first row names columns rather than carrying a settlement.
+
+    Decided on the first field alone, as :mod:`tools.export_trade_snapshot` does:
+    a header read as data makes the instant unparseable and the failure would
+    name the wrong cause.
+    """
+    head = fields[0].strip().strip('"')
+    if not head:
+        return True
+    return not re.fullmatch(r"-?\d+", head)
+
+
+def resolve_funding_columns(first_line: str, archive: Archive) -> FundingLayout:
+    """Match a funding archive's first line against §3.0b's allow-list, or refuse.
+
+    The allow-list is :data:`nn.p4_preregistration.FUNDING_CSV_COLUMN_POLICY`,
+    read rather than restated. Three things it permits and one it does not:
+
+    * a recognised layout may carry columns the policy does not name — they are
+      ignored, so a source that adds a field does not break the acquisition;
+    * two entries may both match (``calc_time``/``last_funding_rate`` is a subset
+      of the three-column layout) and that is fine **only while they agree** on
+      which column is the instant and which is the rate. A disagreement is a
+      refusal, because then the mapping would be this function's choice;
+    * a headerless file is accepted in the single unambiguous two-column shape,
+      and only when its first column parses as an epoch instant inside the
+      archive's own calendar period under exactly one supported unit.
+
+    What it does not permit is inference. An unrecognised column-name set is a
+    refusal — not a fallback to positional order, not a guess from the widths,
+    and not a switch to the REST endpoint. Extending the allow-list moves
+    :func:`nn.p4_preregistration.preregistration_hash`, which is the point.
+    """
+    fields = [field.strip().strip('"') for field in first_line.rstrip("\r\n").split(",")]
+    if not first_line.strip():
+        raise DerivativesSourceError(f"{archive.name}: the funding member is empty")
+
+    if not _looks_like_header(fields):
+        shape = FUNDING_CSV_COLUMN_POLICY["headerless_positional_layout"]
+        if len(fields) != int(shape["columns"]):
+            raise DerivativesSourceError(
+                f"{archive.name}: a headerless funding archive is accepted only in the "
+                f"single unambiguous {shape['columns']}-column shape, and this one has "
+                f"{len(fields)}. {FUNDING_CSV_COLUMN_POLICY['on_unrecognised_layout']}"
+            )
+        # The archive's own calendar period decides the unit, exactly as it does
+        # for a trade archive. A first column that fits no unit — or two — is a
+        # refusal, so "headerless" never becomes "positional whatever the file".
+        raw = int(fields[int(shape["settlement_instant"])])
+        resolve_epoch_unit(
+            raw, raw, period_start=archive.period_start, period_end=archive.period_end
+        )
+        return FundingLayout(
+            layout="headerless-positional",
+            settlement_instant=int(shape["settlement_instant"]),
+            realised_funding_rate=int(shape["realised_funding_rate"]),
+            headerless=True,
+            columns=tuple(fields),
+        )
+
+    observed = set(fields)
+    matches = [
+        allowed
+        for allowed in FUNDING_CSV_COLUMN_POLICY["allowed_header_maps"]
+        if set(allowed["columns"]) <= observed
+    ]
+    if not matches:
+        allowed = [
+            entry["columns"] for entry in FUNDING_CSV_COLUMN_POLICY["allowed_header_maps"]
+        ]
+        raise DerivativesSourceError(
+            f"{archive.name}: funding header {sorted(observed)} matches none of the "
+            f"preregistered layouts {allowed}. "
+            f"{FUNDING_CSV_COLUMN_POLICY['on_unrecognised_layout']}"
+        )
+    instants = {entry["settlement_instant"] for entry in matches}
+    rates = {entry["realised_funding_rate"] for entry in matches}
+    if len(instants) != 1 or len(rates) != 1:
+        raise DerivativesSourceError(
+            f"{archive.name}: funding header {sorted(observed)} matches "
+            f"{[entry['layout'] for entry in matches]}, which disagree about which "
+            f"column is the settlement instant ({sorted(instants)}) or the rate "
+            f"({sorted(rates)}). Choosing between them would be this reader deciding "
+            "the mapping after seeing the file."
+        )
+    # The most specific matching entry names the layout, so a three-column file
+    # is recorded as the three-column layout rather than as its own subset.
+    best = max(matches, key=lambda entry: len(entry["columns"]))
+    return FundingLayout(
+        layout=best["layout"],
+        settlement_instant=best["settlement_instant"],
+        realised_funding_rate=best["realised_funding_rate"],
+        headerless=False,
+        columns=tuple(fields),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# instants
+# --------------------------------------------------------------------------- #
+_DATETIME_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"
+)
+
+
+def parse_instants(values: pd.Series, archive: Archive, *, what: str) -> np.ndarray:
+    """Read one archive column as int64 UTC nanoseconds, or refuse.
+
+    Two representations are accepted and each is decided by the archive's own
+    calendar period rather than by magnitude: an integer epoch, whose unit is
+    resolved by :func:`nn.trade_aggregates.resolve_epoch_unit`, and a UTC
+    wall-clock string of the ``YYYY-MM-DD HH:MM:SS`` family that Binance's
+    metrics archives publish. A column that is neither is a refusal.
+
+    The period is the arbiter for both. A parsed instant outside the archive's
+    own window means the reading is wrong — a mislabelled unit, an implied local
+    timezone — and no reading of it is trustworthy, so it stops rather than
+    contributing rows a later reader could not reproduce.
+    """
+    text = values.astype(str).str.strip()
+    if text.empty:
+        raise DerivativesSourceError(f"{archive.name}: {what} has no rows")
+
+    sample = text.iloc[0]
+    if re.fullmatch(r"-?\d+", sample):
+        raw = text.to_numpy(dtype=np.int64)
+        unit = resolve_epoch_unit(
+            int(raw.min()),
+            int(raw.max()),
+            period_start=archive.period_start,
+            period_end=archive.period_end,
+        )
+        stamps = scale_to_nanoseconds(raw, unit)
+    elif _DATETIME_PATTERN.match(sample):
+        parsed = pd.to_datetime(text, utc=True, errors="coerce", format="mixed")
+        if parsed.isna().any():
+            bad = sorted(set(text[parsed.isna()]))[:4]
+            raise DerivativesSourceError(
+                f"{archive.name}: {what} holds unparseable instant(s) {bad}"
+            )
+        stamps = parsed.dt.tz_convert("UTC").to_numpy(dtype="datetime64[ns]").astype(np.int64)
+    else:
+        raise DerivativesSourceError(
+            f"{archive.name}: {what} begins {sample!r}, which is neither an integer epoch "
+            "nor a UTC wall-clock instant. Refusing to read it under a guessed "
+            "representation."
+        )
+
+    lo = int(archive.period_start.value)
+    hi = int(archive.period_end.value)
+    outside = int(((stamps < lo) | (stamps >= hi)).sum())
+    if outside:
+        raise DerivativesSourceError(
+            f"{archive.name}: {outside} {what} value(s) fall outside the archive's own "
+            f"period [{archive.period_start.isoformat()}, {archive.period_end.isoformat()}). "
+            "The representation is not what it was read as, and no reading of the archive "
+            "is trustworthy."
+        )
+    return stamps
+
+
+def check_strictly_increasing(stamps: np.ndarray, archive: Archive, *, what: str) -> None:
+    """§3.4's duplicate rule: two rows claiming one instant is a rejection.
+
+    Not a de-duplication. Two rows claiming one instant means the reader cannot
+    tell which one is the observation, and picking either is a decision about
+    the data made by the code that reads it.
+    """
+    if len(stamps) == 0:
+        return
+    step = np.diff(stamps)
+    if (step == 0).any():
+        first = int(np.flatnonzero(step == 0)[0])
+        instant = pd.Timestamp(int(stamps[first]), unit="ns", tz="UTC")
+        raise DerivativesSourceError(
+            f"{archive.name}: {what} carries two rows at {instant.isoformat()}. A "
+            "duplicate instant is a rejection of the acquisition, not something to "
+            "de-duplicate: the reader cannot tell which row is the observation."
+        )
+    if (step < 0).any():
+        first = int(np.flatnonzero(step < 0)[0])
+        raise DerivativesSourceError(
+            f"{archive.name}: {what} goes backwards at row {first + 1}. The archive is "
+            "not in instant order and reading it as though it were would put an "
+            "observation on the wrong hour."
+        )
+
+
+def hour_floor(stamps: np.ndarray) -> np.ndarray:
+    """The hour-open instant each timestamp falls in, in int64 nanoseconds."""
+    return (np.asarray(stamps, dtype=np.int64) // HOUR_NS) * HOUR_NS
+
+
+def source_spec() -> dict[str, Any]:
+    """What the exported table is, as data, for the manifest and every artifact.
+
+    Recorded rather than described because it is part of what a P4 number
+    *means*: two runs that resolved staleness differently, carried an
+    observation forward further, or wrote another column layout are not two
+    readings of one source.
+    """
+    return {
+        "source_schema": DERIVATIVES_SOURCE_SCHEMA,
+        "venue": VENUE,
+        "market_type": MARKET_TYPE,
+        "symbol": SYMBOL,
+        "pair": PAIR,
+        "bucket_ns": HOUR_NS,
+        "bucket_convention": (
+            "row 'date' is the hour's OPEN instant, and every observation on the row "
+            "was published at or before that instant. The conservative rule of §4: a "
+            "row decides at date + 1h, so an observation admitted at date has a full "
+            "hour between publication and use"
+        ),
+        "columns": [list(entry) for entry in DERIVATIVES_COLUMN_KINDS],
+        "funding_rule": (
+            "funding_last_rate is the realised rate of the most recent settlement with "
+            "instant <= date; funding_settled_rate is the rate of the settlement that "
+            "became visible in (date - 1h, date], and is 0.0 with funding_settled = 0 "
+            "when none did. The predicted funding rate is never read"
+        ),
+        "open_interest_rule": (
+            "oi_contracts and oi_notional are sum_open_interest and "
+            "sum_open_interest_value at the last snapshot with create_time <= date. "
+            "Not a mean over the hour: a mean is not a state anything was in"
+        ),
+        "perpetual_rule": (
+            "perp_close is the close of the 1h perpetual candle opening at date, or of "
+            "the candle one hour earlier when that candle is absent"
+        ),
+        "staleness_rule": (
+            "an observation older than its MAX_STALENESS_HOURS bound is not carried "
+            "forward: the field is marked unavailable at that hour, and every arm "
+            "including the control loses the row"
+        ),
+        "max_staleness_hours": dict(MAX_STALENESS_HOURS),
+        "duplicate_rule": (
+            "a duplicate instant in any source rejects the acquisition; it is never "
+            "de-duplicated"
+        ),
+        "gap_rule": "a gap is never filled or interpolated; it becomes staleness",
+        "missing_day_rule": (
+            "a metrics day that 404s, fails its published checksum, or arrives short is "
+            "a MISSING DAY: it is recorded with its reason, its rows are never "
+            "interpolated, and the hours it leaves without a snapshot within the "
+            "staleness bound leave the sample universe for every arm. A day that cannot "
+            "be classified — a transport failure that outlived its retries, an "
+            "unreadable archive, an unrecognised schema — stops the acquisition instead"
+        ),
+        "rest_substitution": (
+            "never. fapi.binance.com/futures/data/openInterestHist retains 30 days and "
+            "may not stand in for a missing archive day; no REST row enters this table"
+        ),
+        "unavailable_age_ns": UNAVAILABLE_AGE_NS,
+        "spot_source": (
+            "not acquired: the spot denominator of the basis is the committed candle "
+            "history named in DATA_SOURCES"
+        ),
+    }

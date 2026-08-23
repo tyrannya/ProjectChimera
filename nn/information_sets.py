@@ -44,6 +44,18 @@ import pandas as pd
 from chimera.features import feature_columns
 from nn.data_pipeline import DatasetMetadata, _contiguous_segment_ids
 from nn.dataset import sample_indices
+from nn.derivatives import (
+    DERIVATIVES_FEATURE_FAMILIES,
+    DERIVATIVES_SPEC_VERSION,
+    DerivativesSpec,
+    derivatives_feature_columns,
+)
+from nn.p4_preregistration import (
+    ARMS as P4_ARMS,
+    COMBINED as P4_COMBINED,
+    DERIVATIVES_V1 as P4_DERIVATIVES_V1,
+    RESEARCH_CLASSIFICATION as P4_RESEARCH_CLASSIFICATION,
+)
 from nn.chart_structure import (
     CHART_FEATURE_FAMILIES,
     CHART_SPEC_VERSION,
@@ -81,6 +93,12 @@ OHLCV14_PLUS_CHART = "ohlcv14_plus_chart_structure_v1"
 #: Causal trade-flow microstructure alone (docs/microstructure_v1.md). The first
 #: information set in this repository that is not a function of the hourly candle.
 MICROSTRUCTURE_V1 = "microstructure_v1"
+
+#: P4's family, and the arm that adds it to the control. Both names come from
+#: the preregistration rather than being spelled again here: a run whose arm was
+#: called something else would be answering a question nobody registered.
+DERIVATIVES_V1 = P4_DERIVATIVES_V1
+OHLCV14_PLUS_DERIVATIVES = P4_COMBINED
 #: OHLCV14 plus trade-flow microstructure — P3's combined arm.
 OHLCV14_PLUS_MICROSTRUCTURE = "ohlcv14_plus_microstructure_v1"
 
@@ -175,6 +193,24 @@ def ohlcv14_plus_microstructure_set() -> InformationSet:
     )
 
 
+def derivatives_v1_set() -> InformationSet:
+    return InformationSet(
+        name=DERIVATIVES_V1,
+        columns=tuple(derivatives_feature_columns()),
+        families={k: tuple(v) for k, v in DERIVATIVES_FEATURE_FAMILIES.items()},
+    )
+
+
+def ohlcv14_plus_derivatives_set() -> InformationSet:
+    ohlcv = ohlcv14_set()
+    derivatives = derivatives_v1_set()
+    return InformationSet(
+        name=OHLCV14_PLUS_DERIVATIVES,
+        columns=ohlcv.columns + derivatives.columns,
+        families={**ohlcv.families, **derivatives.families},
+    )
+
+
 def combined_set() -> InformationSet:
     ohlcv = ohlcv14_set()
     smc = smc_v1_set()
@@ -201,6 +237,18 @@ P2C_INFORMATION_SETS = (OHLCV14, CHART_V1, OHLCV14_PLUS_CHART)
 #: than by merit, which is exactly why the next family is measured against it.
 P3_INFORMATION_SETS = (OHLCV14, MICROSTRUCTURE_V1, OHLCV14_PLUS_MICROSTRUCTURE)
 
+#: The three arms of P4, in report order, taken from the preregistration. The
+#: control is `ohlcv14` for the fourth time, and for the reason P2c and P3 gave:
+#: four families have now failed to improve on it, so it remains the best
+#: information set this repository has — by default rather than by merit.
+#:
+#: Unlike every earlier checkpoint, this control is **re-run on P4's own sample
+#: universe** rather than reproduced on the full spine: `derivatives_v1` is not
+#: defined on every row, and comparing a derivatives arm scored where the data
+#: exists against a control scored everywhere would measure two market periods
+#: and report the difference as an information set.
+P4_INFORMATION_SETS = tuple(P4_ARMS)
+
 
 #: Separator between the combined set and the family an ablation removed.
 ABLATION_PREFIX = f"{COMBINED}_minus_"
@@ -222,6 +270,8 @@ def information_set(name: str) -> InformationSet:
         OHLCV14_PLUS_CHART: ohlcv14_plus_chart_set,
         MICROSTRUCTURE_V1: microstructure_v1_set,
         OHLCV14_PLUS_MICROSTRUCTURE: ohlcv14_plus_microstructure_set,
+        DERIVATIVES_V1: derivatives_v1_set,
+        OHLCV14_PLUS_DERIVATIVES: ohlcv14_plus_derivatives_set,
     }
     if name in builders:
         return builders[name]()
@@ -273,6 +323,16 @@ class Checkpoint:
     #: compared against, and `nn.p2b_compare` refuses a batch whose cells
     #: disagree about which source they were measured under.
     trade_source: bool = False
+    #: Whether this checkpoint's evidence is defined against the derivatives
+    #: source, and therefore against a **restricted sample universe**.
+    #:
+    #: True for every arm of such a checkpoint, its OHLCV14 control included.
+    #: That is not a formality: `derivatives_v1` is undefined wherever the
+    #: archive has no observation, so the control has to be re-run on the
+    #: intersection rather than reproduced from an earlier checkpoint's numbers
+    #: — otherwise the delta measures two market periods
+    #: (`docs/p4_preregistration.md` §6.2).
+    derivatives_source: bool = False
     #: What had already been read when this checkpoint was designed.
     adaptive_status: str = ""
 
@@ -354,8 +414,23 @@ P3 = Checkpoint(
     ),
 )
 
+#: P4. The first checkpoint whose input is not a function of the spot tape.
+#:
+#: Registered here because `docs/p4_preregistration.md` §13 requires it before
+#: P4 may run — and registration is *not* permission to run. `nn.p4_stage1`
+#: holds the execution interlock, and every P4 fit goes through it; a checkpoint
+#: that could be run by naming it would make the interlock a convention.
+P4 = Checkpoint(
+    name="P4",
+    family=DERIVATIVES_V1,
+    control=OHLCV14,
+    arms=P4_INFORMATION_SETS,
+    derivatives_source=True,
+    adaptive_status=P4_RESEARCH_CLASSIFICATION,
+)
+
 #: Every checkpoint this runner can execute, by name.
-CHECKPOINTS: dict[str, Checkpoint] = {c.name: c for c in (P2B, P2C, P3)}
+CHECKPOINTS: dict[str, Checkpoint] = {c.name: c for c in (P2B, P2C, P3, P4)}
 
 
 def checkpoint(name: str) -> Checkpoint:
@@ -393,6 +468,14 @@ class AlignedResearchSamples:
     #: supplied. ``None`` for a P2b or P2c run, which reads no trade data at all
     #: and must not record a spec it never applied.
     micro_spec: MicrostructureSpec | None = None
+    #: The derivatives constants this run used, when a derivatives source was
+    #: supplied. ``None`` for every checkpoint before P4, which reads none.
+    derivatives_spec: DerivativesSpec | None = None
+    #: P4's sample universe: one flag per spine row, shared by every view **by
+    #: object identity** so that "the arms were scored on the same rows" is a
+    #: property of construction rather than a claim. ``None`` before P4, which is
+    #: how a run scored on the whole spine says so.
+    eligible: np.ndarray | None = None
 
     def names(self) -> list[str]:
         return list(self.views)
@@ -458,7 +541,11 @@ class AlignedResearchSamples:
             ):
                 per_view = {
                     name: sample_indices(
-                        split, seq_len, horizon, segment_ids=self.views[name].segment_ids
+                        split,
+                        seq_len,
+                        horizon,
+                        segment_ids=self.views[name].segment_ids,
+                        eligible=self.eligible,
                     )
                     for name in names
                 }
@@ -498,6 +585,10 @@ class AlignedResearchSamples:
             "identical fee, slippage and cost threshold",
             "identical sample-index arrays per fold and block",
         ]
+        if self.eligible is not None:
+            shared.append(
+                "one sample universe, applied to every arm from the same array object"
+            )
         # Said separately because they mean different things. The checks above
         # are strong for two or more views and vacuous for one, and a control
         # cell that runs a single view should not report seven comparisons it
@@ -521,6 +612,16 @@ class AlignedResearchSamples:
             "costs": reference.target_spec.to_dict(),
             "seq_len": seq_len,
             "rows": self.n_rows,
+            "sample_universe": (
+                None
+                if self.eligible is None
+                else {
+                    "rows_eligible": int(np.count_nonzero(self.eligible)),
+                    "rows_total": int(len(self.eligible)),
+                    "universe_sha256": _universe_hash(self.eligible),
+                    "applied_to": list(names),
+                }
+            ),
             "folds": evidence,
         }
 
@@ -528,6 +629,14 @@ class AlignedResearchSamples:
 def _index_hash(idx: np.ndarray) -> str:
     """A stable digest of which rows were selected, cheap enough to store."""
     return hashlib.sha256(np.ascontiguousarray(idx, dtype=np.int64).tobytes()).hexdigest()
+
+
+def _universe_hash(mask: np.ndarray) -> str:
+    """A stable digest of a sample universe. The same value `nn.p4_universe` records."""
+    packed = np.ascontiguousarray(np.asarray(mask, dtype=bool))
+    return hashlib.sha256(
+        np.packbits(packed).tobytes() + str(len(packed)).encode()
+    ).hexdigest()
 
 
 def build_information_set_views(
@@ -540,6 +649,7 @@ def build_information_set_views(
     chart_spec: ChartSpec | None = None,
     micro_spec: MicrostructureSpec | None = None,
     trade_aggregates: pd.DataFrame | None = None,
+    derivatives: Any = None,
     extra_sets: Mapping[str, InformationSet] | None = None,
 ) -> AlignedResearchSamples:
     """Build one aligned view per named information set.
@@ -558,6 +668,14 @@ def build_information_set_views(
     data at all, and a run that was handed none may not produce a microstructure
     column — asking for a P3 arm without a trade source is a refusal, not an
     empty matrix.
+
+    ``derivatives`` is P4's second source, and it arrives as a
+    :class:`nn.p4_universe.Universe` rather than as a table. That is deliberate:
+    P4's columns and P4's *sample universe* are computed together from the same
+    join, and handing the runner the two separately would let a caller pair one
+    checkpoint's columns with another's mask. The universe travels into every
+    view by object identity, so §6.2's "computed once and applied to every arm"
+    is a property of this function rather than of its callers.
 
     Fails closed on anything that would move a row: a spine timestamp missing
     from the raw candles or from the trade aggregates, a NaN or infinity in a
@@ -659,8 +777,40 @@ def build_information_set_views(
             spine, spine_dates, trade_aggregates, applied_micro_spec, columns
         )
 
+    derivatives_evidence: dict[str, Any] = {
+        "derivatives_source": "absent; no P4 arm may be built"
+    }
+    applied_derivatives_spec: DerivativesSpec | None = None
+    eligible: np.ndarray | None = None
+    if derivatives is not None:
+        if len(derivatives.eligible) != len(spine):
+            raise ValueError(
+                f"the P4 sample universe covers {len(derivatives.eligible)} rows and the "
+                f"research spine has {len(spine)}. A mask built against another spine "
+                "would move every fold's rows without moving a single number."
+            )
+        if tuple(derivatives.feature_names) != tuple(derivatives_feature_columns()):
+            raise ValueError(
+                "the P4 sample universe carries columns "
+                f"{list(derivatives.feature_names)}, not {derivatives_feature_columns()}"
+            )
+        applied_derivatives_spec = DerivativesSpec()
+        if derivatives.spec_hash != applied_derivatives_spec.spec_hash():
+            raise ValueError(
+                f"the P4 sample universe was built under derivatives spec "
+                f"{derivatives.spec_hash} and this run computes "
+                f"{applied_derivatives_spec.spec_hash()}. Two spec hashes are two "
+                "feature families; they must not share an arm name."
+            )
+        eligible = np.asarray(derivatives.eligible, dtype=bool)
+        for position, name in enumerate(derivatives.feature_names):
+            columns[name] = derivatives.features[:, position]
+        derivatives_evidence = dict(derivatives.join_evidence)
+        derivatives_evidence["universe"] = derivatives.to_dict()
+
     evidence = _join_evidence(spine, raw, raw_rows, columns, timeframe)
     evidence["microstructure"] = micro_evidence
+    evidence["derivatives"] = derivatives_evidence
     degenerate = [
         evidence["matches_under_plus_one_shift"],
         evidence["matches_under_minus_one_shift"],
@@ -680,8 +830,17 @@ def build_information_set_views(
 
     views: dict[str, ResearchData] = {}
     micro_columns = set(microstructure_feature_columns())
+    derivatives_columns = set(derivatives_feature_columns())
     for name, spec in available.items():
         missing = [c for c in spec.columns if c not in columns]
+        if missing and set(missing) <= derivatives_columns:
+            raise ValueError(
+                f"information set {name!r} needs {len(missing)} derivatives column(s) "
+                "and this run was given no derivatives source. A P4 arm is built from "
+                "the committed derivatives snapshot through nn.p4_universe; pass "
+                "derivatives=, or run a checkpoint whose arms are functions of the "
+                "candles alone."
+            )
         if missing and set(missing) <= micro_columns:
             raise ValueError(
                 f"information set {name!r} needs {len(missing)} microstructure column(s) "
@@ -708,6 +867,8 @@ def build_information_set_views(
         columns=columns,
         join_evidence=evidence,
         micro_spec=applied_micro_spec,
+        derivatives_spec=applied_derivatives_spec,
+        eligible=eligible,
     )
 
 
@@ -1095,6 +1256,49 @@ def feature_spec_identity(
                     "smc_version": SMC_SPEC_VERSION,
                     "chart": chart_spec.to_dict(),
                     "chart_version": CHART_SPEC_VERSION,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    }
+
+
+def derivatives_spec_identity(
+    derivatives_spec: DerivativesSpec,
+    derivatives_source: Mapping[str, Any],
+    universe: Mapping[str, Any],
+) -> dict[str, Any]:
+    """What produced the P4 columns and which rows they were scored on.
+
+    A third block rather than a widening of the two above, for the reason
+    :func:`microstructure_spec_identity` gives: ``combined_spec_hash`` is
+    recorded in every committed P2b, P2c and P3 cell, and widening what it covers
+    would give the same research a different identity.
+
+    The **universe** is in here and not beside it. P4 is the first checkpoint
+    whose arms are not scored on the whole spine, so "which rows" is part of what
+    a P4 number means in exactly the way the feature constants are: two cells
+    built over different intersections are not two measurements of one thing, and
+    a comparison must be able to refuse to join them without recomputing the mask.
+    """
+    return {
+        "derivatives_spec_version": DERIVATIVES_SPEC_VERSION,
+        "derivatives_spec": derivatives_spec.to_dict(),
+        "derivatives_spec_hash": derivatives_spec.spec_hash(),
+        "derivatives_feature_families": {
+            k: list(v) for k, v in DERIVATIVES_FEATURE_FAMILIES.items()
+        },
+        "derivatives_source": dict(derivatives_source),
+        "universe": dict(universe),
+        "combined_derivatives_hash": hashlib.sha256(
+            json.dumps(
+                {
+                    "spec": derivatives_spec.to_dict(),
+                    "version": DERIVATIVES_SPEC_VERSION,
+                    "columns": list(derivatives_feature_columns()),
+                    "source": dict(derivatives_source),
+                    "universe_hash": universe.get("universe_hash"),
                 },
                 sort_keys=True,
                 separators=(",", ":"),

@@ -266,3 +266,156 @@ def synthetic_trade_snapshot(synthetic_research_snapshot):
         "payload": manifest,
         "trades": (ts, price, qty, maker, ids),
     }
+
+
+# --------------------------------------------------------------------------- #
+# P4 fixtures: the committed research spine, plus a *synthetic* derivatives source
+#
+# Two things are deliberate and neither is an accident of convenience.
+#
+# The **spine is the real one**. P4's guards are about the committed geometry —
+# the snapshot stops at row 45802, P4-HOLD begins at the next hour, the four
+# outer blocks are the burned ones — and a fixture on synthetic candles would
+# exercise none of that: `check_holdout_boundary` compares the ledger's declared
+# instant against the committed snapshot's own last hour, and on a synthetic
+# spine it would either be meaningless or wrong. So the tree below is a copy of
+# `data/research/`, and the tests run against the geometry P4 will actually run
+# against.
+#
+# The **derivatives source is synthetic**, and it is generated here rather than
+# fetched. It has to be: every rejection the acquisition and the verifier can
+# raise is a claim about a file, and the public Binance archive cannot be asked
+# to serve a corrupt one. Nothing measured on it is a result, no P4 evidence
+# comes from it, and it only ever lives under `tmp_path`.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(scope="session")
+def p4_tree(tmp_path_factory):
+    """A repository root holding a copy of the committed research snapshot."""
+    import shutil
+
+    root = tmp_path_factory.mktemp("chimera-p4")
+    research = root / "data" / "research"
+    research.mkdir(parents=True)
+    for name in (
+        "btc_usdt_1h_gen1_snapshot_manifest.json",
+        "btc_usdt_1h_gen1_raw_pre_styx.parquet",
+        "btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet",
+        "btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet.meta.json",
+        "p4_holdout_ledger.json",
+        "p4_stage1_authorisation.json",
+    ):
+        shutil.copy(ROOT / "data" / "research" / name, research / name)
+    return root
+
+
+@pytest.fixture(scope="session")
+def p4_spine(p4_tree):
+    """The committed spine and raw candles, read once."""
+    import pandas as pd
+
+    research = p4_tree / "data" / "research"
+    return {
+        "manifest": research / "btc_usdt_1h_gen1_snapshot_manifest.json",
+        "spine": pd.read_parquet(research / "btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet"),
+        "raw": pd.read_parquet(research / "btc_usdt_1h_gen1_raw_pre_styx.parquet"),
+        "research": research,
+    }
+
+
+def synthetic_derivatives_hourly(
+    start, end, raw_candles, *, oi_from="2020-09-01", missing_days=(), seed=7
+):
+    """A derivatives source in the committed schema, over a contiguous hourly grid.
+
+    Deterministic, and shaped like the real thing rather than like noise: funding
+    settles at 00:00/08:00/16:00 UTC, open interest is observed every hour from
+    ``oi_from`` onwards, and the perpetual close sits a few basis points above the
+    spot candle so that the verifier's cross-source check has something true to
+    verify. ``missing_days`` removes whole UTC days of open interest, which is
+    exactly what a 404 on the daily metrics archive does.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from nn.derivatives_sources import (
+        DERIVATIVES_COLUMNS,
+        HOUR_NS,
+        UNAVAILABLE_AGE_NS,
+        staleness_bound_ns,
+    )
+
+    hours = np.arange(int(pd.Timestamp(start).value), int(pd.Timestamp(end).value), HOUR_NS)
+    dates = pd.DatetimeIndex(pd.to_datetime(hours, unit="ns", utc=True))
+    n = len(hours)
+    rng = np.random.default_rng(seed)
+
+    settled = (dates.hour % 8 == 0).astype(np.int64)
+    rates = np.where(settled == 1, rng.normal(0.0001, 0.00015, n), 0.0)
+    last_rate = np.zeros(n)
+    age = np.full(n, UNAVAILABLE_AGE_NS, dtype=np.int64)
+    current, last_index, seen = 0.0, None, 0
+    for i in range(n):
+        if settled[i]:
+            current, last_index, seen = float(rates[i]), i, seen + 1
+        if last_index is not None:
+            age[i] = (i - last_index) * HOUR_NS
+        last_rate[i] = current
+    funding_available = (age >= 0) & (age <= staleness_bound_ns("funding_rate"))
+
+    spot = pd.Series(
+        np.asarray(raw_candles["close"], dtype=np.float64),
+        index=pd.DatetimeIndex(pd.to_datetime(raw_candles["date"], utc=True)),
+    ).reindex(dates)
+    close = spot.to_numpy(dtype=np.float64)
+    filled = pd.Series(close).ffill().bfill().to_numpy(dtype=np.float64)
+    basis = rng.normal(0.0004, 0.0006, n)
+    perp_close = filled * (1.0 + basis)
+
+    oi_start = pd.Timestamp(oi_from, tz="UTC")
+    oi_available = np.asarray(dates >= oi_start, dtype=bool)
+    for day in missing_days:
+        stamp = pd.Timestamp(day, tz="UTC").normalize()
+        inside = np.asarray(
+            (dates >= stamp) & (dates < stamp + pd.Timedelta(days=1)), dtype=bool
+        )
+        oi_available &= ~inside
+    oi_contracts = 40_000.0 + np.cumsum(rng.normal(0.0, 40.0, n))
+    oi_notional = oi_contracts * filled
+
+    columns = {
+        "date": dates,
+        "funding_settled": settled,
+        "funding_settled_rate": np.where(settled == 1, rates, 0.0),
+        "funding_visible_count": np.cumsum(settled),
+        "funding_available": funding_available.astype(np.int64),
+        "funding_last_rate": np.where(funding_available, last_rate, 0.0),
+        "funding_age_ns": np.where(funding_available, age, UNAVAILABLE_AGE_NS),
+        "oi_available": oi_available.astype(np.int64),
+        "oi_contracts": np.where(oi_available, oi_contracts, 0.0),
+        "oi_notional": np.where(oi_available, oi_notional, 0.0),
+        "oi_age_ns": np.where(oi_available, 0, UNAVAILABLE_AGE_NS),
+        "perp_available": np.ones(n, dtype=np.int64),
+        "perp_close": perp_close,
+        "perp_age_ns": np.zeros(n, dtype=np.int64),
+    }
+    return pd.DataFrame({name: columns[name] for name in DERIVATIVES_COLUMNS})
+
+
+@pytest.fixture(scope="session")
+def p4_hourly(p4_spine):
+    """A synthetic derivatives source covering the committed spine and its warm-up."""
+    from nn.research_contract import load_contract
+    from tools.export_derivatives_snapshot import acquisition_window
+
+    start, end, _ = acquisition_window(p4_spine["manifest"], load_contract("btc-usdt-1h-gen1"))
+    return synthetic_derivatives_hourly(start, end, p4_spine["raw"])
+
+
+@pytest.fixture(scope="session")
+def p4_universe(p4_spine, p4_hourly):
+    """The sample universe the synthetic source produces on the committed spine."""
+    from nn.p4_universe import build_universe
+
+    return build_universe(p4_spine["spine"], p4_hourly, p4_spine["raw"])

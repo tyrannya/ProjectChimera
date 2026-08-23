@@ -60,6 +60,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from nn.derivatives_sources import DERIVATIVES_COLUMN_KINDS, DERIVATIVES_SOURCE_SCHEMA
 from nn.research_contract import normalise_scope_value
 from nn.trade_aggregates import AGGREGATE_COLUMN_KINDS, TRADE_AGGREGATE_SCHEMA
 
@@ -597,4 +598,93 @@ def fingerprint_trade_aggregates(
         start=dates[0].isoformat(),
         end=dates[-1].isoformat(),
         columns=tuple(name for name, _ in AGGREGATE_COLUMN_KINDS),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# P4's derivatives source
+#
+# A fourth schema rather than a reuse of the trade one, for the reason the trade
+# schema exists at all: two tables of different columns aggregated under
+# different rules must not be able to collide, and the header below names the
+# rules — the staleness bounds, the point-in-time convention, the missing-day
+# treatment — through `source_spec_hash`. A derivatives table exported under a
+# different staleness bound is a different source with the same numbers in it,
+# and this is what makes the two distinguishable without reading either.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class DerivativesHourlyFingerprint:
+    """Identity of an hourly derivatives source, and the span it covers."""
+
+    source_hash: str
+    rows: int
+    start: str
+    end: str
+    columns: tuple[str, ...]
+
+    @property
+    def short_hash(self) -> str:
+        """First 16 hex digits, for logs and console lines. Never for identity."""
+        return self.source_hash[:16]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fingerprint_schema": DERIVATIVES_SOURCE_SCHEMA,
+            "source_hash": self.source_hash,
+            "rows": self.rows,
+            "start": self.start,
+            "end": self.end,
+            "columns": list(self.columns),
+        }
+
+
+def derivatives_hourly_digest(
+    values: Mapping[str, Any], *, source_spec_hash: str, rows: int
+) -> str:
+    """Identity of the first ``rows`` rows of one hourly derivatives table."""
+    if rows <= 0:
+        raise DataFingerprintError(
+            f"a derivatives source covers {rows} rows; there is nothing to identify"
+        )
+    missing = [name for name, _ in DERIVATIVES_COLUMN_KINDS if name not in values]
+    if missing:
+        raise DataFingerprintError(
+            f"cannot fingerprint the derivatives source: column(s) {missing} are absent. "
+            "The identity is defined over every column of the schema, so a table missing "
+            "one of them has no identity under it"
+        )
+    header = {
+        "exchange": _scope_value("exchange", "binance"),
+        "symbol": _scope_value("pair", "BTCUSDT"),
+        "market_type": _scope_value("timeframe", "um"),
+        "source_spec_hash": source_spec_hash,
+        "columns": [list(entry) for entry in DERIVATIVES_COLUMN_KINDS],
+        "rows": rows,
+    }
+    return _digest(DERIVATIVES_SOURCE_SCHEMA, header, DERIVATIVES_COLUMN_KINDS, values, rows)
+
+
+def fingerprint_derivatives_hourly(
+    frame: Any, *, source_spec_hash: str
+) -> DerivativesHourlyFingerprint:
+    """Digest an hourly derivatives table and record the span the digest covers."""
+    dates = pd.to_datetime(pd.Index(np.asarray(frame["date"])), utc=True)
+    if len(dates) == 0:
+        raise DataFingerprintError("an empty derivatives table has no identity")
+    if not dates.is_monotonic_increasing:
+        raise DataFingerprintError(
+            "derivatives hours are not ascending, so the rows a digest covers are not a "
+            "prefix of them"
+        )
+    values = {name: frame[name] for name, _ in DERIVATIVES_COLUMN_KINDS}
+    return DerivativesHourlyFingerprint(
+        source_hash=derivatives_hourly_digest(
+            values, source_spec_hash=source_spec_hash, rows=len(dates)
+        ),
+        rows=int(len(dates)),
+        start=dates[0].isoformat(),
+        end=dates[-1].isoformat(),
+        columns=tuple(name for name, _ in DERIVATIVES_COLUMN_KINDS),
     )

@@ -91,12 +91,24 @@ from nn.information_sets import (
     P2B_INFORMATION_SETS,
     P2C_INFORMATION_SETS,
     P3_INFORMATION_SETS,
+    P4_INFORMATION_SETS,
     ablation_set_names,
     AlignedResearchSamples,
     build_information_set_views,
     checkpoint as load_checkpoint,
+    derivatives_spec_identity,
     feature_spec_identity,
     microstructure_spec_identity,
+)
+from nn.p4_holdout import assert_stage_one_snapshot, check_holdout_boundary
+from nn.p4_stage1 import assert_fit_authorised, assert_stage_one_geometry
+from nn.p4_universe import (
+    availability_gate,
+    build_universe,
+    evaluate_blocks,
+    fold_sample_hashes,
+    holdout_coverage_from_archive_days,
+    universe_identity,
 )
 from nn.research_contract import ContractScopeError, ResearchContract, load_contract
 from nn.simple_models import (
@@ -118,6 +130,10 @@ from nn.train import (
 from nn.walkforward import FoldPlan, REFERENCES_KEY, SUMMARY_METRICS, plan_nested_folds, spread
 from tools.freeze_evidence import PRIMARY
 from tools.verify_research_snapshot import SnapshotVerificationError, verify_snapshot
+from tools.verify_derivatives_snapshot import (
+    DerivativesSnapshotVerificationError,
+    verify_derivatives_snapshot,
+)
 from tools.verify_trade_snapshot import (
     TradeSnapshotVerificationError,
     verify_trade_snapshot,
@@ -139,6 +155,20 @@ DEFAULT_MANIFEST = Path("data/research/btc_usdt_1h_gen1_snapshot_manifest.json")
 #: P2c are functions of the candles alone, and a run that loaded a trade table it
 #: never used would record a provenance it did not have.
 DEFAULT_TRADE_MANIFEST = Path("data/research/btc_usdt_1h_gen1_trade_snapshot_manifest.json")
+
+#: P4's second source, and the file its arms are undefined without.
+DEFAULT_DERIVATIVES_MANIFEST = Path(
+    "data/research/btc_usdt_1h_gen1_derivatives_snapshot_manifest.json"
+)
+
+#: Where the probe records which metrics days P4-HOLD's own period publishes.
+#:
+#: §8.0 applies the block-availability rule to P4-HOLD as well, and stage 1 has
+#: to know the answer before it decides whether to continue — but stage 1's
+#: source file stops at row 45802 and structurally cannot contain the region.
+#: The only outcome-blind answer is archive-day metadata: which days exist, and
+#: no price, label, return or prediction from any of them.
+DEFAULT_HOLDOUT_COVERAGE = Path("data/research/p4_holdout_coverage.json")
 
 #: The geometry P2a ran under. Fractions of the *canonical* research region, not
 #: of the snapshot: the snapshot is a truncated prefix, and taking fractions of
@@ -359,6 +389,77 @@ def load_trade_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, dict[str, An
     return aggregates, manifest
 
 
+def load_derivatives_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Verify the committed derivatives snapshot end to end, then read it.
+
+    The verification is
+    :func:`tools.verify_derivatives_snapshot.verify_derivatives_snapshot` itself
+    — the same checks ``make verify-derivatives-snapshot`` runs, not a second
+    reading of the same manifest. It recomputes every claim: schema, the
+    preregistration hash the source was acquired under, contract identity, the
+    file digest, the source-spec hash, the semantic fingerprint, the table's
+    internal consistency and staleness bounds, the coverage claims, the
+    missing-day accounting, the binding to the OHLCV snapshot, the seal, the
+    P4-HOLD boundary, and the perpetual-versus-spot cross-source check.
+
+    It runs *here*, in the only function that reads the derivatives source,
+    rather than in the operator's ``make`` target, because a target is a
+    convention and ``python -m nn.p2b`` bypasses it.
+
+    A failure names the check and never the data.
+    """
+    if not Path(manifest_path).is_file():
+        raise SnapshotError(
+            f"P4 needs a derivatives snapshot and there is none at {manifest_path}. It "
+            "is produced by tools.export_derivatives_snapshot from Binance's public "
+            "USD-M archives; see docs/p4_preregistration.md §3. Refusing to fit a "
+            "derivatives arm without the source it is defined over."
+        )
+    try:
+        checks = verify_derivatives_snapshot(Path(manifest_path))
+    except DerivativesSnapshotVerificationError as exc:
+        raise SnapshotError(
+            f"the derivatives snapshot at {manifest_path} failed verification ({exc}). "
+            "Refusing to fit a model on data whose own manifest does not describe it."
+        ) from exc
+    logger.info(
+        "derivatives snapshot verified: %d checks passed against %s",
+        len(checks),
+        manifest_path,
+    )
+    manifest = json.loads(Path(manifest_path).read_text())
+    root = Path(manifest_path).resolve().parent.parent.parent
+    hourly = pd.read_parquet(root / manifest["hourly"]["path"])
+    return hourly, manifest
+
+
+def load_holdout_coverage(path: Path) -> dict[str, Any]:
+    """P4-HOLD's availability under §8.0, from archive-day metadata alone.
+
+    Absent is **not** available. A missing file means nobody has established
+    whether the region's own days are published, and an unknown coverage cannot
+    satisfy a gate that requires a known one — so this returns an unavailable
+    verdict with the reason rather than an optimistic default.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return {
+            "label": "p4_hold",
+            "available": False,
+            "reasons": [
+                f"no P4-HOLD coverage at {path}. §8.0 applies the block rule to P4-HOLD "
+                "too, and it is established from archive-day metadata by "
+                "tools.export_derivatives_snapshot --probe. An unknown coverage is not "
+                "an available one."
+            ],
+            "basis": "absent",
+        }
+    payload = json.loads(path.read_text())
+    if "published_days" in payload:
+        return holdout_coverage_from_archive_days(payload["published_days"])
+    return payload
+
+
 def plan_from_manifest(
     manifest: dict[str, Any], rows_available: int
 ) -> tuple[list[FoldPlan], dict[str, int]]:
@@ -455,6 +556,8 @@ def score_baselines(
     seq_len: int,
     baselines: dict[str, Any],
     device: Any,
+    *,
+    eligible: np.ndarray | None = None,
 ) -> Any:
     """The rule floors and the economic references, on the control view's columns.
 
@@ -477,6 +580,7 @@ def score_baselines(
         device=device,
         proba_of=momentum.predict_proba,
         model_name="momentum_baseline",
+        eligible=eligible,
     )
 
 
@@ -496,7 +600,14 @@ def run_cell(
     frozen scoring all come from :mod:`nn.train` — the same three functions P2a
     and the MTST walk-forward go through — so a difference between two cells in
     this report cannot be a difference in how the samples were built.
+
+    ``aligned.eligible`` is P4's sample universe, and it reaches the scaler, the
+    windowing and the frozen scoring from the *same array object* every arm was
+    built with. That is what makes "the three arms were scored on the same rows"
+    a property of how this loop was constructed rather than a claim about it. It
+    is ``None`` for every checkpoint before P4, which scores the whole spine.
     """
+    eligible = aligned.eligible
     data: ResearchData = aligned.views[set_name]
     # The rule floors are scored on the control view, never on the view under
     # test. `MomentumBaseline` reads `ema_cross`, which the `smc_v1` arm does not
@@ -525,9 +636,11 @@ def run_cell(
         threads = threadpool_record()
         for fold, plan in enumerate(folds):
             fold_seed = seed + fold
-            prepared = prepare_research_windows(data, plan.train, plan.inner, seq_len)
+            prepared = prepare_research_windows(
+                data, plan.train, plan.inner, seq_len, eligible=eligible
+            )
             control_prepared = prepare_research_windows(
-                control, plan.train, plan.inner, seq_len
+                control, plan.train, plan.inner, seq_len, eligible=eligible
             )
             baselines = fit_baselines(control, control_prepared.y_train)
             inner_return = data.future_return[prepared.idx_val]
@@ -565,9 +678,16 @@ def run_cell(
                 device=device,
                 proba_of=fitted.predict_proba,
                 model_name=spec.name,
+                eligible=eligible,
             )
             floors = score_baselines(
-                control, control_prepared, plan.outer, seq_len, baselines, device
+                control,
+                control_prepared,
+                plan.outer,
+                seq_len,
+                baselines,
+                device,
+                eligible=eligible,
             )
 
             outer = {spec.name: scored.reports[spec.name]}
@@ -790,6 +910,29 @@ def build_argparser() -> argparse.ArgumentParser:
         help="the P3 trade snapshot. Read only by checkpoints whose arms need it.",
     )
     parser.add_argument(
+        "--derivatives-manifest",
+        type=Path,
+        default=DEFAULT_DERIVATIVES_MANIFEST,
+        help="the P4 derivatives snapshot. Read only by checkpoints whose arms need it.",
+    )
+    parser.add_argument(
+        "--holdout-coverage",
+        type=Path,
+        default=DEFAULT_HOLDOUT_COVERAGE,
+        help="P4-HOLD's archive-day coverage, for the availability gate. Absent is not "
+        "available.",
+    )
+    parser.add_argument(
+        # The second half of the interlock. The first is a committed file; this
+        # is here so that a Make target, a script or a stale shell command cannot
+        # begin a P4 fit by existing. Neither gate alone is enough, and there is
+        # no flag that skips the other.
+        "--authorise-fit",
+        action="store_true",
+        help="confirm, at the command line, that this run may fit a P4 model. Also "
+        "requires data/research/p4_stage1_authorisation.json to say so.",
+    )
+    parser.add_argument(
         # Required, and not inferred from the information set: `ohlcv14` is the
         # control of both checkpoints, so the arms cannot name the question on
         # their own. A run that will not say which question it is answering
@@ -810,6 +953,7 @@ def build_argparser() -> argparse.ArgumentParser:
             set(P2B_INFORMATION_SETS)
             | set(P2C_INFORMATION_SETS)
             | set(P3_INFORMATION_SETS)
+            | set(P4_INFORMATION_SETS)
             | set(ablation_set_names())
         ),
         required=True,
@@ -899,12 +1043,94 @@ def main(argv: list[str] | None = None) -> int:
             ],
         }
 
+    universe = None
+    derivatives_provenance: dict[str, Any] | None = None
+    availability: dict[str, Any] | None = None
+    universe_record: dict[str, Any] | None = None
+    holdout_guards: dict[str, Any] | None = None
+    authorisation: dict[str, Any] | None = None
+    if checkpoint.derivatives_source:
+        # Every P4-HOLD guard, on the real path, before anything is built. The
+        # snapshot bound and the ledger's declared boundary are checked against
+        # the committed OHLCV snapshot, and the derivatives source's own hours
+        # are checked inside its verifier.
+        holdout_guards = {
+            "stage_1_snapshot": assert_stage_one_snapshot(args.manifest),
+            "boundary": check_holdout_boundary(args.manifest),
+        }
+        hourly, derivatives_manifest = load_derivatives_snapshot(args.derivatives_manifest)
+        if derivatives_manifest["contract"]["contract_hash"] != contract.contract_hash:
+            raise SnapshotError(
+                "the derivatives snapshot was exported under contract hash "
+                f"{derivatives_manifest['contract']['contract_hash']} but "
+                f"{args.research_contract} hashes to {contract.contract_hash}"
+            )
+        if (
+            derivatives_manifest["alignment"]["ohlcv_processed_semantic_prefix_hash"]
+            != manifest["processed_outer_coverage"]["semantic_prefix_hash"]
+        ):
+            raise SnapshotError(
+                "the derivatives snapshot was aligned to a different OHLCV research "
+                "input than the one this run loaded; two sources that were never "
+                "aligned to each other must not be joined into one information set"
+            )
+        universe = build_universe(spine, hourly, raw)
+        availability = availability_gate(
+            evaluate_blocks(universe), load_holdout_coverage(args.holdout_coverage)
+        )
+        universe_record = {
+            **universe.to_dict(),
+            "identity": universe_identity(universe, availability),
+        }
+        source = derivatives_manifest["source"]
+        derivatives_provenance = {
+            "manifest": str(args.derivatives_manifest),
+            "snapshot_schema": derivatives_manifest["snapshot_schema"],
+            "preregistration_hash": derivatives_manifest["preregistration_hash"],
+            "venue": source["venue"],
+            "market_type": source["market_type"],
+            "symbol": source["symbol"],
+            "semantic_hash": derivatives_manifest["hourly"]["semantic_hash"],
+            "source_spec_hash": derivatives_manifest["hourly"]["source_spec_hash"],
+            "hours": derivatives_manifest["hourly"]["rows"],
+            "start": derivatives_manifest["hourly"]["start"],
+            "end": derivatives_manifest["hourly"]["end"],
+            "archives": derivatives_manifest["acquisition"]["archive_count"],
+            "missing_metrics_days": derivatives_manifest["acquisition"][
+                "missing_metrics_days"
+            ],
+            "funding_layouts_seen": derivatives_manifest["acquisition"][
+                "funding_layouts_seen"
+            ],
+            "contains_styx": derivatives_manifest["contains_styx"],
+            "contains_p4_hold": derivatives_manifest["contains_p4_hold"],
+            "ohlcv_binding": derivatives_manifest["alignment"][
+                "ohlcv_processed_semantic_prefix_hash"
+            ],
+        }
+
     folds, sizes = plan_from_manifest(manifest, len(spine))
+    if checkpoint.derivatives_source:
+        holdout_guards["fold_plan"] = assert_stage_one_geometry(folds)
+        # The last thing before anything is fitted, and the only door to it.
+        authorisation = assert_fit_authorised(
+            confirm=args.authorise_fit, availability=availability
+        )
+
     names = tuple(dict.fromkeys((CONTROL_SET, args.information_set)))
     aligned = build_information_set_views(
-        spine, ds_meta, raw, names=names, trade_aggregates=trade_aggregates
+        spine,
+        ds_meta,
+        raw,
+        names=names,
+        trade_aggregates=trade_aggregates,
+        derivatives=universe,
     )
     alignment = aligned.prove_alignment(folds, args.seq_len)
+    if universe is not None:
+        alignment["fold_sample_hashes"] = fold_sample_hashes(
+            universe, folds, args.seq_len, ds_meta.target_spec["horizon"], spine
+        )
 
     spec = next(s for s in SIMPLE_MODELS if s.name == args.model)
     logger.warning(
@@ -976,6 +1202,27 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             }
             if checkpoint.trade_source and aligned.micro_spec is not None
+            else {}
+        ),
+        # Present only for a checkpoint whose evidence is defined against the
+        # derivatives source. A cell that recorded `null` here would be claiming
+        # a relationship to a source it never opened, and would not be
+        # byte-comparable with the cells the earlier checkpoints already froze.
+        **(
+            {
+                "derivatives_snapshot": derivatives_provenance,
+                "derivatives_spec": derivatives_spec_identity(
+                    aligned.derivatives_spec,
+                    derivatives_provenance or {},
+                    universe_record or {},
+                ),
+                "sample_universe": universe_record,
+                "availability": availability,
+                "p4_holdout_guards": holdout_guards,
+                "stage": 1,
+                "stage_1_authorisation": authorisation,
+            }
+            if checkpoint.derivatives_source and aligned.derivatives_spec is not None
             else {}
         ),
         "code": code_revision(),

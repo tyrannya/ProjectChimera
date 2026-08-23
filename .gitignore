@@ -40,6 +40,13 @@ data/research/*
 # region nothing has scored. It is a state file rather than data, and the
 # guard in nn/p4_holdout.py has nothing to read without it.
 !data/research/p4_holdout_ledger.json
+# P4's stage-1 fit interlock: whether anyone has authorised this checkpoint to
+# begin fitting, under whose name and for what reason. A state file rather than
+# data, and the point of it is that flipping it is a *commit* — an ignored file
+# would make it a local edit nobody reviews, which is the whole thing it exists
+# to prevent. nn/p4_stage1.py has nothing to read without it, and a missing
+# interlock is refused rather than treated as an open one.
+!data/research/p4_stage1_authorisation.json
 
 artifacts/*
 # ...except the artifact index and per-directory status markers. Which research

@@ -393,13 +393,27 @@ class PreparedWindows:
 
 
 def prepare_research_windows(
-    data: ResearchData, train_split: Split, val_split: Split, seq_len: int
+    data: ResearchData,
+    train_split: Split,
+    val_split: Split,
+    seq_len: int,
+    *,
+    eligible: np.ndarray | None = None,
 ) -> PreparedWindows:
     """Fit the scaler on training rows only, then window train and validation.
 
     Raises ``ValueError`` — rather than returning something empty — when a split
     is too short to hold one window plus its label horizon, or when validation
     does not lie strictly after training.
+
+    ``eligible`` is P4's sample universe (``docs/p4_preregistration.md`` §6.2):
+    a per-row flag restricting which rows may become samples at all. It also
+    restricts the rows the **scaler** is fitted on, which is not a detail — a row
+    outside the universe carries a declared placeholder rather than an
+    observation, and standardising against those placeholders would put them
+    into every scaled value in the fold. Defaults to ``None``, which leaves the
+    behaviour every frozen artifact in this repository was produced under
+    unchanged.
     """
     if val_split.start < train_split.end:
         raise ValueError(
@@ -407,7 +421,16 @@ def prepare_research_windows(
             f"row {train_split.end}, validation starts at row {val_split.start}"
         )
 
-    scaler = StandardScaler().fit(data.features[train_split.start : train_split.end])
+    fit_rows = data.features[train_split.start : train_split.end]
+    if eligible is not None:
+        mask = np.asarray(eligible, dtype=bool)[train_split.start : train_split.end]
+        if not mask.any():
+            raise ValueError(
+                f"no row of the {train_split.name} split is inside the sample universe, "
+                "so there is nothing to fit a scaler on"
+            )
+        fit_rows = fit_rows[mask]
+    scaler = StandardScaler().fit(fit_rows)
 
     # Everything below works on rows [0, val_split.end) only. Rows after this
     # fold are not merely unused — they are not in the arrays that get scaled
@@ -420,6 +443,7 @@ def prepare_research_windows(
     segment_ids = None if data.segment_ids is None else data.segment_ids[:visible]
 
     built = []
+    visible_eligible = None if eligible is None else np.asarray(eligible, dtype=bool)[:visible]
     for split in (train_split, val_split):
         X, y, idx = build_windows(
             scaled,
@@ -428,6 +452,7 @@ def prepare_research_windows(
             seq_len,
             data.target_spec.horizon,
             segment_ids=segment_ids,
+            eligible=visible_eligible,
         )
         if len(X) == 0:
             raise ValueError(
@@ -592,6 +617,7 @@ def score_frozen_split(
     device: torch.device,
     proba_of: Callable[[np.ndarray], np.ndarray] | None = None,
     model_name: str = "mtst",
+    eligible: np.ndarray | None = None,
 ) -> FrozenScore:
     """Score an already-frozen model, threshold and baselines on one split.
 
@@ -616,6 +642,11 @@ def score_frozen_split(
     caller — or a test — can check where the samples came from instead of
     trusting the name.
 
+    ``eligible`` restricts scoring to P4's sample universe. It is passed rather
+    than inferred so that every arm of a P4 comparison receives the *same array*,
+    which is what makes "the three arms were scored on the same rows" a property
+    of how the call was made rather than a claim about it.
+
     Raises ``ValueError`` when the split is too short to hold one window plus
     its label horizon, rather than reporting metrics over zero samples.
     """
@@ -631,6 +662,7 @@ def score_frozen_split(
         seq_len,
         data.target_spec.horizon,
         segment_ids=None if data.segment_ids is None else data.segment_ids[:visible],
+        eligible=None if eligible is None else np.asarray(eligible, dtype=bool)[:visible],
     )
     if len(X) == 0:
         raise ValueError(
