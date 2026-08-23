@@ -223,6 +223,57 @@ def aggregation_spec_hash() -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+#: The epoch-nanosecond range ``pandas`` can represent as a timestamp. Values
+#: outside it are a real input this module has to describe rather than a case it
+#: is entitled to crash on: an archive whose timestamps are already nanoseconds,
+#: read as milliseconds, is off by a factor of a million.
+_NS_MIN = -(2**63) + 1
+_NS_MAX = 2**63 - 1
+
+
+def _describe_instant(value: int) -> str:
+    """Render an epoch-nanosecond value, or say why it is not an instant.
+
+    :func:`resolve_epoch_unit` reports what each candidate unit *would* have
+    made of the archive, and one of those candidates is always wrong by three or
+    six orders of magnitude — that is the point of the report. Formatting it
+    with ``pd.Timestamp`` therefore raised ``OutOfBoundsDatetime`` from inside
+    the error path, so a malformed or mixed-unit archive surfaced as a pandas
+    bounds error about a value the caller never supplied, rather than as this
+    module's own refusal to read it.
+    """
+    if not _NS_MIN <= value <= _NS_MAX:
+        return f"{value} ns (not a representable instant)"
+    return str(pd.Timestamp(value, unit="ns", tz="UTC"))
+
+
+def scale_to_nanoseconds(raw: np.ndarray, unit: str) -> np.ndarray:
+    """Convert an archive's raw epoch column to int64 UTC nanoseconds.
+
+    Fails closed on overflow rather than letting NumPy wrap. ``raw * scale`` on
+    an ``int64`` array is silent modular arithmetic: nanosecond values read as
+    milliseconds wrap to arbitrary instants, some of which land back inside the
+    archive's own period and would pass the range check downstream.
+    """
+    try:
+        scale = EPOCH_UNITS[unit]
+    except KeyError as exc:
+        raise TradeAggregationError(
+            f"{unit!r} is not a supported epoch unit; expected one of "
+            f"{sorted(EPOCH_UNITS)}"
+        ) from exc
+    values = np.asarray(raw, dtype=np.int64)
+    if scale > 1 and len(values):
+        limit = _NS_MAX // scale
+        if int(values.max()) > limit or int(values.min()) < -limit:
+            raise TradeAggregationError(
+                f"an epoch value in this archive does not fit in int64 nanoseconds "
+                f"under unit {unit!r} (raw span {int(values.min())}..{int(values.max())}). "
+                "The archive is not in the unit it was resolved to, or it mixes units."
+            )
+    return values * scale
+
+
 def resolve_epoch_unit(
     raw_min: int, raw_max: int, *, period_start: pd.Timestamp, period_end: pd.Timestamp
 ) -> str:
@@ -262,8 +313,8 @@ def resolve_epoch_unit(
             f"no supported epoch unit places this archive inside {window}: its raw "
             f"timestamps span {raw_min}..{raw_max}, which is "
             + ", ".join(
-                f"{unit} -> {pd.Timestamp(raw_min * scale, unit='ns', tz='UTC')}"
-                f"..{pd.Timestamp(raw_max * scale, unit='ns', tz='UTC')}"
+                f"{unit} -> {_describe_instant(raw_min * scale)}"
+                f"..{_describe_instant(raw_max * scale)}"
                 for unit, scale in EPOCH_UNITS.items()
             )
             + ". Refusing to read it under a guessed unit."

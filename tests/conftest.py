@@ -220,23 +220,18 @@ def synthetic_trade_snapshot(synthetic_research_snapshot):
 
     from nn.trade_aggregates import HourlyTradeAggregator
     from tools.export_trade_snapshot import acquisition_window, write_snapshot
-    from tools.make_sample_data import generate_trades
+    from tools.make_sample_data import trades_reproducing
 
     fixture = synthetic_research_snapshot
     contract = fixture["contract"]
     candles = fixture["candles"]
     start = pd.Timestamp(candles["date"].iloc[0]).tz_convert("UTC")
-    hours = (
-        int(
-            (pd.Timestamp(candles["date"].iloc[-1]).tz_convert("UTC") - start)
-            / pd.Timedelta(hours=1)
-        )
-        + 1
-    )
 
-    ts, price, qty, maker, ids = generate_trades(
-        hours=hours, seed=23, start=start, trades_per_hour=6
-    )
+    # `trades_reproducing`, not `generate_trades`: the two generators draw
+    # independent price paths, so a fixture built from both holds two recordings
+    # of two different markets and cannot exercise the verifier's
+    # `cross_source_values` check at all.
+    ts, price, qty, maker, ids = trades_reproducing(candles, seed=23, trades_per_hour=6)
     aggregator = HourlyTradeAggregator(styx_ns=int(contract.sealed_test_start.value))
     aggregator.add_chunk(ts, price, qty, maker, ids)
     aggregates = aggregator.finish()

@@ -71,6 +71,11 @@ from nn.information_sets import CHECKPOINTS, Checkpoint, OHLCV14, information_se
 from nn.p2b import ARTIFACT_NAME, PREDICTIONS_NAME
 from nn.regime import direction_attribution
 from nn.simple_models import SIMPLE_MODEL_NAMES
+from nn.source_identity import (
+    LEGACY_SOURCE_IDENTITY_SCHEMES,
+    RECOGNISED_SOURCE_IDENTITY_SCHEMES,
+    SOURCE_IDENTITY_SCHEME,
+)
 from nn.walkforward import REFERENCES_KEY
 from tools.freeze_evidence import DERIVED
 
@@ -270,7 +275,53 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
         theirs_code = ref.get("code") or {}
         mine = mine_code.get("source_digest")
         theirs = theirs_code.get("source_digest")
+        mine_scheme = mine_code.get("scheme")
+        theirs_scheme = theirs_code.get("scheme")
+        # Recognised first, and by allow-list. The previous order asked only
+        # whether the two schemes were *equal* and then whether either was the
+        # current one, so two cells both declaring `scheme: "anything/1"` agreed
+        # with each other, failed to be the current scheme, and fell through to
+        # the historical exemption — a cell could re-enter the legacy rule by
+        # inventing a name for itself. An unrecognised scheme is a cell from a
+        # generation this code cannot compare, and is refused.
+        known = sorted(s for s in RECOGNISED_SOURCE_IDENTITY_SCHEMES if s)
+        for scheme, side in ((mine_scheme, cell), (theirs_scheme, reference)):
+            if scheme not in RECOGNISED_SOURCE_IDENTITY_SCHEMES:
+                raise ComparisonError(
+                    f"{described(side)} identifies its source under scheme "
+                    f"{scheme!r}, which this comparison does not recognise. The "
+                    f"known schemes are {known}, plus the historical cells that "
+                    "record none at all. A cell under any other scheme states a "
+                    "rule this code has no definition of, and is refused rather "
+                    "than compared under a guess."
+                )
+        if mine_scheme != theirs_scheme:
+            raise ComparisonError(
+                f"{described(cell)} identifies its source under scheme "
+                f"{mine_scheme!r} and {described(reference)} under "
+                f"{theirs_scheme!r}. Two digests taken under different rules "
+                "are not comparable, and joining them would compare nothing."
+            )
         if mine != theirs:
+            if mine_scheme not in LEGACY_SOURCE_IDENTITY_SCHEMES:
+                raise ComparisonError(
+                    f"{described(cell)} ran source digest {mine} and "
+                    f"{described(reference)} ran {theirs}. Under "
+                    f"{mine_scheme!r} the digest covers this repository's "
+                    "tracked Python source and nothing else, so two cells that disagree "
+                    "on it executed materially different ProjectChimera source. Re-run "
+                    "them from one revision."
+                )
+            # The import-graph scheme this repository used until the source-identity
+            # remediation: the digest covered every module a process imported whose
+            # file resolved inside the checkout, which on a developer machine with an
+            # in-repository virtualenv included site-packages — so the three model
+            # families produced three digests from one source tree. Cells recorded
+            # under it may still join on a shared clean revision, which is what keeps
+            # the committed P2b/P2c/P3 comparisons reproducible. The population is
+            # closed: it is the cells that record no scheme at all, named in
+            # LEGACY_SOURCE_IDENTITY_SCHEMES, and nothing a new cell can write about
+            # itself puts it back in.
             same_clean_revision = bool(
                 mine
                 and theirs
@@ -286,6 +337,23 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     "digests may join only when both cells came from the same clean "
                     "repository revision."
                 )
+        mine_numerics = payload.get("numerics")
+        theirs_numerics = ref.get("numerics")
+        if (mine_numerics is None) != (theirs_numerics is None):
+            raise ComparisonError(
+                f"{described(cell)} and {described(reference)} disagree about whether a "
+                "numerical environment was recorded at all. One of them predates the "
+                "record; they belong to different research generations and must not be "
+                "joined."
+            )
+        if mine_numerics is not None and mine_numerics != theirs_numerics:
+            raise ComparisonError(
+                f"{described(cell)} and {described(reference)} were fitted under "
+                "different numerical environments. Nominally identical control cells "
+                "have been observed to differ across environments by enough to select a "
+                "different threshold, so a comparison whose arms did not share one is "
+                "measuring the environment as well as the information set."
+            )
         # `.get`, not `[...]`: `trade_snapshot` and `microstructure_spec` exist
         # only for a checkpoint whose evidence is defined against the trade
         # source, and a P2b cell that has neither must still compare equal to
@@ -354,6 +422,7 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "combined feature-spec hash",
             "majority and momentum baseline outer reports",
             "CASH and buy-and-hold economic references",
+            "the numerical environment the cells were fitted under, where they record one",
         ],
         "code": {
             "source_digest": (
@@ -380,10 +449,30 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     if (c["payload"].get("code") or {}).get("revision")
                 }
             ),
+            "schemes": sorted(
+                {
+                    (c["payload"].get("code") or {}).get("scheme") or "import-graph/legacy"
+                    for c in cells
+                }
+            ),
             "note": (
-                "source digests may differ across model-specific import graphs. "
-                "A differing digest is accepted only when every compared cell comes "
-                "from the same clean repository revision."
+                f"under {SOURCE_IDENTITY_SCHEME!r} the digest covers this repository's "
+                "tracked Python source under chimera/, nn/, strategies/ and tools/, an "
+                "installed environment cannot enter it, and every compared cell must "
+                "carry the same one. Cells recorded under the earlier import-graph rule "
+                "— whose digest could differ by model family because it swept in an "
+                "in-repository virtualenv — may still join on a shared clean revision, "
+                "which is what keeps their committed comparisons reproducible."
+            ),
+        },
+        "numerics": {
+            "recorded": [c["payload"].get("numerics") is not None for c in cells].count(True),
+            "environment": ref.get("numerics"),
+            "note": (
+                "every compared cell was fitted under one numerical environment, or none "
+                "of them records which environment it was fitted under. Sharing an "
+                "environment is not a determinism claim; see docs/p2b_methodology.md "
+                "section 8"
             ),
         },
         "conclusion": (

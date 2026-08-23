@@ -82,6 +82,7 @@ from nn.trade_aggregates import (
     check_table,
     coverage_report,
     resolve_epoch_unit,
+    scale_to_nanoseconds,
 )
 
 logger = logging.getLogger(__name__)
@@ -453,8 +454,7 @@ def iter_archive_chunks(
                         period_start=archive.period_start,
                         period_end=archive.period_end,
                     )
-                scale = {"ms": 1_000_000, "us": 1_000, "ns": 1}[unit]
-                ts = raw * scale
+                ts = scale_to_nanoseconds(raw, unit)
                 lo = int(archive.period_start.value)
                 hi = int(archive.period_end.value)
                 outside = int(((ts < lo) | (ts >= hi)).sum())

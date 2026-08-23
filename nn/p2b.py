@@ -64,10 +64,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import hashlib
+import platform
 import statistics
-import subprocess
-import sys
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -108,6 +107,7 @@ from nn.simple_models import (
     fit_simple_model,
     flattened_column_names,
 )
+from nn.source_identity import source_identity
 from nn.train import (
     BASELINE_DECISION_THRESHOLD,
     ResearchData,
@@ -167,7 +167,7 @@ FIT_THREADS = 1
 
 
 def code_revision() -> dict[str, Any]:
-    """Which revision of this code produced the artifact.
+    """Which ProjectChimera source produced the artifact.
 
     Every other identity a cell records — the contract hash, the snapshot
     hashes, the feature-spec hash, the library versions — describes the *data*
@@ -177,59 +177,75 @@ def code_revision() -> dict[str, Any]:
     `build_information_set_views` produced identical `alignment["folds"]` blocks
     while building a different number of views.
 
-    Absent when the tree is not a git checkout, which is a fact about the run
-    and is recorded as such rather than guessed at.
+    The digest, not the revision, is what `nn.p2b_compare` compares. A commit
+    that touches only documentation moves HEAD without changing a line any cell
+    executes, and refusing to join cells across it would split a batch for no
+    reason; a dirty working tree moves no revision at all while changing
+    everything.
+
+    :func:`nn.source_identity.source_identity` defines what is hashed, and why
+    it is the git-tracked package roots rather than the modules this process
+    imported: the earlier import-graph digest swept in an in-repository
+    virtualenv's site-packages, which made the P3 cells' digests differ by model
+    family while every line of this repository's source was identical.
     """
-    root = Path(__file__).resolve().parent.parent
+    return source_identity(Path(__file__).resolve().parent.parent)
 
-    def git(*args: str) -> str | None:
+
+def numerical_environment() -> dict[str, Any]:
+    """The numerical stack this process is about to fit under.
+
+    Recorded because nominally identical control cells have been observed to
+    differ across environments. `logistic_regression`'s lbfgs solver reduces
+    through BLAS, and a reduction whose order depends on the BLAS build is not
+    bit-identical across builds — which on this dataset is enough to select a
+    different point off the 0.02-spaced threshold grid and report a materially
+    different net return for the same data, the same code and the same seed.
+    Pinning the thread count (`FIT_THREADS`) removes one source of that
+    variation; it does not remove the others.
+
+    So this block makes no determinism claim. It records what would have to be
+    equal for one to be plausible — interpreter, array and solver libraries,
+    the model library, the BLAS/LAPACK builds actually loaded, and the platform
+    and CPU — so that a future disagreement between two runs can be diagnosed
+    instead of argued about. What it deliberately does not do is assert that
+    two runs sharing it will agree.
+    """
+
+    def version(name: str) -> str | None:
         try:
-            out = subprocess.run(
-                ["git", "-C", str(root), *args],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):  # pragma: no cover
+            return metadata.version(name)
+        except metadata.PackageNotFoundError:
             return None
-        return out.stdout.strip() if out.returncode == 0 else None
-
-    head = git("rev-parse", "HEAD")
-    status = git("status", "--porcelain")
-
-    # The digest, not the revision, is what `nn.p2b_compare` compares. A commit
-    # that touches only documentation moves HEAD without changing a line any
-    # cell executes, and refusing to join cells across it would split a batch
-    # for no reason; a dirty working tree moves no revision at all while
-    # changing everything. Hashing the repository source each process actually
-    # imported answers the question both of those get wrong — what code ran.
-    sources: dict[str, str] = {}
-    for name, module in sorted(sys.modules.items()):
-        path = getattr(module, "__file__", None)
-        if not path:
-            continue
-        resolved = Path(path).resolve()
-        # `is_file()` guards against a module whose `__file__` is a bare name —
-        # a few libraries set one — which resolves against the working directory
-        # and lands inside the repository without existing there.
-        if root in resolved.parents and resolved.suffix == ".py" and resolved.is_file():
-            sources[str(resolved.relative_to(root))] = hashlib.sha256(
-                resolved.read_bytes()
-            ).hexdigest()
-    digest = hashlib.sha256(
-        json.dumps(sources, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
 
     return {
-        "revision": head,
-        "dirty": None if status is None else bool(status.strip()),
-        "source_digest": digest,
-        "source_files": len(sources),
+        "python": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "libraries": {
+            name: version(name)
+            for name in ("numpy", "scipy", "scikit-learn", "pandas", "lightgbm", "xgboost")
+        },
+        "blas": [
+            {
+                "user_api": pool.get("user_api"),
+                "internal_api": pool.get("internal_api"),
+                "version": pool.get("version"),
+                "filepath": Path(pool["filepath"]).name if pool.get("filepath") else None,
+                "threading_layer": pool.get("threading_layer"),
+            }
+            for pool in threadpool_info()
+        ],
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "processor": platform.processor(),
+        },
         "note": (
-            "source_digest covers every repository module this process imported and is "
-            "what nn.p2b_compare requires cells to agree on; revision and dirty are "
-            "recorded beside it because neither one alone says what code ran"
+            "recorded to diagnose numerical drift, not to claim determinism. This "
+            "repository has not demonstrated that a logistic_regression cell reproduces "
+            "bit-for-bit across environments, and does not assert that it does; see "
+            "docs/p2b_methodology.md section 8"
         ),
     }
 
@@ -693,6 +709,7 @@ def to_markdown(payload: dict[str, Any]) -> str:
     """A short per-cell summary. The cross-cell comparison is a separate tool."""
     parity = payload["information_parity"]
     model = payload["model"]
+    micro = payload.get("microstructure_spec") or {}
     lines = [
         f"# {payload['checkpoint']} cell — {model} on `{payload['information_set']}`",
         "",
@@ -709,8 +726,22 @@ def to_markdown(payload: dict[str, Any]) -> str:
         f"`{payload['contract']['sealed_test_start']}`. Not planned over, not fitted on,",
         "not selected on, not scored. `sealed_test: false`.",
         "",
-        f"**Feature spec:** smc `{payload['feature_spec']['smc_spec_version']}` "
-        f"`sha256:{payload['feature_spec']['smc_spec_hash'][:16]}...`",
+        # The combined hash, and the family spec the cell's *own* checkpoint is
+        # defined against. This line used to print `smc_spec_version` and
+        # `smc_spec_hash` unconditionally, so every frozen P2c and P3 cell — a
+        # chart-structure and a microstructure cell respectively — headed its
+        # report with `smc_v1`. Every number under it was right and the identity
+        # above it named a family the cell never computed. The frozen files keep
+        # the old line: they are what those runs printed.
+        "**Feature spec:** combined "
+        f"`sha256:{payload['feature_spec']['combined_spec_hash'][:16]}...`"
+        + (
+            ", microstructure "
+            f"`{micro['microstructure_spec_version']}` "
+            f"`sha256:{micro['microstructure_spec_hash'][:16]}...`"
+            if micro
+            else ""
+        ),
         "",
         "## Per-fold outer validation",
         "",
@@ -948,6 +979,7 @@ def main(argv: list[str] | None = None) -> int:
             else {}
         ),
         "code": code_revision(),
+        "numerics": numerical_environment(),
         "config": {
             "seed": args.seed,
             "seq_len": args.seq_len,

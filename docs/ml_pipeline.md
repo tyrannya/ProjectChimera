@@ -43,8 +43,33 @@ Two separate failures were involved, and both are fixed by construction here:
 
 A 0.05% move is not an opportunity if capturing it costs 0.2%. Labelling such
 moves HOLD stops the model from learning to chase noise that loses money after
-fees, and it means the offline "net return" figure is comparable with what the
-strategy would actually have earned.
+fees, and it puts the offline "net return" figure in the same units as a
+cost-aware decision instead of a gross one.
+
+**What that figure is not.** It is a signal evaluation charged a flat
+round-trip, and it differs from what a live spot bot would have earned in three
+ways worth naming rather than leaving to be discovered:
+
+- **The cost is applied additively**, as `direction × future_return − 0.002`,
+  not as a compounded `(1 + r)(1 − c)² − 1`. On a 20 bps round trip and hourly
+  BTC moves the difference is a few parts in ten thousand of the trade return,
+  which is immaterial against the effects being measured — but it is an
+  approximation, and it is applied identically to every arm, so it cannot
+  favour one.
+- **The cost is a constant, not a model of the book.** `fee_rate` is a flat
+  taker fee and `slippage_rate` a flat allowance; neither responds to size,
+  volatility or time of day, and no funding, borrow or maker rebate exists in
+  it at all. A strategy whose edge is smaller than the uncertainty in that
+  constant has not been shown to have one.
+- **The research evaluation takes SHORT trades that this repository's live
+  strategies cannot.** `realised_trades` opens a `-1` position on a SHORT
+  signal and nets `−future_return − cost`. Every shipped strategy sets
+  `can_short = False` and every shipped config is spot, so on the live path a
+  SHORT signal produces no entry at all. The research number is therefore an
+  answer about the *information*, not a projection of a deployable spot
+  strategy's return; `nn.regime.direction_attribution` exists to split the two
+  sides so the LONG-only half can be read on its own. Freqtrade's backtester
+  remains the authority on execution.
 
 The side effect is that HOLD becomes the majority class. That is handled with
 inverse-frequency class weights in the loss (`nn/train.py::class_weights`);
@@ -393,9 +418,12 @@ produced before the change are detected and flagged rather than compared — see
 
 `trading_metrics` is a *signal evaluation*, not a backtest. It takes
 non-overlapping trades in time order, holds each for `horizon` candles, and
-charges the round-trip cost. Overlapping them would book the same price move
-several times. Freqtrade's backtester remains the authority on execution; this
-exists so model selection can optimise a cost-aware objective instead of accuracy.
+charges the round-trip cost as a flat subtraction from the trade's return; it
+takes SHORT trades, which the long-only spot strategies here do not. Overlapping
+them would book the same price move several times. See *Why costs are in the
+label* above for what the cost model is and is not. Freqtrade's backtester
+remains the authority on execution; this exists so model selection can optimise
+a cost-aware objective instead of accuracy.
 
 Baselines are always reported next to the model, on both validation and test.
 

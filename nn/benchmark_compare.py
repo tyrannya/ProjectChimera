@@ -555,7 +555,7 @@ def economic_verdict(runs: list[Run], model: str, holds: dict[int, float]) -> di
         "beat_cash_observations": sum(1 for v in net if v > 0),
         "buy_and_hold_comparisons": hold_comparisons,
         "beat_buy_and_hold_observations": beat_hold,
-        "made_money": bool(net) and statistics.fmean(net) > 0,
+        "positive_mean_net_return": bool(net) and statistics.fmean(net) > 0,
     }
 
 
@@ -776,11 +776,26 @@ def answers(
     """The checkpoint's questions, answered one line each.
 
     Two verdict fields per model, never one. ``predictive_baseline_improvement``
-    is "did it learn more than a trivial rule"; ``economic_alpha_after_costs`` is
-    "did acting on it make money after fees and slippage". They are different
-    questions with different answers, and collapsing them into a single
-    "beats the baselines" sentence is how a losing model gets read as a working
-    one.
+    is "did it learn more than a trivial rule";
+    ``positive_mean_net_return_after_costs`` is "was the mean outer net return
+    after fees and slippage above zero". They are different questions with
+    different answers, and collapsing them into a single "beats the baselines"
+    sentence is how a losing model gets read as a working one.
+
+    **The second field says less than its old name did.** It was
+    ``economic_alpha_after_costs``, and it was computed — then as now — as
+    ``mean(net_return) > 0`` over four temporal outer folds that were not
+    independent draws, with no interval, no test and, in the folds behind it,
+    trade counts as low as four. A positive point estimate on that evidence is
+    not established economic alpha, and a machine-readable boolean called
+    ``economic_alpha_after_costs`` invites exactly the reading it cannot
+    support. The field now states the literal fact it computes and carries the
+    fold count, the trade count and the dispersion beside it; whether that
+    amounts to alpha is a judgement a reader makes, not a flag this file sets.
+
+    The frozen ``artifacts/benchmark/btc_p2a_comparison/`` evidence keeps the
+    old key: it is a record of what P2a reported, and rewriting it would be
+    rewriting history rather than correcting it.
     """
     out: dict[str, Any] = {}
     for model in SIMPLE_MODEL_NAMES:
@@ -819,11 +834,23 @@ def answers(
                 f"{per_model[model]['observations']}"
             ),
             "predictive_baseline_improvement": beats_floor,
-            "economic_alpha_after_costs": bool(economic["made_money"]),
+            "positive_mean_net_return_after_costs": bool(economic["positive_mean_net_return"]),
+            "mean_net_return_evidence": {
+                "observations": per_model[model]["observations"],
+                "temporal_folds": len(per_model[model]["per_fold_mean_net_return"]),
+                "fold_dispersion_of_mean_net_return": per_model[model][
+                    "fold_dispersion_of_mean_net_return"
+                ],
+                "min_fold_net_return": per_model[model]["metrics"]["net_return"]["min"],
+                "max_fold_net_return": per_model[model]["metrics"]["net_return"]["max"],
+                "min_outer_trades": per_model[model]["metrics"]["n_trades"]["min"],
+            },
             "note": (
-                "predictive-baseline improvement is not economic alpha: clearing "
-                "majority-class and momentum is a floor test, and only a positive mean "
-                "net return after costs — above CASH — is money"
+                "predictive-baseline improvement is not economic alpha, and neither is "
+                "the field beside it: clearing majority-class and momentum is a floor "
+                "test, and a positive mean net return is a point estimate over a handful "
+                "of dependent temporal folds, reported here with its dispersion and its "
+                "thinnest fold rather than as a verdict"
             ),
         }
     out["mtst"] = {
@@ -831,7 +858,9 @@ def answers(
         "positive_outer_folds": (
             f"{per_model[MTST]['positive_outer_folds']}/{per_model[MTST]['observations']}"
         ),
-        "economic_alpha_after_costs": bool(economics[MTST]["made_money"]),
+        "positive_mean_net_return_after_costs": bool(
+            economics[MTST]["positive_mean_net_return"]
+        ),
         "source": "frozen v4 artifacts, read only; not retrained for P2a",
     }
     out["buy_and_hold_mean_net_return"] = (
@@ -918,8 +947,9 @@ def to_markdown(report: dict[str, Any]) -> str:
         "### The checkpoint's questions",
         "",
         "| model | beats MTST | beats majority | beats momentum | beats CASH | "
-        "beats buy-and-hold | predictive-baseline improvement | economic alpha after costs |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "beats buy-and-hold | predictive-baseline improvement | "
+        "positive mean net return after costs | thinnest fold |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for model in SIMPLE_MODEL_NAMES:
         answer = report["answers"][model]
@@ -932,17 +962,22 @@ def to_markdown(report: dict[str, Any]) -> str:
             f"{yes(answer['beats_cash'])} | "
             f"{answer['beats_buy_and_hold_in_observations']} | "
             f"{yes(answer['predictive_baseline_improvement'])} | "
-            f"{yes(answer['economic_alpha_after_costs'])} |"
+            f"{yes(answer['positive_mean_net_return_after_costs'])} | "
+            f"{answer['mean_net_return_evidence']['min_outer_trades']} trades |"
         )
 
     lines += [
         "",
-        "**Read the last two columns apart.** *Predictive-baseline improvement* means the",
-        "model learned more than a trivial rule — a floor test. *Economic alpha after",
-        "costs* means acting on it earned money after fees and slippage, above CASH. A",
-        "model can pass the first and fail the second, and this repository has already",
-        "published exactly that; no model is called profitable here for clearing majority",
-        "or momentum.",
+        "**Read the last three columns apart.** *Predictive-baseline improvement* means",
+        "the model learned more than a trivial rule — a floor test. *Positive mean net",
+        "return after costs* means exactly what it says: the mean of the outer net",
+        "returns, after fees and slippage, was above zero. It is a point estimate over a",
+        "handful of dependent temporal folds with no interval and no test, so it is not a",
+        "claim that economic alpha was established — which is why *thinnest fold* is",
+        "printed beside it: a mean carried by a fold that took four trades is a mean",
+        "about four trades. A model can pass the first column and fail the second, and",
+        "this repository has already published exactly that; no model is called",
+        "profitable here for clearing majority or momentum.",
         "",
         "### Selected thresholds",
         "",

@@ -127,8 +127,20 @@ def build_at(
 
 
 def fingerprint_of(path: Path, contract=CONTRACT):
-    """The research-input fingerprint one dataset carries under one contract."""
-    data = train.load_research_data(path)
+    """The research-input fingerprint one dataset carries under one contract.
+
+    Assembled with :func:`nn.train.research_data_from_frame` rather than loaded
+    with :func:`nn.train.load_research_data`, because most of the tests below
+    corrupt exactly the columns the loader now vouches for: it refuses a dataset
+    whose stored ``future_return`` is not the return over the declared horizon
+    of its own close path, which is the whole point of
+    ``test_the_loader_refuses_labels_built_at_another_horizon`` and would
+    otherwise stop these tests before the identity they are about is computed.
+    What is under test here is the *fingerprint*, not the loader's willingness
+    to run research on a broken table.
+    """
+    frame, ds_meta = load_dataset(path)
+    data = train.research_data_from_frame(frame, ds_meta)
     return data.input_fingerprint(data.sealed_boundary(contract))
 
 
@@ -494,7 +506,8 @@ def test_a_correction_before_the_seal_moves_the_data_not_the_contract(
     and therefore the contract, is untouched.
     """
     corrected = corrupted_copy(tmp_path / "fix", dataset, row=9, column="close", value=31000.0)
-    data = train.load_research_data(corrected)
+    frame, ds_meta = load_dataset(corrected)
+    data = train.research_data_from_frame(frame, ds_meta)
     boundary = data.sealed_boundary(CONTRACT)
 
     assert boundary.contract.contract_hash == CONTRACT.contract_hash
@@ -583,7 +596,8 @@ def test_experiment_records_it_and_hashes_it_into_the_plan(dataset, tmp_path):
         args = experiment.build_argparser().parse_args(
             ["--dataset", str(path), *UNDER_SYNTHETIC]
         )
-        data = train.load_research_data(path)
+        frame, ds_meta = load_dataset(path)
+        data = train.research_data_from_frame(frame, ds_meta)
         boundary = data.sealed_boundary(CONTRACT)
         configs = experiment.build_grid(
             {

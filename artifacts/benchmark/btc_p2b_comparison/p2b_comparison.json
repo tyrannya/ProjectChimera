@@ -435,6 +435,8 @@
     "identical_across_cells": [
       "research contract and its hash",
       "snapshot identity and semantic hashes",
+      "trade-source identity, aggregation spec and microstructure spec, where a checkpoint has one",
+      "the same absence of a trade source, where it has none",
       "fold sizes and periods",
       "the research checkpoint each cell says it answers",
       "per-fold sample-index hashes from the alignment proof",
@@ -442,17 +444,29 @@
       "threshold grid, objective and trade floor",
       "combined feature-spec hash",
       "majority and momentum baseline outer reports",
-      "CASH and buy-and-hold economic references"
+      "CASH and buy-and-hold economic references",
+      "the numerical environment the cells were fitted under, where they record one"
     ],
     "code": {
       "source_digest": "7540b413b5467a9fe03a0d71b3581a5d5703d3ef5d27a108f4ac31fb28cccfca",
+      "source_digests": [
+        "7540b413b5467a9fe03a0d71b3581a5d5703d3ef5d27a108f4ac31fb28cccfca"
+      ],
       "revisions": [
         "1d849fbb199cc0ff81e92c7f9971a0b6558d6102",
         "3dc6baafd4668be5946e70c07fe1b7cc7dda142c",
         "7ee359df57ab5a8b5391550396601e2f6e7d6bbb",
         "fe2d64cf2045e5e1a32180ee3932faf944786076"
       ],
-      "note": "one source digest across every cell. The revision list may hold more than one entry when documentation was committed between cells; that moves HEAD without changing a line any cell executed"
+      "schemes": [
+        "import-graph/legacy"
+      ],
+      "note": "under 'git-tracked-source/1' the digest covers this repository's tracked Python source under chimera/, nn/, strategies/ and tools/, an installed environment cannot enter it, and every compared cell must carry the same one. Cells recorded under the earlier import-graph rule \u2014 whose digest could differ by model family because it swept in an in-repository virtualenv \u2014 may still join on a shared clean revision, which is what keeps their committed comparisons reproducible."
+    },
+    "numerics": {
+      "recorded": 0,
+      "environment": null,
+      "note": "every compared cell was fitted under one numerical environment, or none of them records which environment it was fitted under. Sharing an environment is not a determinism claim; see docs/p2b_methodology.md section 8"
     },
     "conclusion": "every cell scored the same outer rows; a difference between two cells can only be the information set or the model"
   },

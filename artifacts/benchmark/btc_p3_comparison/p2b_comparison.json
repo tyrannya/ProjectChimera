@@ -460,7 +460,8 @@
       "threshold grid, objective and trade floor",
       "combined feature-spec hash",
       "majority and momentum baseline outer reports",
-      "CASH and buy-and-hold economic references"
+      "CASH and buy-and-hold economic references",
+      "the numerical environment the cells were fitted under, where they record one"
     ],
     "code": {
       "source_digest": null,
@@ -472,7 +473,15 @@
       "revisions": [
         "92d984484cd7eed177264f04a2d1f2d88246e54f"
       ],
-      "note": "source digests may differ across model-specific import graphs. A differing digest is accepted only when every compared cell comes from the same clean repository revision."
+      "schemes": [
+        "import-graph/legacy"
+      ],
+      "note": "under 'git-tracked-source/1' the digest covers this repository's tracked Python source under chimera/, nn/, strategies/ and tools/, an installed environment cannot enter it, and every compared cell must carry the same one. Cells recorded under the earlier import-graph rule \u2014 whose digest could differ by model family because it swept in an in-repository virtualenv \u2014 may still join on a shared clean revision, which is what keeps their committed comparisons reproducible."
+    },
+    "numerics": {
+      "recorded": 0,
+      "environment": null,
+      "note": "every compared cell was fitted under one numerical environment, or none of them records which environment it was fitted under. Sharing an environment is not a determinism claim; see docs/p2b_methodology.md section 8"
     },
     "conclusion": "every cell scored the same outer rows; a difference between two cells can only be the information set or the model"
   },

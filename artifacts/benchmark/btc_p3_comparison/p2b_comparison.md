@@ -39,6 +39,7 @@ every cell scored the same outer rows; a difference between two cells can only b
 - combined feature-spec hash
 - majority and momentum baseline outer reports
 - CASH and buy-and-hold economic references
+- the numerical environment the cells were fitted under, where they record one
 
 ## Persisted rows are the planned rows
 

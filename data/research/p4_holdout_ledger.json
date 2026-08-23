@@ -1,0 +1,16 @@
+{
+  "ledger_schema": "chimera.p4-holdout-ledger/1",
+  "region": [
+    45802,
+    48211
+  ],
+  "region_span": "2025-05-19T08:00:00+00:00 .. 2025-08-27T16:00:00+00:00",
+  "state": "unspent",
+  "checkpoint": null,
+  "reason": null,
+  "evaluations_permitted": 1,
+  "checkpoints_permitted": 1,
+  "retired_if_unspent": true,
+  "label_ceiling": "single-region supported; never confirmatory",
+  "note": "The pre-Styx region no committed artifact has scored. It is opened once, by one checkpoint, through nn.p4_holdout.assert_holdout_release, and only after a frozen stage-1 pass produced under the current preregistration hash. If P4 ends without opening it, it is retired here anyway: P4's stage-1 numbers are published by then, and a later design that retunes against them has made these rows adaptive whether or not anyone scored them. Spending it does not make any result confirmatory. Styx is not this region and is not reachable from it."
+}

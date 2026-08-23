@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -65,7 +66,13 @@ from nn.baselines import (
     MomentumBaseline,
 )
 from nn.data_fingerprint import ResearchInputFingerprint, fingerprint_research_input
-from nn.data_pipeline import DatasetMetadata, load_dataset, timeframe_to_minutes
+from nn.data_pipeline import (
+    DataValidationError,
+    DatasetMetadata,
+    check_label_consistency,
+    load_dataset,
+    timeframe_to_minutes,
+)
 from nn.dataset import (
     SealedBoundary,
     Split,
@@ -262,9 +269,17 @@ class ResearchData:
         }
 
 
-def load_research_data(path: str | Path) -> ResearchData:
-    """Load a built dataset and check it against its own metadata."""
-    frame, ds_meta = load_dataset(path)
+def research_data_from_frame(frame: pd.DataFrame, ds_meta: DatasetMetadata) -> ResearchData:
+    """Assemble :class:`ResearchData` from a frame and its metadata.
+
+    **This is assembly, not admission.** It performs no integrity check beyond
+    the structural ones a caller could not proceed without, and in particular it
+    does not verify that the stored labels were produced at the horizon the
+    metadata declares. Every research entrypoint calls
+    :func:`load_research_data` instead, which does; this exists so that
+    ``nn.data_fingerprint``'s own tests can take the identity of a deliberately
+    corrupted table without the loader refusing to hand them one.
+    """
     feature_names = list(ds_meta.feature_names)
     missing = [c for c in feature_names if c not in frame.columns]
     if missing:
@@ -272,9 +287,9 @@ def load_research_data(path: str | Path) -> ResearchData:
 
     if "close" not in frame.columns:
         raise SystemExit(
-            f"{path} has no 'close' column. Reporting needs the price path to build a "
-            "candle-level portfolio curve and a buy-and-hold reference; rebuild the "
-            "dataset with the current tools.build_features."
+            "the dataset has no 'close' column. Reporting needs the price path to build "
+            "a candle-level portfolio curve and a buy-and-hold reference; rebuild it "
+            "with the current tools.build_features."
         )
 
     segment_ids = (
@@ -299,6 +314,37 @@ def load_research_data(path: str | Path) -> ResearchData:
         dates=frame["date"].to_numpy(),
         candles_per_year=365 * 24 * 60 / timeframe_to_minutes(ds_meta.timeframe or "1h"),
     )
+
+
+def load_research_data(path: str | Path) -> ResearchData:
+    """Load a built dataset, and vouch for it before research reads it.
+
+    The vouching is :func:`nn.data_pipeline.check_label_consistency`, and it
+    runs *here*, in the one function every research entrypoint loads through,
+    rather than in a ``make`` target. A dataset is two things that have to
+    agree — the columns and the sidecar that says what they mean — and nothing
+    made them agree. Under-declaring the horizon is the dangerous direction:
+    everything downstream trims a window's tail by ``target_spec.horizon`` so a
+    sample cannot see the candle its own label is taken from, so a table whose
+    labels were built at horizon 6 under a sidecar declaring 1 puts five
+    candles of its own label back into every training row, and no other check in
+    this repository would raise. ``nn.p2b``'s committed-snapshot path is already
+    closed against it — the manifest's semantic hash covers the target spec and
+    the label columns together — and this is the general path.
+    """
+    frame, ds_meta = load_dataset(path)
+    try:
+        check_label_consistency(frame, ds_meta)
+    # `DataValidationError`, not only its `LabelHorizonError` subclass: the check
+    # resolves segments through the contract's own gap semantics, which refuse a
+    # dataset that declares no timeframe, and that refusal is about the same
+    # thing — a sidecar that does not describe the columns beside it.
+    except DataValidationError as exc:
+        raise SystemExit(
+            f"{path} cannot be trusted as a research input: {exc} Rebuild it with the "
+            "current tools.build_features."
+        ) from exc
+    return research_data_from_frame(frame, ds_meta)
 
 
 @dataclass(frozen=True)

@@ -29,6 +29,8 @@ every cell scored the same outer rows; a difference between two cells can only b
 
 - research contract and its hash
 - snapshot identity and semantic hashes
+- trade-source identity, aggregation spec and microstructure spec, where a checkpoint has one
+- the same absence of a trade source, where it has none
 - fold sizes and periods
 - the research checkpoint each cell says it answers
 - per-fold sample-index hashes from the alignment proof
@@ -37,6 +39,7 @@ every cell scored the same outer rows; a difference between two cells can only b
 - combined feature-spec hash
 - majority and momentum baseline outer reports
 - CASH and buy-and-hold economic references
+- the numerical environment the cells were fitted under, where they record one
 
 ## Persisted rows are the planned rows
 

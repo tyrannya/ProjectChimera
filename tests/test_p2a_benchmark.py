@@ -589,7 +589,16 @@ def test_the_comparison_runs_end_to_end(run_dir, mtst_run, dataset, tmp_path):
         answer = report["answers"][model]
         # The two verdicts are always both present and never collapsed into one.
         assert "predictive_baseline_improvement" in answer
-        assert "economic_alpha_after_costs" in answer
+        # And the economic one states the literal fact it computes. The old name,
+        # `economic_alpha_after_costs`, was a boolean for `mean(net_return) > 0`
+        # over four dependent folds; a reader is entitled to read a field with
+        # that name as "alpha was established", and this evidence cannot carry it.
+        assert "positive_mean_net_return_after_costs" in answer
+        assert "economic_alpha_after_costs" not in answer
+        # The point estimate never appears without what qualifies it.
+        evidence = answer["mean_net_return_evidence"]
+        assert evidence["temporal_folds"] >= 1
+        assert "min_outer_trades" in evidence
     markdown = (out / benchmark_compare.REPORT_MD).read_text()
     assert "research evidence" in markdown
     assert "sealed test block is unopened" in markdown
