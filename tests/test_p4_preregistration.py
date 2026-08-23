@@ -60,14 +60,29 @@ ROOT = Path(__file__).resolve().parent.parent
 DOCUMENT = ROOT / "docs" / "p4_preregistration.md"
 
 
-# --- P4 is preregistered, and nothing about it has been started --------------
-def test_p4_is_not_a_runnable_checkpoint():
-    """`--checkpoint P4` must be refused, not answered with empty columns.
+# --- P4 is implemented, registered, and has not been run ---------------------
+def test_p4_is_a_registered_checkpoint_with_its_three_preregistered_arms():
+    """§13's checklist requires the registration; it is not permission to run.
 
-    A registered checkpoint with no engine behind it is the shape of a run that
-    starts before its design is finished.
+    This assertion used to be its opposite: `P4` was absent from `CHECKPOINTS`
+    so that `--checkpoint P4` was refused by there being no engine. The engine
+    exists now, and an absence is a weaker guarantee than a gate — it stops
+    working the moment someone adds the arms. What stops a fit is
+    `nn.p4_stage1`'s interlock, which the tests below assert is closed.
     """
-    assert "P4" not in CHECKPOINTS
+    assert "P4" in CHECKPOINTS
+    assert CHECKPOINTS["P4"].arms == ARMS
+    assert CHECKPOINTS["P4"].control == CONTROL
+    assert CHECKPOINTS["P4"].family == DERIVATIVES_V1
+
+
+def test_no_p4_fit_is_authorised():
+    """The interlock, in the state it ships in and must stay in until a commit."""
+    from nn.p4_stage1 import Stage1Interlock, assert_fit_authorised, read_authorisation
+
+    assert read_authorisation()["state"] == "not_authorised"
+    with pytest.raises(Stage1Interlock):
+        assert_fit_authorised(confirm=True, availability={"gate_passed": True})
 
 
 def test_no_p4_evidence_exists():
@@ -82,11 +97,19 @@ def test_no_p4_market_data_has_been_acquired():
     assert not list(research.glob("*metrics*"))
     assert not list(research.glob("*basis*"))
     assert not list(research.glob("*perp*"))
-    # Nothing P4 touches is a table. The one P4 file is the holdout ledger,
-    # which records a *state* — whether a region has been spent — and carries
-    # no observation of any market at all.
+    # Nothing P4 touches is a table. The two P4 files are both *states* rather
+    # than observations: whether the holdout region has been spent, and whether
+    # anyone has authorised a stage-1 fit. Neither carries an observation of any
+    # market at all.
+    #
+    # This list is a tripwire, deliberately. Acquiring the derivatives source
+    # adds a third P4 file, and the session that acquires it has to come here
+    # and say so — which is the point: "P4 has data now" should be a diff
+    # somebody wrote, not a directory listing that quietly changed.
     p4_files = sorted(path.name for path in research.glob("*p4*"))
-    assert p4_files == ["p4_holdout_ledger.json"]
+    assert p4_files == ["p4_holdout_ledger.json", "p4_stage1_authorisation.json"]
+    authorisation = json.loads((research / "p4_stage1_authorisation.json").read_text())
+    assert authorisation["state"] == "not_authorised"
     ledger = json.loads((research / "p4_holdout_ledger.json").read_text())
     assert set(ledger) == {
         "ledger_schema",
@@ -103,11 +126,33 @@ def test_no_p4_market_data_has_been_acquired():
     }
 
 
-def test_no_derivatives_engine_exists_yet():
-    """The features are specified. They are not implemented, and must not be."""
-    assert not (ROOT / "nn" / "derivatives.py").exists()
-    for name in FEATURE_NAMES:
-        assert not (ROOT / "nn" / "information_sets.py").read_text().count(name)
+def test_the_derivatives_engine_computes_the_preregistered_columns_and_no_others():
+    """The engine reads §5 rather than restating it, so drift is impossible.
+
+    This test used to assert that ``nn/derivatives.py`` did not exist. It does
+    now, and the guarantee it replaces the absence with is stronger: the column
+    list, the windows and the clips are *read from* the preregistration at
+    import, so a ninth column or a moved window is a change to the hashed
+    payload rather than a change the engine could make on its own.
+    """
+    from nn.derivatives import DERIVATIVES_FEATURE_COLUMNS, DerivativesSpec
+
+    assert list(DERIVATIVES_FEATURE_COLUMNS) == list(FEATURE_NAMES)
+    assert len(DERIVATIVES_FEATURE_COLUMNS) == 8
+    material = DerivativesSpec().spec_hash()
+    assert isinstance(material, str) and len(material) == 64
+
+
+def test_the_three_p4_arms_are_built_from_those_columns_and_nothing_else():
+    from nn.derivatives import DERIVATIVES_FEATURE_COLUMNS
+    from nn.information_sets import information_set
+
+    control = information_set(CONTROL)
+    family = information_set(DERIVATIVES_V1)
+    combined = information_set(COMBINED)
+    assert family.columns == tuple(DERIVATIVES_FEATURE_COLUMNS)
+    assert combined.columns == control.columns + family.columns
+    assert len(combined.columns) == len(control.columns) + 8
 
 
 # --- the document and the module say the same thing --------------------------

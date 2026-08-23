@@ -69,6 +69,7 @@ from nn import evaluate as ev
 from nn.data_pipeline import load_dataset
 from nn.information_sets import CHECKPOINTS, Checkpoint, OHLCV14, information_set
 from nn.p2b import ARTIFACT_NAME, PREDICTIONS_NAME
+from nn.p4_holdout import assert_stage_one_bound, assert_stage_one_rows
 from nn.regime import direction_attribution
 from nn.simple_models import SIMPLE_MODEL_NAMES
 from nn.source_identity import (
@@ -230,6 +231,30 @@ def checkpoint_of(cells: Sequence[dict[str, Any]]) -> Checkpoint:
         )
     checkpoint = CHECKPOINTS[named[0]]
 
+    if checkpoint.derivatives_source:
+        # The comparison is a real path into P4's rows and has to carry the same
+        # guard the runner does. A cell whose folds reach row 45802 would put
+        # P4-HOLD into the screen through the join rather than through the run.
+        for cell in cells:
+            folds = (cell["payload"].get("alignment") or {}).get("folds") or []
+            assert_stage_one_rows(
+                [
+                    int(fold[block]["last_row"])
+                    for fold in folds
+                    for block in fold
+                    if block != "fold"
+                ],
+                what=f"{cell['information_set']} x {cell['model']}",
+            )
+            for fold in folds:
+                for block, entry in fold.items():
+                    if block == "fold":
+                        continue
+                    assert_stage_one_bound(
+                        int(entry["row_range"][1]),
+                        what=f"{cell['information_set']} x {cell['model']} {block}",
+                    )
+
     foreign = sorted(
         {c["information_set"] for c in cells if not checkpoint.accepts(c["information_set"])}
     )
@@ -368,6 +393,17 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "snapshot",
             "trade_snapshot",
             "microstructure_spec",
+            # P4's three. `sample_universe` is the one that matters most and is
+            # the one no earlier checkpoint needed: P4's arms are scored on an
+            # intersection rather than on the whole spine, so two cells built
+            # over different universes would be comparing two market periods and
+            # reporting the difference as an information set. The per-fold
+            # sample-index equality below catches that too — this catches it by
+            # name, and catches a cell that carries no universe at all beside one
+            # that does.
+            "derivatives_snapshot",
+            "derivatives_spec",
+            "sample_universe",
         ):
             if payload.get(key) != ref.get(key):
                 raise ComparisonError(
@@ -414,6 +450,9 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "trade-source identity, aggregation spec and microstructure spec, where a "
             "checkpoint has one",
             "the same absence of a trade source, where it has none",
+            "derivatives-source identity, derivatives spec and the sample universe, "
+            "where a checkpoint has one",
+            "the same absence of a derivatives source, where it has none",
             "fold sizes and periods",
             "the research checkpoint each cell says it answers",
             "per-fold sample-index hashes from the alignment proof",
