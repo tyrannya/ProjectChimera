@@ -45,30 +45,44 @@ from typing import Any, Iterable
 #: across a commit that only added a test.
 SOURCE_ROOTS: tuple[str, ...] = ("chimera", "nn", "strategies", "tools")
 
-#: Directory names that are an installed or generated environment rather than
-#: this project's source. None of them can legitimately appear under a source
-#: root; the check is here because the failure it prevents already happened
-#: once, one directory level up.
-ENVIRONMENT_DIRS = frozenset(
-    {
-        ".git",
-        ".venv",
-        "venv",
-        "env",
-        "ENV",
-        "site-packages",
-        "dist-packages",
-        "node_modules",
-        "__pycache__",
-        "build",
-        "dist",
-    }
-)
+#: Directory names that are an installed dependency tree rather than source.
+#:
+#: **Recognised structurally, not by name.** The first version of this excluded
+#: any path containing a component called ``build``, ``dist``, ``.venv``,
+#: ``env`` and so on, which reopened the hole it was written to close from the
+#: other side: a tracked ``nn/build/evil.py`` is importable as
+#: ``nn.build.evil`` and was silently dropped from the digest because one of its
+#: directories had an environment-shaped name. A name is not evidence about what
+#: a directory holds. These three genuinely are dependency trees wherever they
+#: appear, and a virtualenv is recognised by :data:`VIRTUALENV_MARKER` instead.
+EXTERNAL_ENVIRONMENT_DIRS = frozenset({"site-packages", "dist-packages", "node_modules"})
+
+#: The file every virtualenv carries at its root, and nothing else does.
+#:
+#: This is what lets ``tools/.venv/lib/python3.11/site-packages/x.py`` be
+#: excluded as environment content while ``nn/build/evil.py`` is not: one sits
+#: under a directory holding a ``pyvenv.cfg``, and the other does not.
+VIRTUALENV_MARKER = "pyvenv.cfg"
 
 #: Names the rule the digest is computed under. Recorded in every artifact so a
 #: reader — and :mod:`nn.p2b_compare` — can tell a digest taken under this rule
 #: from one taken under the import-graph rule it replaced.
 SOURCE_IDENTITY_SCHEME = "git-tracked-source/1"
+
+#: What a cell recorded before schemes existed: nothing at all.
+#:
+#: The historical population is exactly "cells with no ``code.scheme`` key", and
+#: :mod:`nn.p2b_compare` grants the import-graph exemption to that population and
+#: to no other. Naming it here rather than testing for a falsy value in the
+#: comparator is what stops an arbitrary scheme string from reaching the
+#: exemption by being unrecognised.
+LEGACY_SOURCE_IDENTITY_SCHEMES: frozenset[str | None] = frozenset({None})
+
+#: Every scheme a comparison may see. Anything else is a cell from a generation
+#: this code does not know how to compare, and is refused rather than guessed at.
+RECOGNISED_SOURCE_IDENTITY_SCHEMES: frozenset[str | None] = (
+    frozenset({SOURCE_IDENTITY_SCHEME}) | LEGACY_SOURCE_IDENTITY_SCHEMES
+)
 
 #: What a tracked file that is not in the working tree hashes to.
 ABSENT = "absent"
@@ -100,17 +114,40 @@ def _listing(root: Path, *args: str) -> list[str] | None:
     return [entry for entry in raw.split("\0") if entry]
 
 
-def _python_files(entries: Iterable[str]) -> list[str]:
-    """The ``.py`` entries that are project source rather than an environment."""
-    out = []
-    for entry in entries:
-        path = Path(entry)
-        if path.suffix != ".py":
-            continue
-        if ENVIRONMENT_DIRS.intersection(path.parts):
-            continue
-        out.append(entry)
-    return sorted(set(out))
+def _is_environment_content(root: Path, entry: str) -> bool:
+    """Is ``entry`` part of an installed dependency tree rather than source?
+
+    Answered from the shape of the tree, never from a directory's name alone.
+    A path is environment content when one of its directories is a
+    ``site-packages``/``dist-packages``/``node_modules``, or when one of them is
+    a virtualenv root — a directory holding a :data:`VIRTUALENV_MARKER`.
+
+    Everything else under a source root is project content whatever it is
+    called, which is the point: ``nn/build/evil.py`` is importable as
+    ``nn.build.evil`` and a digest that skipped it because of the word "build"
+    would be back to describing something other than what can run.
+    """
+    path = Path(entry)
+    if EXTERNAL_ENVIRONMENT_DIRS.intersection(path.parts):
+        return True
+    for depth in range(1, len(path.parts)):
+        if (root / Path(*path.parts[:depth]) / VIRTUALENV_MARKER).is_file():
+            return True
+    return False
+
+
+def _python_entries(entries: Iterable[str]) -> list[str]:
+    """The ``.py`` entries of a listing, deduplicated and ordered."""
+    return sorted({entry for entry in entries if Path(entry).suffix == ".py"})
+
+
+def _split_environment(root: Path, entries: Iterable[str]) -> tuple[list[str], list[str]]:
+    """Split ``.py`` entries into (project source, environment content)."""
+    source: list[str] = []
+    environment: list[str] = []
+    for entry in _python_entries(entries):
+        (environment if _is_environment_content(root, entry) else source).append(entry)
+    return source, environment
 
 
 def source_identity(root: Path) -> dict[str, Any]:
@@ -130,7 +167,10 @@ def source_identity(root: Path) -> dict[str, Any]:
             "evidence records which source produced it; run from a checkout."
         )
     untracked = _listing(root, "--others", "--exclude-standard") or []
-    hidden = _python_files(_listing(root, "--others", "--ignored", "--exclude-standard") or [])
+    ignored = _listing(root, "--others", "--ignored", "--exclude-standard") or []
+
+    visible, visible_environment = _split_environment(root, list(tracked) + list(untracked))
+    hidden, hidden_environment = _split_environment(root, ignored)
     if hidden:
         raise SourceIdentityError(
             f"{len(hidden)} Python file(s) under {list(SOURCE_ROOTS)} are hidden by "
@@ -139,8 +179,7 @@ def source_identity(root: Path) -> dict[str, Any]:
             "track the file or move it out of the package roots."
         )
 
-    names = _python_files(tracked) + _python_files(untracked)
-    files = sorted(set(names))
+    files = sorted(set(visible))
     sources: dict[str, str] = {}
     for name in files:
         path = root / name
@@ -159,7 +198,7 @@ def source_identity(root: Path) -> dict[str, Any]:
 
     head = _git(root, "rev-parse", "HEAD")
     status = _git(root, "status", "--porcelain", "--", *SOURCE_ROOTS)
-    untracked_source = set(_python_files(untracked))
+    untracked_source = {name for name in files if name in set(_python_entries(untracked))}
     missing = sorted(name for name, value in sources.items() if value == ABSENT)
 
     return {
@@ -171,12 +210,17 @@ def source_identity(root: Path) -> dict[str, Any]:
         "source_files": len(files),
         "untracked_source_files": len(untracked_source),
         "missing_tracked_source_files": len(missing),
+        "excluded_environment_files": len(visible_environment) + len(hidden_environment),
         "note": (
             "source_digest is a SHA-256 over the content of every Python file git tracks "
             f"under {list(SOURCE_ROOTS)}, plus any untracked Python file among them. An "
             "installed environment — a virtualenv inside the checkout, site-packages, a "
             "model library imported lazily by one model family and not another — is not "
-            "under those roots and cannot move it. revision and dirty are recorded beside "
-            "it because neither one alone says what source ran"
+            "under those roots and cannot move it. An environment is recognised by its "
+            "shape (a site-packages/dist-packages/node_modules directory, or one holding "
+            f"a {VIRTUALENV_MARKER}) and never by a directory's name, so a Python file "
+            "sitting under a source root in a directory merely called build or dist is "
+            "project source and is hashed. revision and dirty are recorded beside the "
+            "digest because neither one alone says what source ran"
         ),
     }

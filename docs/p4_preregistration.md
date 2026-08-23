@@ -9,7 +9,7 @@ information beyond OHLCV14?*)
 Machine-readable twin: [`nn/p4_preregistration.py`](../nn/p4_preregistration.py).
 Every constant in this document is a value there, `tests/test_p4_preregistration.py`
 asserts that the two agree, and a P4 cell will record
-`preregistration_hash` = `sha256:c68820808f6b423e173c81386fd71161382a99e15065fc2fbcaf3f2ef1171fe4`
+`preregistration_hash` = `sha256:68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4`
 so that a cell produced under an edited preregistration is a different object
 rather than the same one with a different story.
 
@@ -189,9 +189,74 @@ number exists.
 | field | venue / instrument | primary source | fallback |
 | --- | --- | --- | --- |
 | funding rate | Binance USD-M perpetual `BTCUSDT` | `data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-{YYYY}-{MM}.zip` | `fapi.binance.com/fapi/v1/fundingRate`, paged |
-| open interest | Binance USD-M perpetual `BTCUSDT` | `data.binance.vision/data/futures/um/monthly/metrics/BTCUSDT/BTCUSDT-metrics-{YYYY}-{MM}.zip` (`sum_open_interest`, `sum_open_interest_value`) | `fapi.binance.com/futures/data/openInterestHist` — **30 days of retention only**, so it is a spot check and cannot build this history |
+| open interest | Binance USD-M perpetual `BTCUSDT` | **daily**: `data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-{YYYY}-{MM}-{DD}.zip` (`sum_open_interest`, `sum_open_interest_value`) | `fapi.binance.com/futures/data/openInterestHist` — **diagnostic only**; 30 days of retention, and it may never stand in for a missing archive day |
 | perpetual price | Binance USD-M perpetual `BTCUSDT` | `data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-{YYYY}-{MM}.zip` | `fapi.binance.com/fapi/v1/klines` |
 | spot price | Binance spot `BTCUSDT` | **already committed**: `data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet` | none needed |
+
+### 3.0a The open-interest archive, corrected
+
+The first version of this preregistration named a **monthly** metrics path.
+Binance does not publish one. A preregistration that commits to a URL which
+does not exist commits to nothing, and the correction belongs here — before any
+probe and before any P4 number — because after either of those it would be a
+source chosen against data.
+
+| | |
+| --- | --- |
+| archive | `data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-{YYYY}-{MM}-{DD}.zip` |
+| granularity | **daily** — one archive per UTC day, each holding 5-minute rows |
+| earliest intended availability | **2020-09-01** |
+| columns read | `sum_open_interest` (contracts), `sum_open_interest_value` (notional) |
+
+**2020-09-01 is an intent, not a measurement.** Nothing here has touched the
+network. The probe establishes the real first available day from metadata only,
+and a first day later than this one *narrows the sample universe* rather than
+being worked around.
+
+**A missing day is a missing day.** An archive that 404s, fails its checksum or
+arrives short is never interpolated. One missing day removes 288 five-minute
+snapshots, so under the 1-hour open-interest staleness bound (§3.4) **every hour
+of that UTC day leaves the sample universe for every arm, the control
+included**. Missing days are counted, reported per block, and fed to the
+availability rule in §8.0.
+
+**Coverage failure is fail-closed.** An archive that cannot be fetched or
+verified stops the acquisition rather than being skipped, and a block that fails
+the availability rule makes the checkpoint `not_evaluable` — see §9.0, which is
+the row that says why that is not a negative result.
+
+**The REST endpoint is diagnostic and fallback only.**
+`fapi.binance.com/futures/data/openInterestHist` retains 30 days, so it cannot
+build this history at all. It may spot-check a handful of recent archive rows.
+It may **never** silently stand in for a missing archive day: a row sourced from
+REST is not a row of the preregistered historical source, and an acquisition
+that substituted one would be reporting a universe it did not have.
+
+### 3.0b The funding archive's columns, fixed before the file is opened
+
+Binance has published funding data under more than one column layout. A reader
+that inferred the mapping at acquisition time would be deciding, *after seeing
+the file*, which column is the rate — a researcher degree of freedom wearing the
+clothes of an implementation detail. So the mapping is an allow-list, fixed
+here, and `nn/p4_preregistration.py::FUNDING_CSV_COLUMN_POLICY` is the copy the
+acquisition must read rather than restate.
+
+| accepted layout (by exact column-name set) | settlement instant | realised rate |
+| --- | --- | --- |
+| `fundingTime`, `fundingRate` | `fundingTime` | `fundingRate` |
+| `calc_time`, `funding_interval_hours`, `last_funding_rate` | `calc_time` | `last_funding_rate` |
+| `calc_time`, `last_funding_rate` | `calc_time` | `last_funding_rate` |
+
+A recognised layout may carry extra columns; they are ignored. A **headerless**
+file is accepted only in the single unambiguous two-column shape, and only when
+its first column parses as an epoch instant inside the archive's own calendar
+period — the same "let the archive's period decide the unit" test
+`nn.trade_aggregates.resolve_epoch_unit` applies to trades.
+
+**Anything else is a refusal.** Do not infer a mapping, do not fall back to
+positional order, and do not read the REST endpoint instead. Extending the
+allow-list is a commit that moves the preregistration hash, and is permitted
+only while no P4 outer number exists.
 
 ### 3.1 Timestamp semantics
 
@@ -279,9 +344,11 @@ The acquisition follows P3's pattern exactly, and none of it is written yet:
 
 ### 3.6 The availability risk, named before it can be an excuse
 
-`fapi`'s open-interest endpoint retains **30 days**. The monthly `metrics`
-archive is the only route to a multi-year history, and **this repository has not
-established when that archive begins.** Nothing here has touched the network.
+`fapi`'s open-interest endpoint retains **30 days**. The daily `metrics` archive
+(§3.0a) is the only route to a multi-year history, and **this repository has not
+established when that archive begins.** Nothing here has touched the network;
+2020-09-01 is the earliest day this preregistration intends to request, not a
+day anyone has confirmed exists.
 
 That is not a reason to postpone the preregistration; it is a reason to
 preregister the consequence:
@@ -292,11 +359,12 @@ preregister the consequence:
   intersection**. The new information set does not get an unfair universe, and
   neither does the control.
 - If the intersection cannot support the design — specifically, if it does not
-  contain at least **two** of the four exploratory outer blocks in full **and**
-  the whole of P4-HOLD — then **P4 is not run as designed**. The finding is
-  recorded as "not evaluable from public archives at this history depth", the
-  reason is recorded with it, and the checkpoint does not quietly become a
-  two-fold checkpoint on a shorter history with the same decision rule.
+  contain at least **two** of the four exploratory outer blocks *available under
+  §8.0* **and** P4-HOLD available under the same rule — then **P4 is not run as
+  designed**. The outcome is `not_evaluable` / `insufficient_coverage` (§9.0),
+  the per-block coverage is recorded with it, and the checkpoint does not
+  quietly become a two-fold checkpoint on a shorter history with the same
+  decision rule.
 - If the intersection excludes some exploratory blocks but satisfies the gate
   above, the *excluded* blocks are reported as excluded with their row ranges,
   and stage 1's fold count is over the blocks that survive — with the
@@ -524,6 +592,34 @@ result at 1.0× is redeemed by a better one at another multiplier.
 
 ## 8. Validation design and the decision rule
 
+### 8.0 What "available in full" means, given a punctured daily feed
+
+§3.6's gate said "two blocks in full" and "in full" had no operational meaning.
+That is not a small gap. One missing daily open-interest archive removes a whole
+UTC day of rows from every arm, so under a literal reading a single 404 anywhere
+in five years makes every block unavailable and the checkpoint unrunnable —
+and under a loose reading, any amount of loss can be waved through once the
+numbers are in. Both readings are available to whoever is holding the result.
+
+So the rule is arithmetic, and it is fixed before any probe:
+
+> A block — an exploratory outer block, **or P4-HOLD, under the same rule** — is
+> **available** when, after the §6.2 universe conditions are applied:
+>
+> 1. at least **98%** of its rows survive, **and**
+> 2. no contiguous run of excluded rows exceeds **48 hours**.
+
+Both numbers come from the mechanism rather than from a desired answer. An outer
+block is 4,821 rows, so 2% is about 96 hours — four missing days scattered
+across roughly seven months, which is a feed with holes and still the same
+block. 48 hours is two consecutive missing archives; a longer unbroken outage
+removes a *market episode* rather than a sample of hours, and a block missing an
+episode is not that block.
+
+A block that fails is **unavailable**, is excluded from stage 1's fold count
+entirely, and is never included at a discount. Per-block coverage is computed
+before any model is fitted and reported whatever the gate decides.
+
 ### 8.1 Why the old rule is not enough
 
 P2b, P2c and P3 continued on "3 of 4 folds improved". Under an independent
@@ -555,11 +651,18 @@ Read on the existing snapshot, rows `[0, 45802)`, four outer blocks
 arms realises at least **10** non-overlapping outer trades. Invalid folds are
 reported and are excluded from **both** the numerator and the denominator.
 
+**Improved means `delta > 0`, strictly. A delta of exactly zero is not an
+improvement.** The claim under test is that the new information adds something,
+and adding nothing is the null rather than a win. Zero is reachable in practice
+— two arms that take no trades in a fold both return exactly 0.0 — which is why
+it is settled here instead of when it happens.
+
 **Stage 1 continues only if all three hold:**
 
-1. at least **3** of the four folds are valid;
-2. the combined arm improves on the control in at least **3** of the valid
-   folds;
+1. at least **3** of the four folds are valid, counted over the blocks that are
+   *available* under §8.0;
+2. the combined arm improves on the control (`delta > 0`) in at least **3** of
+   the valid folds;
 3. the mean delta over valid folds is **> 0** *and* the worst valid fold's delta
    is **≥ −0.02**.
 
@@ -589,14 +692,28 @@ columns, their windows and clips, the model and its unchanged P2a configuration,
 the inner-only threshold rule, the cost model, the universe rule.
 
 - **One evaluation.** One arm pair (combined vs control), one model, one region.
-- The decision threshold is selected on the block **immediately preceding** the
-  holdout — rows `[40981, 45802)` — exactly as every fold in this programme
-  selects on the block before its own. Nothing is selected on P4-HOLD.
-- P4-HOLD is `[45802, 48211)`. It is scored once and never re-scored.
+- **Training** is rows `[0, 40981)`, **selection** is rows `[40981, 45802)`, and
+  **evaluation** is P4-HOLD, `[45802, 48211)`. Those three ranges are values in
+  `nn/p4_preregistration.py` (`STAGE_2_TRAIN_ROWS`, `STAGE_2_SELECTION_ROWS`,
+  `STAGE_2_EVALUATION_ROWS`), inside the hashed payload: moving any of them
+  moves the preregistration hash. They were prose here and nothing else, which
+  meant the three numbers deciding what stage 2 fits, selects and reports on
+  could be changed by an edit that moved no hash.
+- The threshold is selected on the block **immediately preceding** the holdout,
+  exactly as every fold in this programme selects on the block before its own.
+  Nothing is selected on P4-HOLD.
+- It is scored once and never re-scored, with the fold-boundary horizon purge
+  already in the runner. Nothing is fitted or selected on a row inside P4-HOLD.
 - Both arms are scored on the same rows, from the same file, in the same run.
-- Training reaches rows `[0, 40981)` and inner selection `[40981, 45802)`, with
-  the fold-boundary horizon purge already in the runner. Nothing is fitted or
-  selected on a row inside P4-HOLD.
+
+**And the region is mechanically closed until all of that is true.**
+`nn/p4_holdout.py` is the door: `assert_stage_one_rows` and
+`assert_stage_one_bound` refuse any stage-1 row set or snapshot reaching row
+45802 or beyond, so the screen cannot read the region it is screening in order
+to decide whether to open; `assert_holdout_release` refuses unless the ledger
+says the region is unspent, the stage-1 report was produced under *this*
+preregistration hash, the availability gate passed, and the continuation rule
+passes. See §9.3.
 
 **What to expect, said in advance so that a thin result is not a surprise that
 invites a second look.** P4-HOLD is 2,409 rows — half an outer block. Every
@@ -659,7 +776,30 @@ results, not after them.
 
 ## 9. What each outcome means, and what happens next
 
-Fixed before the run exists. There is no fourth row.
+Fixed before the run exists.
+
+### 9.0 Before any of them: not evaluable is not negative
+
+If the availability gate of §3.6 and §8.0 fails, **nothing was measured**. The
+outcome is:
+
+| label | reason code | classification | what happens |
+| --- | --- | --- | --- |
+| `not_evaluable` | `insufficient_coverage` | **not a research result** | Record the per-block coverage and stop. Do not run stage 1 on the blocks that did survive, do not open the holdout, and do not report P4 as negative evidence about derivatives positioning. |
+
+This row exists because the alternative is the most tempting mistake available
+here: a checkpoint that could not obtain its data, written up as a checkpoint
+that looked and found nothing. "We could not get five years of open interest
+from a public archive" is a fact about archives. It says nothing whatever about
+whether funding, open interest and basis carry information, and a research
+programme that let the two blur would have manufactured a negative out of a
+404.
+
+`nn/p4_preregistration.py::NOT_EVALUABLE_OUTCOME` and `EVIDENCE_CLASSIFICATION`
+carry this in the hashed payload, so the classification cannot be softened after
+the coverage is known.
+
+### 9.1 The three outcomes of a holdout that was spent
 
 | holdout outcome | condition | classification | what happens |
 | --- | --- | --- | --- |
@@ -672,7 +812,10 @@ tens of trades cannot carry the word *confirmatory*, and no amount of favourable
 arithmetic on it will change that. The classification is a property of the
 evaluation data, fixed here, not a property of the number that comes back.
 
-### 9.1 Styx
+There is no fourth row here, and §9.0 is not one: it is the outcome of never
+reaching this table at all.
+
+### 9.2 Styx
 
 The sealed test block at `2025-08-27T23:00:00+00:00` is **not** opened, **not**
 moved, and **not** available to resolve an ambiguous P4 result under any
@@ -680,7 +823,54 @@ outcome. It is not a tiebreaker, it is not a "if supported, confirm on Styx"
 step, and P4-HOLD is not a substitute for it — P4-HOLD was never sealed, which
 is exactly the difference.
 
-### 9.2 The stopping rule, in one sentence
+### 9.3 P4-HOLD is spent once, by one checkpoint, ever — or retired unspent
+
+Everything above is a promise. `nn/p4_holdout.py` is the mechanism, and
+`data/research/p4_holdout_ledger.json` is the state it reads. All of it is
+**outcome-blind**: it reads row indices, the ledger, and the counters a stage-1
+report declares about the *burned* blocks. It never reads a price, a label, a
+return or a prediction from inside the region, and no function in it returns
+holdout data. Deciding whether the holdout may be opened must not require having
+looked at it.
+
+**Stage 1 cannot reach it.** `assert_stage_one_rows` refuses any row index at or
+past 45802 and `assert_stage_one_bound` refuses any row *range* ending past it,
+so a fold plan or a snapshot manifest cut one block longer is a named refusal
+rather than a silent widening. Today's committed snapshot holds `[0, 45802)` and
+therefore cannot reach the region — this turns that fact about a file into a
+checked precondition, because a later export is exactly how it would stop being
+true.
+
+**It opens only on a frozen, matching stage-1 pass.** `assert_holdout_release`
+requires four things, none of which is a judgement call: the ledger says
+`unspent`; the stage-1 report was produced under *this* preregistration hash, so
+a pass computed under an edited rule does not open it; the availability gate
+passed; and §8.2's continuation rule passes on that report.
+
+**One evaluation, one checkpoint, ever.** `record_spend` writes the ledger to
+`spent` and every later release attempt is refused by name. A second reading of
+these rows is not a fresh holdout.
+
+**And if P4 never spends it, it is retired anyway.**
+
+> If P4 ends without opening P4-HOLD — stage 1 failed, the availability gate
+> failed, the checkpoint was abandoned — `record_retirement` marks the region
+> `retired` and no later checkpoint may treat it as fresh.
+
+This is the rule a future P4b or P5 would otherwise argue its way around, so it
+is written down now, while nobody has a result to defend. By the time P4 ends,
+its stage-1 numbers are published. A later design that reads them, retunes
+against them, and then presents these same rows as an independent holdout is
+using an adaptive region while calling it fresh — the rows informed a design
+decision whether or not anyone scored them. Retirement does not forbid
+*describing* the region; it forbids treating a result on it as independent
+evidence.
+
+**None of this upgrades anything.** Spending P4-HOLD does not make P4
+confirmatory. Its maximum label is **single-region supported, never
+confirmatory**, and the ledger says so in the file.
+
+### 9.4 The stopping rule, in one sentence
 
 **Every path above ends the checkpoint.** There is no branch on which P4 is
 re-fitted, re-windowed, re-costed, re-armed or re-scored against the same rows,
@@ -721,6 +911,13 @@ Every choice P4 introduces, and the sentence that closes it.
 | choice | how it is constrained |
 | --- | --- |
 | which derivatives fields | three, fixed in §3: funding, open interest, basis. No others. |
+| which archive path, at what granularity | §3.0a: the daily metrics archive, earliest intended day 2020-09-01. REST is diagnostic only and may never stand in. |
+| how a funding CSV's columns are read | §3.0b: an allow-list fixed before any archive was opened. An unrecognised layout is a refusal. |
+| what "available in full" means | §8.0: 98% of rows surviving, no contiguous outage over 48 hours. Applied to P4-HOLD under the same rule. |
+| whether a zero delta counts as improvement | §8.2: it does not. `delta > 0`, strictly. |
+| what stage 2 fits, selects and reports on | three row ranges inside the hashed preregistration, §8.3. |
+| what an availability failure means | §9.0: `not_evaluable` / `insufficient_coverage`, and not a negative result. |
+| who may open the holdout, and how often | §9.3: once, one checkpoint, gated by `nn/p4_holdout.py`, retired if unspent. |
 | how many features | exactly eight, named in §5. No additions, no substitutions. |
 | trailing windows (9, 24, 30, 168) | declared per feature in §5; no window may be re-chosen at any point. |
 | clips | declared per feature in §5. A clip is a domain bound, not a threshold to tune. |
@@ -754,6 +951,18 @@ Recorded in every P4 artifact's own payload, as `adaptive_status` already is for
 P2b, P2c and P3, so that a reader who never opens this document still gets the
 label with the number.
 
+Every label P4 can end with, as one table, in
+`nn/p4_preregistration.py::EVIDENCE_CLASSIFICATION` and therefore inside the
+hash:
+
+| label | reached when | is it a research result? |
+| --- | --- | --- |
+| `not_evaluable` | the availability gate failed (§9.0) | **no** — nothing was measured |
+| `screened_out` | the gate passed and stage 1 did not continue | exploratory, on burned blocks |
+| `negative` | the holdout was spent and the delta was ≤ 0 | yes |
+| `hypothesis_generating` | the holdout was spent and the result was inconclusive | yes |
+| `single_region_supported` | the holdout was spent and the result was supported | yes — **and this is the ceiling** |
+
 ---
 
 ## 13. What must exist before P4 runs
@@ -761,14 +970,19 @@ label with the number.
 A checklist, so that "preregistered" does not quietly come to mean "started".
 
 - [ ] acquisition tool with `--plan` and `--probe`, no network in `--plan`
-- [ ] the availability window established from metadata, and the §3.6 gate applied
+- [ ] the availability window established from metadata, and the §3.6/§8.0 gate applied
+- [ ] the funding CSV layout matched against §3.0b's allow-list, or refused
 - [ ] a snapshot exporter and a fail-closed verifier that recomputes every claim
 - [ ] the verifier called from inside the only function that loads the source
 - [ ] a value-level cross-source check with justified explicit tolerances
 - [ ] the eight columns implemented against §5, with a spec hash
 - [ ] the §4.4 leakage battery, each item with a positive control, **passing**
 - [ ] `P4` registered in `nn.information_sets.CHECKPOINTS` with its three arms
+- [ ] every stage-1 row set and snapshot passed through `nn.p4_holdout`
 - [ ] the P4-HOLD snapshot exported, verified, and left uninspected
 - [ ] this document unchanged, and its hash recorded in every cell
 
 Nothing on that list is done. That is the correct state for a preregistration.
+
+The ledger at `data/research/p4_holdout_ledger.json` says `unspent`, and no
+Python file in this repository has read a row of `[45802, 48211)`.

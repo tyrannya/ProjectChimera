@@ -20,6 +20,17 @@ import pytest
 from nn.information_sets import CHECKPOINTS
 from nn.p4_preregistration import (
     ARMS,
+    AVAILABILITY_GATE,
+    BLOCK_AVAILABILITY_RULE,
+    EVIDENCE_CLASSIFICATION,
+    FUNDING_CSV_COLUMN_POLICY,
+    HOLDOUT_SPEND_POLICY,
+    IMPROVED_RULE,
+    NOT_EVALUABLE_OUTCOME,
+    STAGE_1_MAX_ROW_EXCLUSIVE,
+    STAGE_2_EVALUATION_ROWS,
+    STAGE_2_SELECTION_ROWS,
+    STAGE_2_TRAIN_ROWS,
     COMBINED,
     CONTROL,
     COST_SENSITIVITY_MULTIPLIERS,
@@ -64,11 +75,32 @@ def test_no_p4_evidence_exists():
     assert not list((ROOT / "artifacts" / "benchmark").glob("btc_p4_*"))
 
 
-def test_no_p4_data_has_been_acquired():
+def test_no_p4_market_data_has_been_acquired():
     research = ROOT / "data" / "research"
     assert not list(research.glob("*funding*"))
     assert not list(research.glob("*open_interest*"))
-    assert not list(research.glob("*p4*"))
+    assert not list(research.glob("*metrics*"))
+    assert not list(research.glob("*basis*"))
+    assert not list(research.glob("*perp*"))
+    # Nothing P4 touches is a table. The one P4 file is the holdout ledger,
+    # which records a *state* — whether a region has been spent — and carries
+    # no observation of any market at all.
+    p4_files = sorted(path.name for path in research.glob("*p4*"))
+    assert p4_files == ["p4_holdout_ledger.json"]
+    ledger = json.loads((research / "p4_holdout_ledger.json").read_text())
+    assert set(ledger) == {
+        "ledger_schema",
+        "region",
+        "region_span",
+        "state",
+        "checkpoint",
+        "reason",
+        "evaluations_permitted",
+        "checkpoints_permitted",
+        "retired_if_unspent",
+        "label_ceiling",
+        "note",
+    }
 
 
 def test_no_derivatives_engine_exists_yet():
@@ -100,6 +132,33 @@ def test_the_document_states_the_decision_numbers():
     assert "5/16" in text
     assert f"{HOLDOUT_ROWS[0]}, {HOLDOUT_ROWS[1]})" in text
     assert PRIMARY_MODEL in text
+
+
+def test_the_document_and_the_module_agree_on_the_mechanics():
+    """A doc section and a hashed value that drift apart is the old failure.
+
+    Every number below decides something, and each one appears in both places;
+    the test exists so that changing one of them in prose alone fails here
+    rather than being discovered when a run disagrees with its own design.
+    """
+    text = DOCUMENT.read_text()
+    rule = BLOCK_AVAILABILITY_RULE
+    assert f"{rule['min_surviving_row_fraction']:.0%}" in text
+    assert f"**{rule['max_contiguous_missing_hours']} hours**" in text
+    assert "2020-09-01" in text
+    assert "/daily/metrics/" in text
+    assert "`delta > 0`, strictly" in text
+    assert "not_evaluable" in text and "insufficient_coverage" in text
+    for start, end in (STAGE_2_TRAIN_ROWS, STAGE_2_SELECTION_ROWS, STAGE_2_EVALUATION_ROWS):
+        assert f"[{start}, {end})" in text
+
+
+def test_the_document_states_the_mechanical_guard_rather_than_only_promising():
+    text = DOCUMENT.read_text()
+    assert "nn/p4_holdout.py" in text
+    assert "p4_holdout_ledger.json" in text
+    assert "assert_holdout_release" in text
+    assert "retired" in text
 
 
 def test_every_data_source_names_a_venue_a_column_and_a_publication_rule():
@@ -250,6 +309,226 @@ def test_the_trade_floor_bites_once_and_leaves_the_screen_satisfiable():
     assert valid.count(False) == 1
     # And the rejected alternative would have left too few to screen on.
     assert [min(a, b) >= 20 for a, b in zip(trades, other)].count(True) == 1
+
+
+# --- the science did not move ------------------------------------------------
+def test_the_feature_family_is_exactly_what_was_preregistered():
+    """Literal, so that a later edit to a window is a failing test.
+
+    Every other test here checks a property — eight columns, bounded clips,
+    named families. This one checks the values, because the whole point of a
+    preregistration is that these particular numbers were fixed before the data
+    existed, and a property test would pass a wholesale replacement.
+    """
+    assert [(f["name"], f["window"], tuple(f["clip"])) for f in FEATURES] == [
+        ("drv_funding_last", None, (-0.01, 0.01)),
+        ("drv_funding_sum_9", 9, (-0.09, 0.09)),
+        ("drv_funding_z", 30, (-5.0, 5.0)),
+        ("drv_oi_log_change_24h", 24, (-1.0, 1.0)),
+        ("drv_oi_notional_ratio", 168, (0.0, 10.0)),
+        ("drv_oi_price_divergence", 24, (-1.0, 1.0)),
+        ("drv_basis", None, (-0.02, 0.02)),
+        ("drv_basis_z", 168, (-5.0, 5.0)),
+    ]
+
+
+def test_the_model_target_and_costs_are_exactly_what_was_preregistered():
+    assert PRIMARY_MODEL == "xgboost"
+    assert SECONDARY_MODELS == ("logistic_regression", "lightgbm")
+    assert TARGET["timeframe"] == "1h" and TARGET["horizon"] == 6
+    assert TARGET["fee_rate"] == 0.0005 and TARGET["slippage_rate"] == 0.0005
+    assert TARGET["cost_threshold"] == 0.002
+    assert COST_SENSITIVITY_MULTIPLIERS == (1.0, 1.5, 2.0)
+    assert MIN_OUTER_TRADES == 10
+    assert STAGE_1_CONTINUATION["valid_folds_required"] == 3
+    assert STAGE_1_CONTINUATION["improved_folds_required"] == 3
+    assert STAGE_1_CONTINUATION["worst_fold_delta_at_least"] == -0.02
+
+
+# --- the sources name something that exists ----------------------------------
+def test_the_open_interest_source_is_the_daily_archive():
+    """The first version named a monthly metrics path Binance does not publish.
+
+    A preregistration that commits to a nonexistent URL commits to nothing, and
+    the correction had to happen here — before any probe and before any P4
+    number — because after either one it is a source chosen against data.
+    """
+    oi = next(s for s in DATA_SOURCES if s["field"] == "open_interest")
+    assert "/daily/metrics/" in oi["primary"]
+    assert "/monthly/metrics/" not in oi["primary"]
+    assert "{day}" in oi["primary"]
+    assert oi["archive_granularity"].startswith("daily")
+    assert oi["earliest_intended_availability"] == "2020-09-01"
+    assert "288" in oi["missing_day_behaviour"]
+    assert "fail closed" in oi["coverage_failure_behaviour"]
+
+
+def test_the_rest_endpoint_is_diagnostic_and_may_not_stand_in():
+    oi = next(s for s in DATA_SOURCES if s["field"] == "open_interest")
+    assert "openInterestHist" in oi["fallback"]
+    assert "30 days" in oi["fallback"]
+    assert "NEVER silently stand in" in oi["fallback"]
+
+
+def test_every_named_source_is_a_daily_or_monthly_path_that_carries_its_period():
+    """A template with no period placeholder cannot address an archive."""
+    for source in DATA_SOURCES:
+        if not source["primary"].startswith("https://data.binance.vision"):
+            continue
+        assert "{year}" in source["primary"] and "{month}" in source["primary"]
+
+
+def test_the_funding_column_mapping_is_an_allow_list_fixed_before_any_archive():
+    """So that a schema discovered later cannot become a choice made later."""
+    policy = FUNDING_CSV_COLUMN_POLICY
+    assert policy["canonical_fields"] == ["settlement_instant", "realised_funding_rate"]
+    assert len(policy["allowed_header_maps"]) >= 2
+    for layout in policy["allowed_header_maps"]:
+        assert layout["settlement_instant"] in layout["columns"]
+        assert layout["realised_funding_rate"] in layout["columns"]
+    assert "refuse" in policy["on_unrecognised_layout"]
+    assert "do not infer" in policy["on_unrecognised_layout"].lower()
+    assert "moves the preregistration hash" in policy["on_unrecognised_layout"]
+
+
+def test_the_headerless_case_is_bounded_rather_than_positional_guessing():
+    layout = FUNDING_CSV_COLUMN_POLICY["headerless_positional_layout"]
+    assert layout["columns"] == 2
+    assert "calendar period" in layout["condition"]
+
+
+# --- the decision mechanics are inside the hash ------------------------------
+@pytest.mark.parametrize(
+    "key",
+    [
+        "stage_2_train_rows",
+        "stage_2_selection_rows",
+        "stage_2_evaluation_rows",
+        "stage_1_max_row_exclusive",
+        "availability_gate",
+        "block_availability_rule",
+        "universe_conditions",
+        "holdout_spend_policy",
+        "improved_rule",
+        "evidence_classification",
+        "not_evaluable_outcome",
+        "funding_csv_column_policy",
+    ],
+)
+def test_every_result_critical_mechanic_is_in_the_hashed_payload(key):
+    """Prose can be edited by the commit that reports the result. This cannot."""
+    assert key in preregistration()
+
+
+def test_moving_any_of_them_moves_the_hash(monkeypatch):
+    """The property the previous test is only half of.
+
+    Being *in* the payload is not enough — the payload has to be what the hash
+    is taken over. Each mechanic is perturbed in turn and the hash must move.
+    """
+    import nn.p4_preregistration as prereg
+
+    before = preregistration_hash()
+    for name, value in (
+        ("STAGE_2_TRAIN_ROWS", (0, 40000)),
+        ("STAGE_2_SELECTION_ROWS", (40000, 45802)),
+        ("STAGE_2_EVALUATION_ROWS", (45802, 48000)),
+        ("STAGE_1_MAX_ROW_EXCLUSIVE", 46000),
+        ("MIN_OUTER_TRADES", 11),
+        ("AVAILABILITY_GATE", {"requires_exploratory_blocks_available": 1}),
+        ("BLOCK_AVAILABILITY_RULE", {"min_surviving_row_fraction": 0.5}),
+        ("IMPROVED_RULE", {"improved_when": "delta >= 0"}),
+        ("HOLDOUT_SPEND_POLICY", {"evaluations_permitted": 2}),
+        ("EVIDENCE_CLASSIFICATION", {"maximum_label": "confirmatory"}),
+        ("FUNDING_CSV_COLUMN_POLICY", {"canonical_fields": []}),
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(prereg, name, value)
+            assert prereg.preregistration_hash() != before, name
+    assert preregistration_hash() == before
+
+
+def test_the_stage_two_geometry_is_contiguous_and_ends_at_the_holdout():
+    assert STAGE_2_TRAIN_ROWS[0] == 0
+    assert STAGE_2_TRAIN_ROWS[1] == STAGE_2_SELECTION_ROWS[0]
+    assert STAGE_2_SELECTION_ROWS[1] == HOLDOUT_ROWS[0]
+    assert tuple(STAGE_2_EVALUATION_ROWS) == tuple(HOLDOUT_ROWS)
+    assert STAGE_2_SELECTION_ROWS == EXPLORATORY_OUTER_BLOCKS[-1]
+
+
+def test_stage_one_cannot_reach_the_stage_two_evaluation_region():
+    assert STAGE_1_MAX_ROW_EXCLUSIVE == HOLDOUT_ROWS[0]
+
+
+# --- the ambiguities are gone ------------------------------------------------
+def test_improved_is_a_strict_inequality():
+    assert IMPROVED_RULE["improved_when"] == "delta > 0"
+    assert IMPROVED_RULE["zero_is_improved"] is False
+    assert STAGE_1_CONTINUATION["improved_rule"]["zero_is_improved"] is False
+
+
+def test_blocks_in_full_has_an_operational_rule_for_a_punctured_feed():
+    rule = BLOCK_AVAILABILITY_RULE
+    assert 0 < rule["min_surviving_row_fraction"] < 1
+    assert rule["max_contiguous_missing_hours"] >= 24
+    assert "P4-HOLD" in rule["applies_to"]
+    assert AVAILABILITY_GATE["block_rule"] == "BLOCK_AVAILABILITY_RULE"
+
+
+def test_one_missing_day_is_survivable_and_a_missing_week_is_not():
+    """The rule read against the mechanism that produces the gaps.
+
+    A missing daily OI archive removes 24 hours. An outer block is 4,821 rows,
+    so the fraction tolerates about four such days; the contiguity bound
+    tolerates two in a row and no more.
+    """
+    block_rows = EXPLORATORY_OUTER_BLOCKS[0][1] - EXPLORATORY_OUTER_BLOCKS[0][0]
+    tolerated_hours = block_rows * (1 - BLOCK_AVAILABILITY_RULE["min_surviving_row_fraction"])
+    assert 24 <= tolerated_hours < 24 * 7
+    assert BLOCK_AVAILABILITY_RULE["max_contiguous_missing_hours"] == 48
+
+
+def test_insufficient_coverage_is_not_a_negative_research_result():
+    outcome = NOT_EVALUABLE_OUTCOME
+    assert outcome["label"] == "not_evaluable"
+    assert outcome["reason_code"] == "insufficient_coverage"
+    assert outcome["classification"] == "not a research result"
+    assert "not_evaluable" in EVIDENCE_CLASSIFICATION
+    assert "NOT negative evidence" in EVIDENCE_CLASSIFICATION["not_evaluable"]
+    assert "do not report P4 as negative" in outcome["then"]
+    # And it is not one of the stage-2 outcomes: nothing was measured.
+    assert outcome["label"] not in {o["label"] for o in STAGE_2_OUTCOMES}
+
+
+# --- the holdout is spendable once, ever -------------------------------------
+def test_the_spend_policy_is_one_evaluation_by_one_checkpoint():
+    policy = HOLDOUT_SPEND_POLICY
+    assert policy["evaluations_permitted"] == 1
+    assert policy["checkpoints_permitted"] == 1
+    assert policy["retired_if_unspent"] is True
+    assert policy["region"] == list(HOLDOUT_ROWS)
+    assert policy["enforced_by"] == "nn.p4_holdout"
+
+
+def test_retirement_forecloses_the_p4b_reuse_argument():
+    note = HOLDOUT_SPEND_POLICY["note"]
+    assert "P4b" in note and "P5" in note
+    assert "fresh holdout" in note
+    assert "does not forbid describing" in note
+
+
+def test_spending_the_holdout_does_not_upgrade_the_label():
+    assert "never confirmatory" in HOLDOUT_SPEND_POLICY["does_not_upgrade"]
+    assert EVIDENCE_CLASSIFICATION["maximum_label"].endswith("never confirmatory")
+
+
+def test_the_committed_ledger_matches_the_preregistered_policy():
+    ledger = json.loads((ROOT / "data" / "research" / "p4_holdout_ledger.json").read_text())
+    assert ledger["region"] == HOLDOUT_SPEND_POLICY["region"]
+    assert ledger["evaluations_permitted"] == HOLDOUT_SPEND_POLICY["evaluations_permitted"]
+    assert ledger["checkpoints_permitted"] == HOLDOUT_SPEND_POLICY["checkpoints_permitted"]
+    assert ledger["retired_if_unspent"] == HOLDOUT_SPEND_POLICY["retired_if_unspent"]
+    assert ledger["state"] == "unspent"
 
 
 # --- there is no escape hatch ------------------------------------------------

@@ -184,14 +184,44 @@ DATA_SOURCES: tuple[dict[str, Any], ...] = (
         "venue": "binance",
         "market_type": "usd-m perpetual futures",
         "symbol": "BTCUSDT",
+        # A *daily* archive. The first version of this preregistration named a
+        # monthly metrics path; Binance does not publish one, so the source it
+        # committed to did not exist. Corrected here, before any probe and
+        # before any P4 number, which is the only time a source may be changed.
         "primary": (
-            "https://data.binance.vision/data/futures/um/monthly/metrics/BTCUSDT/"
-            "BTCUSDT-metrics-{year}-{month}.zip "
+            "https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/"
+            "BTCUSDT-metrics-{year}-{month}-{day}.zip "
             "(sum_open_interest, sum_open_interest_value)"
         ),
+        "archive_granularity": "daily; one archive per UTC day",
+        "earliest_intended_availability": "2020-09-01",
+        "availability_note": (
+            "2020-09-01 is the earliest BTCUSDT metrics day this preregistration "
+            "intends to request. It is a stated intent, not a measured fact: nothing "
+            "here has touched the network. The probe step establishes the real first "
+            "available day from metadata only, and a first day later than this one "
+            "narrows the sample universe rather than being worked around"
+        ),
+        "missing_day_behaviour": (
+            "a daily archive that 404s, fails its checksum, or is short is a MISSING "
+            "DAY, never an interpolated one. One missing day removes 288 five-minute "
+            "snapshots, so under the 1-hour staleness bound every hour of that UTC day "
+            "leaves the sample universe for EVERY arm, the control included. Missing "
+            "days are counted, reported per block, and fed to the availability gate"
+        ),
+        "coverage_failure_behaviour": (
+            "fail closed: an archive that cannot be fetched or verified stops the "
+            "acquisition rather than being skipped, and a block that fails the "
+            "availability rule makes the checkpoint not_evaluable rather than negative"
+        ),
         "fallback": (
-            "https://fapi.binance.com/futures/data/openInterestHist — 30 days of "
-            "retention only, so it cannot build this history and is a spot check"
+            "https://fapi.binance.com/futures/data/openInterestHist — DIAGNOSTIC AND "
+            "FALLBACK ONLY. It retains 30 days, so it cannot build this history at "
+            "all. It may be used to spot-check a handful of recent archive rows and "
+            "may NEVER silently stand in for a missing archive day: a row sourced "
+            "from REST is not a row of the preregistered historical source, and an "
+            "acquisition that substituted one would be reporting a universe it did "
+            "not have"
         ),
         "timestamp_column": "create_time",
         "timestamp_semantics": "the instant of a 5-minute snapshot of the open book",
@@ -227,6 +257,67 @@ DATA_SOURCES: tuple[dict[str, Any], ...] = (
     },
 )
 
+#: Which CSV columns the funding archive is allowed to be read from.
+#:
+#: Fixed **before any archive has been opened**, because "we looked at the file
+#: and mapped the columns that worked" is a researcher degree of freedom wearing
+#: the clothes of an implementation detail. Binance has published funding data
+#: under more than one column layout; a reader that inferred the mapping at
+#: acquisition time would be choosing, after seeing the data, which column is
+#: the rate.
+#:
+#: The rule is an allow-list, not a heuristic. A header row must match one of
+#: the maps below *exactly* by column-name set. A headerless file is accepted
+#: only in the single unambiguous two-column shape, and only when its first
+#: column parses as an epoch instant inside the archive's own calendar day —
+#: the same "let the archive's period decide" test
+#: :func:`nn.trade_aggregates.resolve_epoch_unit` applies to trades. Anything
+#: else is a refusal, and extending this list is a commit that moves
+#: :func:`preregistration_hash` and may only happen before a P4 outer number
+#: exists.
+FUNDING_CSV_COLUMN_POLICY: dict[str, Any] = {
+    "canonical_fields": ["settlement_instant", "realised_funding_rate"],
+    "allowed_header_maps": [
+        {
+            "layout": "fundingTime/fundingRate",
+            "columns": ["fundingTime", "fundingRate"],
+            "settlement_instant": "fundingTime",
+            "realised_funding_rate": "fundingRate",
+        },
+        {
+            "layout": "calc_time/funding_interval_hours/last_funding_rate",
+            "columns": ["calc_time", "funding_interval_hours", "last_funding_rate"],
+            "settlement_instant": "calc_time",
+            "realised_funding_rate": "last_funding_rate",
+        },
+        {
+            "layout": "calc_time/last_funding_rate",
+            "columns": ["calc_time", "last_funding_rate"],
+            "settlement_instant": "calc_time",
+            "realised_funding_rate": "last_funding_rate",
+        },
+    ],
+    "headerless_positional_layout": {
+        "columns": 2,
+        "settlement_instant": 0,
+        "realised_funding_rate": 1,
+        "condition": (
+            "accepted only when the first column parses as an epoch instant inside the "
+            "archive's own calendar period under exactly one supported unit"
+        ),
+    },
+    "on_unrecognised_layout": (
+        "refuse the acquisition and stop. Do not infer a mapping, do not fall back to "
+        "positional order, and do not read the REST endpoint instead. Extending "
+        "allowed_header_maps is a commit that moves the preregistration hash and is "
+        "permitted only while no P4 outer number exists"
+    ),
+    "extra_columns": (
+        "a recognised layout may carry columns this policy does not name; they are "
+        "ignored. An unrecognised column-name SET is a refusal"
+    ),
+}
+
 #: How long an observation may be carried forward before its row leaves the
 #: sample universe. Funding is 8-hourly by construction, so holding the last
 #: settlement is the definition of the feature rather than a repair; one extra
@@ -248,6 +339,24 @@ EXPLORATORY_OUTER_BLOCKS: tuple[tuple[int, int], ...] = (
 )
 HOLDOUT_ROWS = (45802, 48211)
 RESEARCH_ROWS = 48217
+
+#: The exact geometry of the one-shot evaluation, in the same row space.
+#:
+#: These were prose in the document and nothing else, which meant the three
+#: numbers that decide what stage 2 fits on, selects on and reports could be
+#: changed by an edit that moved no hash. They are values now, they are inside
+#: :func:`preregistration`, and moving any of them moves
+#: :func:`preregistration_hash`.
+STAGE_2_TRAIN_ROWS = (0, 40981)
+STAGE_2_SELECTION_ROWS = (40981, 45802)
+STAGE_2_EVALUATION_ROWS = HOLDOUT_ROWS
+
+#: The last row a stage-1 dataset may contain, exclusive.
+#:
+#: Stage 1 reads the committed snapshot, which holds rows [0, 45802) and
+#: therefore cannot reach the holdout at all. :mod:`nn.p4_holdout` turns that
+#: from a fact about today's file into a checked precondition.
+STAGE_1_MAX_ROW_EXCLUSIVE = HOLDOUT_ROWS[0]
 
 #: Every artifact that has read the exploratory blocks. The list is why they
 #: cannot confirm anything, and it is recorded so that the claim is checkable
@@ -284,6 +393,160 @@ EXPLORATORY_BLOCKS_READ_BY: tuple[str, ...] = (
 #: recorded limitation instead of a hidden one.
 MIN_OUTER_TRADES = 10
 
+#: What "improved" means, stated so that a tie cannot be argued either way.
+#:
+#: A strict inequality on the net-return delta. An exactly-zero delta is **not**
+#: an improvement: the claim under test is that the new information adds
+#: something, and adding nothing is the null, not a win. Zero is reachable in
+#: practice — two arms that take no trades in a fold both return exactly 0.0 —
+#: which is precisely why it needed saying before it happened rather than after.
+IMPROVED_RULE = {
+    "statistic": "outer net return after costs, combined arm minus control arm",
+    "improved_when": "delta > 0",
+    "zero_is_improved": False,
+    "note": (
+        "strict. A fold in which both arms take no trades has delta exactly 0.0 and "
+        "is not an improvement; it is also invalid under min_outer_trades, and both "
+        "readings are recorded so neither has to be decided later"
+    ),
+}
+
+#: When a block counts as available, given a punctured daily open-interest feed.
+#:
+#: "Two blocks in full" was the gate and "in full" had no operational meaning.
+#: One missing daily OI archive removes a whole UTC day of rows from every arm,
+#: so under a literal reading a single 404 anywhere in five years would make
+#: every block unavailable and the checkpoint unrunnable — and under a loose
+#: reading, any amount of loss could be waved through after the fact.
+#:
+#: The numbers are set from the mechanism, not from a desired outcome, and
+#: before any probe: an outer block is 4,821 rows, so 2% is about 96 hours —
+#: four missing days spread across roughly seven months, which is a feed with
+#: holes and still the same block. 48 hours is two consecutive missing archives;
+#: a longer unbroken outage removes a market episode rather than a sample of
+#: hours, and a block missing an episode is not that block.
+BLOCK_AVAILABILITY_RULE = {
+    "min_surviving_row_fraction": 0.98,
+    "max_contiguous_missing_hours": 48,
+    "applies_to": "each exploratory outer block, and P4-HOLD, under the same rule",
+    "measured_on": (
+        "rows surviving the sample-universe conditions, computed before any model is "
+        "fitted and reported per block whatever the gate decides"
+    ),
+    "note": (
+        "'in full' means this rule and nothing else. A block that fails it is "
+        "UNAVAILABLE and is excluded from stage 1's fold count entirely; it is never "
+        "included at a discount"
+    ),
+}
+
+#: The gate that decides whether P4 can be evaluated at all.
+#:
+#: Failing it is **not** a research result about derivatives information. It is a
+#: statement about what public archives contain, and it is classified as such.
+AVAILABILITY_GATE = {
+    "requires_exploratory_blocks_available": 2,
+    "requires_holdout_available": True,
+    "block_rule": "BLOCK_AVAILABILITY_RULE",
+    "on_failure": "not_evaluable",
+    "note": (
+        "two available blocks is below stage 1's three-valid-fold requirement, so an "
+        "intersection that only just clears this gate fails stage 1 by construction "
+        "and the holdout is never opened. That is the intended behaviour: the gate "
+        "stops the acquisition, and stage 1 stops the evaluation"
+    ),
+}
+
+#: The four conditions a row must satisfy to be in P4's sample universe, applied
+#: identically to every arm with the control re-run on the result.
+UNIVERSE_CONDITIONS: tuple[dict[str, str], ...] = (
+    {
+        "condition": "ohlcv14_row",
+        "requires": (
+            "the row is in the OHLCV14 research spine: past indicator warm-up, no NaN "
+            "feature, and its 6-candle label knowable without touching a sealed close"
+        ),
+    },
+    {
+        "condition": "derivatives_defined",
+        "requires": (
+            "every one of the eight derivatives_v1 columns is defined at the row, "
+            "after the 240-hour derivatives warm-up"
+        ),
+    },
+    {
+        "condition": "within_staleness_bounds",
+        "requires": (
+            "no observation the row depends on is stale beyond its MAX_STALENESS_HOURS "
+            "bound; a missing OI day therefore removes that whole UTC day"
+        ),
+    },
+    {
+        "condition": "no_segment_bridge",
+        "requires": "no feature's window bridges a spine segment boundary",
+    },
+)
+
+#: The holdout is spent once, by one checkpoint, ever — or not at all.
+HOLDOUT_SPEND_POLICY = {
+    "region": list(HOLDOUT_ROWS),
+    "evaluations_permitted": 1,
+    "checkpoints_permitted": 1,
+    "gated_on": "a frozen stage-1 pass artifact satisfying STAGE_1_CONTINUATION",
+    "retired_if_unspent": True,
+    "note": (
+        "if P4 does not spend P4-HOLD — because stage 1 failed, because the "
+        "availability gate failed, or because the checkpoint was abandoned — the "
+        "region is RETIRED from research-confirmation use anyway. A later P4b or P5 "
+        "may not read P4's published stage-1 results, retune against them, and then "
+        "present the same rows as a fresh holdout: by then the rows have informed a "
+        "design decision and are adaptive like every other block. Retirement does not "
+        "forbid describing the region; it forbids treating a result on it as "
+        "independent evidence"
+    ),
+    "does_not_upgrade": (
+        "spending the holdout does not make P4 confirmatory. Its maximum label is "
+        "single-region supported, never confirmatory"
+    ),
+    "ledger": "data/research/p4_holdout_ledger.json",
+    "enforced_by": "nn.p4_holdout",
+}
+
+#: Every label P4 can end with, including the one that is not a research result.
+EVIDENCE_CLASSIFICATION = {
+    "not_evaluable": (
+        "the availability gate failed. This is a fact about what public archives "
+        "contain and is NOT negative evidence about derivatives information: nothing "
+        "was measured. Recorded as not_evaluable / insufficient_coverage, with the "
+        "per-block coverage that produced it"
+    ),
+    "screened_out": (
+        "the availability gate passed and stage 1 did not continue. Exploratory, on "
+        "burned blocks; reported as negative for this design at this horizon and not "
+        "as a result about the information itself"
+    ),
+    "negative": "the holdout was spent and the delta was <= 0",
+    "hypothesis_generating": "the holdout was spent and the result was inconclusive",
+    "single_region_supported": (
+        "the holdout was spent and the result was supported. The ceiling. Never "
+        "confirmatory, because one never-sealed region of about 2,400 rows cannot be"
+    ),
+    "maximum_label": "single-region supported; never confirmatory",
+}
+
+#: The reason an unavailable checkpoint is not a negative one, as a value.
+NOT_EVALUABLE_OUTCOME = {
+    "label": "not_evaluable",
+    "reason_code": "insufficient_coverage",
+    "when": "the availability gate in AVAILABILITY_GATE fails",
+    "classification": "not a research result",
+    "then": (
+        "record the per-block coverage and stop. Do not run stage 1 on the blocks "
+        "that did survive, do not open the holdout, and do not report P4 as negative "
+        "evidence about derivatives positioning — nothing was measured"
+    ),
+}
+
 #: Under an independent p = 0.5 null, P(X >= 3 of 4) = 5/16.
 #:
 #: Recorded because it is the number that makes "3 of 4" not evidence: a coin
@@ -297,9 +560,12 @@ NULL_PROBABILITY_THREE_OF_FOUR = 5 / 16
 STAGE_1_CONTINUATION = {
     "valid_folds_required": 3,
     "improved_folds_required": 3,
+    "improved_rule": dict(IMPROVED_RULE),
     "mean_delta_above": 0.0,
+    "mean_delta_strict": True,
     "worst_fold_delta_at_least": -0.02,
     "screen_false_positive_rate_under_coin_null": NULL_PROBABILITY_THREE_OF_FOUR,
+    "evaluated_on": "the exploratory blocks that passed BLOCK_AVAILABILITY_RULE",
     "note": (
         "a screening rule, not a test. Its only job is to decide whether to spend "
         "the single-use holdout; a false continuation costs one holdout evaluation "
@@ -420,7 +686,42 @@ DEGREES_OF_FREEDOM: tuple[dict[str, str], ...] = (
     },
     {
         "choice": "what a result means",
-        "constrained_by": "STAGE_2_OUTCOMES, fixed before the run.",
+        "constrained_by": (
+            "STAGE_2_OUTCOMES and EVIDENCE_CLASSIFICATION, fixed before the run, "
+            "including that an availability failure is not_evaluable and not negative."
+        ),
+    },
+    {
+        "choice": "how a funding CSV's columns are read",
+        "constrained_by": (
+            "FUNDING_CSV_COLUMN_POLICY, an allow-list fixed before any archive was "
+            "opened. An unrecognised layout is a refusal, not an inference."
+        ),
+    },
+    {
+        "choice": "what counts as a block being available",
+        "constrained_by": (
+            "BLOCK_AVAILABILITY_RULE: 98% of rows surviving and no contiguous outage "
+            "over 48 hours. Set from the mechanism before any probe."
+        ),
+    },
+    {
+        "choice": "whether an exactly-zero fold delta is an improvement",
+        "constrained_by": "IMPROVED_RULE: it is not. delta > 0, strictly.",
+    },
+    {
+        "choice": "what stage 2 fits, selects and reports on",
+        "constrained_by": (
+            "STAGE_2_TRAIN_ROWS, STAGE_2_SELECTION_ROWS and STAGE_2_EVALUATION_ROWS, "
+            "inside the hashed preregistration rather than only in prose."
+        ),
+    },
+    {
+        "choice": "who may spend the holdout, and how often",
+        "constrained_by": (
+            "HOLDOUT_SPEND_POLICY: once, by one checkpoint, gated on a frozen stage-1 "
+            "pass, enforced by nn.p4_holdout, and retired if unspent."
+        ),
     },
 )
 
@@ -440,14 +741,26 @@ def preregistration() -> dict[str, Any]:
         "features": [dict(feature) for feature in FEATURES],
         "warmup_hours": WARMUP_HOURS,
         "data_sources": [dict(source) for source in DATA_SOURCES],
+        "funding_csv_column_policy": dict(FUNDING_CSV_COLUMN_POLICY),
         "max_staleness_hours": dict(MAX_STALENESS_HOURS),
         "exploratory_outer_blocks": [list(block) for block in EXPLORATORY_OUTER_BLOCKS],
         "exploratory_blocks_read_by": list(EXPLORATORY_BLOCKS_READ_BY),
         "holdout_rows": list(HOLDOUT_ROWS),
         "research_rows": RESEARCH_ROWS,
+        "stage_1_max_row_exclusive": STAGE_1_MAX_ROW_EXCLUSIVE,
+        "stage_2_train_rows": list(STAGE_2_TRAIN_ROWS),
+        "stage_2_selection_rows": list(STAGE_2_SELECTION_ROWS),
+        "stage_2_evaluation_rows": list(STAGE_2_EVALUATION_ROWS),
+        "block_availability_rule": dict(BLOCK_AVAILABILITY_RULE),
+        "availability_gate": dict(AVAILABILITY_GATE),
+        "universe_conditions": [dict(entry) for entry in UNIVERSE_CONDITIONS],
+        "holdout_spend_policy": dict(HOLDOUT_SPEND_POLICY),
+        "improved_rule": dict(IMPROVED_RULE),
         "min_outer_trades": MIN_OUTER_TRADES,
         "stage_1_continuation": dict(STAGE_1_CONTINUATION),
         "stage_2_outcomes": [dict(outcome) for outcome in STAGE_2_OUTCOMES],
+        "not_evaluable_outcome": dict(NOT_EVALUABLE_OUTCOME),
+        "evidence_classification": dict(EVIDENCE_CLASSIFICATION),
         "research_classification": RESEARCH_CLASSIFICATION,
         "degrees_of_freedom": [dict(entry) for entry in DEGREES_OF_FREEDOM],
         "styx": (

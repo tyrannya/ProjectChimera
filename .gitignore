@@ -36,6 +36,10 @@ data/research/*
 !data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet
 !data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet.meta.json
 !data/research/btc_usdt_1h_gen1_snapshot_manifest.json
+# The P4-HOLD ledger: which checkpoint, if any, has spent the one pre-Styx
+# region nothing has scored. It is a state file rather than data, and the
+# guard in nn/p4_holdout.py has nothing to read without it.
+!data/research/p4_holdout_ledger.json
 
 artifacts/*
 # ...except the artifact index and per-directory status markers. Which research

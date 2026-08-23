@@ -21,6 +21,8 @@ import pytest
 
 from nn.p2b_compare import ComparisonError, check_cells_agree
 from nn.source_identity import (
+    LEGACY_SOURCE_IDENTITY_SCHEMES,
+    RECOGNISED_SOURCE_IDENTITY_SCHEMES,
     SOURCE_IDENTITY_SCHEME,
     SOURCE_ROOTS,
     SourceIdentityError,
@@ -80,6 +82,27 @@ def test_a_site_packages_directory_under_a_source_root_cannot_enter_it_either(ch
     (vendored / "__init__.py").write_text("__version__ = '4.7.0'\n")
     git(checkout, "add", "-A")
     assert digest(checkout) == before
+
+
+def test_a_real_virtualenv_under_a_source_root_is_still_excluded(checkout):
+    """The case that must keep working after the name-based filter is gone.
+
+    A virtualenv is recognised by the ``pyvenv.cfg`` at its root, not by being
+    called ``.venv``, so its contents stay out of the digest — which is the
+    whole reason the exclusion exists.
+    """
+    before = digest(checkout)
+    venv = checkout / "tools" / ".venv"
+    venv.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    library = venv / "lib" / "python3.11" / "site-packages" / "sklearn"
+    library.mkdir(parents=True)
+    (library / "__init__.py").write_text("__version__ = '1.9.0'\n")
+    (venv / "lib" / "python3.11" / "shim.py").write_text("X = 1\n")
+
+    identity = source_identity(checkout)
+    assert identity["source_digest"] == before
+    assert identity["excluded_environment_files"] >= 2
 
 
 def test_importing_another_model_library_cannot_move_it(checkout):
@@ -152,6 +175,64 @@ def test_a_committed_source_change_moves_it(checkout):
     after = source_identity(checkout)
     assert after["source_digest"] != before
     assert after["dirty"] is False
+
+
+def test_a_tracked_module_under_a_directory_called_build_is_hashed(checkout):
+    """The blind spot the first version of the exclusion opened from the far side.
+
+    ``nn/build/evil.py`` is importable as ``nn.build.evil``. The name-based
+    filter dropped it because one of its directories was called ``build``, so a
+    module research could execute was invisible to the identity that exists to
+    say what research executed — the same failure as the in-repository
+    virtualenv, arrived at from the opposite direction.
+    """
+    before = digest(checkout)
+    evil = checkout / "nn" / "build"
+    evil.mkdir(parents=True)
+    (evil / "__init__.py").write_text("")
+    (evil / "evil.py").write_text("def patch():\n    return 'owned'\n")
+    git(checkout, "add", "-A")
+    git(checkout, "commit", "-qm", "a module under a directory called build")
+
+    identity = source_identity(checkout)
+    assert identity["source_digest"] != before
+    assert identity["excluded_environment_files"] == 0
+    # And it is the content that moves it, not merely the file existing.
+    (evil / "evil.py").write_text("def patch():\n    return 'owned differently'\n")
+    assert digest(checkout) != identity["source_digest"]
+
+
+@pytest.mark.parametrize("directory", ["build", "dist", "env", "venv", ".venv", "ENV"])
+def test_an_environment_shaped_name_alone_never_hides_project_source(checkout, directory):
+    """A directory's name is not evidence about what it holds.
+
+    Two acceptable outcomes and one unacceptable one. If git can see the file it
+    enters the digest; if ``.gitignore`` hides it, identity refuses to answer at
+    all. What must never happen is the third thing — the file silently absent
+    from a digest that reports success, which is what a name-based filter did.
+    """
+    before = digest(checkout)
+    target = checkout / "nn" / directory
+    target.mkdir(parents=True)
+    (target / "helper.py").write_text("VALUE = 2\n")
+    git(checkout, "add", "-A")
+
+    try:
+        after = digest(checkout)
+    except SourceIdentityError as exc:
+        assert "hidden by" in str(exc)
+        return
+    assert after != before, f"nn/{directory}/helper.py vanished from the digest"
+
+
+def test_a_gitignored_module_under_a_build_directory_is_refused(checkout):
+    """Hiding it from git as well must not buy silence either."""
+    (checkout / ".gitignore").write_text(".venv/\nnn/build/\n")
+    evil = checkout / "nn" / "build"
+    evil.mkdir(parents=True)
+    (evil / "evil.py").write_text("X = 1\n")
+    with pytest.raises(SourceIdentityError, match="hidden by"):
+        source_identity(checkout)
 
 
 # --- what must refuse to answer ---------------------------------------------
@@ -256,6 +337,75 @@ def test_the_two_schemes_may_not_be_mixed_in_one_comparison():
     other["payload"]["code"].pop("scheme")
     with pytest.raises(ComparisonError, match="different rules"):
         check_cells_agree([control, other])
+
+
+# --- a cell may not name its own way out of the current rule -----------------
+@pytest.mark.parametrize(
+    "scheme",
+    [
+        "import-graph/legacy",
+        "git-tracked-source/2",
+        "git-tracked-source/0",
+        "whatever/1",
+        "",
+    ],
+)
+def test_an_unrecognised_scheme_is_refused_outright(scheme):
+    """Recognised by allow-list, before any digest is looked at.
+
+    The check used to be "are the two schemes equal, and is either the current
+    one" — so two cells that both declared the same invented scheme agreed with
+    each other, failed the current-scheme test, and landed in the historical
+    exemption. Inventing a name was a way back into a rule written for cells
+    that predate names.
+    """
+    control = _cell("ohlcv14", scheme=scheme)
+    other = _cell("smc_v1", scheme=scheme)
+    with pytest.raises(ComparisonError, match="does not recognise"):
+        check_cells_agree([control, other])
+
+
+def test_an_invented_scheme_cannot_reach_the_historical_exemption():
+    """The exploit the allow-list closes, spelled out.
+
+    Same clean revision, differing digests, a scheme nobody has ever defined:
+    under the old ordering this joined, on a rule that exists only to keep the
+    committed P2b/P2c/P3 comparisons reproducible.
+    """
+    revision = "1" * 40
+    control = _cell("ohlcv14", scheme="legacy-ish/1", revision=revision, dirty=False)
+    other = _cell(
+        "smc_v1",
+        scheme="legacy-ish/1",
+        source_digest="e" * 64,
+        revision=revision,
+        dirty=False,
+    )
+    with pytest.raises(ComparisonError, match="does not recognise"):
+        check_cells_agree([control, other])
+
+
+def test_the_recognised_set_is_the_current_scheme_and_the_unnamed_historical_one():
+    assert RECOGNISED_SOURCE_IDENTITY_SCHEMES == {SOURCE_IDENTITY_SCHEME, None}
+    assert LEGACY_SOURCE_IDENTITY_SCHEMES == {None}
+    assert SOURCE_IDENTITY_SCHEME not in LEGACY_SOURCE_IDENTITY_SCHEMES
+
+
+def test_the_committed_cells_are_the_population_the_exemption_is_for():
+    """Falsifies the three above: the exemption still applies to real history."""
+    import json
+
+    for cell in ("btc_p3_ohlcv14_xgboost", "btc_p3_ohlcv14_lightgbm"):
+        payload = json.loads(
+            (
+                Path(__file__).resolve().parent.parent
+                / "artifacts"
+                / "benchmark"
+                / cell
+                / "p2b.json"
+            ).read_text()
+        )
+        assert payload["code"].get("scheme") in LEGACY_SOURCE_IDENTITY_SCHEMES
 
 
 def test_cells_fitted_under_different_numerical_environments_are_refused():

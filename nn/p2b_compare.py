@@ -71,7 +71,11 @@ from nn.information_sets import CHECKPOINTS, Checkpoint, OHLCV14, information_se
 from nn.p2b import ARTIFACT_NAME, PREDICTIONS_NAME
 from nn.regime import direction_attribution
 from nn.simple_models import SIMPLE_MODEL_NAMES
-from nn.source_identity import SOURCE_IDENTITY_SCHEME
+from nn.source_identity import (
+    LEGACY_SOURCE_IDENTITY_SCHEMES,
+    RECOGNISED_SOURCE_IDENTITY_SCHEMES,
+    SOURCE_IDENTITY_SCHEME,
+)
 from nn.walkforward import REFERENCES_KEY
 from tools.freeze_evidence import DERIVED
 
@@ -271,33 +275,53 @@ def check_cells_agree(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
         theirs_code = ref.get("code") or {}
         mine = mine_code.get("source_digest")
         theirs = theirs_code.get("source_digest")
-        if mine_code.get("scheme") != theirs_code.get("scheme"):
+        mine_scheme = mine_code.get("scheme")
+        theirs_scheme = theirs_code.get("scheme")
+        # Recognised first, and by allow-list. The previous order asked only
+        # whether the two schemes were *equal* and then whether either was the
+        # current one, so two cells both declaring `scheme: "anything/1"` agreed
+        # with each other, failed to be the current scheme, and fell through to
+        # the historical exemption — a cell could re-enter the legacy rule by
+        # inventing a name for itself. An unrecognised scheme is a cell from a
+        # generation this code cannot compare, and is refused.
+        known = sorted(s for s in RECOGNISED_SOURCE_IDENTITY_SCHEMES if s)
+        for scheme, side in ((mine_scheme, cell), (theirs_scheme, reference)):
+            if scheme not in RECOGNISED_SOURCE_IDENTITY_SCHEMES:
+                raise ComparisonError(
+                    f"{described(side)} identifies its source under scheme "
+                    f"{scheme!r}, which this comparison does not recognise. The "
+                    f"known schemes are {known}, plus the historical cells that "
+                    "record none at all. A cell under any other scheme states a "
+                    "rule this code has no definition of, and is refused rather "
+                    "than compared under a guess."
+                )
+        if mine_scheme != theirs_scheme:
             raise ComparisonError(
                 f"{described(cell)} identifies its source under scheme "
-                f"{mine_code.get('scheme')!r} and {described(reference)} under "
-                f"{theirs_code.get('scheme')!r}. Two digests taken under different rules "
+                f"{mine_scheme!r} and {described(reference)} under "
+                f"{theirs_scheme!r}. Two digests taken under different rules "
                 "are not comparable, and joining them would compare nothing."
             )
         if mine != theirs:
-            if mine_code.get("scheme") == SOURCE_IDENTITY_SCHEME:
+            if mine_scheme not in LEGACY_SOURCE_IDENTITY_SCHEMES:
                 raise ComparisonError(
                     f"{described(cell)} ran source digest {mine} and "
                     f"{described(reference)} ran {theirs}. Under "
-                    f"{SOURCE_IDENTITY_SCHEME!r} the digest covers this repository's "
+                    f"{mine_scheme!r} the digest covers this repository's "
                     "tracked Python source and nothing else, so two cells that disagree "
                     "on it executed materially different ProjectChimera source. Re-run "
                     "them from one revision."
                 )
             # The import-graph scheme this repository used until the source-identity
-            # remediation: the digest
-            # covered every module a process imported whose file resolved inside
-            # the checkout, which on a developer machine with an in-repository
-            # virtualenv included site-packages — so the three model families
-            # produced three digests from one source tree. Cells recorded under
-            # it may still join on a shared clean revision, which is what keeps
-            # the committed P2b/P2c/P3 comparisons reproducible. No cell produced
-            # after the scheme exists can reach this branch: it is selected by
-            # the cell's own recorded scheme, not by a path or a checkpoint name.
+            # remediation: the digest covered every module a process imported whose
+            # file resolved inside the checkout, which on a developer machine with an
+            # in-repository virtualenv included site-packages — so the three model
+            # families produced three digests from one source tree. Cells recorded
+            # under it may still join on a shared clean revision, which is what keeps
+            # the committed P2b/P2c/P3 comparisons reproducible. The population is
+            # closed: it is the cells that record no scheme at all, named in
+            # LEGACY_SOURCE_IDENTITY_SCHEMES, and nothing a new cell can write about
+            # itself puts it back in.
             same_clean_revision = bool(
                 mine
                 and theirs
