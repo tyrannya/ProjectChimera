@@ -6,6 +6,8 @@
 	p2c-cell p2c-btc p2c-compare freeze-evidence \
 	trade-plan trade-probe trade-snapshot verify-trade-snapshot \
 	p3-cell p3-btc p3-compare \
+	derivatives-plan derivatives-probe derivatives-snapshot \
+	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
@@ -143,9 +145,15 @@ P2B_DIR    ?= artifacts/benchmark
 P2B_RUNS   = $(foreach s,$(P2B_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2b_$(s)_$(m)))
 P2C_RUNS   = $(foreach s,$(P2C_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2c_$(s)_$(m)))
 P3_RUNS    = $(foreach s,$(P3_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p3_$(s)_$(m)))
+# P4's three arms, in the order docs/p4_preregistration.md §2 reports them.
+P4_SETS    = ohlcv14 derivatives_v1 ohlcv14_plus_derivatives_v1
+P4_RUNS    = $(foreach s,$(P4_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p4_$(s)_$(m)))
 # Where `trade-snapshot` stages one archive at a time. Point it at a large disk:
 # the archives are deleted as they are folded, but one of them has to fit.
 TRADE_WORKDIR ?= /tmp/chimera-trades
+# Where `derivatives-snapshot` stages one archive at a time. Smaller than the
+# trade archives by three orders of magnitude, but the same discipline applies.
+DERIVATIVES_WORKDIR ?= /tmp/chimera-derivatives
 PROBE_MONTHS  ?= 2
 
 p2b-btc: verify-research-snapshot  ## P2b: all nine cells (3 information sets x 3 models x 4 folds)
@@ -230,6 +238,57 @@ p3-cell:  ## One P3 cell. Args: SET=microstructure_v1 MODEL=xgboost
 p3-compare:  ## Join the P3 cells: parity proof, recomputation, deltas
 	$(PYTHON) -m nn.p2b_compare --runs $(P3_RUNS) \
 		--out $(P2B_DIR)/btc_p3_comparison
+
+# --- P4: derivatives positioning and carry ----------------------------------
+# P4's source is not the spot tape at all. `derivatives-snapshot` streams three
+# Binance USD-M archives — monthly funding, DAILY open-interest metrics, monthly
+# 1h perpetual klines — reduces each to the hourly point-in-time observation the
+# features are defined over, and deletes it before requesting the next.
+#
+# Run `derivatives-plan` (no network) and then `derivatives-probe` before
+# committing to the bulk download. The probe is where the open-interest
+# availability window stops being an unknown: it binary-searches the archive's
+# first published day from HEAD requests alone, matches each field's schema
+# against the preregistered allow-list, and writes nothing.
+#
+# The window is derived from the committed OHLCV snapshot and closes at the last
+# hour the research spine reaches — which is also the hour before P4-HOLD begins,
+# so stage 1's own source file structurally cannot contain the region stage 1
+# decides whether to open.
+#
+# **No P4 model runs from these targets.** `p4-cell` and `p4-btc` go through
+# `nn.p4_stage1`'s interlock: `data/research/p4_stage1_authorisation.json` must
+# say `authorised` *and* `--authorise-fit` must be passed. `p4-status` reports
+# what would run and what is currently stopping it, and fits nothing.
+derivatives-plan:  ## List the derivatives archives the acquisition would fetch. No network.
+	$(PYTHON) -m tools.export_derivatives_snapshot --plan
+
+derivatives-probe:  ## Establish the open-interest window and each field's schema. Bounded.
+	$(PYTHON) -m tools.export_derivatives_snapshot --probe
+
+derivatives-snapshot:  ## Acquire the P4 derivatives source and export the hourly snapshot
+	$(PYTHON) -m tools.export_derivatives_snapshot --workdir $(DERIVATIVES_WORKDIR)
+
+verify-derivatives-snapshot:  ## Check the committed derivatives snapshot: hashes, bounds, coverage
+	$(PYTHON) -m tools.verify_derivatives_snapshot
+
+p4-status:  ## What P4 stage 1 would run, and what is stopping it. Fits nothing.
+	$(PYTHON) -c "import json, nn.p4_stage1 as s; print(json.dumps(s.describe(), indent=2))"
+
+p4-btc: verify-research-snapshot verify-derivatives-snapshot  ## P4: all nine cells. Needs an authorised interlock.
+	@for s in $(P4_SETS); do for m in $(P2B_MODELS); do \
+		echo "--- $$s x $$m ---"; \
+		$(PYTHON) -m nn.p2b --checkpoint P4 --information-set $$s --model $$m \
+			--authorise-fit --out $(P2B_DIR)/btc_p4_$${s}_$${m} || exit 1; \
+	done; done
+
+p4-cell:  ## One P4 cell. Args: SET=derivatives_v1 MODEL=xgboost
+	$(PYTHON) -m nn.p2b --checkpoint P4 --information-set $(SET) --model $(MODEL) \
+		--authorise-fit --out $(P2B_DIR)/btc_p4_$(SET)_$(MODEL)
+
+p4-compare:  ## Join the P4 cells: parity proof, recomputation, deltas
+	$(PYTHON) -m nn.p2b_compare --runs $(P4_RUNS) \
+		--out $(P2B_DIR)/btc_p4_comparison
 
 # Covers primary evidence only — cells and their per-sample predictions.
 # Comparisons and ablation tables are derived: `tools.freeze_evidence` refuses

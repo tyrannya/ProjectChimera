@@ -323,7 +323,16 @@ transformation of the same hourly bars, not a proof about a space.
 The next checkpoint, **P4**, is preregistered and has not been run:
 [`docs/p4_preregistration.md`](docs/p4_preregistration.md) fixes its question,
 arms, sources, sample universe, decision rule and stopping rule before any P4
-data is acquired.
+data is acquired. Its **input path is now implemented** — the acquisition, the
+`derivatives_v1` engine ([`docs/derivatives_v1.md`](docs/derivatives_v1.md)), the
+verifier, the sample universe, the availability gate and the stage-1 runner —
+and none of it has fitted anything. Two things stop it: the derivatives source
+has not been acquired, because the egress policy in force denies
+`data.binance.vision`; and
+[`data/research/p4_stage1_authorisation.json`](data/research/p4_stage1_authorisation.json)
+says `not_authorised`, so beginning a P4 fit is a reviewable commit rather than a
+flag. `make p4-status` reports what would run and what is currently stopping it,
+and fits nothing.
 
 `--checkpoint` is a required input rather than something inferred from the arms,
 because `ohlcv14` is the control of all three and cannot say which question a
@@ -474,6 +483,7 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/microstructure_v1.md](docs/microstructure_v1.md) | The causal trade-flow information set: 32 exact definitions (checkpoint P3) |
 | [docs/p2b_methodology.md](docs/p2b_methodology.md) | Checkpoints P2b, P2c and P3: does any of those families add information beyond OHLCV14? |
 | [docs/p4_preregistration.md](docs/p4_preregistration.md) | Checkpoint P4, preregistered before its data exists: derivatives positioning and carry |
+| [docs/derivatives_v1.md](docs/derivatives_v1.md) | P4's information set, as implemented: what §5 left open, and two consequences that tighten its gate |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
 | [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, and what is next |
 

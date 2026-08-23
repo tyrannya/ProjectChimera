@@ -148,6 +148,8 @@ Four files plus two manifests under `data/research/`:
 | `btc_usdt_1h_gen1_snapshot_manifest.json` | — | hashes, spans, and the canonical reference |
 | `btc_usdt_1h_gen1_trades_hourly_pre_styx.parquet` | 47,878 | `2019-12-01T00:00` .. `2025-05-19T07:00` |
 | `btc_usdt_1h_gen1_trade_snapshot_manifest.json` | — | P3's second source: hashes, the aggregation spec, the 84 archives, and the binding to the OHLCV snapshot |
+| `p4_holdout_ledger.json` | — | P4-HOLD's state: `unspent`, and the region it governs. Carries no observation of any market |
+| `p4_stage1_authorisation.json` | — | P4's fit interlock: `not_authorised`, and the preregistration hash it would be granted under |
 
 The raw file is the unprocessed OHLCV history the market-structure engine is run
 over. The processed file is the OHLCV14 research spine: 14 features, `target`,
@@ -363,6 +365,49 @@ it. `load_trade_snapshot` runs the whole verifier before anything is fitted, so
 The nine cells land in `btc_p3_<information_set>_<model>/` and are frozen under
 `artifacts/btc_p3_SHA256SUMS.txt`. They cost appreciably more than P2b's: the
 combined arm is 46 columns × 64 timesteps = 2,944 inputs per row.
+
+
+### P4, the fourth checkpoint — implemented, not run
+
+P4 reads a **third source**: an hourly point-in-time table of Binance USD-M
+funding, open interest and perpetual price. That table is **not committed**,
+because it has not been acquired: outbound access to `data.binance.vision` is
+denied by the egress policy in force, exactly as it was when P3's machinery was
+written. So the steps below are what a reproduction will look like, and the
+first of them is the one that is currently blocked.
+
+```bash
+make derivatives-plan        # networkless: every archive that would be fetched
+make derivatives-probe       # bounded: the OI availability window, and each schema
+make derivatives-snapshot    # the acquisition itself
+make verify-derivatives-snapshot
+make p4-status               # what stage 1 would run, and what is stopping it
+```
+
+`make derivatives-plan` runs today and touches nothing: it reports a window of
+`2019-12-01T00:00` to `2025-05-19T08:00` — 47,912 hours — over 66 monthly funding
+archives, 1,722 **daily** open-interest metrics archives and 66 monthly kline
+archives, and asserts that the window ends before both Styx and P4-HOLD's first
+instant.
+
+`make derivatives-probe` currently fails closed, and the failure is the right
+one: it reports that the archive could not be *fetched* rather than that a day is
+not *published*, and stops. That distinction is the whole of §3.0a — a missing
+day is a measurement that feeds the availability gate, and a blocked network is
+not a measurement of anything.
+
+**No P4 cell exists, and none can be produced by accident.** `nn.p4_stage1` holds
+a two-part interlock: `data/research/p4_stage1_authorisation.json` must say
+`authorised` — which is a commit, with a name and a reason on it — *and*
+`--authorise-fit` must be passed. `make p4-status` prints both, plus the nine
+cells the matrix would run and which single one of them decides. It fits nothing.
+
+P4-HOLD, rows `[45802, 48211)`, is `unspent` and has not been read. The committed
+research snapshot stops at row 45802 and the derivatives acquisition window stops
+at the same hour, so stage 1's inputs structurally cannot contain the region
+stage 1 decides whether to open — and `nn.p4_holdout` turns that from a fact
+about today's files into a checked precondition on the snapshot, the fold plan
+and the source's own hours.
 
 ### Optional, post-hoc
 
