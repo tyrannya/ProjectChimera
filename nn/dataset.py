@@ -272,6 +272,7 @@ def sample_indices(
     horizon: int,
     *,
     segment_ids: np.ndarray | None = None,
+    eligible: np.ndarray | None = None,
 ) -> np.ndarray:
     """The rows a split actually yields samples for.
 
@@ -281,18 +282,39 @@ def sample_indices(
     :func:`build_windows` returns, which is what makes it usable as *the*
     definition of "which rows were scored" — a later analysis can ask that
     question without rebuilding the tensors, and cannot answer it differently.
+
+    ``eligible`` is P4's sample universe: a per-row flag saying whether the row
+    is one the comparison may be scored on at all. A candidate survives only when
+    the row itself and every row of its input window are eligible. It is
+    deliberately **not** applied to the embargoed label row: the label is
+    ``close[t+horizon] / close[t] - 1``, a function of the candle history that
+    the universe rule (``docs/p4_preregistration.md`` §6.2) does not constrain,
+    and requiring it would be a fifth condition nobody preregistered.
+
+    Defaults to ``None``, in which case nothing about the existing behaviour
+    changes — which is what keeps the frozen v4, P2a, P2b, P2c and P3 evidence
+    reproducible byte for byte.
     """
     idx = window_indices(split, seq_len, horizon)
-    if idx.size == 0 or segment_ids is None:
+    if idx.size == 0 or (segment_ids is None and eligible is None):
         return idx
 
-    segments = np.asarray(segment_ids)
+    keep = np.ones(len(idx), dtype=bool)
     offsets = np.arange(-seq_len + 1, 1)
     window_rows = idx[:, None] + offsets[None, :]
-    current_segment = segments[idx]
-    input_is_contiguous = (segments[window_rows] == current_segment[:, None]).all(axis=1)
-    label_is_contiguous = segments[idx + horizon] == current_segment
-    return idx[input_is_contiguous & label_is_contiguous]
+
+    if segment_ids is not None:
+        segments = np.asarray(segment_ids)
+        current_segment = segments[idx]
+        keep &= (segments[window_rows] == current_segment[:, None]).all(axis=1)
+        keep &= segments[idx + horizon] == current_segment
+
+    if eligible is not None:
+        mask = np.asarray(eligible, dtype=bool)
+        keep &= mask[idx]
+        keep &= mask[window_rows].all(axis=1)
+
+    return idx[keep]
 
 
 def build_windows(
@@ -303,12 +325,15 @@ def build_windows(
     horizon: int,
     *,
     segment_ids: np.ndarray | None = None,
+    eligible: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Materialise ``(X, y, row_index)`` for one split.
 
     ``X`` has shape ``(n_samples, seq_len, n_features)``. If ``segment_ids`` is
     provided, a candidate is kept only when both its whole input sequence and
-    its embargoed label row belong to the same contiguous data segment.
+    its embargoed label row belong to the same contiguous data segment. If
+    ``eligible`` is provided, a candidate is kept only when the row and its whole
+    input window are inside the sample universe — see :func:`sample_indices`.
     """
     if features.ndim != 2:
         raise ValueError(f"features must be 2-D, got shape {features.shape}")
@@ -316,8 +341,10 @@ def build_windows(
         raise ValueError("features and targets must have the same length")
     if segment_ids is not None and len(segment_ids) != len(features):
         raise ValueError("segment_ids must have the same length as features")
+    if eligible is not None and len(eligible) != len(features):
+        raise ValueError("eligible must have the same length as features")
 
-    idx = sample_indices(split, seq_len, horizon, segment_ids=segment_ids)
+    idx = sample_indices(split, seq_len, horizon, segment_ids=segment_ids, eligible=eligible)
     if idx.size == 0:
         return (
             np.empty((0, seq_len, features.shape[1]), dtype=np.float32),
