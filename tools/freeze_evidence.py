@@ -175,17 +175,24 @@ def manifest_entries(manifest: Path) -> list[tuple[str, str]]:
     return entries
 
 
-def check(manifest: Path) -> list[str]:
+def check(manifest: Path, *, root: Path | None = None) -> list[str]:
     """Every covered file that vanished or moved, described. Empty means frozen.
 
     The whole of the verification, with no exemption of any kind — not by
     directory, not by suffix, not by evidence class. Both ``--verify`` and the
     test suite call this, so "frozen" has exactly one meaning in this
     repository.
+
+    ``root`` is the tree the manifest's repository-relative paths resolve
+    against, and it defaults to this repository. It is an argument because
+    :func:`nn.p4_holdout.assert_frozen_stage_one` has to verify a manifest in
+    whatever tree it was handed — a guard that checked one tree while being
+    asked about another would report "frozen" about files nobody looked at.
     """
+    tree = ROOT if root is None else Path(root)
     problems: list[str] = []
     for expected, name in manifest_entries(manifest):
-        path = ROOT / name
+        path = tree / name
         if not path.is_file():
             problems.append(f"MISSING  {name}")
             continue
