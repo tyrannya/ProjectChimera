@@ -55,7 +55,51 @@ FIXTURE_ARCHIVES = [
         "checksum_verified": False,
         "checksum_mismatch": False,
         "layout": {"layout": "fundingTime/fundingRate"},
-    }
+    },
+    # The 2020-09-01 shape: 576 raw rows, 288 logical observations, every
+    # instant duplicated once with the paired rows identical across the whole
+    # CSV row. Present so the manifest's source-integrity accounting is written
+    # from something other than zeros and the verifier has arithmetic to redo.
+    {
+        "field": "open_interest",
+        "name": "SYNTHETIC-FIXTURE-metrics-2020-09-01.zip",
+        "url": "fixture://synthetic",
+        "kind": "daily",
+        "period_start": "2020-09-01T00:00:00+00:00",
+        "period_end": "2020-09-02T00:00:00+00:00",
+        "bytes": 1,
+        "sha256": "0" * 64,
+        "published_sha256": None,
+        "checksum_verified": False,
+        "checksum_mismatch": False,
+        "rows": 288,
+        "normalisation": {
+            "rows_read": 576,
+            "observations_retained": 288,
+            "exact_duplicate_rows_collapsed": 288,
+            "duplicate_instants": 288,
+        },
+    },
+    {
+        "field": "open_interest",
+        "name": "SYNTHETIC-FIXTURE-metrics-2020-09-03.zip",
+        "url": "fixture://synthetic",
+        "kind": "daily",
+        "period_start": "2020-09-03T00:00:00+00:00",
+        "period_end": "2020-09-04T00:00:00+00:00",
+        "bytes": 1,
+        "sha256": "0" * 64,
+        "published_sha256": None,
+        "checksum_verified": False,
+        "checksum_mismatch": False,
+        "rows": 288,
+        "normalisation": {
+            "rows_read": 288,
+            "observations_retained": 288,
+            "exact_duplicate_rows_collapsed": 0,
+            "duplicate_instants": 0,
+        },
+    },
 ]
 
 
@@ -284,6 +328,104 @@ def test_a_manifest_that_overstates_its_coverage_is_refused(exported, tmp_path):
 
     path = _repoint(exported, tmp_path, edit)
     with pytest.raises(DerivativesSnapshotVerificationError, match="hours_available"):
+        verify_derivatives_snapshot(path)
+
+
+def test_the_manifest_accounts_for_every_exact_duplicate_row_it_collapsed(exported):
+    """Collapsed rows leave a trace, per archive and in aggregate."""
+    integrity = exported["payload"]["acquisition"]["open_interest_source_integrity"]
+    assert integrity["archives_read"] == 2
+    assert integrity["raw_rows_read"] == 576 + 288
+    assert integrity["logical_observations_retained"] == 288 + 288
+    assert integrity["exact_duplicate_rows_collapsed"] == 288
+    assert integrity["duplicate_instants_collapsed"] == 288
+    assert integrity["archives_with_exact_duplicates"] == 1
+    assert integrity["conflicting_duplicate_instants"] == 0
+    # The rule itself lives once, in the source spec the manifest copies and the
+    # source_spec_hash binds.
+    assert "if and only if" in exported["payload"]["source"]["duplicate_rule"].lower()
+
+
+def test_the_raw_archive_identity_survives_the_collapse(exported):
+    """Normalisation must not pretend the upstream bytes were different.
+
+    The per-archive record still carries the ZIP's own sha256 and the raw row
+    count it was read from, so the logical table and the bytes it came from stay
+    separately identified.
+    """
+    records = [
+        a
+        for a in exported["payload"]["acquisition"]["archives"]
+        if a["field"] == "open_interest"
+    ]
+    duplicated = next(a for a in records if a["normalisation"]["rows_read"] == 576)
+    assert duplicated["sha256"], "the archive's own digest is still recorded"
+    assert duplicated["rows"] == 288 != duplicated["normalisation"]["rows_read"]
+
+
+def test_a_manifest_whose_duplicate_aggregate_disagrees_with_its_records_is_refused(
+    exported, tmp_path
+):
+    def edit(payload, _root):
+        payload["acquisition"]["open_interest_source_integrity"][
+            "exact_duplicate_rows_collapsed"
+        ] = 0
+
+    path = _repoint(exported, tmp_path, edit)
+    with pytest.raises(
+        DerivativesSnapshotVerificationError, match="exact_duplicate_rows_collapsed"
+    ):
+        verify_derivatives_snapshot(path)
+
+
+def test_a_manifest_declaring_a_conflicting_duplicate_instant_is_refused(exported, tmp_path):
+    """A conflict stops the acquisition, so no written snapshot may report one."""
+
+    def edit(payload, _root):
+        payload["acquisition"]["open_interest_source_integrity"][
+            "conflicting_duplicate_instants"
+        ] = 1
+
+    path = _repoint(exported, tmp_path, edit)
+    with pytest.raises(DerivativesSnapshotVerificationError, match="conflicting"):
+        verify_derivatives_snapshot(path)
+
+
+def test_a_per_archive_normalisation_that_does_not_add_up_is_refused(exported, tmp_path):
+    def edit(payload, _root):
+        for archive in payload["acquisition"]["archives"]:
+            if archive.get("normalisation", {}).get("rows_read") == 576:
+                archive["normalisation"]["observations_retained"] = 400
+
+    path = _repoint(exported, tmp_path, edit)
+    with pytest.raises(DerivativesSnapshotVerificationError, match="do not add up"):
+        verify_derivatives_snapshot(path)
+
+
+def test_a_manifest_claiming_rows_it_did_not_retain_is_refused(exported, tmp_path):
+    def edit(payload, _root):
+        for archive in payload["acquisition"]["archives"]:
+            if "normalisation" in archive:
+                archive["rows"] = 999
+
+    path = _repoint(exported, tmp_path, edit)
+    with pytest.raises(DerivativesSnapshotVerificationError, match="claims it contributed"):
+        verify_derivatives_snapshot(path)
+
+
+def test_rows_removed_without_a_duplicate_instant_behind_them_are_refused(exported, tmp_path):
+    """Every collapsed row came from an instant; a count without one is nonsense."""
+
+    def edit(payload, _root):
+        for archive in payload["acquisition"]["archives"]:
+            if archive.get("normalisation", {}).get("duplicate_instants") == 288:
+                archive["normalisation"]["duplicate_instants"] = 0
+                payload["acquisition"]["open_interest_source_integrity"][
+                    "duplicate_instants_collapsed"
+                ] = 0
+
+    path = _repoint(exported, tmp_path, edit)
+    with pytest.raises(DerivativesSnapshotVerificationError, match="at least one row"):
         verify_derivatives_snapshot(path)
 
 

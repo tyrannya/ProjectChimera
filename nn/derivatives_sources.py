@@ -557,6 +557,118 @@ def check_strictly_increasing(stamps: np.ndarray, archive: Archive, *, what: str
         )
 
 
+# --------------------------------------------------------------------------- #
+# the metrics archive's exact duplicate rows
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class MetricsDuplicateNormalisation:
+    """What collapsing exact duplicate rows did to one daily metrics archive.
+
+    Four counts, kept together because any one of them alone is a claim nobody
+    can check: rows retained without rows read hides what was removed, and rows
+    removed without the instants they came from hides whether one instant was
+    duplicated fifty times or fifty instants were duplicated once.
+    """
+
+    rows_read: int
+    observations_retained: int
+    exact_duplicate_rows_collapsed: int
+    duplicate_instants: int
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "rows_read": self.rows_read,
+            "observations_retained": self.observations_retained,
+            "exact_duplicate_rows_collapsed": self.exact_duplicate_rows_collapsed,
+            "duplicate_instants": self.duplicate_instants,
+        }
+
+
+def collapse_exact_duplicate_metrics_rows(
+    rows: Sequence[Sequence[str]],
+    instants: np.ndarray,
+    archive: Archive,
+    *,
+    columns: Sequence[str],
+) -> tuple[np.ndarray, MetricsDuplicateNormalisation]:
+    """Collapse rows that repeat one instant *identically*, and refuse the rest.
+
+    **The source condition this exists for.** The official Binance USD-M daily
+    metrics archives for BTCUSDT dated 2020-09-01 and 2020-09-02 were observed to
+    hold 576 data rows for 288 five-minute instants: every observation appears
+    exactly twice, and the paired rows are identical across the full CSV row.
+    Nothing here generalises that to other days — it is a defect two archives
+    were measured to have, not a property of the source.
+
+    **The rule, and its two halves.** Rows sharing an instant are collapsed to
+    one logical observation *only* when every source field in them is identical.
+    When any field differs, this raises: the reader still cannot tell which row
+    is the observation, so it does not take the first, does not take the last,
+    does not average, and does not infer. That half is
+    :func:`check_strictly_increasing`'s policy, unchanged and merely reached by a
+    different door.
+
+    **"Every source field" means the whole row.** ``rows`` carries every column
+    the CSV published, verbatim, including the columns the P4 feature engine
+    never reads. Two rows agreeing on ``create_time``, ``sum_open_interest`` and
+    ``sum_open_interest_value`` but differing anywhere else are *not* exact
+    duplicates and are refused, because a source that disagrees with itself about
+    a field this design ignores is a source disagreeing with itself.
+
+    ``instants`` must already be ascending, and ``rows`` in the same order.
+    Returns the keep-mask over them and the counts to record in provenance. An
+    instant repeated more than twice with every row equivalent collapses to one,
+    and every row removed is counted.
+    """
+    count = len(instants)
+    keep = np.ones(count, dtype=bool)
+    if count == 0:
+        return keep, MetricsDuplicateNormalisation(0, 0, 0, 0)
+
+    # Group boundaries rather than a key-based de-duplication: the keys of a
+    # generic drop_duplicates would have to be spelled out anyway, and it would
+    # silently accept the conflicting case this must refuse.
+    boundary = np.ones(count, dtype=bool)
+    boundary[1:] = instants[1:] != instants[:-1]
+    starts = np.flatnonzero(boundary).tolist()
+    ends = starts[1:] + [count]
+
+    collapsed = 0
+    duplicate_instants = 0
+    for start, end in zip(starts, ends):
+        if end - start == 1:
+            continue
+        first = rows[start]
+        for index in range(start + 1, end):
+            other = rows[index]
+            if list(other) == list(first):
+                continue
+            instant = pd.Timestamp(int(instants[start]), unit="ns", tz="UTC")
+            differing = [
+                f"{name}={left!r} vs {right!r}"
+                for name, left, right in zip(columns, first, other)
+                if left != right
+            ]
+            raise DerivativesSourceError(
+                f"{archive.name}: two rows at {instant.isoformat()} disagree "
+                f"({'; '.join(differing[:4])}). Rows sharing an instant are collapsed "
+                "only when every source field is identical; these are conflicting "
+                "observations, the reader cannot tell which one is the observation, "
+                "and choosing between them would be a decision about the data made by "
+                "the code that reads it."
+            )
+        keep[start + 1 : end] = False
+        collapsed += end - start - 1
+        duplicate_instants += 1
+
+    return keep, MetricsDuplicateNormalisation(
+        rows_read=count,
+        observations_retained=count - collapsed,
+        exact_duplicate_rows_collapsed=collapsed,
+        duplicate_instants=duplicate_instants,
+    )
+
+
 def hour_floor(stamps: np.ndarray) -> np.ndarray:
     """The hour-open instant each timestamp falls in, in int64 nanoseconds."""
     return (np.asarray(stamps, dtype=np.int64) // HOUR_NS) * HOUR_NS
@@ -606,8 +718,14 @@ def source_spec() -> dict[str, Any]:
         ),
         "max_staleness_hours": dict(MAX_STALENESS_HOURS),
         "duplicate_rule": (
-            "a duplicate instant in any source rejects the acquisition; it is never "
-            "de-duplicated"
+            "a duplicate instant rejects the acquisition, with one narrowly scoped "
+            "exception in the daily metrics archive: rows repeating one create_time "
+            "are collapsed to a single logical observation IF AND ONLY IF every "
+            "source field in them is identical across the complete CSV row, columns "
+            "this design never reads included. Any disagreeing field rejects the "
+            "acquisition as before; no row is chosen, dropped or averaged, and the "
+            "count of rows collapsed is recorded per archive. Funding and kline "
+            "archives are unchanged: a duplicate instant in either rejects outright"
         ),
         "gap_rule": "a gap is never filled or interpolated; it becomes staleness",
         "missing_day_rule": (
