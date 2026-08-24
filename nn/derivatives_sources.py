@@ -37,6 +37,7 @@ from typing import Any, Iterator, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from nn import p4_preregistration
 from nn.p4_preregistration import DATA_SOURCES, FUNDING_CSV_COLUMN_POLICY, MAX_STALENESS_HOURS
 from nn.trade_aggregates import resolve_epoch_unit, scale_to_nanoseconds
 
@@ -593,12 +594,12 @@ def collapse_exact_duplicate_metrics_rows(
 ) -> tuple[np.ndarray, MetricsDuplicateNormalisation]:
     """Collapse rows that repeat one instant *identically*, and refuse the rest.
 
-    **The source condition this exists for.** The official Binance USD-M daily
-    metrics archives for BTCUSDT dated 2020-09-01 and 2020-09-02 were observed to
-    hold 576 data rows for 288 five-minute instants: every observation appears
-    exactly twice, and the paired rows are identical across the full CSV row.
-    Nothing here generalises that to other days — it is a defect two archives
-    were measured to have, not a property of the source.
+    **The rule is not written here.** It is
+    :data:`nn.p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY` — amendment A1,
+    inside the hashed preregistration — and this function is its implementation,
+    not a second statement of it. The refusal below quotes the policy's own
+    ``on_conflict`` wording rather than paraphrasing it, so an edit to the rule
+    changes what the code says as well as what the design says.
 
     **The rule, and its two halves.** Rows sharing an instant are collapsed to
     one logical observation *only* when every source field in them is identical.
@@ -649,13 +650,11 @@ def collapse_exact_duplicate_metrics_rows(
                 for name, left, right in zip(columns, first, other)
                 if left != right
             ]
+            policy = p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY
             raise DerivativesSourceError(
                 f"{archive.name}: two rows at {instant.isoformat()} disagree "
-                f"({'; '.join(differing[:4])}). Rows sharing an instant are collapsed "
-                "only when every source field is identical; these are conflicting "
-                "observations, the reader cannot tell which one is the observation, "
-                "and choosing between them would be a decision about the data made by "
-                "the code that reads it."
+                f"({'; '.join(differing[:4])}). {policy['acceptance']}. "
+                f"These are conflicting observations, so: {policy['on_conflict']}."
             )
         keep[start + 1 : end] = False
         collapsed += end - start - 1
@@ -717,16 +716,12 @@ def source_spec() -> dict[str, Any]:
             "including the control loses the row"
         ),
         "max_staleness_hours": dict(MAX_STALENESS_HOURS),
-        "duplicate_rule": (
-            "a duplicate instant rejects the acquisition, with one narrowly scoped "
-            "exception in the daily metrics archive: rows repeating one create_time "
-            "are collapsed to a single logical observation IF AND ONLY IF every "
-            "source field in them is identical across the complete CSV row, columns "
-            "this design never reads included. Any disagreeing field rejects the "
-            "acquisition as before; no row is chosen, dropped or averaged, and the "
-            "count of rows collapsed is recorded per archive. Funding and kline "
-            "archives are unchanged: a duplicate instant in either rejects outright"
-        ),
+        # Not a restatement — the preregistered object itself. There is exactly
+        # one authoritative copy of this rule, in nn.p4_preregistration, and it
+        # is read here rather than paraphrased. Editing it therefore moves
+        # preregistration_hash AND source_spec_hash together, and a checkout
+        # where the two disagree cannot be constructed.
+        "duplicate_rule": dict(p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY),
         "gap_rule": "a gap is never filled or interpolated; it becomes staleness",
         "missing_day_rule": (
             "a metrics day that 404s, fails its published checksum, or arrives short is "

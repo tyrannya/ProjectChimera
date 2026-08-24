@@ -43,6 +43,7 @@ from nn.p4_preregistration import (
     HOLDOUT_ROWS,
     MIN_OUTER_TRADES,
     NULL_PROBABILITY_THREE_OF_FOUR,
+    OPEN_INTEREST_DUPLICATE_POLICY,
     PRIMARY_COMPARISON,
     PRIMARY_MODEL,
     RESEARCH_ROWS,
@@ -58,6 +59,12 @@ from nn.walkforward import plan_nested_folds
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCUMENT = ROOT / "docs" / "p4_preregistration.md"
+
+#: The hash the original preregistration carried, before amendment A1 (§3.4a) put
+#: `open_interest_duplicate_policy` into the payload. Historical provenance: no P4
+#: cell, fit or outcome was produced under it, and the tests below assert both that
+#: the document still records it and that nothing may be run under it.
+SUPERSEDED_HASH = "68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4"
 
 
 # --- P4 is implemented, registered, and has not been run ---------------------
@@ -486,6 +493,7 @@ def test_moving_any_of_them_moves_the_hash(monkeypatch):
         ("HOLDOUT_SPEND_POLICY", {"evaluations_permitted": 2}),
         ("EVIDENCE_CLASSIFICATION", {"maximum_label": "confirmatory"}),
         ("FUNDING_CSV_COLUMN_POLICY", {"canonical_fields": []}),
+        ("OPEN_INTEREST_DUPLICATE_POLICY", {"grouping_key": "other"}),
     ):
         with monkeypatch.context() as patch:
             patch.setattr(prereg, name, value)
@@ -623,3 +631,182 @@ def test_the_degrees_of_freedom_are_inventoried_and_each_one_is_closed():
 )
 def test_the_document_forbids_each_named_post_hoc_move(forbidden):
     assert forbidden in DOCUMENT.read_text()
+
+
+# --- amendment A1: the duplicate policy, and the two things it must not do ----
+def test_the_duplicate_policy_is_inside_the_hashed_preregistration():
+    """In the payload, not only in a module namespace beside it."""
+    assert preregistration()["open_interest_duplicate_policy"] == dict(
+        OPEN_INTEREST_DUPLICATE_POLICY
+    )
+
+
+def test_the_duplicate_policy_is_scoped_to_open_interest_and_refuses_conflicts():
+    policy = OPEN_INTEREST_DUPLICATE_POLICY
+    assert policy["scope"]["field"] == "open_interest"
+    assert policy["scope"]["applies_to"] == ["open_interest"]
+    assert sorted(policy["scope"]["does_not_apply_to"]) == ["funding_rate", "perpetual_price"]
+    assert policy["grouping_key"] == "create_time"
+    for forbidden in ("first", "last", "average", "infer"):
+        assert forbidden in policy["on_conflict"].lower(), forbidden
+    assert set(policy["provenance_required"]) == {
+        "rows_read",
+        "observations_retained",
+        "exact_duplicate_rows_collapsed",
+        "duplicate_instants",
+    }
+
+
+def test_the_policy_records_that_it_is_an_amendment_and_what_it_replaced():
+    """The history is data, not a story told about the data.
+
+    A rule adopted after looking at a source is a different kind of object from
+    one fixed before, and the payload has to say which this is — otherwise the
+    hash certifies a commitment whose provenance it cannot express.
+    """
+    policy = OPEN_INTEREST_DUPLICATE_POLICY
+    assert policy["amendment"] == "A1"
+    assert "before any P4 model fit" in policy["amendment_status"]
+    assert "ANY source" in policy["supersedes"]
+    assert "2020-09-01" in policy["adopted_because"]
+    assert "2020-09-02" in policy["adopted_because"]
+    assert "no claim is made" in policy["adopted_because"].lower()
+
+
+def test_the_source_spec_reads_the_policy_rather_than_restating_it():
+    """The anti-drift property, asserted as identity rather than as similarity."""
+    from nn.derivatives_sources import source_spec
+
+    assert source_spec()["duplicate_rule"] == dict(OPEN_INTEREST_DUPLICATE_POLICY)
+
+
+def test_editing_the_policy_moves_both_hashes_together(monkeypatch):
+    """`preregistration says X, source_spec says Y` must be unconstructible.
+
+    Both identities are recomputed under a perturbed policy. If either failed to
+    move, a later edit could leave the design and the acquisition disagreeing
+    while the suite stayed green — which is the exact failure this amendment is
+    supposed to make impossible.
+    """
+    import nn.p4_preregistration as prereg
+    from nn.derivatives_sources import source_spec
+    from tools.export_derivatives_snapshot import source_spec_hash
+
+    before_prereg = preregistration_hash()
+    before_source = source_spec_hash()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "OPEN_INTEREST_DUPLICATE_POLICY",
+            {**OPEN_INTEREST_DUPLICATE_POLICY, "grouping_key": "something_else"},
+        )
+        assert prereg.preregistration_hash() != before_prereg
+        assert source_spec_hash() != before_source
+        assert source_spec()["duplicate_rule"]["grouping_key"] == "something_else"
+    assert preregistration_hash() == before_prereg
+    assert source_spec_hash() == before_source
+
+
+def test_the_acquisition_groups_on_the_key_the_policy_names(monkeypatch, tmp_path):
+    """The reader reads the policy; it does not carry its own copy of the key."""
+    import zipfile
+
+    import pandas as pd
+
+    import nn.p4_preregistration as prereg
+    from nn.derivatives_sources import DerivativesSourceError, metrics_archive
+    from tools.export_derivatives_snapshot import read_metrics
+
+    archive = metrics_archive(pd.Timestamp("2020-09-01", tz="UTC"))
+    path = tmp_path / archive.name
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            archive.name.removesuffix(".zip") + ".csv",
+            "create_time,sum_open_interest,sum_open_interest_value\n"
+            "2020-09-01 00:00:00,1.0,2.0\n",
+        )
+    assert len(read_metrics(path, archive)[0]) == 1
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "OPEN_INTEREST_DUPLICATE_POLICY",
+            {**OPEN_INTEREST_DUPLICATE_POLICY, "grouping_key": "sum_open_interest"},
+        )
+        # Grouping on a column that is not an instant must fail in the parser,
+        # which proves the key came from the policy and not from a literal.
+        with pytest.raises(DerivativesSourceError):
+            read_metrics(path, archive)
+
+
+def test_the_document_records_the_amendment_and_preserves_the_superseded_hash():
+    text = DOCUMENT.read_text()
+    superseded = SUPERSEDED_HASH
+    assert "3.4a" in text
+    assert "Source-protocol amendment A1" in text
+    assert "576" in text and "288" in text
+    assert "2020-09-01" in text and "2020-09-02" in text
+    # The active hash is the amended one, and the old one survives as history
+    # rather than being quietly overwritten.
+    assert f"sha256:{preregistration_hash()}" in text
+    assert superseded in text
+    assert superseded != preregistration_hash()
+    assert "Superseded hash" in text
+    # And it is named inside the amendment itself, not only in the header: §3.4a
+    # is where the change is explained, so it is where the value it replaced has
+    # to be readable.
+    section = text.split("### 3.4a", 1)[1].split("### 3.5", 1)[0]
+    assert superseded in section
+    # The document must not claim the amendment predates the source inspection.
+    assert "Amendment A1" in text.split("---", 1)[0]
+
+
+def test_the_document_and_the_policy_agree_on_what_is_out_of_scope():
+    """Markdown wraps prose, so the section is compared with runs of whitespace
+    collapsed — otherwise the assertion tests the line width rather than the claim."""
+    text = DOCUMENT.read_text()
+    section = " ".join(text.split("### 3.4a", 1)[1].split("### 3.5", 1)[0].split())
+    assert "no normalisation of any kind" in section
+    assert "reject the acquisition" in section.lower()
+    assert "funding" in section and "perpetual klines" in section
+    assert OPEN_INTEREST_DUPLICATE_POLICY["grouping_key"] in section
+
+
+def test_the_stage_one_authorisation_carries_only_the_active_hash_and_stays_closed():
+    """Rebinding the interlock to the current design must grant nothing.
+
+    And it names exactly one design. The superseded hash is provenance, and its
+    home is the preregistration document — an interlock that carried two hashes
+    would invite the question of which one it authorises.
+    """
+    path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
+    text = path.read_text()
+    payload = json.loads(text)
+    assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
+    assert payload["state"] == "not_authorised"
+    assert payload["preregistration_hash"] == preregistration_hash()
+    assert payload["authorised_by"] is None and payload["authorised_at"] is None
+    assert SUPERSEDED_HASH not in text, "only the active hash belongs in the interlock"
+
+
+def test_no_p4_result_can_be_produced_under_the_superseded_hash(tmp_path):
+    """A design that no longer exists cannot authorise a fit under the new one."""
+    from nn.p4_stage1 import Stage1Interlock, assert_fit_authorised
+
+    superseded = SUPERSEDED_HASH
+    research = tmp_path / "data" / "research"
+    research.mkdir(parents=True)
+    (research / "p4_stage1_authorisation.json").write_text(
+        json.dumps(
+            {
+                "authorisation_schema": "chimera.p4-stage1-authorisation/1",
+                "state": "authorised",
+                "preregistration_hash": superseded,
+                "authorised_by": "test",
+                "authorised_at": "1970-01-01T00:00:00Z",
+                "reason": "test",
+            }
+        )
+    )
+    with pytest.raises(Stage1Interlock, match="not permission to run another"):
+        assert_fit_authorised(confirm=True, availability={"gate_passed": True}, root=tmp_path)

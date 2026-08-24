@@ -83,6 +83,7 @@ from typing import Any, Iterator, Sequence
 import numpy as np
 import pandas as pd
 
+from nn import p4_preregistration
 from nn.derivatives_sources import (
     ACQUIRED_FIELDS,
     BASE_URL,
@@ -352,7 +353,13 @@ def read_metrics(
     ``keep_default_na=False`` keeps every field as the literal text the CSV
     carries, so the comparison is over what the source published rather than over
     what a NA-sentinel table folded together.
+
+    The column rows are grouped on is
+    :data:`nn.p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY`'s
+    ``grouping_key``, read from the hashed preregistration rather than spelled
+    again here.
     """
+    key = p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY["grouping_key"]
     zf, member, fields, _ = _open_member(path, archive)
     try:
         missing = [name for name in METRICS_REQUIRED_COLUMNS if name not in fields]
@@ -369,7 +376,7 @@ def read_metrics(
         zf.close()
     if frame.empty:
         raise DerivativesSourceError(f"{archive.name}: {member} holds no snapshots")
-    instants = parse_instants(frame["create_time"], archive, what="create_time")
+    instants = parse_instants(frame[key], archive, what=key)
     order = np.argsort(instants, kind="stable")
     instants = instants[order]
     rows = [tuple(row) for row in frame.to_numpy()[order]]

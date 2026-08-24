@@ -341,9 +341,14 @@ def test_the_manifest_accounts_for_every_exact_duplicate_row_it_collapsed(export
     assert integrity["duplicate_instants_collapsed"] == 288
     assert integrity["archives_with_exact_duplicates"] == 1
     assert integrity["conflicting_duplicate_instants"] == 0
-    # The rule itself lives once, in the source spec the manifest copies and the
-    # source_spec_hash binds.
-    assert "if and only if" in exported["payload"]["source"]["duplicate_rule"].lower()
+    # The rule itself lives once — in the hashed preregistration, which the
+    # source spec reads and the manifest copies — so the manifest's copy is the
+    # preregistered policy rather than a paraphrase of it.
+    from nn.p4_preregistration import OPEN_INTEREST_DUPLICATE_POLICY
+
+    assert exported["payload"]["source"]["duplicate_rule"] == dict(
+        OPEN_INTEREST_DUPLICATE_POLICY
+    )
 
 
 def test_the_raw_archive_identity_survives_the_collapse(exported):
