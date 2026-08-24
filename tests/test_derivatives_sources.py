@@ -27,7 +27,10 @@ from nn.derivatives_sources import (
     funding_archive,
     funding_inception,
     funding_source_boundary,
+    kline_archive,
     metrics_archive,
+    perpetual_inception,
+    perpetual_source_boundary,
     parse_instants,
     plan_archives,
     resolve_funding_columns,
@@ -38,6 +41,7 @@ from nn.p4_preregistration import (
     FUNDING_ARCHIVE_INCEPTION_POLICY,
     FUNDING_CSV_COLUMN_POLICY,
     MAX_STALENESS_HOURS,
+    PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY,
 )
 from nn.trade_aggregates import TradeAggregationError
 
@@ -394,3 +398,195 @@ def test_the_source_spec_records_the_rules_a_number_depends_on():
     assert spec["max_staleness_hours"] == dict(MAX_STALENESS_HOURS)
     assert "never" in spec["rest_substitution"]
     assert "never interpolated" in spec["missing_day_rule"]
+
+
+# --- amendment A3: where the perpetual kline archive is allowed to begin ------
+#
+# The same generic warm-up month, a different archive. The acquisition plan asks
+# for perpetual-price history from 2019-12 to give the basis a pre-spine overlap
+# between its two legs, and the published monthly 1h kline archive does not have
+# it. §3.4c makes that a *source boundary* rather than a gap, on its own evidence
+# and with its own object, and these tests are that boundary as the planner sees
+# it.
+PERP_INCEPTION_MONTH = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["first_protocol_month"]
+
+
+def test_the_kline_plan_starts_at_the_source_inception_when_an_earlier_month_is_asked_for():
+    """§3.4c: the plan begins at max(requested start, inception). Nothing earlier."""
+    archives = plan_archives(
+        PERPETUAL,
+        pd.Timestamp("2019-12-01", tz="UTC"),
+        pd.Timestamp("2020-04-01", tz="UTC"),
+    )
+    assert archives[0].period_start == perpetual_inception()
+    assert archives[0].period_start == pd.Timestamp(f"{PERP_INCEPTION_MONTH}-01", tz="UTC")
+
+
+def test_the_pre_inception_kline_month_is_never_listed():
+    """The specific archive that does not exist, named.
+
+    It is not requested, so it never reaches the fail-closed rule that stops the
+    acquisition on an absent perpetual month — which is exactly the point of
+    §3.4c: a month before the source begins is outside the source, not a hole in
+    it.
+    """
+    archives = plan_archives(
+        PERPETUAL,
+        pd.Timestamp("2019-09-01", tz="UTC"),
+        pd.Timestamp("2020-04-01", tz="UTC"),
+    )
+    names = [archive.name for archive in archives]
+    assert "BTCUSDT-1h-2019-12.zip" not in names
+    for month in ("2019-09", "2019-10", "2019-11", "2019-12"):
+        assert f"BTCUSDT-1h-{month}.zip" not in names
+
+
+def test_the_kline_inception_month_and_every_later_month_are_still_planned():
+    """Clamping the start removes the months before the source, and nothing else."""
+    archives = plan_archives(
+        PERPETUAL,
+        pd.Timestamp("2019-12-01", tz="UTC"),
+        pd.Timestamp("2020-06-01", tz="UTC"),
+    )
+    assert [archive.name for archive in archives] == [
+        f"BTCUSDT-1h-2020-{month:02d}.zip" for month in range(1, 6)
+    ]
+    assert archives[0].name == "BTCUSDT-1h-2020-01.zip"
+
+
+@pytest.mark.parametrize("requested", ["2020-01-01", "2020-01-15", "2021-03-01", "2024-11-01"])
+def test_a_kline_start_at_or_after_the_inception_is_not_clamped(requested):
+    """A3 is a floor, not a rewrite: it may narrow the window and never move it later."""
+    start = pd.Timestamp(requested, tz="UTC")
+    archives = plan_archives(PERPETUAL, start, start + pd.offsets.MonthBegin(3))
+    assert archives[0].period_start == start.normalize().replace(day=1)
+    assert perpetual_source_boundary(start)["months_clamped"] == 0
+
+
+def test_a_kline_window_entirely_before_the_inception_is_refused_rather_than_invented():
+    with pytest.raises(DerivativesSourceError, match="no published month"):
+        plan_archives(
+            PERPETUAL,
+            pd.Timestamp("2019-01-01", tz="UTC"),
+            pd.Timestamp("2019-06-01", tz="UTC"),
+        )
+
+
+def test_the_clamped_kline_month_stays_visible_in_provenance():
+    """§3.4c forbids the month simply disappearing from the plan's account of itself."""
+    boundary = perpetual_source_boundary(pd.Timestamp("2019-12-01", tz="UTC"))
+    for key in PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["provenance_required"]:
+        assert key in boundary, key
+    assert boundary["amendment"] == "A3"
+    assert boundary["field"] == "perpetual_price"
+    assert boundary["generic_requested_from"] == "2019-12"
+    assert boundary["source_inception_month"] == PERP_INCEPTION_MONTH
+    assert boundary["effective_from"] == PERP_INCEPTION_MONTH
+    assert boundary["months_clamped"] == 1
+    assert boundary["not_an_internal_gap"] is True
+    assert boundary["reason"] == (
+        PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["pre_inception_behaviour"]
+    )
+
+
+def test_kline_provenance_reports_no_clamp_when_none_happened():
+    boundary = perpetual_source_boundary(pd.Timestamp("2021-05-15", tz="UTC"))
+    assert boundary["generic_requested_from"] == "2021-05"
+    assert boundary["effective_from"] == "2021-05"
+    assert boundary["months_clamped"] == 0
+    assert boundary["not_an_internal_gap"] is False
+
+
+def test_the_kline_planner_reads_the_preregistered_month_rather_than_a_literal(monkeypatch):
+    """The anti-drift property: move the policy, and the plan moves with it.
+
+    A checkout where the preregistration says one month and the planner asks for
+    an earlier one is what this makes unconstructible.
+    """
+    import nn.p4_preregistration as prereg
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY",
+            {**PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY, "first_protocol_month": "2021-06"},
+        )
+        archives = plan_archives(
+            PERPETUAL,
+            pd.Timestamp("2019-12-01", tz="UTC"),
+            pd.Timestamp("2021-09-01", tz="UTC"),
+        )
+        assert archives[0].period_start == pd.Timestamp("2021-06-01", tz="UTC")
+        assert perpetual_inception() == pd.Timestamp("2021-06-01", tz="UTC")
+        # A2's archive is a different source and is not dragged along.
+        assert funding_inception() == pd.Timestamp(
+            f"{FUNDING_ARCHIVE_INCEPTION_POLICY['first_protocol_month']}-01", tz="UTC"
+        )
+    assert perpetual_inception() == pd.Timestamp(f"{PERP_INCEPTION_MONTH}-01", tz="UTC")
+
+
+def test_a_kline_policy_month_the_planner_cannot_read_is_refused_rather_than_guessed(
+    monkeypatch,
+):
+    import nn.p4_preregistration as prereg
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY",
+            {
+                **PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY,
+                "first_protocol_month": "January 2020",
+            },
+        )
+        with pytest.raises(DerivativesSourceError, match="not a YYYY-MM month"):
+            perpetual_inception()
+
+
+def test_no_planned_kline_archive_leaves_the_public_kline_archive():
+    """The pre-inception region is not sought from REST, from spot, or anywhere else.
+
+    Every planned perpetual URL is under the USD-M monthly kline prefix. Nothing
+    in the plan reaches `fapi.binance.com`, and nothing reaches the spot archive —
+    which is the substitution §3.4c calls out by name, because the spot leg is
+    already in the repository and already in the basis formula as its denominator.
+    """
+    archives = plan_archives(
+        PERPETUAL,
+        pd.Timestamp("2019-12-01", tz="UTC"),
+        pd.Timestamp("2020-06-01", tz="UTC"),
+    )
+    assert archives
+    for archive in archives:
+        assert archive.url.startswith(f"{BASE_URL}/data/futures/um/monthly/klines/BTCUSDT/1h/")
+        assert "fapi" not in archive.url
+        assert "/spot/" not in archive.url
+
+
+def test_the_source_spec_reads_the_kline_inception_policy_rather_than_restating_it():
+    assert source_spec()["perpetual_inception_rule"] == dict(
+        PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+    )
+    # And it is a distinct object from A2's, not the same rule read twice.
+    assert source_spec()["perpetual_inception_rule"] != source_spec()["funding_inception_rule"]
+
+
+def test_the_spot_denominator_is_still_not_acquired_and_still_not_a_perpetual_proxy():
+    """A3 forbids the one substitution that would otherwise look convenient."""
+    spec = source_spec()
+    assert "not acquired" in spec["spot_source"]
+    assert spec["rest_substitution"].startswith("never")
+    assert spec["perpetual_rule"] == (
+        "perp_close is the close of the 1h perpetual candle opening at date, or of "
+        "the candle one hour earlier when that candle is absent"
+    )
+    assert "spot" in spec["perpetual_inception_rule"]["no_substitution"]
+
+
+def test_every_kline_archive_the_planner_builds_covers_exactly_its_own_month():
+    """The clamp changes where the plan starts and nothing about what a month is."""
+    archive = kline_archive(2020, 1)
+    assert archive.field == PERPETUAL
+    assert archive.kind == "monthly"
+    assert archive.period_start == pd.Timestamp("2020-01-01", tz="UTC")
+    assert archive.period_end == pd.Timestamp("2020-02-01", tz="UTC")

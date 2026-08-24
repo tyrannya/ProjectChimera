@@ -3,16 +3,20 @@
 **Original preregistration written before any P4 data was acquired and before any
 P4 observation existed. Amendment A1 (§3.4a) adopted after a bounded inspection of
 real source archives. Amendment A2 (§3.4b) adopted after the first full
-acquisition attempt met the beginning of the published funding archive. Both are
-before any P4 model fit, Stage-1 result or outcome.**
+acquisition attempt met the beginning of the published funding archive. Amendment
+A3 (§3.4c) adopted after the next acquisition attempt met the beginning of the
+published perpetual kline archive. All three are before any P4 model fit,
+Stage-1 result or outcome.**
 
 The distinction is load-bearing and is not smoothed over anywhere in this
-document: everything below except §3.4a and §3.4b was fixed with no source file
-open, and those two were not. They are also in order — A1 came from the bounded
-archive inspection, A2 from the acquisition attempt that inspection was a
-precondition for. What A1 responds to is a *source-format* defect measured in two
-published archives; what A2 responds to is which months of a public archive are
-published at all. Neither responds to a P4 number, of which none exists.
+document: everything below except §3.4a, §3.4b and §3.4c was fixed with no source
+file open, and those three were not. They are also in order — A1 came from the
+bounded archive inspection, A2 from the acquisition attempt that inspection was a
+precondition for, and A3 from the attempt that got past A2's boundary and reached
+the next source. What A1 responds to is a *source-format* defect measured in two
+published archives; what A2 and A3 respond to is which months of two different
+public archives are published at all, each measured separately. None of them
+responds to a P4 number, of which none exists.
 
 Research checkpoint: **P4** (*does causal derivatives positioning and carry
 information — perpetual funding, open interest and futures basis — add usable
@@ -21,7 +25,7 @@ information beyond OHLCV14?*)
 Machine-readable twin: [`nn/p4_preregistration.py`](../nn/p4_preregistration.py).
 Every constant in this document is a value there, `tests/test_p4_preregistration.py`
 asserts that the two agree, and a P4 cell will record
-`preregistration_hash` = `sha256:db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05`
+`preregistration_hash` = `sha256:dffec07e3f5004847d5ad7960b6b16d9cf86a146f336841882c3cf6ed69c5f45`
 so that a cell produced under an edited preregistration is a different object
 rather than the same one with a different story.
 
@@ -31,17 +35,22 @@ the original preregistration, before amendment A1 (§3.4a) added
 `open_interest_duplicate_policy` to the hashed payload.
 `sha256:e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27f783a5` was the active hash
 after A1 and before amendment A2 (§3.4b) added `funding_archive_inception_policy`
-to it. Both are recorded here as history, not as alternatives: no P4 cell, fit or
-outcome was ever produced under either, and nothing may be produced under either
-now.
+to it.
+`sha256:db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05` was the active hash
+after A2 and before amendment A3 (§3.4c) added
+`perpetual_kline_archive_inception_policy` to it. All three are recorded here as
+history, not as alternatives: no P4 cell, fit or outcome was ever produced under
+any of them, and nothing may be produced under any of them now.
 
 **No P4 model has been fitted and no P4 result exists.** No derivatives snapshot
-has been committed to this repository. What *has* happened is recorded in §3.4a
-and §3.4b: a bounded inspection of two published metrics archives to establish
-their column layout and row structure — the `--probe` step §3.5 always intended —
-and a first full acquisition attempt that stopped at the missing 2019-12 funding
-archive without producing a snapshot. Both carry source-availability and
-source-format information only, and no outcome information. `P4` is deliberately *not* registered in
+has been committed to this repository. What *has* happened is recorded in §3.4a,
+§3.4b and §3.4c: a bounded inspection of two published metrics archives to
+establish their column layout and row structure — the `--probe` step §3.5 always
+intended — a first full acquisition attempt that stopped at the missing 2019-12
+funding archive, and a next attempt that stopped at the missing 2019-12 perpetual
+kline archive. Neither attempt produced a snapshot. All three carry
+source-availability and source-format information only, and no outcome
+information. `P4` is deliberately *not* registered in
 `nn.information_sets.CHECKPOINTS`, so `python -m nn.p2b --checkpoint P4` is
 refused rather than producing a cell from columns that do not exist. There is no
 P4 engine, no P4 arm, and no P4 artifact directory.
@@ -558,7 +567,7 @@ be produced under either now.
 | --- | --- | --- |
 | original preregistration | `sha256:68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4` | A1 |
 | after amendment A1 (§3.4a) | `sha256:e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27f783a5` | A2 |
-| after amendment A2 (§3.4b) | `sha256:db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05` | — active |
+| after amendment A2 (§3.4b) | `sha256:db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05` | A3 (§3.4c) |
 
 `data/research/p4_stage1_authorisation.json` carries only the *active* hash, for
 the reason §3.4a gives: an interlock that names three designs invites the question
@@ -570,6 +579,164 @@ Stage-1 result exists, P4-HOLD is unspent and unread, and the sealed region is
 untouched. The only information that entered this decision is which months of a
 public archive are published, and what the first published month's header and
 first rows are.
+
+### 3.4c Source-protocol amendment A3 — perpetual kline archive inception
+
+**Status: amendment, not an original commitment.** Adopted after the next real
+full derivatives acquisition attempt met the boundary described below, and before
+any P4 model fit, Stage-1 result, outcome or holdout access existed. It is the
+third amendment to this document, and it comes after §3.4b in time as well as in
+order: A1 followed a bounded inspection of two metrics archives, A2 followed the
+attempt that inspection was a precondition for, and A3 followed the attempt that
+got past the funding boundary A2 fixed and reached the next source.
+
+**A3 is not A2, and A2 does not cover this.** §3.4b is explicit that it clamps
+the funding archive and nothing else — "open interest keeps its own §3.0a
+first-day rule; perpetual klines are untouched" — because at that point the
+perpetual kline archive had not been checked. It has now been. The two archives
+were measured separately, carry separate hashed objects, and are clamped by
+separate rules that happen to name the same month. That agreement is an
+observation about two published sources, not a rule about the venue, and moving
+either month in the design moves exactly one plan.
+
+**What the original rule said.** The perpetual klines were preregistered as a
+*continuous* monthly source, exactly as funding was: the acquisition plans whole
+monthly archives from whatever month the generic warm-up planner asks for, and an
+archive that is not published stops the acquisition (§3.5). That rule made no
+distinction between a hole inside a published sequence and a month before the
+sequence begins.
+
+**What was then measured.** The acquisition plan requests perpetual-price history
+beginning in **2019-12**, to provide pre-spine warm-up and source overlap. Real
+HTTP checks of the published monthly archive
+`data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-{YYYY}-{MM}.zip`
+on the acquisition path returned:
+
+| month | status | published |
+| --- | --- | --- |
+| 2019-09 | 404 | no |
+| 2019-10 | 404 | no |
+| 2019-11 | 404 | no |
+| 2019-12 | 404 | no |
+| 2020-01 | 200 | yes |
+| 2020-02 | 200 | yes |
+
+The first required missing archive therefore occurs **before the observed
+beginning of the published monthly sequence**, not as a hole inside an
+established one. `BTCUSDT-1h-2020-01.zip` was downloaded and begins:
+
+```
+1577836800000,7189.43,7190.52,7170.15,7171.55,2449.049,1577840399999,17576424.43970,3688,996.198,7149370.76353,0
+1577840400000,7171.43,7225,7171.10,7210.24,3865.038,1577843999999,27838046.00670,6635,2340.878,16860294.05346,0
+1577844000000,7210.38,7239.30,7206.46,7237.99,3228.365,1577847599999,23324810.40721,5120,1774.145,12818470.64119,0
+```
+
+— that is, a first candle open-time of **2020-01-01T00:00:00Z**, under the
+**already-allowed Binance 12-field kline layout**. No column rule changes.
+
+**Six months were checked. That is all that is claimed.** Nothing here asserts
+that no BTCUSDT perpetual-price data of any kind existed before January 2020,
+that the absence has a known cause, or that it will persist. The claim is
+specifically about the preregistered Binance USD-M **monthly 1h kline archive**
+source: it is not published for the months checked before 2020-01, and it is
+published from 2020-01.
+
+**Why 2019-12 was asked for at all.** Not because the source was believed to
+publish it. The generic warm-up/source window begins one whole month before the
+research spine's first hour (2020-01-04T06:00Z) so that the derivatives features
+have somewhere to accumulate and the perpetual and spot legs overlap before the
+first scored row. That generic window is unchanged by this amendment; what
+changed is the recognition that the monthly perpetual kline archive source does
+not provide that month, and that January 2020 is the fixed protocol inception for
+this source.
+
+**What the amendment fixes, and only this.** The machine-readable rule is
+`PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY` in
+[`nn/p4_preregistration.py`](../nn/p4_preregistration.py), inside the hashed
+payload:
+
+- **Scope**: the `perpetual_price` field, from the Binance USD-M `BTCUSDT`
+  monthly 1h kline archive, and no other source. Funding keeps A2's own inception
+  object; open interest keeps its §3.0a first-day rule.
+- **Source inception**: the first protocol month is **2020-01**.
+- **Pre-inception**: a requested month strictly before 2020-01 is **outside the
+  published archive source and is not an internal continuity gap**. It is not
+  requested, it is not counted as a missing month, and it never reaches the
+  fail-closed rule of §3.5.
+- **Acquisition start**: the perpetual kline plan begins at
+  **max(generic requested start, 2020-01)**. The generic research window, the
+  requested warm-up, the research spine, the spot denominator source, the basis
+  formula and every feature lookback are *unchanged* — only the perpetual kline
+  archive iterator is clamped, and `nn/derivatives_sources.py::plan_archives`
+  reads the policy rather than carrying its own copy of the date. The plan no
+  longer requests `BTCUSDT-1h-2019-12.zip`; it begins at
+  `BTCUSDT-1h-2020-01.zip`.
+- **No substitution**: **never**. No synthetic perpetual price is created for the
+  pre-inception region, `fapi.binance.com/fapi/v1/klines` does not backfill it,
+  nothing is interpolated or carried backwards, **the spot candle history does not
+  stand in for the missing perpetual leg**, and no other venue, instrument or
+  archive is read in its place. The spot close is the basis *denominator*;
+  substituting it for the numerator would make `drv_basis` identically zero and
+  report a measured spread where none was observed.
+- **Downstream availability**: basis-derived features become available **only
+  where their required perpetual-price input is actually present**. A row with no
+  perpetual close inside its staleness bound has no `drv_basis` and no
+  `drv_basis_z`, and leaves the sample universe for every arm rather than
+  receiving a fabricated value.
+- **After inception, §3.4 and §3.5 stand unamended**: every expected month from
+  2020-01 onward is mandatory, and a month that 404s, fails its checksum or
+  cannot be read **stops the acquisition**. No gap after inception may be
+  skipped, interpolated, forward-filled, backward-filled or replaced by a
+  different source. A missing 2020-01 is a hard failure like any other.
+- **Provenance**: `generic_requested_from`, `source_inception_month`,
+  `effective_from`, `months_clamped`, `not_an_internal_gap` and the amendment
+  identity are recorded in the `--plan` output and in the snapshot manifest under
+  `acquisition.perpetual_source_boundary`. The clamped month does not disappear:
+  the plan says 2019-12 was asked for, that the source begins at 2020-01, and
+  that the difference is this policy. Where the generic requested start is
+  already at or after 2020-01, `months_clamped` is zero and no clamp occurs.
+
+**What it does not change.** No feature, no window, no clip, no staleness bound,
+no availability threshold, no sample-universe condition, no Stage-1 geometry, no
+holdout rule, no target, no horizon, no cost model, no model configuration, no
+comparison rule. **The basis feature definitions do not change**: `drv_basis` is
+still the perpetual close at *t* over the spot close at *t* minus one, clipped to
+`[-0.02, 0.02]`, and `drv_basis_z` is still its 168-hour z-score clipped to
+`[-5.0, 5.0]`.
+
+**The consequence, which is reported and not repaired.** The perpetual history
+now begins where the source begins, and the *unchanged* rules of §4.3, §5 and
+§6.2 decide the rest. Rows without a perpetual close inside the 1-hour staleness
+bound have no defined basis feature and are **outside the common sample universe
+for every arm, the control included** (§6.2, condition `derivatives_defined`).
+That is the correct behaviour: the alternative is to manufacture a price, or to
+read the spot leg twice and call the difference a basis, and both are forbidden.
+The lost rows are a recorded limitation of the evaluation, not a defect to work
+around.
+
+**This intentionally moves the preregistration hash.** The amendment changes
+source-acquisition semantics, so it belongs in the hashed payload and not in
+prose alone. The three superseded hashes — the original preregistration's, the
+one A1 carried, and the one A2 carried — are recorded at the top of this document
+and immediately below, as history. No P4 cell, fit or outcome was produced under
+any of them, and nothing may be produced under any of them now.
+
+| design | hash | superseded by |
+| --- | --- | --- |
+| original preregistration | `sha256:68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4` | A1 |
+| after amendment A1 (§3.4a) | `sha256:e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27f783a5` | A2 |
+| after amendment A2 (§3.4b) | `sha256:db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05` | A3 |
+| after amendment A3 (§3.4c) | `sha256:dffec07e3f5004847d5ad7960b6b16d9cf86a146f336841882c3cf6ed69c5f45` | — active |
+
+`data/research/p4_stage1_authorisation.json` carries only the *active* hash, for
+the reason §3.4a gives. Its state is `not_authorised`, and rebinding it to the
+active design grants nothing.
+
+**No outcome information motivated this.** No P4 model has been fitted, no
+Stage-1 result exists, P4-HOLD is unspent and unread, and the sealed region is
+untouched. The only information that entered this decision is which months of a
+public archive are published, and what the first published month's first rows
+are.
 
 ### 3.5 Fail-closed acquisition and integrity
 

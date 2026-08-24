@@ -105,6 +105,7 @@ from nn.derivatives_sources import (
     check_strictly_increasing,
     collapse_exact_duplicate_metrics_rows,
     funding_source_boundary,
+    perpetual_source_boundary,
     parse_instants,
     _utc_day,
     plan_archives,
@@ -762,6 +763,9 @@ def describe_plan(
         # generic warm-up asked for and the month the source begins at are both
         # here, so a clamped month is visibly clamped instead of absent.
         "funding_source_boundary": funding_source_boundary(start),
+        # Amendment A3, on the same terms and for the same reason, for the
+        # perpetual kline archive's own boundary.
+        "perpetual_source_boundary": perpetual_source_boundary(start),
         "network_accessed": False,
     }
 
@@ -1264,6 +1268,9 @@ def write_snapshot(
                 {a["layout"]["layout"] for a in archives if a.get("layout")}
             ),
             "funding_source_boundary": funding_source_boundary(pd.Timestamp(requested_from)),
+            "perpetual_source_boundary": perpetual_source_boundary(
+                pd.Timestamp(requested_from)
+            ),
             "open_interest_first_available_day": oi_first_available_day,
             "missing_metrics_days": len(missing_days),
             "open_interest_source_integrity": metrics_source_integrity(archives),

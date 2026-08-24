@@ -33,6 +33,7 @@ from nn.derivatives_sources import (
 from nn.p4_preregistration import (
     FEATURES,
     FUNDING_ARCHIVE_INCEPTION_POLICY,
+    PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY,
     WARMUP_HOURS,
 )
 
@@ -462,3 +463,79 @@ def test_an_undefined_row_carries_a_declared_zero_rather_than_a_nan():
     values = features[COLUMNS].to_numpy(dtype=np.float64)[undefined]
     assert np.isfinite(values).all()
     assert (values == 0.0).all()
+
+
+# --- §3.4c: a basis that exists only where its perpetual leg does -------------
+def test_rows_without_a_perpetual_input_have_no_basis_rather_than_a_fabricated_one():
+    """Amendment A3's downstream rule, in the engine that enforces it.
+
+    A source clamped to the kline archive's inception has no perpetual leg before
+    its first hour, and a row whose perpetual observation is unavailable is the
+    same case wherever it occurs. The engine does not fall back to the spot close,
+    does not carry a price backwards and does not seed the basis: the row has no
+    defined `drv_basis` and no defined `drv_basis_z`, and leaves the sample
+    universe for every arm.
+
+    The gap is placed *after* the 240-hour warm-up on purpose. Inside the warm-up
+    every row is already out of the universe, so a test there could not tell an
+    absent perpetual leg from a row §6.2 had removed anyway.
+    """
+    inception = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["first_protocol_month"]
+    frame, close = build_source(n=600, start=f"{inception}-01")
+    missing = np.zeros(len(frame), dtype=bool)
+    missing[300:400] = True
+
+    frame = frame.copy()
+    frame.loc[missing, "perp_available"] = 0
+    frame.loc[missing, "perp_close"] = 0.0
+    frame.loc[missing, "perp_age_ns"] = UNAVAILABLE_AGE_NS
+    features = compute_derivatives_features(frame, close)
+
+    basis_ok = features["drv_basis__defined"].to_numpy()
+    z_ok = features["drv_basis_z__defined"].to_numpy()
+    assert not basis_ok[missing].any()
+    assert basis_ok[~missing].all()
+    assert not z_ok[missing].any()
+
+    # The placeholder is declared and is never a value, and the whole row leaves
+    # the sample universe rather than carrying a basis nobody measured.
+    assert (features["drv_basis"].to_numpy()[missing] == 0.0).all()
+    assert (features["drv_basis_z"].to_numpy()[missing] == 0.0).all()
+    assert not features["defined"].to_numpy()[missing].any()
+    # And the rows that do have a perpetual leg are unaffected: the absence is
+    # localised, not a reason to drop the source.
+    assert features["defined"].to_numpy()[400:].all()
+
+    # Positive control. Had the spot close been substituted for the missing
+    # perpetual leg — the one substitution §3.4c names, because the spot series is
+    # already in the repository and already the basis denominator — those rows
+    # would have been *defined*, inside the universe, and reporting a measured
+    # spread of exactly zero. That is the outcome the rule exists to prevent.
+    substituted = frame.copy()
+    substituted.loc[missing, "perp_available"] = 1
+    substituted.loc[missing, "perp_close"] = close[missing]
+    substituted.loc[missing, "perp_age_ns"] = 0
+    swapped = compute_derivatives_features(substituted, close)
+    assert swapped["drv_basis__defined"].to_numpy()[missing].all()
+    assert swapped["defined"].to_numpy()[missing].all()
+    assert (swapped["drv_basis"].to_numpy()[missing] == 0.0).all()
+
+
+def test_the_basis_formula_and_window_are_what_they_were_before_a3():
+    """A3 moves where the perpetual history starts and nothing about the feature."""
+    frame, close = build_source(n=400)
+    features = compute_derivatives_features(frame, close)
+    perp = frame["perp_close"].to_numpy(dtype=float)
+
+    # On every row inside the sample universe. The warm-up rows carry the declared
+    # placeholder, which is §6.2's rule and not the basis formula.
+    expected = np.clip(perp / close - 1.0, -0.02, 0.02)
+    defined = features["defined"].to_numpy()
+    assert defined.any()
+    np.testing.assert_allclose(
+        features["drv_basis"].to_numpy()[defined], expected[defined], rtol=0, atol=1e-12
+    )
+
+    windows = {feature["name"]: feature["window"] for feature in FEATURES}
+    assert windows["drv_basis"] is None and windows["drv_basis_z"] == 168
+    assert PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["windows_unchanged"]

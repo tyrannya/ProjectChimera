@@ -22,12 +22,14 @@ from nn.derivatives_sources import (
     HOUR_NS,
     UNAVAILABLE_AGE_NS,
     funding_archive,
+    kline_archive,
     staleness_bound_ns,
 )
 from nn.p4_holdout import HoldoutError, check_holdout_boundary, holdout_first_instant
 from nn.p4_preregistration import (
     FUNDING_ARCHIVE_INCEPTION_POLICY,
     HOLDOUT_ROWS,
+    PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY,
     preregistration_hash,
 )
 from nn.research_contract import load_contract
@@ -225,8 +227,10 @@ def test_the_generic_window_and_warmup_are_not_moved_by_the_clamp(p4_spine):
     described = describe_plan(plan(start, end), start, end, CONTRACT, alignment)
     assert described["window"]["from"] == "2019-12-01T00:00:00+00:00"
     assert described["spine"]["warmup_hours_requested"] == 822
-    assert described["fields"]["perpetual_price"]["period_from"] == "2019-12-01T00:00:00+00:00"
-    # Open interest keeps its own §3.0a first day; A2 did not touch it.
+    # The perpetual plan is now clamped too — by amendment A3 (§3.4c), on its own
+    # archive and its own evidence, not by A2 reaching further than it said.
+    assert described["fields"]["perpetual_price"]["period_from"] == "2020-01-01T00:00:00+00:00"
+    # Open interest keeps its own §3.0a first day; neither amendment touched it.
     assert described["earliest_intended_metrics_day"] == "2020-09-01"
 
 
@@ -630,3 +634,127 @@ def test_a_perpetual_series_at_the_wrong_scale_is_caught(p4_hourly, p4_spine):
     broken["perp_close"] = broken["perp_close"] * 10.0
     with pytest.raises(DerivativesSnapshotVerificationError, match="not a cost of"):
         cross_source_consistency(broken, p4_spine["raw"])
+
+
+# --- amendment A3: the perpetual kline archive's inception, in the real plan ---
+def test_the_real_plan_asks_for_the_warmup_kline_month_and_gets_the_inception_month(p4_spine):
+    """The committed spine's own numbers, which is where §3.4c came from.
+
+    The generic warm-up planner asks for 2019-12; the published kline archive
+    begins at 2020-01. Both are in the plan's account of itself, so the clamped
+    month is visibly clamped rather than quietly absent.
+    """
+    start, end, alignment = acquisition_window(p4_spine["manifest"], CONTRACT)
+    assert start == pd.Timestamp("2019-12-01", tz="UTC")
+    described = describe_plan(plan(start, end), start, end, CONTRACT, alignment)
+
+    boundary = described["perpetual_source_boundary"]
+    assert boundary["amendment"] == "A3"
+    assert boundary["generic_requested_from"] == "2019-12"
+    assert boundary["source_inception_month"] == "2020-01"
+    assert boundary["effective_from"] == "2020-01"
+    assert boundary["months_clamped"] == 1
+    assert boundary["not_an_internal_gap"] is True
+
+    perpetual = described["fields"]["perpetual_price"]
+    assert perpetual["period_from"] == "2020-01-01T00:00:00+00:00"
+    assert "BTCUSDT-1h-2020-01.zip" in perpetual["first"]
+    assert described["network_accessed"] is False
+
+
+def test_the_two_boundaries_are_reported_separately_in_the_same_plan(p4_spine):
+    """A2 and A3 travel as two provenance objects, not one merged claim."""
+    start, end, alignment = acquisition_window(p4_spine["manifest"], CONTRACT)
+    described = describe_plan(plan(start, end), start, end, CONTRACT, alignment)
+    assert described["funding_source_boundary"]["amendment"] == "A2"
+    assert described["funding_source_boundary"]["field"] == "funding_rate"
+    assert described["perpetual_source_boundary"]["amendment"] == "A3"
+    assert described["perpetual_source_boundary"]["field"] == "perpetual_price"
+
+
+def test_the_pre_inception_kline_month_is_never_requested_and_so_is_never_missing(p4_spine):
+    """The two halves of §3.4c's distinction, in one place.
+
+    An unplanned month cannot be fetched, so it cannot reach the fail-closed rule
+    that stops the acquisition on an absent perpetual archive. That is what
+    "outside the source, not an internal gap" means operationally.
+    """
+    start, end, _ = acquisition_window(p4_spine["manifest"], CONTRACT)
+    names = [archive.name for archive in plan(start, end)["perpetual_price"]]
+    assert "BTCUSDT-1h-2019-12.zip" not in names
+    assert names[0] == "BTCUSDT-1h-2020-01.zip"
+    assert not any(name.startswith("BTCUSDT-1h-2019") for name in names)
+    # Every later expected month is there: the clamp removed the pre-inception
+    # months and nothing else.
+    assert names[1] == "BTCUSDT-1h-2020-02.zip"
+    assert len(names) == len({*names})
+
+
+def test_a_missing_kline_month_at_the_inception_stops_the_acquisition(monkeypatch, tmp_path):
+    """§3.4c relaxes nothing at or after 2020-01: the first month is mandatory."""
+    import tools.export_derivatives_snapshot as exporter
+
+    monkeypatch.setattr(exporter, "download_archive", lambda *a, **k: None)
+    start = pd.Timestamp("2019-12-01", tz="UTC")
+    end = pd.Timestamp("2020-04-01", tz="UTC")
+    plan_by_field = plan(start, end, oi_first_day=pd.Timestamp("2020-09-01", tz="UTC"))
+    with pytest.raises(DerivativesExportError, match="BTCUSDT-1h-2020-01.zip"):
+        exporter._require(plan_by_field["perpetual_price"][0], tmp_path, timeout=1)
+
+
+@pytest.mark.parametrize("year,month", [(2020, 1), (2020, 2), (2022, 7), (2025, 5)])
+def test_every_expected_kline_month_from_the_inception_onward_is_mandatory(
+    monkeypatch, tmp_path, year, month
+):
+    """A gap *after* inception is still a hard failure, and never a skipped month."""
+    import tools.export_derivatives_snapshot as exporter
+
+    monkeypatch.setattr(exporter, "download_archive", lambda *a, **k: None)
+    archive = kline_archive(year, month)
+    assert archive.period_start >= pd.Timestamp(
+        f"{PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY['first_protocol_month']}-01", tz="UTC"
+    )
+    with pytest.raises(DerivativesExportError, match="is not published"):
+        exporter._require(archive, tmp_path, timeout=1)
+
+
+def test_no_rest_or_spot_fallback_exists_for_pre_inception_perpetual_data():
+    """There is no code path that fetches the months the archive does not publish.
+
+    Asserted structurally rather than by reading prose: the acquisition's only
+    perpetual fetch is `_require` over a planned archive, the planner never emits
+    a pre-inception month, and no module in the acquisition path names the REST
+    kline endpoint at all.
+    """
+    import inspect
+
+    import nn.derivatives_sources as sources
+    import tools.export_derivatives_snapshot as exporter
+
+    for module in (sources, exporter):
+        text = inspect.getsource(module)
+        assert "fapi.binance.com/fapi/v1/klines" not in text
+        assert "futures/data/klines" not in text
+    # The one place a perpetual archive is fetched takes an Archive the planner
+    # built, so the clamp is upstream of every fetch rather than beside one.
+    assert "download_archive" in inspect.getsource(exporter._require)
+    start = pd.Timestamp("2019-01-01", tz="UTC")
+    end = pd.Timestamp("2019-12-01", tz="UTC")
+    with pytest.raises(Exception, match="no published month"):
+        plan(start, end)
+
+
+def test_the_manifest_records_the_perpetual_source_boundary(exported):
+    """§3.4c's provenance requirement: the clamped month does not disappear."""
+    boundary = exported["payload"]["acquisition"]["perpetual_source_boundary"]
+    for key in PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["provenance_required"]:
+        assert key in boundary, key
+    assert boundary["amendment"] == "A3"
+    assert boundary["source_inception_month"] == "2020-01"
+    assert boundary["no_substitution"].startswith("never")
+    # And the hashed rule itself travels with the table, not a paraphrase of it.
+    assert exported["payload"]["source"]["perpetual_inception_rule"] == dict(
+        PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+    )
+    # A2's boundary is still there beside it, as its own object.
+    assert exported["payload"]["acquisition"]["funding_source_boundary"]["amendment"] == "A2"
