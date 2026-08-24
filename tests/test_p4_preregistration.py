@@ -39,6 +39,7 @@ from nn.p4_preregistration import (
     DEGREES_OF_FREEDOM,
     EXPLORATORY_OUTER_BLOCKS,
     FEATURES,
+    FUNDING_ARCHIVE_INCEPTION_POLICY,
     FEATURE_NAMES,
     HOLDOUT_ROWS,
     MIN_OUTER_TRADES,
@@ -65,6 +66,11 @@ DOCUMENT = ROOT / "docs" / "p4_preregistration.md"
 #: cell, fit or outcome was produced under it, and the tests below assert both that
 #: the document still records it and that nothing may be run under it.
 SUPERSEDED_HASH = "68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4"
+
+#: The hash the design carried between amendment A1 and amendment A2 (§3.4b), before
+#: `funding_archive_inception_policy` entered the payload. Historical provenance on the
+#: same terms: no P4 cell, fit or outcome was produced under it either.
+SUPERSEDED_HASH_A1 = "e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27f783a5"
 
 
 # --- P4 is implemented, registered, and has not been run ---------------------
@@ -465,6 +471,7 @@ def test_the_headerless_case_is_bounded_rather_than_positional_guessing():
         "evidence_classification",
         "not_evaluable_outcome",
         "funding_csv_column_policy",
+        "funding_archive_inception_policy",
     ],
 )
 def test_every_result_critical_mechanic_is_in_the_hashed_payload(key):
@@ -494,6 +501,7 @@ def test_moving_any_of_them_moves_the_hash(monkeypatch):
         ("EVIDENCE_CLASSIFICATION", {"maximum_label": "confirmatory"}),
         ("FUNDING_CSV_COLUMN_POLICY", {"canonical_fields": []}),
         ("OPEN_INTEREST_DUPLICATE_POLICY", {"grouping_key": "other"}),
+        ("FUNDING_ARCHIVE_INCEPTION_POLICY", {"first_protocol_month": "2021-06"}),
     ):
         with monkeypatch.context() as patch:
             patch.setattr(prereg, name, value)
@@ -802,6 +810,244 @@ def test_no_p4_result_can_be_produced_under_the_superseded_hash(tmp_path):
                 "authorisation_schema": "chimera.p4-stage1-authorisation/1",
                 "state": "authorised",
                 "preregistration_hash": superseded,
+                "authorised_by": "test",
+                "authorised_at": "1970-01-01T00:00:00Z",
+                "reason": "test",
+            }
+        )
+    )
+    with pytest.raises(Stage1Interlock, match="not permission to run another"):
+        assert_fit_authorised(confirm=True, availability={"gate_passed": True}, root=tmp_path)
+
+
+# --- amendment A2: where the funding archive begins, and what that is not -----
+def test_the_inception_policy_is_inside_the_hashed_preregistration():
+    """In the payload, not only in a module namespace beside it."""
+    assert preregistration()["funding_archive_inception_policy"] == dict(
+        FUNDING_ARCHIVE_INCEPTION_POLICY
+    )
+
+
+def test_the_inception_policy_is_scoped_to_funding_and_names_one_month():
+    policy = FUNDING_ARCHIVE_INCEPTION_POLICY
+    assert policy["scope"]["field"] == "funding_rate"
+    assert policy["scope"]["applies_to"] == ["funding_rate"]
+    assert sorted(policy["scope"]["does_not_apply_to"]) == ["open_interest", "perpetual_price"]
+    assert (
+        "monthly" in policy["scope"]["archive"] and "fundingRate" in policy["scope"]["archive"]
+    )
+    assert policy["first_protocol_month"] == "2020-01"
+    assert policy["first_protocol_instant"].startswith("2020-01-01T00:00:00")
+    assert set(policy["provenance_required"]) == {
+        "generic_requested_from",
+        "source_inception_month",
+        "effective_from",
+        "months_clamped",
+    }
+
+
+def test_the_inception_policy_records_that_it_is_an_amendment_and_what_it_replaced():
+    """The history is data, not a story told about the data — as with A1."""
+    policy = FUNDING_ARCHIVE_INCEPTION_POLICY
+    assert policy["amendment"] == "A2"
+    assert "before any P4 model fit" in policy["amendment_status"]
+    assert "continuous" in policy["supersedes"]
+    assert "2019-12" in policy["adopted_because"]
+    assert "404" in policy["adopted_because"] and "200" in policy["adopted_because"]
+
+
+def test_the_observed_evidence_is_status_codes_and_not_a_conclusion():
+    """What was measured, month by month, with the boundary falling where it fell."""
+    months = {
+        entry["month"]: entry
+        for entry in FUNDING_ARCHIVE_INCEPTION_POLICY["observed_evidence"]["months"]
+    }
+    for month in ("2019-09", "2019-10", "2019-11", "2019-12"):
+        assert months[month]["status"] == 404 and months[month]["published"] is False
+    for month in ("2020-01", "2020-02"):
+        assert months[month]["status"] == 200 and months[month]["published"] is True
+    # The first *required* missing archive is before the observed start of the
+    # sequence, which is the whole reason A2 is a boundary and not a gap rule.
+    assert max(m for m, e in months.items() if not e["published"]) < min(
+        m for m, e in months.items() if e["published"]
+    )
+    evidence = FUNDING_ARCHIVE_INCEPTION_POLICY["observed_evidence"]
+    assert evidence["first_observed_row"].startswith("2020-01-01T00:00:00")
+    # The layout observed is one §3.0b already allowed; A2 changes no column rule.
+    assert evidence["observed_layout"] in {
+        entry["layout"] for entry in FUNDING_CSV_COLUMN_POLICY["allowed_header_maps"]
+    }
+
+
+def test_the_claim_is_about_the_archive_and_not_about_the_market():
+    """The generalisation A2 explicitly refuses to make."""
+    limit = FUNDING_ARCHIVE_INCEPTION_POLICY["generalisation_limit"]
+    assert "six months were checked" in limit.lower()
+    assert "monthly fundingRate archive" in limit
+    assert "any kind" in limit
+
+
+def test_a_pre_inception_month_is_outside_the_source_and_not_an_internal_gap():
+    policy = FUNDING_ARCHIVE_INCEPTION_POLICY
+    assert "not an internal continuity gap" in policy["pre_inception_behaviour"].lower()
+    assert "not counted as a missing month" in policy["pre_inception_behaviour"]
+    assert "max(generic requested start" in policy["acquisition_start_rule"]
+
+
+def test_nothing_may_stand_in_for_the_pre_inception_region():
+    substitution = FUNDING_ARCHIVE_INCEPTION_POLICY["no_substitution"]
+    assert substitution.startswith("never")
+    for forbidden in ("synthetic", "REST", "interpolated", "backwards"):
+        assert forbidden in substitution, forbidden
+
+
+def test_continuity_after_inception_is_unchanged_and_fail_closed():
+    """A2 is a boundary, not a relaxation of §3.4 after it."""
+    after = FUNDING_ARCHIVE_INCEPTION_POLICY["post_inception_continuity"]
+    assert "mandatory" in after and "stops the acquisition" in after
+    for forbidden in ("skipped", "interpolated", "forward-invented", "replaced"):
+        assert forbidden in after, forbidden
+
+
+def test_the_amendment_changes_no_feature_window_clip_or_bound():
+    """The scientific degrees of freedom A2 must leave exactly where they were."""
+    windows = {feature["name"]: feature["window"] for feature in FEATURES}
+    clips = {feature["name"]: feature["clip"] for feature in FEATURES}
+    assert windows["drv_funding_z"] == 30
+    assert windows["drv_funding_sum_9"] == 9
+    assert windows["drv_funding_last"] is None
+    assert clips["drv_funding_z"] == [-5.0, 5.0]
+    assert clips["drv_funding_sum_9"] == [-0.09, 0.09]
+    assert clips["drv_funding_last"] == [-0.01, 0.01]
+    assert WARMUP_HOURS == 240
+    assert TARGET["horizon"] == 6 and TARGET["timeframe"] == "1h"
+    unchanged = FUNDING_ARCHIVE_INCEPTION_POLICY["windows_unchanged"]
+    assert "30-settlement" in unchanged and "9-settlement" in unchanged
+
+
+def test_the_consequence_is_reported_rather_than_repaired():
+    """Losing early rows is the intended outcome, and the payload says so."""
+    consequence = FUNDING_ARCHIVE_INCEPTION_POLICY["downstream_consequence"]
+    assert "outside the common sample universe" in consequence
+    assert "EVERY arm" in consequence
+    assert "reported, not repaired" in consequence
+
+
+def test_editing_the_inception_policy_moves_both_hashes_together(monkeypatch):
+    """`preregistration says 2020-01, acquisition asks for 2019-12` must be
+    unconstructible — the same anti-drift property A1 has, for A2's rule."""
+    import nn.p4_preregistration as prereg
+    from nn.derivatives_sources import source_spec
+    from tools.export_derivatives_snapshot import source_spec_hash
+
+    before_prereg = preregistration_hash()
+    before_source = source_spec_hash()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "FUNDING_ARCHIVE_INCEPTION_POLICY",
+            {**FUNDING_ARCHIVE_INCEPTION_POLICY, "first_protocol_month": "2021-06"},
+        )
+        assert prereg.preregistration_hash() != before_prereg
+        assert source_spec_hash() != before_source
+        assert source_spec()["funding_inception_rule"]["first_protocol_month"] == "2021-06"
+    assert preregistration_hash() == before_prereg
+    assert source_spec_hash() == before_source
+
+
+def test_the_acquisition_carries_no_second_copy_of_the_inception_month():
+    """Checked with the parser, not with a grep, for the reason the REST test gives.
+
+    The month appears in prose in these modules — a comment explaining the
+    binding, a docstring naming what was asked for — and banning the characters
+    would ban the documentation. What must not exist is a *value*: a string
+    constant outside a docstring that a later edit could leave disagreeing with
+    the hashed policy while the suite stayed green.
+    """
+    import ast
+
+    month = FUNDING_ARCHIVE_INCEPTION_POLICY["first_protocol_month"]
+    for name in ("nn/derivatives_sources.py", "tools/export_derivatives_snapshot.py"):
+        tree = ast.parse((ROOT / name).read_text())
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef))
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                assert month not in node.value, f"{name}:{node.lineno}"
+
+
+def test_the_document_records_the_amendment_and_both_superseded_hashes():
+    text = DOCUMENT.read_text()
+    assert "3.4b" in text
+    assert "Source-protocol amendment A2" in text
+    # The measured status codes, stated factually rather than summarised.
+    for month in ("2019-09", "2019-10", "2019-11", "2019-12", "2020-01", "2020-02"):
+        assert month in text, month
+    assert "404" in text and "200" in text
+    section = " ".join(text.split("### 3.4b", 1)[1].split("### 3.5", 1)[0].split())
+    # The active hash, and the two it replaced, all inside the amendment itself.
+    assert f"sha256:{preregistration_hash()}" in section
+    assert SUPERSEDED_HASH in section
+    assert SUPERSEDED_HASH_A1 in section
+    assert SUPERSEDED_HASH_A1 != preregistration_hash()
+    # And the amendment's own claims, in prose, matching the payload.
+    assert "not an internal continuity gap" in section
+    assert "max(generic requested start, 2020-01)" in section
+    assert "stops the acquisition" in section
+    assert "outside the common sample universe" in section
+    # Ordering is preserved rather than rewritten: A1 came first, and the
+    # original protocol is not retold as if 2020-01 had always been known.
+    assert text.index("### 3.4a") < text.index("### 3.4b")
+    assert "Amendment A2" in text.split("---", 1)[0]
+    assert "the first version of this preregistration" not in section.lower()
+
+
+def test_the_document_does_not_generalise_past_what_was_observed():
+    text = " ".join(
+        DOCUMENT.read_text().split("### 3.4b", 1)[1].split("### 3.5", 1)[0].split()
+    )
+    assert "Six months were checked" in text
+    assert "monthly `fundingRate` archive" in text
+    assert "Nothing here asserts that no BTCUSDT funding data of any kind existed" in text
+
+
+def test_the_stage_one_authorisation_is_rebound_to_the_active_design_and_stays_closed():
+    """Rebinding the interlock for a second amendment must still grant nothing."""
+    path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
+    text = path.read_text()
+    payload = json.loads(text)
+    assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
+    assert payload["state"] == "not_authorised"
+    assert payload["preregistration_hash"] == preregistration_hash()
+    assert payload["authorised_by"] is None and payload["authorised_at"] is None
+    assert payload["reason"] is None
+    for superseded in (SUPERSEDED_HASH, SUPERSEDED_HASH_A1):
+        assert superseded not in text, "only the active hash belongs in the interlock"
+
+
+def test_no_p4_result_can_be_produced_under_the_pre_a2_hash(tmp_path):
+    """An authorisation granted for the design A2 replaced authorises nothing."""
+    from nn.p4_stage1 import Stage1Interlock, assert_fit_authorised
+
+    research = tmp_path / "data" / "research"
+    research.mkdir(parents=True)
+    (research / "p4_stage1_authorisation.json").write_text(
+        json.dumps(
+            {
+                "authorisation_schema": "chimera.p4-stage1-authorisation/1",
+                "state": "authorised",
+                "preregistration_hash": SUPERSEDED_HASH_A1,
                 "authorised_by": "test",
                 "authorised_at": "1970-01-01T00:00:00Z",
                 "reason": "test",

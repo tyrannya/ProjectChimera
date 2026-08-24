@@ -18,9 +18,18 @@ import json
 import pandas as pd
 import pytest
 
-from nn.derivatives_sources import HOUR_NS, UNAVAILABLE_AGE_NS, staleness_bound_ns
+from nn.derivatives_sources import (
+    HOUR_NS,
+    UNAVAILABLE_AGE_NS,
+    funding_archive,
+    staleness_bound_ns,
+)
 from nn.p4_holdout import HoldoutError, check_holdout_boundary, holdout_first_instant
-from nn.p4_preregistration import HOLDOUT_ROWS, preregistration_hash
+from nn.p4_preregistration import (
+    FUNDING_ARCHIVE_INCEPTION_POLICY,
+    HOLDOUT_ROWS,
+    preregistration_hash,
+)
 from nn.research_contract import load_contract
 from tools.export_derivatives_snapshot import (
     DERIVATIVES_SNAPSHOT_SCHEMA,
@@ -28,6 +37,7 @@ from tools.export_derivatives_snapshot import (
     DerivativesExportError,
     acquisition_window,
     check_hourly_table,
+    acquire,
     describe_plan,
     plan,
     source_spec_hash,
@@ -179,6 +189,89 @@ def test_a_snapshot_cut_one_block_longer_is_refused_before_a_window_is_planned(
         acquisition_window(longer, CONTRACT)
 
 
+# --- amendment A2: the funding archive's inception, in the real plan ----------
+def test_the_real_plan_asks_for_the_warmup_month_and_gets_the_inception_month(p4_spine):
+    """The committed spine's own numbers, which is where §3.4b came from.
+
+    The generic warm-up planner asks for 2019-12; the published archive begins at
+    2020-01. Both are in the plan's account of itself, so the clamped month is
+    visibly clamped rather than quietly absent.
+    """
+    start, end, alignment = acquisition_window(p4_spine["manifest"], CONTRACT)
+    assert start == pd.Timestamp("2019-12-01", tz="UTC")
+    described = describe_plan(plan(start, end), start, end, CONTRACT, alignment)
+
+    boundary = described["funding_source_boundary"]
+    assert boundary["amendment"] == "A2"
+    assert boundary["generic_requested_from"] == "2019-12"
+    assert boundary["source_inception_month"] == "2020-01"
+    assert boundary["effective_from"] == "2020-01"
+    assert boundary["months_clamped"] == 1
+    assert boundary["not_an_internal_gap"] is True
+
+    funding = described["fields"]["funding_rate"]
+    assert funding["period_from"] == "2020-01-01T00:00:00+00:00"
+    assert "BTCUSDT-fundingRate-2020-01.zip" in funding["first"]
+    assert described["network_accessed"] is False
+
+
+def test_the_generic_window_and_warmup_are_not_moved_by_the_clamp(p4_spine):
+    """§3.4b clamps the funding iterator and nothing else.
+
+    The research spine boundary and the requested feature warm-up are unchanged,
+    and the other two fields plan from the same start they always did.
+    """
+    start, end, alignment = acquisition_window(p4_spine["manifest"], CONTRACT)
+    described = describe_plan(plan(start, end), start, end, CONTRACT, alignment)
+    assert described["window"]["from"] == "2019-12-01T00:00:00+00:00"
+    assert described["spine"]["warmup_hours_requested"] == 822
+    assert described["fields"]["perpetual_price"]["period_from"] == "2019-12-01T00:00:00+00:00"
+    # Open interest keeps its own §3.0a first day; A2 did not touch it.
+    assert described["earliest_intended_metrics_day"] == "2020-09-01"
+
+
+def test_the_pre_inception_month_is_never_requested_and_so_is_never_a_missing_month(p4_spine):
+    """The two halves of §3.4b's distinction, in one place.
+
+    An unplanned month cannot be fetched, so it cannot reach the fail-closed rule
+    that stops the acquisition on an absent funding archive. That is what "outside
+    the source, not an internal gap" means operationally.
+    """
+    start, end, _ = acquisition_window(p4_spine["manifest"], CONTRACT)
+    names = [archive.name for archive in plan(start, end)["funding_rate"]]
+    assert "BTCUSDT-fundingRate-2019-12.zip" not in names
+    assert names[0] == "BTCUSDT-fundingRate-2020-01.zip"
+    assert not any(name.startswith("BTCUSDT-fundingRate-2019") for name in names)
+
+
+def test_a_missing_funding_month_at_the_inception_stops_the_acquisition(monkeypatch, tmp_path):
+    """§3.4b relaxes nothing at or after 2020-01: the first month is mandatory."""
+    import tools.export_derivatives_snapshot as exporter
+
+    monkeypatch.setattr(exporter, "download_archive", lambda *a, **k: None)
+    start = pd.Timestamp("2019-12-01", tz="UTC")
+    end = pd.Timestamp("2020-04-01", tz="UTC")
+    plan_by_field = plan(start, end, oi_first_day=pd.Timestamp("2020-09-01", tz="UTC"))
+    with pytest.raises(DerivativesExportError, match="BTCUSDT-fundingRate-2020-01.zip"):
+        acquire(plan_by_field, start=start, end=end, timeout=1, workdir=tmp_path)
+
+
+@pytest.mark.parametrize("year,month", [(2020, 1), (2020, 2), (2022, 7), (2025, 5)])
+def test_every_expected_funding_month_from_the_inception_onward_is_mandatory(
+    monkeypatch, tmp_path, year, month
+):
+    """A gap *after* inception is still a hard failure, and never a skipped month."""
+    import tools.export_derivatives_snapshot as exporter
+
+    monkeypatch.setattr(exporter, "download_archive", lambda *a, **k: None)
+    archive = funding_archive(year, month)
+    assert archive.period_start >= pd.Timestamp(
+        f"{FUNDING_ARCHIVE_INCEPTION_POLICY['first_protocol_month']}-01", tz="UTC"
+    )
+    with pytest.raises(DerivativesExportError, match="is not published"):
+        exporter._require(archive, tmp_path, timeout=1)
+
+
 # --- the exported snapshot ----------------------------------------------------
 def test_the_exported_snapshot_verifies_in_full(exported):
     checks = verify_derivatives_snapshot(exported["path"])
@@ -265,6 +358,21 @@ def test_every_url_the_acquisition_builds_points_at_the_public_archive():
     assert "/daily/metrics/" in METRICS_TEMPLATE
     assert "/monthly/fundingRate/" in FUNDING_TEMPLATE
     assert "/monthly/klines/" in KLINE_TEMPLATE
+
+
+def test_the_manifest_records_the_funding_source_boundary(exported):
+    """§3.4b's provenance requirement: the clamped month does not disappear."""
+    boundary = exported["payload"]["acquisition"]["funding_source_boundary"]
+    for key in FUNDING_ARCHIVE_INCEPTION_POLICY["provenance_required"]:
+        assert key in boundary, key
+    assert boundary["generic_requested_from"] == "2019-12"
+    assert boundary["effective_from"] == "2020-01"
+    assert boundary["months_clamped"] == 1
+    assert boundary["no_substitution"].startswith("never")
+    # And the hashed rule itself travels with the table, not a paraphrase of it.
+    assert exported["payload"]["source"]["funding_inception_rule"] == dict(
+        FUNDING_ARCHIVE_INCEPTION_POLICY
+    )
 
 
 def test_the_manifest_records_the_preregistration_the_source_was_acquired_under(exported):

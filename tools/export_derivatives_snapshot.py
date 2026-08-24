@@ -104,6 +104,7 @@ from nn.derivatives_sources import (
     canonical_member,
     check_strictly_increasing,
     collapse_exact_duplicate_metrics_rows,
+    funding_source_boundary,
     parse_instants,
     _utc_day,
     plan_archives,
@@ -757,6 +758,10 @@ def describe_plan(
             "data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet"
         ),
         "earliest_intended_metrics_day": EARLIEST_METRICS_DAY,
+        # Amendment A2, in the plan rather than only in the design: the month the
+        # generic warm-up asked for and the month the source begins at are both
+        # here, so a clamped month is visibly clamped instead of absent.
+        "funding_source_boundary": funding_source_boundary(start),
         "network_accessed": False,
     }
 
@@ -1258,6 +1263,7 @@ def write_snapshot(
             "funding_layouts_seen": sorted(
                 {a["layout"]["layout"] for a in archives if a.get("layout")}
             ),
+            "funding_source_boundary": funding_source_boundary(pd.Timestamp(requested_from)),
             "open_interest_first_available_day": oi_first_available_day,
             "missing_metrics_days": len(missing_days),
             "open_interest_source_integrity": metrics_source_integrity(archives),

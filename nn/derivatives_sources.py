@@ -84,6 +84,14 @@ KLINE_TEMPLATE = (
 #: and a later one narrows the universe rather than being worked around.
 EARLIEST_METRICS_DAY = "2020-09-01"
 
+# There is deliberately no `EARLIEST_FUNDING_MONTH` beside the line above. The
+# funding archive's first protocol month lives in
+# `nn.p4_preregistration.FUNDING_ARCHIVE_INCEPTION_POLICY` — amendment A2, inside
+# the hashed preregistration — and a constant here would be a second copy of it
+# that a later edit could leave disagreeing with the design while the suite stayed
+# green. `funding_inception()` reads the policy at call time instead, so moving
+# the rule moves the plan.
+
 #: USD-M kline archives carry twelve columns. Checked against the width of the
 #: first row: the spot archive's layout differs, and reading one as the other
 #: shifts every field.
@@ -276,6 +284,58 @@ def _months(start: pd.Timestamp, end: pd.Timestamp) -> Iterator[pd.Timestamp]:
         cursor = cursor + pd.offsets.MonthBegin(1)
 
 
+def funding_inception() -> pd.Timestamp:
+    """The first month of the funding archive this protocol reads, as an instant.
+
+    Amendment A2, read from
+    :data:`nn.p4_preregistration.FUNDING_ARCHIVE_INCEPTION_POLICY` rather than
+    written here. The policy names a month; a month begin in UTC is the instant
+    the planner needs, and the conversion is the only thing this function does.
+    """
+    policy = p4_preregistration.FUNDING_ARCHIVE_INCEPTION_POLICY
+    month = str(policy["first_protocol_month"])
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise DerivativesSourceError(
+            f"the funding archive inception policy names {month!r}, which is not a "
+            "YYYY-MM month. The plan cannot be built from it."
+        )
+    return pd.Timestamp(f"{month}-01", tz="UTC")
+
+
+def funding_source_boundary(start: pd.Timestamp) -> dict[str, Any]:
+    """What A2's inception did to a requested funding start, as provenance.
+
+    The clamp must never make the requested month *disappear*: a plan that simply
+    began later would read as a design that always started there. Both months are
+    recorded, together with how many the policy removed and why, so a reader can
+    see that 2019-12 was asked for and that the source is what refused it.
+    """
+    policy = p4_preregistration.FUNDING_ARCHIVE_INCEPTION_POLICY
+    requested = pd.Timestamp(start).tz_convert("UTC").normalize().replace(day=1)
+    inception = funding_inception()
+    effective = max(requested, inception)
+    months = 0
+    cursor = requested
+    while cursor < effective:
+        months += 1
+        cursor = cursor + pd.offsets.MonthBegin(1)
+    return {
+        "amendment": policy["amendment"],
+        "generic_requested_from": requested.strftime("%Y-%m"),
+        "source_inception_month": policy["first_protocol_month"],
+        "effective_from": effective.strftime("%Y-%m"),
+        "months_clamped": months,
+        "rule": policy["acquisition_start_rule"],
+        "reason": (
+            policy["pre_inception_behaviour"]
+            if months
+            else "the requested start is at or after the source inception; nothing is clamped"
+        ),
+        "not_an_internal_gap": bool(months),
+        "no_substitution": policy["no_substitution"],
+    }
+
+
 def plan_archives(
     field: str,
     start: pd.Timestamp,
@@ -302,7 +362,21 @@ def plan_archives(
             f"the acquisition window [{start.isoformat()}, {end.isoformat()}) is empty"
         )
     if field == FUNDING:
-        return [funding_archive(m.year, m.month) for m in _months(start, end)]
+        # Amendment A2. A month before the archive's first protocol month is
+        # outside the source rather than a hole in it, so it is not requested —
+        # and never becomes a missing month, because a missing month stops the
+        # acquisition and an unpublished pre-inception month is not one.
+        inception = funding_inception()
+        first = max(start, inception)
+        if first >= end:
+            raise DerivativesSourceError(
+                f"the funding window [{start.isoformat()}, {end.isoformat()}) ends at "
+                f"or before the archive's first protocol month "
+                f"{inception.date().isoformat()}, so it names no published month. "
+                "Amendment A2 clamps the start to the source inception; it does not "
+                "invent history before it."
+            )
+        return [funding_archive(m.year, m.month) for m in _months(first, end)]
     if field == PERPETUAL:
         return [kline_archive(m.year, m.month) for m in _months(start, end)]
     if field == OPEN_INTEREST:
@@ -722,6 +796,11 @@ def source_spec() -> dict[str, Any]:
         # preregistration_hash AND source_spec_hash together, and a checkout
         # where the two disagree cannot be constructed.
         "duplicate_rule": dict(p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY),
+        # The same identity binding, for the same reason: amendment A2's inception
+        # is the preregistered object, not a date this module also happens to
+        # know. plan_archives reads it too, so "preregistration says 2020-01 and
+        # the planner asks for 2019-12" is not a constructible checkout.
+        "funding_inception_rule": dict(p4_preregistration.FUNDING_ARCHIVE_INCEPTION_POLICY),
         "gap_rule": "a gap is never filled or interpolated; it becomes staleness",
         "missing_day_rule": (
             "a metrics day that 404s, fails its published checksum, or arrives short is "
