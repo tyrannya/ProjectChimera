@@ -403,6 +403,139 @@ OPEN_INTEREST_DUPLICATE_POLICY: dict[str, Any] = {
     ),
 }
 
+#: Where the published funding archive *begins*, and what a month before it is.
+#:
+#: **This is amendment A2, and it is not an original preregistration rule.** The
+#: original design planned funding as a continuous monthly source over whatever
+#: window the generic warm-up planner asked for, and treated every absent month
+#: as a hard failure without distinguishing a hole inside a published sequence
+#: from a month before the sequence starts. The distinction is made here, after
+#: the first real full-acquisition attempt met the second case, and before any
+#: P4 model fit, Stage-1 result, outcome or holdout access existed. The original
+#: wording is kept in ``supersedes`` rather than overwritten, and
+#: ``docs/p4_preregistration.md`` §3.4b records the same history in prose.
+#:
+#: What forced it is in ``adopted_because``: the acquisition asks for 2019-12
+#: only to give the 30-settlement funding window somewhere to warm up, and that
+#: month is not published. The checks that established it are bounded and are
+#: recorded as status codes rather than as a conclusion about the market: four
+#: consecutive months before 2020-01 are absent and the two months from 2020-01
+#: are present, so the first required missing archive is *before* the observed
+#: beginning of the sequence rather than inside it.
+#:
+#: **This is a source-inception boundary and not a relaxation of §3.4.** After
+#: 2020-01 every expected month is still mandatory and a missing one still stops
+#: the acquisition. Nothing here permits a synthetic value, a REST backfill, an
+#: interpolation, or a different source for the months the archive does not
+#: publish — the history simply begins where the source begins, and the existing
+#: causality, warm-up and sample-universe rules decide when a funding feature
+#: first becomes defined.
+#:
+#: :func:`nn.derivatives_sources.plan_archives` and
+#: :func:`nn.derivatives_sources.source_spec` read this object rather than
+#: restating it, so a checkout in which the design says 2020-01 and the planner
+#: asks for 2019-12 cannot be constructed.
+FUNDING_ARCHIVE_INCEPTION_POLICY: dict[str, Any] = {
+    "amendment": "A2",
+    "amendment_status": (
+        "adopted after the first real full-acquisition attempt found the requested "
+        "warm-up month absent from the published archive, and before any P4 model "
+        "fit, Stage-1 result, outcome or holdout access existed. This is a "
+        "source-protocol amendment, not an original preregistration rule"
+    ),
+    "supersedes": (
+        "the original rule, under which funding was planned as a continuous monthly "
+        "source from whatever month the generic warm-up planner requested, and every "
+        "absent month was an internal continuity gap and a hard failure"
+    ),
+    "scope": {
+        "field": "funding_rate",
+        "archive": (
+            "Binance USD-M BTCUSDT monthly fundingRate archive, "
+            "data/futures/um/monthly/fundingRate"
+        ),
+        "applies_to": ["funding_rate"],
+        "does_not_apply_to": ["open_interest", "perpetual_price"],
+    },
+    "first_protocol_month": "2020-01",
+    "first_protocol_instant": "2020-01-01T00:00:00+00:00",
+    "adopted_because": (
+        "the acquisition plan requests funding from 2019-12 to warm the 30-settlement "
+        "window, and real HEAD checks of the monthly fundingRate archive on the "
+        "acquisition host returned 404 for 2019-12 and 200 for 2020-01. The first "
+        "required missing archive therefore falls BEFORE the observed beginning of the "
+        "published monthly sequence rather than inside an established one. The "
+        "downloaded BTCUSDT-fundingRate-2020-01.zip begins at 2020-01-01T00:00:00Z "
+        "under the already-allowed calc_time/funding_interval_hours/last_funding_rate "
+        "layout, so no column rule changes"
+    ),
+    "observed_evidence": {
+        "checked": "HTTP status of the published monthly archive, one request per month",
+        "months": [
+            {"month": "2019-09", "status": 404, "published": False},
+            {"month": "2019-10", "status": 404, "published": False},
+            {"month": "2019-11", "status": 404, "published": False},
+            {"month": "2019-12", "status": 404, "published": False},
+            {"month": "2020-01", "status": 200, "published": True},
+            {"month": "2020-02", "status": 200, "published": True},
+        ],
+        "first_observed_row": "2020-01-01T00:00:00+00:00",
+        "observed_layout": "calc_time/funding_interval_hours/last_funding_rate",
+    },
+    "generalisation_limit": (
+        "six months were checked and that is all that is claimed. This says nothing "
+        "about whether BTCUSDT funding of any kind existed before January 2020, only "
+        "that the preregistered Binance monthly fundingRate archive is not published "
+        "for the months checked before it and is published from it"
+    ),
+    "pre_inception_behaviour": (
+        "a requested month strictly before first_protocol_month is OUTSIDE the "
+        "published archive source and is NOT an internal continuity gap. It is not "
+        "counted as a missing month, is not requested, and never reaches the "
+        "fail-closed rule that governs the months the source does publish"
+    ),
+    "acquisition_start_rule": (
+        "the funding archive plan begins at max(generic requested start, "
+        "first_protocol_month). The generic research spine boundary and the requested "
+        "feature warm-up are unchanged; only the funding archive iterator is clamped"
+    ),
+    "no_substitution": (
+        "never. No synthetic funding value is created for the pre-inception region, no "
+        "REST endpoint backfills it, nothing is interpolated or carried backwards, and "
+        "no other venue, instrument or archive stands in for it"
+    ),
+    "post_inception_continuity": (
+        "unchanged and fail-closed: every expected month from first_protocol_month "
+        "onward is mandatory, and a month that 404s, fails its checksum or cannot be "
+        "read stops the acquisition. No gap after inception may be skipped, "
+        "interpolated, forward-invented or replaced by a different source"
+    ),
+    "downstream_consequence": (
+        "the funding history begins where the source begins, and the unchanged "
+        "causality, warm-up and sample-universe rules decide the rest: a row at which "
+        "fewer than the required settlements have accumulated has no defined "
+        "drv_funding_sum_9 or drv_funding_z and is outside the common sample universe "
+        "for EVERY arm, the control included. Losing early training rows this way is "
+        "the intended consequence and is reported, not repaired"
+    ),
+    "windows_unchanged": (
+        "no feature, window, clip, staleness bound, availability threshold, target, "
+        "horizon, Stage-1 geometry, cost model or comparison rule is changed by this "
+        "amendment. The 30-settlement funding z-score and the 9-settlement funding sum "
+        "are exactly what they were"
+    ),
+    "provenance_required": [
+        "generic_requested_from",
+        "source_inception_month",
+        "effective_from",
+        "months_clamped",
+    ],
+    "other_sources": (
+        "open interest keeps its own §3.0a first-day rule and perpetual klines keep "
+        "theirs; A2 clamps the funding archive plan and nothing else"
+    ),
+}
+
 #: How long an observation may be carried forward before its row leaves the
 #: sample universe. Funding is 8-hourly by construction, so holding the last
 #: settlement is the definition of the feature rather than a repair; one extra
@@ -814,6 +947,21 @@ DEGREES_OF_FREEDOM: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "choice": "where the funding archive's history is allowed to begin",
+        "constrained_by": (
+            "FUNDING_ARCHIVE_INCEPTION_POLICY, amendment A2: the Binance USD-M BTCUSDT "
+            "monthly fundingRate archive's first protocol month is 2020-01, and the "
+            "funding plan begins at max(generic requested start, that month). A month "
+            "before it is outside the source rather than an internal gap, and is never "
+            "synthesised, backfilled from REST, interpolated or sought elsewhere. Every "
+            "expected month from 2020-01 onward stays mandatory and fail-closed. "
+            "Adopted after the first full-acquisition attempt met the boundary and "
+            "before any P4 fit — the second rule here that is an amendment rather than "
+            "an original commitment, which is why it carries its own supersedes and "
+            "amendment_status."
+        ),
+    },
+    {
         "choice": "who may spend the holdout, and how often",
         "constrained_by": (
             "HOLDOUT_SPEND_POLICY: once, by one checkpoint, gated on a frozen stage-1 "
@@ -840,6 +988,7 @@ def preregistration() -> dict[str, Any]:
         "data_sources": [dict(source) for source in DATA_SOURCES],
         "funding_csv_column_policy": dict(FUNDING_CSV_COLUMN_POLICY),
         "open_interest_duplicate_policy": dict(OPEN_INTEREST_DUPLICATE_POLICY),
+        "funding_archive_inception_policy": dict(FUNDING_ARCHIVE_INCEPTION_POLICY),
         "max_staleness_hours": dict(MAX_STALENESS_HOURS),
         "exploratory_outer_blocks": [list(block) for block in EXPLORATORY_OUTER_BLOCKS],
         "exploratory_blocks_read_by": list(EXPLORATORY_BLOCKS_READ_BY),

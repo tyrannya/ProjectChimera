@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from nn.derivatives_sources import (
+    BASE_URL,
     EARLIEST_METRICS_DAY,
     FUNDING,
     OPEN_INTEREST,
@@ -24,6 +25,8 @@ from nn.derivatives_sources import (
     canonical_member,
     check_strictly_increasing,
     funding_archive,
+    funding_inception,
+    funding_source_boundary,
     metrics_archive,
     parse_instants,
     plan_archives,
@@ -31,7 +34,11 @@ from nn.derivatives_sources import (
     source_spec,
     staleness_bound_ns,
 )
-from nn.p4_preregistration import FUNDING_CSV_COLUMN_POLICY, MAX_STALENESS_HOURS
+from nn.p4_preregistration import (
+    FUNDING_ARCHIVE_INCEPTION_POLICY,
+    FUNDING_CSV_COLUMN_POLICY,
+    MAX_STALENESS_HOURS,
+)
 from nn.trade_aggregates import TradeAggregationError
 
 import numpy as np
@@ -233,6 +240,147 @@ def test_an_empty_window_is_refused():
         plan_archives(
             FUNDING, pd.Timestamp("2023-02-01", tz="UTC"), pd.Timestamp("2023-01-01", tz="UTC")
         )
+
+
+# --- amendment A2: where the funding archive is allowed to begin --------------
+#
+# The generic warm-up planner asks for a month before the research spine so the
+# 30-settlement funding window has somewhere to accumulate. For the committed
+# spine that month is 2019-12, and the published monthly archive does not have
+# it. §3.4b makes that a *source boundary* rather than a gap, and these tests are
+# the boundary as the planner sees it.
+INCEPTION_MONTH = FUNDING_ARCHIVE_INCEPTION_POLICY["first_protocol_month"]
+
+
+def test_the_funding_plan_starts_at_the_source_inception_when_an_earlier_month_is_asked_for():
+    """§3.4b: the plan begins at max(requested start, inception). Nothing earlier."""
+    archives = plan_archives(
+        FUNDING,
+        pd.Timestamp("2019-12-01", tz="UTC"),
+        pd.Timestamp("2020-04-01", tz="UTC"),
+    )
+    assert archives[0].period_start == funding_inception()
+    assert archives[0].period_start == pd.Timestamp(f"{INCEPTION_MONTH}-01", tz="UTC")
+
+
+def test_the_pre_inception_month_is_never_listed():
+    """The specific archive that does not exist, named.
+
+    It is not requested, so it never reaches the fail-closed rule that stops the
+    acquisition on an absent funding month — which is exactly the point of §3.4b:
+    a month before the source begins is outside the source, not a hole in it.
+    """
+    archives = plan_archives(
+        FUNDING,
+        pd.Timestamp("2019-09-01", tz="UTC"),
+        pd.Timestamp("2020-04-01", tz="UTC"),
+    )
+    names = [archive.name for archive in archives]
+    assert "BTCUSDT-fundingRate-2019-12.zip" not in names
+    for month in ("2019-09", "2019-10", "2019-11", "2019-12"):
+        assert f"BTCUSDT-fundingRate-{month}.zip" not in names
+
+
+def test_the_inception_month_and_every_later_month_are_still_planned():
+    """Clamping the start removes the months before the source, and nothing else."""
+    archives = plan_archives(
+        FUNDING,
+        pd.Timestamp("2019-12-01", tz="UTC"),
+        pd.Timestamp("2020-06-01", tz="UTC"),
+    )
+    assert [archive.name for archive in archives] == [
+        f"BTCUSDT-fundingRate-2020-{month:02d}.zip" for month in range(1, 6)
+    ]
+
+
+@pytest.mark.parametrize("requested", ["2020-01-01", "2020-01-15", "2021-03-01", "2024-11-01"])
+def test_a_start_at_or_after_the_inception_is_not_clamped(requested):
+    """A2 is a floor, not a rewrite: it may narrow the window and never move it later."""
+    start = pd.Timestamp(requested, tz="UTC")
+    archives = plan_archives(FUNDING, start, start + pd.offsets.MonthBegin(3))
+    assert archives[0].period_start == start.normalize().replace(day=1)
+
+
+def test_a_window_entirely_before_the_inception_is_refused_rather_than_invented():
+    with pytest.raises(DerivativesSourceError, match="no published month"):
+        plan_archives(
+            FUNDING,
+            pd.Timestamp("2019-01-01", tz="UTC"),
+            pd.Timestamp("2019-06-01", tz="UTC"),
+        )
+
+
+def test_the_clamped_month_stays_visible_in_provenance():
+    """§3.4b forbids the month simply disappearing from the plan's account of itself."""
+    boundary = funding_source_boundary(pd.Timestamp("2019-12-01", tz="UTC"))
+    assert boundary["amendment"] == "A2"
+    assert boundary["generic_requested_from"] == "2019-12"
+    assert boundary["source_inception_month"] == INCEPTION_MONTH
+    assert boundary["effective_from"] == INCEPTION_MONTH
+    assert boundary["months_clamped"] == 1
+    assert boundary["not_an_internal_gap"] is True
+    assert boundary["reason"] == FUNDING_ARCHIVE_INCEPTION_POLICY["pre_inception_behaviour"]
+
+
+def test_provenance_reports_no_clamp_when_none_happened():
+    boundary = funding_source_boundary(pd.Timestamp("2021-05-15", tz="UTC"))
+    assert boundary["generic_requested_from"] == "2021-05"
+    assert boundary["effective_from"] == "2021-05"
+    assert boundary["months_clamped"] == 0
+    assert boundary["not_an_internal_gap"] is False
+
+
+def test_the_planner_reads_the_preregistered_month_rather_than_a_literal(monkeypatch):
+    """The anti-drift property: move the policy, and the plan moves with it.
+
+    A checkout where the preregistration says one month and the planner asks for
+    an earlier one is what this makes unconstructible.
+    """
+    import nn.p4_preregistration as prereg
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "FUNDING_ARCHIVE_INCEPTION_POLICY",
+            {**FUNDING_ARCHIVE_INCEPTION_POLICY, "first_protocol_month": "2021-06"},
+        )
+        archives = plan_archives(
+            FUNDING,
+            pd.Timestamp("2019-12-01", tz="UTC"),
+            pd.Timestamp("2021-09-01", tz="UTC"),
+        )
+        assert archives[0].period_start == pd.Timestamp("2021-06-01", tz="UTC")
+        assert funding_inception() == pd.Timestamp("2021-06-01", tz="UTC")
+    assert funding_inception() == pd.Timestamp(f"{INCEPTION_MONTH}-01", tz="UTC")
+
+
+def test_a_policy_month_the_planner_cannot_read_is_refused_rather_than_guessed(monkeypatch):
+    import nn.p4_preregistration as prereg
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "FUNDING_ARCHIVE_INCEPTION_POLICY",
+            {**FUNDING_ARCHIVE_INCEPTION_POLICY, "first_protocol_month": "January 2020"},
+        )
+        with pytest.raises(DerivativesSourceError, match="not a YYYY-MM month"):
+            funding_inception()
+
+
+def test_no_planned_funding_archive_leaves_the_public_archive():
+    """The pre-inception region is not sought from the REST fallback or anywhere else."""
+    archives = plan_archives(
+        FUNDING,
+        pd.Timestamp("2019-12-01", tz="UTC"),
+        pd.Timestamp("2020-06-01", tz="UTC"),
+    )
+    assert archives
+    for archive in archives:
+        assert archive.url.startswith(f"{BASE_URL}/data/futures/um/monthly/fundingRate/")
+
+
+def test_the_source_spec_reads_the_inception_policy_rather_than_restating_it():
+    assert source_spec()["funding_inception_rule"] == dict(FUNDING_ARCHIVE_INCEPTION_POLICY)
 
 
 # --- the staleness bounds, read rather than restated --------------------------

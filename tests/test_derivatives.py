@@ -30,7 +30,11 @@ from nn.derivatives_sources import (
     UNAVAILABLE_AGE_NS,
     staleness_bound_ns,
 )
-from nn.p4_preregistration import FEATURES, WARMUP_HOURS
+from nn.p4_preregistration import (
+    FEATURES,
+    FUNDING_ARCHIVE_INCEPTION_POLICY,
+    WARMUP_HOURS,
+)
 
 COLUMNS = list(DERIVATIVES_FEATURE_COLUMNS)
 
@@ -248,6 +252,41 @@ def test_the_funding_z_reading_is_inert_wherever_the_clip_does_not_bite():
     clipped = np.clip(last, -0.01, 0.01)
     assert np.array_equal(last, clipped)
     assert features["defined"].to_numpy().any()
+
+
+# --- §3.4b: a source that begins where the archive begins ---------------------
+def test_rows_before_enough_funding_settlements_are_undefined_rather_than_invented():
+    """Amendment A2's intended consequence, in the engine that produces it.
+
+    A source clamped to the funding archive's inception has nothing behind its
+    first hours. The engine does not shorten the window, does not seed it and does
+    not carry anything backwards: the rows have no defined funding feature and
+    leave the sample universe for every arm, which is what §3.4b says must happen
+    and must be reported rather than repaired.
+    """
+    inception = FUNDING_ARCHIVE_INCEPTION_POLICY["first_protocol_month"]
+    frame, close = build_source(n=600, start=f"{inception}-01")
+    features = compute_derivatives_features(frame, close)
+    visible = frame["funding_visible_count"].to_numpy()
+
+    z_ok = features["drv_funding_z__defined"].to_numpy()
+    sum_ok = features["drv_funding_sum_9__defined"].to_numpy()
+    assert not z_ok[visible < 30].any()
+    assert z_ok[visible >= 30].all()
+    assert not sum_ok[visible < 9].any()
+    assert sum_ok[visible >= 9].all()
+
+    # An undefined row carries the declared placeholder and never a value: no
+    # partial window, no seeded mean, no rate carried backwards from the first
+    # settlement the archive does publish.
+    assert (features["drv_funding_z"].to_numpy()[visible < 30] == 0.0).all()
+    assert (features["drv_funding_sum_9"].to_numpy()[visible < 9] == 0.0).all()
+    assert not features["defined"].to_numpy()[visible < 30].any()
+
+    # The window is untouched: the first row with a defined z-score is exactly the
+    # thirtieth visible settlement, not an earlier one reached by relaxing it.
+    assert int(np.flatnonzero(z_ok)[0]) == int(np.flatnonzero(visible >= 30)[0])
+    assert int(np.flatnonzero(features["defined"].to_numpy())[0]) >= WARMUP_HOURS
 
 
 # --- §4.2: open-interest staleness, at exactly one hour -----------------------
