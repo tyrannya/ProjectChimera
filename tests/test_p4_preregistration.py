@@ -48,6 +48,7 @@ from nn.p4_preregistration import (
     MIN_OUTER_TRADES,
     NULL_PROBABILITY_THREE_OF_FOUR,
     OPEN_INTEREST_DUPLICATE_POLICY,
+    OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY,
     PRIMARY_COMPARISON,
     PRIMARY_MODEL,
     RESEARCH_ROWS,
@@ -79,6 +80,11 @@ SUPERSEDED_HASH_A1 = "e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27
 #: `perpetual_kline_archive_inception_policy` entered the payload. Historical provenance
 #: on the same terms: no P4 cell, fit or outcome was produced under it either.
 SUPERSEDED_HASH_A2 = "db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05"
+
+#: The hash the design carried between amendment A3 and amendment A4 (§3.4d), before
+#: `open_interest_observation_validity_policy` entered the payload. Historical
+#: provenance on the same terms: no P4 cell, fit or outcome was produced under it either.
+SUPERSEDED_HASH_A3 = "dffec07e3f5004847d5ad7960b6b16d9cf86a146f336841882c3cf6ed69c5f45"
 
 
 # --- P4 is implemented, registered, and has not been run ---------------------
@@ -481,6 +487,7 @@ def test_the_headerless_case_is_bounded_rather_than_positional_guessing():
         "funding_csv_column_policy",
         "funding_archive_inception_policy",
         "perpetual_kline_archive_inception_policy",
+        "open_interest_observation_validity_policy",
     ],
 )
 def test_every_result_critical_mechanic_is_in_the_hashed_payload(key):
@@ -512,6 +519,10 @@ def test_moving_any_of_them_moves_the_hash(monkeypatch):
         ("OPEN_INTEREST_DUPLICATE_POLICY", {"grouping_key": "other"}),
         ("FUNDING_ARCHIVE_INCEPTION_POLICY", {"first_protocol_month": "2021-06"}),
         ("PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY", {"first_protocol_month": "2021-06"}),
+        (
+            "OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY",
+            {"validity_rule": "any published row is an observation"},
+        ),
     ):
         with monkeypatch.context() as patch:
             patch.setattr(prereg, name, value)
@@ -1346,6 +1357,293 @@ def test_no_p4_result_can_be_produced_under_the_pre_a3_hash(tmp_path):
                 "authorisation_schema": "chimera.p4-stage1-authorisation/1",
                 "state": "authorised",
                 "preregistration_hash": SUPERSEDED_HASH_A2,
+                "authorised_by": "test",
+                "authorised_at": "1970-01-01T00:00:00Z",
+                "reason": "test",
+            }
+        )
+    )
+    with pytest.raises(Stage1Interlock, match="not permission to run another"):
+        assert_fit_authorised(confirm=True, availability={"gate_passed": True}, root=tmp_path)
+
+
+# --- amendment A4: which source rows are open-interest observations at all -----
+def test_the_observation_validity_policy_is_inside_the_hashed_preregistration():
+    """In the payload, not only in a module namespace beside it."""
+    assert preregistration()["open_interest_observation_validity_policy"] == dict(
+        OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    )
+
+
+def test_the_validity_policy_is_scoped_to_open_interest_and_names_both_metrics():
+    policy = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    assert policy["scope"]["field"] == "open_interest"
+    assert policy["scope"]["applies_to"] == ["open_interest"]
+    assert sorted(policy["scope"]["does_not_apply_to"]) == ["funding_rate", "perpetual_price"]
+    assert policy["scope"]["consumed_fields"] == [
+        "sum_open_interest",
+        "sum_open_interest_value",
+    ]
+    assert "DAILY metrics" in policy["scope"]["archive"]
+    assert "sum_open_interest > 0" in policy["validity_rule"]
+    assert "sum_open_interest_value > 0" in policy["validity_rule"]
+    assert "if and only if" in policy["validity_rule"]
+    assert set(policy["provenance_required"]) == {
+        "logical_observations",
+        "valid_positive_observations",
+        "invalid_zero_observations",
+        "invalid_both_zero_observations",
+        "invalid_zero_contracts_only",
+        "invalid_zero_notional_only",
+        "negative_observations",
+        "nonfinite_observations",
+    }
+
+
+def test_the_validity_policy_records_that_it_is_an_amendment_and_what_it_replaced():
+    policy = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    assert policy["amendment"] == "A4"
+    assert "before any P4 model fit" in policy["amendment_status"]
+    assert "every metrics row surviving schema validation was an open-interest " in (
+        policy["supersedes"]
+    )
+    assert "1722" in policy["adopted_because"]
+    assert "open interest is non-positive on an available hour" in policy["adopted_because"]
+
+
+def test_a4_runs_after_a1_and_does_not_replace_it():
+    """Two rules about the same archive, in a fixed order, neither subsuming the other.
+
+    A1 decides which *published rows* are one logical row; A4 decides which of
+    those logical rows are *observations*. If A4 ran first it would discard zero
+    rows before A1 could see that two of them disagreed, and A1's accounting would
+    stop describing what the archive published.
+    """
+    a1, a4 = OPEN_INTEREST_DUPLICATE_POLICY, OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    assert a1["amendment"] == "A1" and a4["amendment"] == "A4"
+    assert a1 != a4
+    assert "A1 exact-duplicate normalisation" in a4["applies_after"]
+    assert "A1 still decides which published rows are one logical row" in a4["other_sources"]
+    # A1 is untouched by A4: same scope, same key, same acceptance, same refusal.
+    assert a1["grouping_key"] == "create_time"
+    assert "reject the acquisition" in a1["on_conflict"]
+
+
+def test_the_observed_evidence_is_counted_rows_and_not_a_conclusion():
+    """What the scan found, as numbers, with no cause attached to any of them."""
+    evidence = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY["observed_evidence"]
+    run = evidence["max_consecutive_paired_zero_run"]
+    assert run["observations"] == 102
+    assert run["observation_spacing_minutes"] == 5
+    assert run["minutes"] == 510 == run["observations"] * run["observation_spacing_minutes"]
+    assert run["hours"] == 8.5
+
+    one_sided = evidence["one_sided_zero_rows"]
+    assert one_sided["found"] == 12
+    assert one_sided["date"] == "2023-04-10"
+    assert one_sided["all_on_one_date"] is True
+    assert len(one_sided["instants_utc"]) == 12
+    assert all(stamp.startswith("2023-04-10T") for stamp in one_sided["instants_utc"])
+
+    assert evidence["scan_days"] == 1722
+    assert evidence["scan_errors"] == 0
+    assert evidence["negative_consumed_values_observed"] == 0
+    assert "2021-05-22" in evidence["paired_zero_rows_exist"]
+    assert "not isolated to one date" in evidence["paired_zero_rows_exist"]
+
+
+def test_the_amendment_does_not_generalise_past_what_the_scan_measured():
+    policy = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    limit = policy["generalisation_limit"]
+    assert "that is all that is claimed" in limit
+    assert "Nothing here asserts a cause" in limit
+    # The two claims it must not make, checked as claims it does not make.
+    assert "no claim is made" in policy["no_sentinel_claim"].lower()
+    assert "No official source saying so" in policy["no_sentinel_claim"]
+    assert "does not infer the true economic open interest" in policy["no_economic_inference"]
+
+
+def test_a_zero_row_is_not_a_valid_zero_state_and_is_not_repaired():
+    policy = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    assert "not a valid zero open-interest state" in policy["exactly_zero_is_invalid"]
+    handling = policy["invalid_row_handling"]
+    assert "remains a real published source row, counted in provenance and accounting" in (
+        handling
+    )
+    for forbidden in ("interpolated", "averaged", "REST endpoint", "future observation"):
+        assert any(forbidden in entry for entry in handling), forbidden
+    assert any("does NOT update the hourly last-observation reducer" in e for e in handling)
+    assert any("does NOT enter the causal OI observation sequence" in e for e in handling)
+
+
+def test_a_negative_or_non_finite_value_is_a_hard_failure_and_not_a_zero_row():
+    policy = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    assert "HARD FAIL" in policy["on_negative_or_nonfinite"]
+    assert "never classified as an ordinary zero-invalid observation" in (
+        policy["on_negative_or_nonfinite"]
+    )
+    assert "unparseable" in policy["on_negative_or_nonfinite"]
+
+
+def test_a4_leaves_the_staleness_bound_and_the_missing_day_rule_alone():
+    from nn.p4_preregistration import MAX_STALENESS_HOURS
+
+    policy = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    assert MAX_STALENESS_HOURS["open_interest"] == 1
+    assert "1 hour in MAX_STALENESS_HOURS" in policy["staleness_unchanged"]
+    assert "UNAVAILABLE" in policy["staleness_unchanged"]
+    assert "PROSPECTIVELY" in policy["later_valid_observation"]
+    assert "never applied backwards" in policy["later_valid_observation"]
+    assert "NOT thereby a §3.0a missing day" in policy["missing_day_relationship"]
+    assert "404" in policy["missing_day_relationship"]
+
+
+def test_a4_changes_no_feature_window_clip_or_gate():
+    policy = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    unchanged = policy["windows_unchanged"]
+    for name in ("drv_oi_log_change_24h", "drv_oi_notional_ratio", "drv_oi_price_divergence"):
+        assert name in unchanged
+    assert "No epsilon is added to open interest" in unchanged
+    assert "no zero is replaced by a tiny positive value" in unchanged
+    for word in ("window", "clip", "target", "horizon", "cost model", "gate"):
+        assert word in unchanged, word
+    # And the values themselves are the ones the feature spec already carried.
+    assert {f["name"]: f["window"] for f in FEATURES if f["family"] == "open_interest"} == {
+        "drv_oi_log_change_24h": 24,
+        "drv_oi_notional_ratio": 168,
+        "drv_oi_price_divergence": 24,
+    }
+
+
+def test_the_accounting_identity_is_stated_rather_than_left_to_the_reader():
+    identity = OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY["accounting_identity"]
+    assert "logical_observations (after A1 duplicate collapse) ==" in identity
+    assert "valid_positive_observations + invalid_zero_observations" in identity
+    assert "disjoint" in identity
+
+
+def test_editing_the_validity_policy_moves_both_hashes_together(monkeypatch):
+    """The anti-drift property A1, A2 and A3 have, for A4's rule.
+
+    `the preregistration says both metrics must be positive and the acquisition
+    admits a zero` must not be a constructible checkout.
+    """
+    import nn.p4_preregistration as prereg
+    from nn.derivatives_sources import source_spec
+    from tools.export_derivatives_snapshot import source_spec_hash
+
+    before_prereg = preregistration_hash()
+    before_source = source_spec_hash()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY",
+            {
+                **OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY,
+                "validity_rule": "any published row is an observation",
+            },
+        )
+        assert prereg.preregistration_hash() != before_prereg
+        assert source_spec_hash() != before_source
+        assert (
+            source_spec()["open_interest_validity_rule"]["validity_rule"]
+            == "any published row is an observation"
+        )
+    assert preregistration_hash() == before_prereg
+    assert source_spec_hash() == before_source
+
+
+def test_the_acquisition_reads_the_policy_rather_than_restating_it():
+    """One authoritative copy, checked as identity rather than as agreement."""
+    from nn.derivatives_sources import source_spec
+
+    assert source_spec()["open_interest_validity_rule"] == dict(
+        OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    )
+
+
+def test_the_document_records_amendment_a4_and_all_four_superseded_hashes():
+    text = DOCUMENT.read_text()
+    assert "3.4d" in text
+    assert "Source-protocol amendment A4" in text
+    section = " ".join(text.split("### 3.4d", 1)[1].split("### 3.5", 1)[0].split())
+    # The measured facts, stated as facts rather than summarised into a cause.
+    assert "1722" in section
+    assert "open interest is non-positive on an available hour" in section
+    assert "102" in section and "510 minutes" in section and "8.5 hours" in section
+    assert "2021-05-22" in section
+    assert "exactly 12" in section and "2023-04-10" in section
+    assert "zero scan errors" in section
+    assert "no negative" in section
+    # The active hash, and the four it replaced, all inside the amendment itself.
+    assert f"sha256:{preregistration_hash()}" in section
+    for superseded in (
+        SUPERSEDED_HASH,
+        SUPERSEDED_HASH_A1,
+        SUPERSEDED_HASH_A2,
+        SUPERSEDED_HASH_A3,
+    ):
+        assert superseded in section, superseded
+        assert superseded != preregistration_hash()
+    # And the amendment's own claims, in prose, matching the payload.
+    assert "if and only if" in section
+    assert "HARD FAILURE" in section
+    assert "prospectively only" in section
+    assert "outside\nthe common sample universe".replace("\n", " ") in section
+    assert "does not infer the economic open interest" in section.lower()
+    assert "no official source saying so is known to this repository" in section.lower()
+    # Ordering is preserved rather than rewritten: A1, A2, A3, then A4.
+    assert (
+        text.index("### 3.4a")
+        < text.index("### 3.4b")
+        < text.index("### 3.4c")
+        < text.index("### 3.4d")
+        < text.index("### 3.5 Fail-closed")
+    )
+    assert "Amendment A4" in text.split("---", 1)[0]
+
+
+def test_the_document_says_the_open_interest_definitions_do_not_change():
+    section = " ".join(
+        DOCUMENT.read_text().split("### 3.4d", 1)[1].split("### 3.5", 1)[0].split()
+    )
+    assert "The open-interest feature definitions do not change" in section
+    assert "`[-1.0, 1.0]`" in section and "`[0.0, 10.0]`" in section
+    assert "No epsilon is added to open" in section
+    assert "missing-day rule is unamended" in section
+
+
+def test_the_stage_one_authorisation_carries_the_a4_hash_and_stays_closed():
+    """Rebinding the interlock for a fourth amendment must still grant nothing."""
+    path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
+    text = path.read_text()
+    payload = json.loads(text)
+    assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
+    assert payload["state"] == "not_authorised"
+    assert payload["preregistration_hash"] == preregistration_hash()
+    assert payload["authorised_by"] is None and payload["authorised_at"] is None
+    assert payload["reason"] is None
+    for superseded in (
+        SUPERSEDED_HASH,
+        SUPERSEDED_HASH_A1,
+        SUPERSEDED_HASH_A2,
+        SUPERSEDED_HASH_A3,
+    ):
+        assert superseded not in text, "only the active hash belongs in the interlock"
+
+
+def test_no_p4_result_can_be_produced_under_the_pre_a4_hash(tmp_path):
+    """An authorisation granted for the design A4 replaced authorises nothing."""
+    from nn.p4_stage1 import Stage1Interlock, assert_fit_authorised
+
+    research = tmp_path / "data" / "research"
+    research.mkdir(parents=True)
+    (research / "p4_stage1_authorisation.json").write_text(
+        json.dumps(
+            {
+                "authorisation_schema": "chimera.p4-stage1-authorisation/1",
+                "state": "authorised",
+                "preregistration_hash": SUPERSEDED_HASH_A3,
                 "authorised_by": "test",
                 "authorised_at": "1970-01-01T00:00:00Z",
                 "reason": "test",

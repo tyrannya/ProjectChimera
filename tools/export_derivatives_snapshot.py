@@ -101,8 +101,10 @@ from nn.derivatives_sources import (
     Archive,
     DerivativesSourceError,
     MetricsDuplicateNormalisation,
+    MetricsObservationValidity,
     canonical_member,
     check_strictly_increasing,
+    classify_open_interest_observations,
     collapse_exact_duplicate_metrics_rows,
     funding_source_boundary,
     perpetual_source_boundary,
@@ -333,10 +335,14 @@ def read_funding(
     return instants, rates, {**layout.to_dict(), "settlements": int(len(instants))}
 
 
-def read_metrics(
-    path: Path, archive: Archive
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, MetricsDuplicateNormalisation]:
-    """One daily metrics archive's open-interest snapshots, and what was collapsed.
+def read_metrics(path: Path, archive: Archive) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    MetricsDuplicateNormalisation,
+    MetricsObservationValidity,
+]:
+    """One daily metrics archive's open-interest observations, and what they cost.
 
     Only the three columns §3.0a names are *used*. A file without all three has no
     open interest in it under this schema and is refused rather than read for
@@ -360,6 +366,17 @@ def read_metrics(
     :data:`nn.p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY`'s
     ``grouping_key``, read from the hashed preregistration rather than spelled
     again here.
+
+    **What comes back is the VALID observations, not every logical row.**
+    Amendment A4 — :data:`nn.p4_preregistration.OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY`
+    — is applied here, in the one function that turns an archive into
+    observations, so no caller can reach the reducer around it. The order is the
+    policy's own and is visible in the body: schema, then A1's exact-duplicate
+    collapse over the complete published rows, then the numeric parse of the two
+    consumed fields, then classification. A row with either consumed field
+    exactly zero is counted in the returned
+    :class:`~nn.derivatives_sources.MetricsObservationValidity` and dropped from
+    the observation sequence; a negative or non-finite one stops the acquisition.
     """
     key = p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY["grouping_key"]
     zf, member, fields, _ = _open_member(path, archive)
@@ -394,9 +411,14 @@ def read_metrics(
     )[order][keep]
     # Still the fail-closed check it always was. A duplicate instant reaching it
     # now is one the exact-duplicate rule declined to collapse, which cannot
-    # happen — and a non-monotonic archive is refused here exactly as before.
+    # happen — and a non-monotonic archive is refused here exactly as before. It
+    # runs on the logical rows, before A4 removes any of them, so an archive that
+    # disagrees with itself about its own ordering is still refused for that.
     check_strictly_increasing(instants, archive, what="open-interest snapshots")
-    return instants, contracts, notional, normalisation
+    valid, validity = classify_open_interest_observations(
+        contracts, notional, instants, archive
+    )
+    return instants[valid], contracts[valid], notional[valid], normalisation, validity
 
 
 def iter_klines(path: Path, archive: Archive) -> Iterator[tuple[np.ndarray, np.ndarray]]:
@@ -633,8 +655,18 @@ def check_hourly_table(frame: pd.DataFrame) -> None:
         values = frame[name].to_numpy(dtype=np.float64)
         if not np.isfinite(values).all():
             raise DerivativesExportError(f"{name} carries a non-finite value")
-    if (frame["oi_contracts"].to_numpy()[frame["oi_available"].to_numpy() == 1] <= 0).any():
+    # Amendment A4 is what makes these two checks provable rather than hopeful:
+    # only strictly positive observations enter the reducer, so an hour marked
+    # available carries a positive state in BOTH consumed metrics. A published
+    # zero never reaches here — it was refused as an observation, and the hours it
+    # left without one are unavailable.
+    oi_hours = frame["oi_available"].to_numpy() == 1
+    if (frame["oi_contracts"].to_numpy()[oi_hours] <= 0).any():
         raise DerivativesExportError("open interest is non-positive on an available hour")
+    if (frame["oi_notional"].to_numpy()[oi_hours] <= 0).any():
+        raise DerivativesExportError(
+            "open-interest notional is non-positive on an available hour"
+        )
     if (frame["perp_close"].to_numpy()[frame["perp_available"].to_numpy() == 1] <= 0).any():
         raise DerivativesExportError(
             "the perpetual close is non-positive on an available hour"
@@ -890,20 +922,25 @@ def probe(
                 continue
             present.append(day.date().isoformat())
             if schema is None:
-                instants, contracts, notional, normalisation = read_metrics(
+                instants, contracts, notional, normalisation, validity = read_metrics(
                     fetched.path, archive
                 )
+                # Every figure below is over the VALID observations, because that
+                # is what the acquisition would use. A day whose rows were all
+                # rejected by amendment A4 has no minimum and no maximum, and the
+                # probe says so rather than raising on an empty reduction.
                 schema = {
                     "columns_read": list(METRICS_REQUIRED_COLUMNS),
                     "snapshots": int(len(instants)),
                     "normalisation": normalisation.to_dict(),
+                    "validity": validity.to_dict(),
                     "cadence_minutes_observed": sorted(
                         {int(v) for v in (np.diff(instants) // (60 * 1_000_000_000))}
                     )[:6],
-                    "contracts_min": float(contracts.min()),
-                    "contracts_max": float(contracts.max()),
-                    "notional_min": float(notional.min()),
-                    "notional_max": float(notional.max()),
+                    "contracts_min": float(contracts.min()) if len(contracts) else None,
+                    "contracts_max": float(contracts.max()) if len(contracts) else None,
+                    "notional_min": float(notional.min()) if len(notional) else None,
+                    "notional_max": float(notional.max()) if len(notional) else None,
                     "measured_on": day.date().isoformat(),
                 }
             fetched.path.unlink(missing_ok=True)
@@ -992,16 +1029,21 @@ def acquire(
                 )
                 continue
             path = root / archive.name
-            instants, contracts, notional, normalisation = read_metrics(path, archive)
+            instants, contracts, notional, normalisation, validity = read_metrics(
+                path, archive
+            )
             open_interest.add(instants, np.column_stack((contracts, notional)))
-            # "rows" is the logical observations this archive contributed; the
-            # raw row count it was read from is in the normalisation block beside
-            # it, so a collapse is never invisible in the per-archive record.
+            # "rows" is the VALID observations this archive contributed to the
+            # causal sequence. The raw row count it was read from is in the
+            # normalisation block beside it and the logical count A1 left behind
+            # is in the validity block, so neither a collapse nor a rejected
+            # observation is ever invisible in the per-archive record.
             records.append(
                 {
                     **record,
                     "rows": int(len(instants)),
                     "normalisation": normalisation.to_dict(),
+                    "validity": validity.to_dict(),
                 }
             )
             path.unlink(missing_ok=True)
@@ -1126,7 +1168,7 @@ def coverage_report(
 
 
 def metrics_source_integrity(archives: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """The exact-duplicate accounting for the metrics archives, summed.
+    """The source accounting for the metrics archives — A1's and A4's — summed.
 
     Derived from the per-archive ``normalisation`` blocks rather than counted
     separately, so the aggregate and the records it came from cannot drift; the
@@ -1140,11 +1182,27 @@ def metrics_source_integrity(archives: Sequence[dict[str, Any]]) -> dict[str, An
     reader should be able to see the number rather than infer it from the absence
     of a field.
 
-    The rule these counts were produced under is not restated here: it is
-    ``source.duplicate_rule`` in the same manifest, bound by ``source_spec_hash``,
-    and a second copy could only ever disagree with the first.
+    ``negative_observations`` and ``nonfinite_observations`` are 0 in every
+    manifest for the same reason, and by amendment A4 rather than A1: either one
+    stops the acquisition inside
+    :func:`nn.derivatives_sources.classify_open_interest_observations`, so no
+    snapshot can be written after one was seen.
+
+    **The A4 half is what keeps a rejected observation from looking like a
+    missing one.** ``logical_observations`` is what the archive published after
+    A1 collapsed identical repeats; ``valid_positive_observations`` is what
+    entered the causal sequence; the difference is counted, partitioned by which
+    consumed field was zero, and adds up exactly. A reader can therefore see that
+    the source served those rows and that this protocol declined them, which is
+    not the same statement as "the archive did not publish them".
+
+    The rules these counts were produced under are not restated here: they are
+    ``source.duplicate_rule`` and ``source.open_interest_validity_rule`` in the
+    same manifest, bound by ``source_spec_hash``, and a second copy could only
+    ever disagree with the first.
     """
     entries = [entry["normalisation"] for entry in archives if "normalisation" in entry]
+    valid = [entry["validity"] for entry in archives if "validity" in entry]
     return {
         "archives_read": len(entries),
         "raw_rows_read": sum(int(e["rows_read"]) for e in entries),
@@ -1157,6 +1215,24 @@ def metrics_source_integrity(archives: Sequence[dict[str, Any]]) -> dict[str, An
             1 for e in entries if int(e["exact_duplicate_rows_collapsed"])
         ),
         "conflicting_duplicate_instants": 0,
+        "archives_classified": len(valid),
+        "logical_observations": sum(int(e["logical_observations"]) for e in valid),
+        "valid_positive_observations": sum(
+            int(e["valid_positive_observations"]) for e in valid
+        ),
+        "invalid_zero_observations": sum(int(e["invalid_zero_observations"]) for e in valid),
+        "invalid_both_zero_observations": sum(
+            int(e["invalid_both_zero_observations"]) for e in valid
+        ),
+        "invalid_zero_contracts_only": sum(
+            int(e["invalid_zero_contracts_only"]) for e in valid
+        ),
+        "invalid_zero_notional_only": sum(int(e["invalid_zero_notional_only"]) for e in valid),
+        "archives_with_invalid_zero_observations": sum(
+            1 for e in valid if int(e["invalid_zero_observations"])
+        ),
+        "negative_observations": 0,
+        "nonfinite_observations": 0,
     }
 
 
@@ -1255,6 +1331,18 @@ def write_snapshot(
                 "acquisition.open_interest_source_integrity; rows sharing an instant "
                 "that disagree in any field still stop the acquisition. No claim is made "
                 "about other days: this is what two archives were measured to contain",
+                "the daily metrics archive publishes rows whose consumed open-interest "
+                "metrics are exactly zero — both fields zero, and, on 2023-04-10, twelve "
+                "rows with positive contracts and zero notional. Under amendment A4 such "
+                "a row is a published source row and an invalid observation: it is "
+                "counted under acquisition.open_interest_source_integrity, it does not "
+                "enter the causal observation sequence, and it is never interpolated, "
+                "averaged or substituted. No claim is made about what the true open "
+                "interest was during those rows, and none that the venue documents zero "
+                "as a sentinel. The hours a run of them leaves without a valid "
+                "observation inside the 1-hour staleness bound are unavailable for every "
+                "arm — the longest such run observed was 102 consecutive five-minute "
+                "rows, 8.5 hours",
             ],
         },
         "acquisition": {

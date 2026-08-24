@@ -695,6 +695,242 @@ PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY: dict[str, Any] = {
     ),
 }
 
+#: What counts as an open-interest *observation*, and what is merely a row.
+#:
+#: **This is amendment A4, and it is not an original preregistration rule.** The
+#: original design had no notion of an invalid observation at all: every row that
+#: survived schema validation and the duplicate rule was an observation, and the
+#: only question left was how stale it was. That worked because nothing had ever
+#: read the source at row level, and the assumption underneath — that a published
+#: metrics row carries a positive open-interest state — had never been checked.
+#: It has now been, and it is false. The original wording is kept in
+#: ``supersedes`` rather than overwritten, and ``docs/p4_preregistration.md``
+#: §3.4d records the same history in prose.
+#:
+#: **What forced it is in ``adopted_because``.** The first real full acquisition
+#: after A3 completed all 1722 planned open-interest days and then failed during
+#: construction and validation of the hourly table, on the pre-write check that
+#: refuses a non-positive open interest on an hour marked available. The source
+#: was then inspected directly, before any P4 fit, Stage-1 result or outcome
+#: existed, and the rows behind that failure are published rows carrying zero.
+#:
+#: **What this rule does NOT say.** It does not say that BTCUSDT's real economic
+#: open interest was zero during those rows, and it does not say that Binance
+#: documents zero as an outage sentinel — no official statement to that effect is
+#: known to this repository, so none is claimed. What is claimed is narrower and
+#: is the whole of the rule: a consumed metric of exactly zero is not a valid
+#: positive open-interest state under this protocol, so it is not admitted as an
+#: observation. Nothing is inferred about what the true state was; the protocol
+#: refuses to name one.
+#:
+#: **Where it sits in the order.** After schema validation and after A1's exact
+#: duplicate normalisation, and nowhere else. A1 must continue to describe what
+#: the archive *published*, so a zero row duplicated identically is collapsed by
+#: A1 first and classified once by A4 afterwards. Classifying before A1 would
+#: make the duplicate accounting a statement about rows this rule had already
+#: removed, which is not what that accounting is for.
+#:
+#: :func:`nn.derivatives_sources.classify_open_interest_observations` is this
+#: rule's implementation and :func:`nn.derivatives_sources.source_spec` reads this
+#: object rather than restating it, so the acquisition cannot come to mean
+#: something the preregistration does not say.
+OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY: dict[str, Any] = {
+    "amendment": "A4",
+    "amendment_status": (
+        "adopted after the first real full acquisition following A3 completed the whole "
+        "planned open-interest download and then failed at pre-write hourly-table "
+        "validation, and after the source was inspected directly — and before any P4 "
+        "model fit, Stage-1 result, outcome or holdout access existed. This is a "
+        "source-protocol amendment, not an original preregistration rule"
+    ),
+    "supersedes": (
+        "the original rule, under which every metrics row surviving schema validation "
+        "was an open-interest observation regardless of its value, the only remaining "
+        "question was staleness, and a published zero would have been carried into the "
+        "hourly table as a real zero open-interest state"
+    ),
+    "scope": {
+        "field": "open_interest",
+        "archive": (
+            "Binance USD-M BTCUSDT DAILY metrics archives, "
+            "data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-YYYY-MM-DD.zip"
+        ),
+        "applies_to": ["open_interest"],
+        "does_not_apply_to": ["funding_rate", "perpetual_price"],
+        "consumed_fields": ["sum_open_interest", "sum_open_interest_value"],
+    },
+    "applies_after": (
+        "schema validation and A1 exact-duplicate normalisation, in that order. The "
+        "complete published CSV rows are read, A1 collapses rows that repeat one "
+        "create_time identically, the consumed numeric fields are parsed, and only then "
+        "is each retained logical row classified here"
+    ),
+    "validity_rule": (
+        "a retained logical row is a VALID open-interest observation if and only if "
+        "sum_open_interest > 0 AND sum_open_interest_value > 0. Both consumed metrics "
+        "must be strictly positive"
+    ),
+    "exactly_zero_is_invalid": (
+        "a row in which either consumed field is EXACTLY ZERO is an invalid observation "
+        "and not a valid zero open-interest state. It is a published zero-valued "
+        "observation that is invalid under this protocol's positive-state requirement, "
+        "and no further interpretation of it is asserted"
+    ),
+    "invalid_row_handling": [
+        "remains a real published source row, counted in provenance and accounting",
+        "is classified as an invalid OI observation",
+        "does NOT enter the causal OI observation sequence",
+        "does NOT update the hourly last-observation reducer",
+        "is NOT replaced with another numeric value",
+        "is NOT interpolated",
+        "is NOT averaged",
+        "is NOT repaired from the REST endpoint",
+        "is NOT repaired from a future observation",
+        "does NOT turn the archive or the UTC day into a missing day on its own",
+    ],
+    "on_negative_or_nonfinite": (
+        "HARD FAIL. A consumed OI field that is negative, non-finite or unparseable "
+        "stops the acquisition. It is never classified as an ordinary zero-invalid "
+        "observation, never dropped and never repaired: none was observed, so a run "
+        "that meets one has met something this inspection did not measure"
+    ),
+    "staleness_unchanged": (
+        "after an invalid row the existing as-of rule is unchanged: the most recent "
+        "PRIOR VALID observation stays visible only while its age satisfies the "
+        "preregistered open_interest staleness bound of 1 hour in MAX_STALENESS_HOURS. "
+        "Once it is older than that bound, open interest is UNAVAILABLE. A long run of "
+        "invalid rows therefore produces unavailable hours; the prior valid observation "
+        "is never carried across it"
+    ),
+    "later_valid_observation": (
+        "a valid observation after an invalid run restores availability PROSPECTIVELY "
+        "only. It is never applied backwards to the hours the run left unavailable"
+    ),
+    "missing_day_relationship": (
+        "an archive or UTC day containing invalid rows is NOT thereby a §3.0a missing "
+        "day. The missing-day rule is unchanged and still applies only to an archive "
+        "that 404s, fails its published checksum or arrives short"
+    ),
+    "downstream_consequence": (
+        "hours with no valid open-interest observation inside the staleness bound have "
+        "no defined open-interest input and are outside the common sample universe for "
+        "EVERY arm, ohlcv14 included. Losing those hours is the intended consequence "
+        "and is reported, not repaired"
+    ),
+    "provenance_required": [
+        "logical_observations",
+        "valid_positive_observations",
+        "invalid_zero_observations",
+        "invalid_both_zero_observations",
+        "invalid_zero_contracts_only",
+        "invalid_zero_notional_only",
+        "negative_observations",
+        "nonfinite_observations",
+    ],
+    "accounting_identity": (
+        "for every successfully exported archive: logical_observations (after A1 "
+        "duplicate collapse) == valid_positive_observations + "
+        "invalid_zero_observations, and invalid_zero_observations == "
+        "invalid_both_zero_observations + invalid_zero_contracts_only + "
+        "invalid_zero_notional_only, the three being disjoint. "
+        "negative_observations and nonfinite_observations are 0 in any exported "
+        "snapshot because either one stops the acquisition"
+    ),
+    "adopted_because": (
+        "the first real full acquisition after A3 completed all 1722 planned "
+        "open-interest days and then failed during construction and validation of the "
+        "hourly table with 'open interest is non-positive on an available hour'. Direct "
+        "inspection of the source then established that the daily metrics archives "
+        "publish rows whose consumed open-interest metrics are exactly zero, in two "
+        "distinct shapes: paired zeros in both consumed fields, and positive contracts "
+        "with zero notional. The original protocol had no way to describe such a row "
+        "except as a real zero open-interest state, which it is not"
+    ),
+    "observed_evidence": {
+        "inspection": (
+            "direct inspection of the published archives, before any P4 fit, Stage-1 "
+            "result, P4 outcome, P4-HOLD access or Styx access"
+        ),
+        "paired_zero_rows_exist": (
+            "rows with sum_open_interest == 0 AND sum_open_interest_value == 0 were "
+            "observed on multiple dates and are not isolated to one date. Observed "
+            "examples include 2021-05-22 04:25..05:10 UTC and multiple later dates "
+            "through 2025"
+        ),
+        "max_consecutive_paired_zero_run": {
+            "observations": 102,
+            "observation_spacing_minutes": 5,
+            "minutes": 510,
+            "hours": 8.5,
+            "note": (
+                "the longest consecutive run of paired-zero five-minute observations "
+                "found by the scan. It is 8.5 times the 1-hour open-interest staleness "
+                "bound, so it cannot be absorbed by the existing carry-forward"
+            ),
+        },
+        "one_sided_zero_rows": {
+            "found": 12,
+            "shape": "sum_open_interest > 0 and sum_open_interest_value == 0",
+            "date": "2023-04-10",
+            "all_on_one_date": True,
+            "instants_utc": [
+                "2023-04-10T08:25:00+00:00",
+                "2023-04-10T08:45:00+00:00",
+                "2023-04-10T08:55:00+00:00",
+                "2023-04-10T09:00:00+00:00",
+                "2023-04-10T09:05:00+00:00",
+                "2023-04-10T09:10:00+00:00",
+                "2023-04-10T09:15:00+00:00",
+                "2023-04-10T09:20:00+00:00",
+                "2023-04-10T09:25:00+00:00",
+                "2023-04-10T09:30:00+00:00",
+                "2023-04-10T09:35:00+00:00",
+                "2023-04-10T09:40:00+00:00",
+            ],
+        },
+        "scan_coverage": (
+            "the complete planned 1722-day open-interest acquisition range, scanned "
+            "with errors=0"
+        ),
+        "scan_days": 1722,
+        "scan_errors": 0,
+        "negative_consumed_values_observed": 0,
+    },
+    "generalisation_limit": (
+        "this is what one complete scan of the planned range found and that is all that "
+        "is claimed. Exactly 12 one-sided zero rows were found and all fell on "
+        "2023-04-10; the longest paired-zero run found was 102 observations; no negative "
+        "consumed value was found. Nothing here asserts a cause, a mechanism, a "
+        "frequency outside the scanned range, or that the pattern will persist"
+    ),
+    "no_sentinel_claim": (
+        "no claim is made that Binance documents zero as a sentinel value, an outage "
+        "marker or anything else. No official source saying so is known to this "
+        "repository. The rows are described only as published zero-valued observations "
+        "that are invalid under this protocol's positive-state requirement"
+    ),
+    "no_economic_inference": (
+        "A4 does not infer the true economic open interest during an invalid row. It "
+        "does not assert that open interest was zero, that it was unchanged, or that it "
+        "was anything else. The protocol simply refuses to treat a non-positive "
+        "consumed metric as a valid positive open-interest state"
+    ),
+    "windows_unchanged": (
+        "no modelling, feature, window, clip, warm-up, target, horizon, cost model, "
+        "staleness bound, availability threshold, Stage-1 geometry, holdout rule or "
+        "gate is changed by this amendment. drv_oi_log_change_24h, "
+        "drv_oi_notional_ratio and drv_oi_price_divergence keep their definitions and "
+        "their windows exactly. No epsilon is added to open interest to make a log "
+        "ratio defined, and no zero is replaced by a tiny positive value"
+    ),
+    "other_sources": (
+        "funding and the perpetual klines are untouched. A4 governs which metrics rows "
+        "become open-interest observations and nothing else; A1 still decides which "
+        "published rows are one logical row, A2 and A3 still clamp their own archive "
+        "plans, and §3.0a still decides what a missing day is"
+    ),
+}
+
 #: How long an observation may be carried forward before its row leaves the
 #: sample universe. Funding is 8-hourly by construction, so holding the last
 #: settlement is the definition of the feature rather than a repair; one extra
@@ -1139,6 +1375,27 @@ DEGREES_OF_FREEDOM: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "choice": "which open-interest source rows count as observations at all",
+        "constrained_by": (
+            "OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY, amendment A4: a retained "
+            "logical metrics row is a valid open-interest observation only when "
+            "sum_open_interest and sum_open_interest_value are BOTH strictly positive. "
+            "A row with either consumed field exactly zero stays a published source row "
+            "and is counted, but is not a valid zero OI state and never enters the "
+            "causal observation sequence — it is not interpolated, averaged, substituted "
+            "from REST or repaired from a later row, and it does not make its day a "
+            "missing day. A negative, non-finite or unparseable consumed value is a hard "
+            "failure instead. Classification runs AFTER schema validation and A1's "
+            "exact-duplicate collapse, the 1-hour staleness bound is unchanged, and the "
+            "hours a long invalid run leaves without a valid observation simply leave "
+            "the common sample universe for every arm. Adopted after the first full "
+            "acquisition after A3 failed at pre-write hourly-table validation and the "
+            "source was inspected directly, and before any P4 fit — the fourth rule "
+            "here that is an amendment rather than an original commitment, which is why "
+            "it carries its own supersedes and amendment_status."
+        ),
+    },
+    {
         "choice": "who may spend the holdout, and how often",
         "constrained_by": (
             "HOLDOUT_SPEND_POLICY: once, by one checkpoint, gated on a frozen stage-1 "
@@ -1168,6 +1425,9 @@ def preregistration() -> dict[str, Any]:
         "funding_archive_inception_policy": dict(FUNDING_ARCHIVE_INCEPTION_POLICY),
         "perpetual_kline_archive_inception_policy": dict(
             PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+        ),
+        "open_interest_observation_validity_policy": dict(
+            OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
         ),
         "max_staleness_hours": dict(MAX_STALENESS_HOURS),
         "exploratory_outer_blocks": [list(block) for block in EXPLORATORY_OUTER_BLOCKS],

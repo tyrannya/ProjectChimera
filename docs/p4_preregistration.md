@@ -5,17 +5,23 @@ P4 observation existed. Amendment A1 (§3.4a) adopted after a bounded inspection
 real source archives. Amendment A2 (§3.4b) adopted after the first full
 acquisition attempt met the beginning of the published funding archive. Amendment
 A3 (§3.4c) adopted after the next acquisition attempt met the beginning of the
-published perpetual kline archive. All three are before any P4 model fit,
-Stage-1 result or outcome.**
+published perpetual kline archive. Amendment A4 (§3.4d) adopted after the
+acquisition that got past both boundaries completed its whole open-interest
+download and then failed at pre-write validation on a published zero-valued
+open-interest row. All four are before any P4 model fit, Stage-1 result or
+outcome.**
 
 The distinction is load-bearing and is not smoothed over anywhere in this
-document: everything below except §3.4a, §3.4b and §3.4c was fixed with no source
-file open, and those three were not. They are also in order — A1 came from the
-bounded archive inspection, A2 from the acquisition attempt that inspection was a
-precondition for, and A3 from the attempt that got past A2's boundary and reached
-the next source. What A1 responds to is a *source-format* defect measured in two
-published archives; what A2 and A3 respond to is which months of two different
-public archives are published at all, each measured separately. None of them
+document: everything below except §3.4a, §3.4b, §3.4c and §3.4d was fixed with no
+source file open, and those four were not. They are also in order — A1 came from
+the bounded archive inspection, A2 from the acquisition attempt that inspection
+was a precondition for, A3 from the attempt that got past A2's boundary and
+reached the next source, and A4 from the attempt that got past A3's boundary,
+downloaded all 1722 open-interest days and stopped on what was in them. What A1
+responds to is a *source-format* defect measured in two published archives; what
+A2 and A3 respond to is which months of two different public archives are
+published at all, each measured separately; what A4 responds to is which *values*
+the metrics archive publishes in the two columns P4 consumes. None of them
 responds to a P4 number, of which none exists.
 
 Research checkpoint: **P4** (*does causal derivatives positioning and carry
@@ -25,7 +31,7 @@ information beyond OHLCV14?*)
 Machine-readable twin: [`nn/p4_preregistration.py`](../nn/p4_preregistration.py).
 Every constant in this document is a value there, `tests/test_p4_preregistration.py`
 asserts that the two agree, and a P4 cell will record
-`preregistration_hash` = `sha256:dffec07e3f5004847d5ad7960b6b16d9cf86a146f336841882c3cf6ed69c5f45`
+`preregistration_hash` = `sha256:b52ce5dda17ff065bd70d4f4a62ef6b0e221dd18ed2cf4c0f20017ec3bae59a7`
 so that a cell produced under an edited preregistration is a different object
 rather than the same one with a different story.
 
@@ -38,19 +44,24 @@ after A1 and before amendment A2 (§3.4b) added `funding_archive_inception_polic
 to it.
 `sha256:db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05` was the active hash
 after A2 and before amendment A3 (§3.4c) added
-`perpetual_kline_archive_inception_policy` to it. All three are recorded here as
+`perpetual_kline_archive_inception_policy` to it.
+`sha256:dffec07e3f5004847d5ad7960b6b16d9cf86a146f336841882c3cf6ed69c5f45` was the active hash
+after A3 and before amendment A4 (§3.4d) added
+`open_interest_observation_validity_policy` to it. All four are recorded here as
 history, not as alternatives: no P4 cell, fit or outcome was ever produced under
 any of them, and nothing may be produced under any of them now.
 
 **No P4 model has been fitted and no P4 result exists.** No derivatives snapshot
 has been committed to this repository. What *has* happened is recorded in §3.4a,
-§3.4b and §3.4c: a bounded inspection of two published metrics archives to
+§3.4b, §3.4c and §3.4d: a bounded inspection of two published metrics archives to
 establish their column layout and row structure — the `--probe` step §3.5 always
 intended — a first full acquisition attempt that stopped at the missing 2019-12
-funding archive, and a next attempt that stopped at the missing 2019-12 perpetual
-kline archive. Neither attempt produced a snapshot. All three carry
-source-availability and source-format information only, and no outcome
-information. `P4` is deliberately *not* registered in
+funding archive, a next attempt that stopped at the missing 2019-12 perpetual
+kline archive, and a third that downloaded all 1722 open-interest days and then
+stopped at its own pre-write validation because a published zero-valued
+open-interest row had been marked available. No attempt produced a snapshot. All
+four carry source-availability, source-format and source-value information only,
+and no outcome information. `P4` is deliberately *not* registered in
 `nn.information_sets.CHECKPOINTS`, so `python -m nn.p2b --checkpoint P4` is
 refused rather than producing a cell from columns that do not exist. There is no
 P4 engine, no P4 arm, and no P4 artifact directory.
@@ -357,6 +368,9 @@ Fail-closed, and identically for every arm:
   the sample universe for every arm, control included** (§6).
 - No forward-fill crosses a boundary the OHLCV14 spine already treats as a
   segment break.
+- Staleness is measured from the last **valid** observation. **As originally
+  written every parsed row was an observation; §3.4d says which open-interest
+  rows are, and states why and when.** The bound itself is untouched.
 
 ### 3.4a Source-protocol amendment A1 — exact duplicate metrics rows
 
@@ -726,7 +740,7 @@ any of them, and nothing may be produced under any of them now.
 | original preregistration | `sha256:68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4` | A1 |
 | after amendment A1 (§3.4a) | `sha256:e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27f783a5` | A2 |
 | after amendment A2 (§3.4b) | `sha256:db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05` | A3 |
-| after amendment A3 (§3.4c) | `sha256:dffec07e3f5004847d5ad7960b6b16d9cf86a146f336841882c3cf6ed69c5f45` | — active |
+| after amendment A3 (§3.4c) | `sha256:dffec07e3f5004847d5ad7960b6b16d9cf86a146f336841882c3cf6ed69c5f45` | A4 (§3.4d) |
 
 `data/research/p4_stage1_authorisation.json` carries only the *active* hash, for
 the reason §3.4a gives. Its state is `not_authorised`, and rebinding it to the
@@ -737,6 +751,204 @@ Stage-1 result exists, P4-HOLD is unspent and unread, and the sealed region is
 untouched. The only information that entered this decision is which months of a
 public archive are published, and what the first published month's first rows
 are.
+
+### 3.4d Source-protocol amendment A4 — zero-valued OI observations
+
+**Status: amendment, not an original commitment.** Adopted after the first real
+full derivatives acquisition following A3 completed its whole open-interest
+download and then failed at pre-write validation, and after the source was
+inspected directly — and before any P4 model fit, Stage-1 result, outcome or
+holdout access existed. It is the fourth amendment to this document, and it comes
+after §3.4c in time as well as in order: A1 followed a bounded inspection of two
+metrics archives, A2 followed the acquisition attempt that inspection was a
+precondition for, A3 followed the attempt that got past A2's boundary and reached
+the next source, and A4 followed the attempt that got past A3's boundary and
+completed the download.
+
+**A4 is not A1.** §3.4a decides which *published rows* are one logical row. A4
+decides which of those logical rows are open-interest *observations*. They are
+different questions about the same archive, they run in that order, and neither
+subsumes the other.
+
+**What the original rule said.** The original design had no notion of an invalid
+observation at all. Every row that survived schema validation was an observation,
+the only remaining question was how stale it was (§3.4), and a published zero
+would have entered the hourly table as a real zero open-interest state. That
+worked because nothing had ever read the source at row level, and the assumption
+underneath it — that a published metrics row carries a positive open-interest
+state — had never been checked.
+
+**What forced the check.** The first full acquisition after A3 completed all
+**1722** planned open-interest days and then failed during construction and
+validation of the hourly table, with:
+
+```
+open interest is non-positive on an available hour
+```
+
+That check is original and unchanged. It fired because the acquisition had marked
+an hour available on the strength of a published zero — which is exactly what it
+exists to refuse. The failure is therefore a correct refusal by the protocol, and
+what needed fixing was the protocol's silence about what such a row *is*.
+
+**What was then measured.** The source was inspected directly, before any P4 fit
+or result. Two shapes of zero-valued row exist in the published
+`data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-YYYY-MM-DD.zip` archives.
+
+*Class 1 — both consumed metrics zero* (`sum_open_interest == 0` and
+`sum_open_interest_value == 0`). These are not isolated to one date. Observed
+examples include **2021-05-22 04:25..05:10 UTC**, and multiple later dates through
+2025. A scan found a maximum consecutive run of:
+
+| | |
+| --- | --- |
+| consecutive zero observations | **102** |
+| observation spacing | 5 minutes |
+| run length | **510 minutes = 8.5 hours** |
+
+*Class 2 — positive contracts, zero notional* (`sum_open_interest > 0` and
+`sum_open_interest_value == 0`). A complete scan of the planned 1722-day
+open-interest acquisition range found **exactly 12** such rows, with **zero scan
+errors**, and all 12 fell on **2023-04-10**:
+
+```
+2023-04-10 08:25:00  106675.406  0.0
+2023-04-10 08:45:00  106692.571  0.0
+2023-04-10 08:55:00  106635.216  0.0
+2023-04-10 09:00:00  106649.636  0.0
+2023-04-10 09:05:00  106619.044  0.0
+2023-04-10 09:10:00  106571.446  0.0
+2023-04-10 09:15:00  106642.634  0.0
+2023-04-10 09:20:00  106713.826  0.0
+2023-04-10 09:25:00  106621.186  0.0
+2023-04-10 09:30:00  106569.966  0.0
+2023-04-10 09:35:00  106616.156  0.0
+2023-04-10 09:40:00  106803.474  0.0
+```
+
+The same full scan found **no negative** consumed open-interest value.
+
+**That is all that is claimed.** One complete scan of the planned range found what
+is written above. Nothing here asserts a cause, a mechanism, a rate outside the
+scanned range, or that the pattern will persist.
+
+**A4 does not infer the economic open interest during those rows.** It does not
+say that BTCUSDT's real open interest went to zero, that it was unchanged, or
+that it was anything else. It says only that a consumed metric of exactly zero is
+not a valid *positive* open-interest state under this protocol, so it is not
+admitted as an observation. Nor is any claim made that the venue documents zero as
+a sentinel value: **no official source saying so is known to this repository**, so
+these rows are described only as *published zero-valued observations that are
+invalid under this protocol's positive-state requirement*.
+
+**What the amendment fixes, and only this.** The machine-readable rule is
+`OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY` in
+[`nn/p4_preregistration.py`](../nn/p4_preregistration.py), inside the hashed
+payload:
+
+- **Scope**: the `open_interest` field, from the Binance USD-M `BTCUSDT` daily
+  metrics archive, and no other source. Funding and the perpetual klines are
+  untouched.
+- **Order**: the rule applies **after** schema validation and **after** §3.4a's
+  exact-duplicate normalisation. The complete published rows are read, A1
+  collapses identical repeats of one `create_time`, the two consumed numeric
+  fields are parsed, and only then is each retained logical row classified. A zero
+  row published twice identically is therefore collapsed by A1 **first** and
+  classified once by A4 afterwards — which is what keeps A1's duplicate accounting
+  a description of what the archive published.
+- **Validity**: a retained logical row is a **valid** open-interest observation
+  **if and only if** `sum_open_interest > 0` **and**
+  `sum_open_interest_value > 0`. Both consumed metrics must be strictly positive.
+- **An exactly-zero consumed field makes the row invalid**, and an invalid row
+  remains a real published source row for provenance and accounting. It **does
+  not** enter the causal observation sequence, **does not** update the hourly
+  last-observation reducer, is **not** replaced with another numeric value, is
+  **not** interpolated, is **not** averaged, is **not** repaired from REST, is
+  **not** repaired from a future observation, and **does not** on its own turn its
+  archive or its UTC day into a §3.0a missing day.
+- **Negative, non-finite or unparseable is a HARD FAILURE**, not an ordinary
+  zero-invalid observation. None was observed, so none has a preregistered
+  meaning, and a run that meets one has met something the inspection did not
+  measure. It stops the acquisition.
+- **Staleness is unchanged.** After an invalid row the existing as-of rule of §3.4
+  applies exactly as before: the most recent **prior valid** observation stays
+  visible only while its age is within the preregistered 1-hour open-interest
+  bound. Once it is older than that, open interest is **unavailable**.
+- **A later valid observation restores availability prospectively only.** It is
+  never applied backwards to hours the invalid run left unavailable.
+- **Provenance**: `logical_observations`, `valid_positive_observations`,
+  `invalid_zero_observations`, `invalid_both_zero_observations`,
+  `invalid_zero_contracts_only`, `invalid_zero_notional_only`,
+  `negative_observations` and `nonfinite_observations` are recorded per archive
+  and summed in the snapshot manifest under
+  `acquisition.open_interest_source_integrity`, beside A1's counts. For any
+  successfully exported archive the accounting is exact:
+
+  ```
+  logical_observations   ==  valid_positive_observations + invalid_zero_observations
+  invalid_zero_observations ==  invalid_both_zero_observations
+                              + invalid_zero_contracts_only
+                              + invalid_zero_notional_only
+  negative_observations  ==  0
+  nonfinite_observations ==  0
+  ```
+
+  The last two hold because either one stops the acquisition. The snapshot
+  therefore shows that the source **served** those rows and that this protocol
+  **declined** them, which is not the same statement as the archive not
+  publishing them.
+
+**The consequence, which is reported and not repaired.** The observed 8.5-hour
+paired-zero run is 8.5 times the open-interest staleness bound, so it cannot be
+absorbed by the existing carry-forward and A4 must not let it be. After the
+unchanged 1-hour allowance on the last prior valid observation expires, the
+affected hours have **no** open-interest input, and rows without one are **outside
+the common sample universe for every arm, `ohlcv14` included** (§6.2, condition
+`derivatives_defined`). Availability returns only when a new valid positive
+observation appears, and only from that point forward. Losing those hours is the
+correct behaviour: the alternative is to carry a state across nine hours in which
+nothing was observed, or to invent one.
+
+**What it does not change.** No feature, no window, no clip, no warm-up, no
+staleness bound, no availability threshold, no sample-universe condition, no
+Stage-1 geometry, no holdout rule, no target, no horizon, no cost model, no model
+configuration, no comparison rule, no gate. **The open-interest feature
+definitions do not change**: `drv_oi_log_change_24h` is still the 24-hour log
+change of contract-count open interest clipped to `[-1.0, 1.0]`,
+`drv_oi_notional_ratio` is still notional over its trailing 168-hour mean clipped
+to `[0.0, 10.0]`, and `drv_oi_price_divergence` is still the difference of the two
+24-hour log changes clipped to `[-1.0, 1.0]`. **No epsilon is added to open
+interest to make a log ratio defined, and no zero is replaced by a tiny positive
+value.** A row whose open-interest input is unavailable stays outside the sample
+universe; that is the answer, rather than a problem to smooth over.
+
+**§3.0a's missing-day rule is unamended.** A day is missing when its archive
+404s, fails its published checksum or arrives short. A day containing invalid
+rows is a day the source published, in full, and is counted as such.
+
+**This intentionally moves the preregistration hash.** The amendment changes
+source-ingest semantics, so it belongs in the hashed payload and not in prose
+alone. The four superseded hashes — the original preregistration's, and the ones
+A1, A2 and A3 carried — are recorded at the top of this document and immediately
+below, as history. No P4 cell, fit or outcome was produced under any of them, and
+nothing may be produced under any of them now.
+
+| design | hash | superseded by |
+| --- | --- | --- |
+| original preregistration | `sha256:68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4` | A1 |
+| after amendment A1 (§3.4a) | `sha256:e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27f783a5` | A2 |
+| after amendment A2 (§3.4b) | `sha256:db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05` | A3 |
+| after amendment A3 (§3.4c) | `sha256:dffec07e3f5004847d5ad7960b6b16d9cf86a146f336841882c3cf6ed69c5f45` | A4 |
+| after amendment A4 (§3.4d) | `sha256:b52ce5dda17ff065bd70d4f4a62ef6b0e221dd18ed2cf4c0f20017ec3bae59a7` | — active |
+
+`data/research/p4_stage1_authorisation.json` carries only the *active* hash, for
+the reason §3.4a gives. Its state is `not_authorised`, and rebinding it to the
+active design grants nothing.
+
+**No outcome information motivated this.** No P4 model has been fitted, no
+Stage-1 result exists, P4-HOLD is unspent and unread, and the sealed region is
+untouched. The only information that entered this decision is what values the
+published metrics archive carries in two columns.
 
 ### 3.5 Fail-closed acquisition and integrity
 
