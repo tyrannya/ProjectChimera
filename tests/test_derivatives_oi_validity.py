@@ -438,9 +438,8 @@ def test_no_invalid_row_is_interpolated_substituted_or_backfilled(long_run):
     valid = {_instant(7 * 60 + 40), _instant(7 * 60 + 45), _instant(16 * 60 + 20)}
 
     assert seen <= valid, "every hour resolves to a valid observation or to none"
-    assert seen == {_instant(7 * 60 + 45), _instant(16 * 60 + 20)}, (
-        "the two an hourly grid can land on; 07:40 is superseded by 07:45 before 08:00"
-    )
+    # The two an hourly grid can land on: 07:40 is superseded by 07:45 before 08:00.
+    assert seen == {_instant(7 * 60 + 45), _instant(16 * 60 + 20)}
     for minute in long_run["run"]:
         assert _instant(minute) not in seen
     # No zero was ever written as a state, either: every value the reducer holds
