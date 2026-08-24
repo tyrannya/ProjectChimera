@@ -84,12 +84,26 @@ FIXTURE_ARCHIVES = [
         "published_sha256": None,
         "checksum_verified": False,
         "checksum_mismatch": False,
-        "rows": 288,
+        "rows": 284,
         "normalisation": {
             "rows_read": 576,
             "observations_retained": 288,
             "exact_duplicate_rows_collapsed": 288,
             "duplicate_instants": 288,
+        },
+        # A4 runs on what A1 left behind: 288 logical rows, four of which carry a
+        # zero in a consumed field and are rejected as observations. Non-zero on
+        # purpose, so the manifest's validity accounting and the verifier's
+        # arithmetic are written from something other than a row of zeros.
+        "validity": {
+            "logical_observations": 288,
+            "valid_positive_observations": 284,
+            "invalid_zero_observations": 4,
+            "invalid_both_zero_observations": 2,
+            "invalid_zero_contracts_only": 1,
+            "invalid_zero_notional_only": 1,
+            "negative_observations": 0,
+            "nonfinite_observations": 0,
         },
     },
     {
@@ -110,6 +124,16 @@ FIXTURE_ARCHIVES = [
             "observations_retained": 288,
             "exact_duplicate_rows_collapsed": 0,
             "duplicate_instants": 0,
+        },
+        "validity": {
+            "logical_observations": 288,
+            "valid_positive_observations": 288,
+            "invalid_zero_observations": 0,
+            "invalid_both_zero_observations": 0,
+            "invalid_zero_contracts_only": 0,
+            "invalid_zero_notional_only": 0,
+            "negative_observations": 0,
+            "nonfinite_observations": 0,
         },
     },
 ]
@@ -468,7 +492,9 @@ def test_the_raw_archive_identity_survives_the_collapse(exported):
 
     The per-archive record still carries the ZIP's own sha256 and the raw row
     count it was read from, so the logical table and the bytes it came from stay
-    separately identified.
+    separately identified. Three counts, three different statements: 576 rows
+    published, 288 logical rows after A1 collapsed the identical repeats, and 284
+    valid observations after A4 declined the four zero-valued ones.
     """
     records = [
         a
@@ -477,7 +503,10 @@ def test_the_raw_archive_identity_survives_the_collapse(exported):
     ]
     duplicated = next(a for a in records if a["normalisation"]["rows_read"] == 576)
     assert duplicated["sha256"], "the archive's own digest is still recorded"
-    assert duplicated["rows"] == 288 != duplicated["normalisation"]["rows_read"]
+    assert duplicated["normalisation"]["rows_read"] == 576
+    assert duplicated["normalisation"]["observations_retained"] == 288
+    assert duplicated["validity"]["logical_observations"] == 288
+    assert duplicated["rows"] == 284 == duplicated["validity"]["valid_positive_observations"]
 
 
 def test_a_manifest_whose_duplicate_aggregate_disagrees_with_its_records_is_refused(

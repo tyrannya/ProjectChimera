@@ -799,6 +799,132 @@ def collapse_exact_duplicate_metrics_rows(
     )
 
 
+# --------------------------------------------------------------------------- #
+# the metrics archive's zero-valued open-interest rows
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class MetricsObservationValidity:
+    """Which of one archive's logical rows are open-interest observations.
+
+    Eight counts, and an identity between them. ``logical_observations`` is what
+    A1 left behind — the rows the archive published, after identical repeats of
+    one instant were collapsed — and every one of them is either a valid positive
+    observation or an invalid zero one, with the invalid ones partitioned by
+    which consumed field was zero. ``negative_observations`` and
+    ``nonfinite_observations`` are 0 in anything that was successfully read,
+    because either one stops the acquisition; they are recorded anyway so that a
+    reader sees the number rather than inferring it from a missing field.
+    """
+
+    logical_observations: int
+    valid_positive_observations: int
+    invalid_zero_observations: int
+    invalid_both_zero_observations: int
+    invalid_zero_contracts_only: int
+    invalid_zero_notional_only: int
+    negative_observations: int = 0
+    nonfinite_observations: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "logical_observations": self.logical_observations,
+            "valid_positive_observations": self.valid_positive_observations,
+            "invalid_zero_observations": self.invalid_zero_observations,
+            "invalid_both_zero_observations": self.invalid_both_zero_observations,
+            "invalid_zero_contracts_only": self.invalid_zero_contracts_only,
+            "invalid_zero_notional_only": self.invalid_zero_notional_only,
+            "negative_observations": self.negative_observations,
+            "nonfinite_observations": self.nonfinite_observations,
+        }
+
+
+def classify_open_interest_observations(
+    contracts: np.ndarray,
+    notional: np.ndarray,
+    instants: np.ndarray,
+    archive: Archive,
+) -> tuple[np.ndarray, MetricsObservationValidity]:
+    """Which logical rows are valid open-interest observations, and which are not.
+
+    **The rule is not written here.** It is
+    :data:`nn.p4_preregistration.OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY` —
+    amendment A4, inside the hashed preregistration — and this function is its
+    implementation rather than a second statement of it. The refusal below quotes
+    the policy's own ``on_negative_or_nonfinite`` wording, so an edit to the rule
+    changes what the code says as well as what the design says.
+
+    **The rule.** A row is a valid observation only when ``sum_open_interest``
+    and ``sum_open_interest_value`` are *both* strictly positive. A row with
+    either consumed field exactly zero is a published source row and an invalid
+    observation: it is counted, and it is kept out of the causal sequence. It is
+    not given a substitute value of any kind, and it does not make its archive a
+    missing day.
+
+    **Order.** ``contracts``, ``notional`` and ``instants`` are the *logical*
+    rows — schema already validated, A1's identical repeats already collapsed —
+    so this classification is strictly downstream of both. That ordering is the
+    policy's ``applies_after`` and is what keeps A1's duplicate accounting a
+    description of what the archive published.
+
+    **Negative and non-finite stop everything.** Neither was observed by the scan
+    behind A4, so neither has a preregistered meaning, and a run that meets one
+    has met something the inspection did not measure. An unparseable field
+    arrives here as NaN and is refused on the same terms.
+
+    Returns the keep-mask over the logical rows and the counts to record in
+    provenance.
+    """
+    policy = p4_preregistration.OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
+    contracts = np.asarray(contracts, dtype=np.float64)
+    notional = np.asarray(notional, dtype=np.float64)
+
+    for name, values in (
+        ("sum_open_interest", contracts),
+        ("sum_open_interest_value", notional),
+    ):
+        nonfinite = ~np.isfinite(values)
+        if nonfinite.any():
+            index = int(np.flatnonzero(nonfinite)[0])
+            raise DerivativesSourceError(
+                f"{archive.name}: {name} at {_instant_text(instants, index)} is not a "
+                f"finite number. Amendment A4: {policy['on_negative_or_nonfinite']}."
+            )
+        negative = values < 0
+        if negative.any():
+            index = int(np.flatnonzero(negative)[0])
+            raise DerivativesSourceError(
+                f"{archive.name}: {name} at {_instant_text(instants, index)} is "
+                f"{values[index]!r}, which is negative. Amendment A4: "
+                f"{policy['on_negative_or_nonfinite']}."
+            )
+
+    # The rule as the policy states it — strictly positive in both consumed
+    # metrics — with the zero masks kept only to partition the rejections. After
+    # the two refusals above every value is finite and non-negative, so "not
+    # positive" and "exactly zero" are the same set; saying it the first way is
+    # saying what validity_rule says.
+    valid = (contracts > 0.0) & (notional > 0.0)
+    zero_contracts = contracts == 0.0
+    zero_notional = notional == 0.0
+    both = zero_contracts & zero_notional
+    return valid, MetricsObservationValidity(
+        logical_observations=int(len(contracts)),
+        valid_positive_observations=int(valid.sum()),
+        invalid_zero_observations=int((~valid).sum()),
+        invalid_both_zero_observations=int(both.sum()),
+        invalid_zero_contracts_only=int((zero_contracts & ~zero_notional).sum()),
+        invalid_zero_notional_only=int((zero_notional & ~zero_contracts).sum()),
+    )
+
+
+def _instant_text(instants: np.ndarray, index: int) -> str:
+    """The instant one logical row carries, for a refusal that names the row."""
+    try:
+        return pd.Timestamp(int(np.asarray(instants)[index]), unit="ns", tz="UTC").isoformat()
+    except (IndexError, ValueError):  # pragma: no cover - defensive
+        return f"row {index}"
+
+
 def hour_floor(stamps: np.ndarray) -> np.ndarray:
     """The hour-open instant each timestamp falls in, in int64 nanoseconds."""
     return (np.asarray(stamps, dtype=np.int64) // HOUR_NS) * HOUR_NS
@@ -862,6 +988,13 @@ def source_spec() -> dict[str, Any]:
         # perpetual kline archive was measured separately and carries its own rule.
         "perpetual_inception_rule": dict(
             p4_preregistration.PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+        ),
+        # And amendment A4's, on the same terms: which metrics rows become
+        # open-interest observations at all is part of what an exported table
+        # means, so the preregistered object is carried here rather than
+        # paraphrased, and editing it moves both hashes together.
+        "open_interest_validity_rule": dict(
+            p4_preregistration.OPEN_INTEREST_OBSERVATION_VALIDITY_POLICY
         ),
         "gap_rule": "a gap is never filled or interpolated; it becomes staleness",
         "missing_day_rule": (

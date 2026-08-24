@@ -7,8 +7,9 @@ opens the Parquet, re-derives the numbers, and compares them with what the
 manifest says — schema, contract identity, both boundaries, the file digest, the
 source-spec hash, the semantic fingerprint, the table's internal consistency, the
 staleness bounds, the coverage claims, the missing-day accounting, the
-exact-duplicate accounting of the metrics archives, and the binding to the OHLCV
-snapshot the derivatives are joined to.
+exact-duplicate accounting of the metrics archives, the observation-validity
+accounting beside it, and the binding to the OHLCV snapshot the derivatives are
+joined to.
 
 **Nothing here fits anything, and nothing here reads a model output.** It is a
 statement about an input.
@@ -332,10 +333,17 @@ def verify_derivatives_snapshot(manifest_path: Path = DEFAULT_MANIFEST) -> list[
             f"{record['name']} records {read} raw row(s), {collapsed} collapsed and "
             f"{kept} retained, which do not add up",
         )
+        # What the archive contributed is no longer what A1 retained: amendment
+        # A4 classifies those retained rows and only the valid ones reach the
+        # reducer. The two claims are checked together in the A4 block below, and
+        # the block itself is mandatory here so that a manifest cannot drop the
+        # classification and leave `rows` accountable to nothing.
         _require(
-            int(record["rows"]) == kept,
-            f"{record['name']} claims it contributed {record['rows']} row(s) and its "
-            f"normalisation retained {kept}",
+            "validity" in record,
+            f"{record['name']} records a duplicate normalisation and no "
+            "observation-validity block. Amendment A4 classifies every logical row a "
+            "metrics archive retains, so a manifest without that accounting was "
+            "written under a superseded protocol.",
         )
         _require(
             instants_hit <= collapsed and (instants_hit == 0) == (collapsed == 0),
@@ -371,6 +379,110 @@ def verify_derivatives_snapshot(manifest_path: Path = DEFAULT_MANIFEST) -> list[
             f"{integrity['exact_duplicate_rows_collapsed']} row(s) collapsed across "
             f"{integrity['duplicate_instants_collapsed']} instant(s) in "
             f"{integrity['archives_with_exact_duplicates']} archive(s), 0 conflicting",
+        )
+    )
+
+    # The A4 accounting, on the same terms and for the same reason: this verifier
+    # cannot re-classify rows it cannot open, so what it refuses to trust is the
+    # arithmetic. A rejected observation must be visible as a rejected
+    # observation — counted, partitioned, and adding up against the logical row
+    # count A1 left behind — rather than quietly indistinguishable from a row the
+    # archive never published.
+    classified = [
+        record for record in payload["acquisition"]["archives"] if "validity" in record
+    ]
+    validities = [record["validity"] for record in classified]
+    for key in ("negative_observations", "nonfinite_observations"):
+        _require(
+            int(integrity[key]) == 0,
+            f"the manifest records {integrity[key]} {key.replace('_', ' ')}. A negative "
+            "or non-finite consumed open-interest value stops the acquisition under "
+            "amendment A4, so a written snapshot cannot have seen one.",
+        )
+    for record in classified:
+        entry = record["validity"]
+        logical, valid = (
+            int(entry["logical_observations"]),
+            int(entry["valid_positive_observations"]),
+        )
+        invalid = int(entry["invalid_zero_observations"])
+        parts = (
+            int(entry["invalid_both_zero_observations"]),
+            int(entry["invalid_zero_contracts_only"]),
+            int(entry["invalid_zero_notional_only"]),
+        )
+        _require(
+            logical == valid + invalid,
+            f"{record['name']} records {logical} logical observation(s), {valid} valid "
+            f"and {invalid} invalid, which do not add up",
+        )
+        _require(
+            invalid == sum(parts),
+            f"{record['name']} records {invalid} invalid observation(s) and "
+            f"{sum(parts)} across the three disjoint zero shapes",
+        )
+        _require(
+            int(entry["negative_observations"]) == 0
+            and int(entry["nonfinite_observations"]) == 0,
+            f"{record['name']} records a negative or non-finite consumed value; "
+            "amendment A4 stops the acquisition on either",
+        )
+        _require(
+            int(record["rows"]) == valid,
+            f"{record['name']} claims it contributed {record['rows']} observation(s) "
+            f"and its classification found {valid} valid one(s)",
+        )
+        if "normalisation" in record:
+            _require(
+                int(record["normalisation"]["observations_retained"]) == logical,
+                f"{record['name']} retained "
+                f"{record['normalisation']['observations_retained']} logical row(s) "
+                f"after the duplicate collapse and classified {logical}. Amendment A4 "
+                "runs on what A1 left behind, so the two counts are the same number.",
+            )
+    for key, recomputed_total in (
+        ("archives_classified", len(validities)),
+        ("logical_observations", sum(int(e["logical_observations"]) for e in validities)),
+        (
+            "valid_positive_observations",
+            sum(int(e["valid_positive_observations"]) for e in validities),
+        ),
+        (
+            "invalid_zero_observations",
+            sum(int(e["invalid_zero_observations"]) for e in validities),
+        ),
+        (
+            "invalid_both_zero_observations",
+            sum(int(e["invalid_both_zero_observations"]) for e in validities),
+        ),
+        (
+            "invalid_zero_contracts_only",
+            sum(int(e["invalid_zero_contracts_only"]) for e in validities),
+        ),
+        (
+            "invalid_zero_notional_only",
+            sum(int(e["invalid_zero_notional_only"]) for e in validities),
+        ),
+        (
+            "archives_with_invalid_zero_observations",
+            sum(1 for e in validities if int(e["invalid_zero_observations"])),
+        ),
+    ):
+        _require(
+            int(integrity[key]) == recomputed_total,
+            f"the manifest says open_interest_source_integrity.{key} is "
+            f"{integrity[key]} and its own per-archive records give {recomputed_total}",
+        )
+    checks.append(
+        CheckResult(
+            "invalid zero observations",
+            f"{integrity['invalid_zero_observations']} of "
+            f"{integrity['logical_observations']} logical row(s) rejected across "
+            f"{integrity['archives_with_invalid_zero_observations']} archive(s) "
+            f"({integrity['invalid_both_zero_observations']} both-zero, "
+            f"{integrity['invalid_zero_contracts_only']} zero-contracts, "
+            f"{integrity['invalid_zero_notional_only']} zero-notional), "
+            "0 negative, 0 non-finite",
         )
     )
 

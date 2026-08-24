@@ -19,6 +19,11 @@ rule is written for whatever the source actually serves.
 Every test below goes through :func:`tools.export_derivatives_snapshot.read_metrics`
 on a real ZIP, because that is the production path — the collapse, the schema
 refusal and the strictly-increasing check are only in the right order there.
+
+``read_metrics`` also returns amendment A4's observation-validity record, which
+is the fifth element the unpackings below discard. Every row here is strictly
+positive in both consumed fields, so A4 rejects nothing and this file measures
+A1 alone; ``tests/test_derivatives_oi_validity.py`` is where the two rules meet.
 """
 
 from __future__ import annotations
@@ -78,7 +83,7 @@ def _archive(tmp_path, rows, *, header=HEADER, name=ARCHIVE.name):
 # --- 1. one exact duplicate pair ---------------------------------------------
 def test_one_exact_duplicate_pair_is_accepted_as_one_observation(tmp_path):
     rows = [_row(0), _row(5), _row(5), _row(10)]
-    instants, contracts, notional, norm = read_metrics(_archive(tmp_path, rows), ARCHIVE)
+    instants, contracts, notional, norm, _ = read_metrics(_archive(tmp_path, rows), ARCHIVE)
 
     assert len(instants) == 3, "the repeated instant is one logical observation"
     assert norm.rows_read == 4
@@ -95,7 +100,7 @@ def test_a_wholly_duplicated_archive_halves_to_its_logical_observations(tmp_path
     """The 2020-09-01/2020-09-02 shape: 2N rows, N instants, paired rows equal."""
     minutes = list(range(0, 60, 5))
     rows = [_row(m, contracts=f"{10000 + m}.000") for m in minutes for _ in (0, 1)]
-    instants, contracts, _, norm = read_metrics(_archive(tmp_path, rows), ARCHIVE)
+    instants, contracts, _, norm, _ = read_metrics(_archive(tmp_path, rows), ARCHIVE)
 
     assert norm.rows_read == 2 * len(minutes)
     assert norm.observations_retained == len(minutes)
@@ -110,7 +115,7 @@ def test_a_wholly_duplicated_archive_halves_to_its_logical_observations(tmp_path
 # --- 3. three identical rows at one instant ----------------------------------
 def test_three_identical_rows_at_one_instant_collapse_to_one(tmp_path):
     rows = [_row(0), _row(5), _row(5), _row(5), _row(10)]
-    instants, _, _, norm = read_metrics(_archive(tmp_path, rows), ARCHIVE)
+    instants, _, _, norm, _ = read_metrics(_archive(tmp_path, rows), ARCHIVE)
 
     assert len(instants) == 3
     assert norm.exact_duplicate_rows_collapsed == 2, "two removed, not one"
@@ -173,7 +178,7 @@ def test_an_instant_outside_the_archives_own_day_still_stops_a_duplicated_archiv
 def test_an_archive_without_duplicates_reads_exactly_as_before(tmp_path):
     minutes = list(range(0, 60, 5))
     rows = [_row(m, contracts=f"{10000 + m}.000") for m in minutes]
-    instants, contracts, notional, norm = read_metrics(_archive(tmp_path, rows), ARCHIVE)
+    instants, contracts, notional, norm, _ = read_metrics(_archive(tmp_path, rows), ARCHIVE)
 
     assert len(instants) == len(minutes)
     assert norm.rows_read == norm.observations_retained == len(minutes)
