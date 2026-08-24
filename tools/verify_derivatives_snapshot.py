@@ -6,8 +6,9 @@ An independent reader, not a second look at the exporter's own bookkeeping. It
 opens the Parquet, re-derives the numbers, and compares them with what the
 manifest says — schema, contract identity, both boundaries, the file digest, the
 source-spec hash, the semantic fingerprint, the table's internal consistency, the
-staleness bounds, the coverage claims, the missing-day accounting, and the
-binding to the OHLCV snapshot the derivatives are joined to.
+staleness bounds, the coverage claims, the missing-day accounting, the
+exact-duplicate accounting of the metrics archives, and the binding to the OHLCV
+snapshot the derivatives are joined to.
 
 **Nothing here fits anything, and nothing here reads a model output.** It is a
 statement about an input.
@@ -300,6 +301,78 @@ def verify_derivatives_snapshot(manifest_path: Path = DEFAULT_MANIFEST) -> list[
         "anything the acquisition could not classify must have stopped it.",
     )
     checks.append(CheckResult("missing days", f"{declared_missing}, all classified"))
+
+    # The exact-duplicate accounting, re-added here rather than imported. This
+    # verifier never opens a metrics ZIP — the archives are not committed and
+    # cannot be — so it cannot re-collapse the rows itself. What it can refuse to
+    # trust is the aggregate: every number below is recomputed from the manifest's
+    # own per-archive records, and each record must be internally consistent with
+    # the rule. A manifest that summarised a collapse it did not record, or
+    # recorded a retained count its raw count does not support, fails here.
+    integrity = payload["acquisition"]["open_interest_source_integrity"]
+    normalised = [
+        record for record in payload["acquisition"]["archives"] if "normalisation" in record
+    ]
+    entries = [record["normalisation"] for record in normalised]
+    _require(
+        int(integrity["conflicting_duplicate_instants"]) == 0,
+        f"the manifest records {integrity['conflicting_duplicate_instants']} conflicting "
+        "duplicate instant(s). Rows sharing an instant that disagree in any field stop "
+        "the acquisition, so a written snapshot cannot have seen one.",
+    )
+    for record in normalised:
+        entry = record["normalisation"]
+        read, kept = int(entry["rows_read"]), int(entry["observations_retained"])
+        collapsed, instants_hit = (
+            int(entry["exact_duplicate_rows_collapsed"]),
+            int(entry["duplicate_instants"]),
+        )
+        _require(
+            kept == read - collapsed,
+            f"{record['name']} records {read} raw row(s), {collapsed} collapsed and "
+            f"{kept} retained, which do not add up",
+        )
+        _require(
+            int(record["rows"]) == kept,
+            f"{record['name']} claims it contributed {record['rows']} row(s) and its "
+            f"normalisation retained {kept}",
+        )
+        _require(
+            instants_hit <= collapsed and (instants_hit == 0) == (collapsed == 0),
+            f"{record['name']} records {collapsed} collapsed row(s) across "
+            f"{instants_hit} duplicate instant(s); every affected instant loses at "
+            "least one row, and no row is lost without one",
+        )
+    for key, recomputed_total in (
+        ("archives_read", len(entries)),
+        ("raw_rows_read", sum(int(e["rows_read"]) for e in entries)),
+        (
+            "logical_observations_retained",
+            sum(int(e["observations_retained"]) for e in entries),
+        ),
+        (
+            "exact_duplicate_rows_collapsed",
+            sum(int(e["exact_duplicate_rows_collapsed"]) for e in entries),
+        ),
+        ("duplicate_instants_collapsed", sum(int(e["duplicate_instants"]) for e in entries)),
+        (
+            "archives_with_exact_duplicates",
+            sum(1 for e in entries if int(e["exact_duplicate_rows_collapsed"])),
+        ),
+    ):
+        _require(
+            int(integrity[key]) == recomputed_total,
+            f"the manifest says open_interest_source_integrity.{key} is "
+            f"{integrity[key]} and its own per-archive records give {recomputed_total}",
+        )
+    checks.append(
+        CheckResult(
+            "exact duplicates",
+            f"{integrity['exact_duplicate_rows_collapsed']} row(s) collapsed across "
+            f"{integrity['duplicate_instants_collapsed']} instant(s) in "
+            f"{integrity['archives_with_exact_duplicates']} archive(s), 0 conflicting",
+        )
+    )
 
     _require(
         int(payload["safety_checks"]["rest_rows_exported"]) == 0,

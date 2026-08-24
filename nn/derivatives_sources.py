@@ -37,6 +37,7 @@ from typing import Any, Iterator, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from nn import p4_preregistration
 from nn.p4_preregistration import DATA_SOURCES, FUNDING_CSV_COLUMN_POLICY, MAX_STALENESS_HOURS
 from nn.trade_aggregates import resolve_epoch_unit, scale_to_nanoseconds
 
@@ -557,6 +558,116 @@ def check_strictly_increasing(stamps: np.ndarray, archive: Archive, *, what: str
         )
 
 
+# --------------------------------------------------------------------------- #
+# the metrics archive's exact duplicate rows
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class MetricsDuplicateNormalisation:
+    """What collapsing exact duplicate rows did to one daily metrics archive.
+
+    Four counts, kept together because any one of them alone is a claim nobody
+    can check: rows retained without rows read hides what was removed, and rows
+    removed without the instants they came from hides whether one instant was
+    duplicated fifty times or fifty instants were duplicated once.
+    """
+
+    rows_read: int
+    observations_retained: int
+    exact_duplicate_rows_collapsed: int
+    duplicate_instants: int
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "rows_read": self.rows_read,
+            "observations_retained": self.observations_retained,
+            "exact_duplicate_rows_collapsed": self.exact_duplicate_rows_collapsed,
+            "duplicate_instants": self.duplicate_instants,
+        }
+
+
+def collapse_exact_duplicate_metrics_rows(
+    rows: Sequence[Sequence[str]],
+    instants: np.ndarray,
+    archive: Archive,
+    *,
+    columns: Sequence[str],
+) -> tuple[np.ndarray, MetricsDuplicateNormalisation]:
+    """Collapse rows that repeat one instant *identically*, and refuse the rest.
+
+    **The rule is not written here.** It is
+    :data:`nn.p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY` — amendment A1,
+    inside the hashed preregistration — and this function is its implementation,
+    not a second statement of it. The refusal below quotes the policy's own
+    ``on_conflict`` wording rather than paraphrasing it, so an edit to the rule
+    changes what the code says as well as what the design says.
+
+    **The rule, and its two halves.** Rows sharing an instant are collapsed to
+    one logical observation *only* when every source field in them is identical.
+    When any field differs, this raises: the reader still cannot tell which row
+    is the observation, so it does not take the first, does not take the last,
+    does not average, and does not infer. That half is
+    :func:`check_strictly_increasing`'s policy, unchanged and merely reached by a
+    different door.
+
+    **"Every source field" means the whole row.** ``rows`` carries every column
+    the CSV published, verbatim, including the columns the P4 feature engine
+    never reads. Two rows agreeing on ``create_time``, ``sum_open_interest`` and
+    ``sum_open_interest_value`` but differing anywhere else are *not* exact
+    duplicates and are refused, because a source that disagrees with itself about
+    a field this design ignores is a source disagreeing with itself.
+
+    ``instants`` must already be ascending, and ``rows`` in the same order.
+    Returns the keep-mask over them and the counts to record in provenance. An
+    instant repeated more than twice with every row equivalent collapses to one,
+    and every row removed is counted.
+    """
+    count = len(instants)
+    keep = np.ones(count, dtype=bool)
+    if count == 0:
+        return keep, MetricsDuplicateNormalisation(0, 0, 0, 0)
+
+    # Group boundaries rather than a key-based de-duplication: the keys of a
+    # generic drop_duplicates would have to be spelled out anyway, and it would
+    # silently accept the conflicting case this must refuse.
+    boundary = np.ones(count, dtype=bool)
+    boundary[1:] = instants[1:] != instants[:-1]
+    starts = np.flatnonzero(boundary).tolist()
+    ends = starts[1:] + [count]
+
+    collapsed = 0
+    duplicate_instants = 0
+    for start, end in zip(starts, ends):
+        if end - start == 1:
+            continue
+        first = rows[start]
+        for index in range(start + 1, end):
+            other = rows[index]
+            if list(other) == list(first):
+                continue
+            instant = pd.Timestamp(int(instants[start]), unit="ns", tz="UTC")
+            differing = [
+                f"{name}={left!r} vs {right!r}"
+                for name, left, right in zip(columns, first, other)
+                if left != right
+            ]
+            policy = p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY
+            raise DerivativesSourceError(
+                f"{archive.name}: two rows at {instant.isoformat()} disagree "
+                f"({'; '.join(differing[:4])}). {policy['acceptance']}. "
+                f"These are conflicting observations, so: {policy['on_conflict']}."
+            )
+        keep[start + 1 : end] = False
+        collapsed += end - start - 1
+        duplicate_instants += 1
+
+    return keep, MetricsDuplicateNormalisation(
+        rows_read=count,
+        observations_retained=count - collapsed,
+        exact_duplicate_rows_collapsed=collapsed,
+        duplicate_instants=duplicate_instants,
+    )
+
+
 def hour_floor(stamps: np.ndarray) -> np.ndarray:
     """The hour-open instant each timestamp falls in, in int64 nanoseconds."""
     return (np.asarray(stamps, dtype=np.int64) // HOUR_NS) * HOUR_NS
@@ -605,10 +716,12 @@ def source_spec() -> dict[str, Any]:
             "including the control loses the row"
         ),
         "max_staleness_hours": dict(MAX_STALENESS_HOURS),
-        "duplicate_rule": (
-            "a duplicate instant in any source rejects the acquisition; it is never "
-            "de-duplicated"
-        ),
+        # Not a restatement — the preregistered object itself. There is exactly
+        # one authoritative copy of this rule, in nn.p4_preregistration, and it
+        # is read here rather than paraphrased. Editing it therefore moves
+        # preregistration_hash AND source_spec_hash together, and a checkout
+        # where the two disagree cannot be constructed.
+        "duplicate_rule": dict(p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY),
         "gap_rule": "a gap is never filled or interpolated; it becomes staleness",
         "missing_day_rule": (
             "a metrics day that 404s, fails its published checksum, or arrives short is "

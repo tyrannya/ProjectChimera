@@ -318,6 +318,91 @@ FUNDING_CSV_COLUMN_POLICY: dict[str, Any] = {
     ),
 }
 
+#: When rows repeating one instant may be collapsed, and when they may not.
+#:
+#: **This is amendment A1, and it is not an original preregistration rule.** The
+#: rule written before any archive was opened rejected *every* duplicate
+#: timestamp in *every* source, with no normalisation of any kind. That rule was
+#: narrowed after the first bounded real-source inspection and before any P4
+#: model fit, Stage-1 result or outcome existed. The original wording is kept in
+#: ``supersedes`` rather than overwritten, and ``docs/p4_preregistration.md``
+#: §3.4a records the same history in prose. Nothing about a P4 *result*
+#: motivated it, because no P4 result exists.
+#:
+#: What forced it is in ``adopted_because``: two official archives were measured
+#: and found to publish every row twice, byte-identically. That is a
+#: source-format defect, not two conflicting observations — and the original rule
+#: was written for conflicting observations. A reader that cannot tell which of
+#: two rows is the observation must stop; a reader looking at two copies of one
+#: row has nothing to tell apart and nothing to choose between.
+#:
+#: The narrowing is deliberately as small as it can be: one field, one archive,
+#: one grouping key, equality over the *complete* published row, and a refusal
+#: everywhere else. Widening it — another source, a subset of columns, a
+#: tie-break of any kind — is a commit that moves :func:`preregistration_hash`
+#: and is permitted only while no P4 outer number exists.
+#:
+#: :func:`nn.derivatives_sources.source_spec` reads this object rather than
+#: restating it, so the acquisition cannot come to mean something the
+#: preregistration does not say.
+OPEN_INTEREST_DUPLICATE_POLICY: dict[str, Any] = {
+    "amendment": "A1",
+    "amendment_status": (
+        "adopted after inspection of real source archives revealed a source-format "
+        "defect, and before any P4 model fit, Stage-1 result, outcome or holdout "
+        "access existed. This is a source-protocol amendment, not an original "
+        "preregistration rule"
+    ),
+    "supersedes": (
+        "the original rule, under which a duplicate timestamp in ANY source was a "
+        "rejection of the acquisition and never a de-duplication"
+    ),
+    "adopted_because": (
+        "the official Binance USD-M daily metrics archives for BTCUSDT dated "
+        "2020-09-01 and 2020-09-02 were observed to hold 576 data rows for 288 "
+        "create_time instants, every observation published twice with the paired "
+        "rows identical across every column of the CSV. The observed defect is "
+        "exact row duplication, not conflicting observations. Two archives were "
+        "inspected; no claim is made that any other day is duplicated"
+    ),
+    "scope": {
+        "field": "open_interest",
+        "archive": "Binance USD-M daily metrics, data/futures/um/daily/metrics",
+        "applies_to": ["open_interest"],
+        "does_not_apply_to": ["funding_rate", "perpetual_price"],
+    },
+    "grouping_key": "create_time",
+    "acceptance": (
+        "rows sharing one grouping_key value are accepted only when the complete "
+        "published CSV row is identical across every column. The comparison runs "
+        "after schema validation and covers every column the archive carries, "
+        "including columns no derivatives_v1 feature consumes"
+    ),
+    "normalisation": (
+        "N identical rows at one instant collapse to exactly one logical "
+        "observation; the N - 1 removed rows are counted"
+    ),
+    "on_conflict": (
+        "if any field differs, reject the acquisition. Never choose the first row, "
+        "never choose the last, never average, never infer which row is correct"
+    ),
+    "provenance_required": [
+        "rows_read",
+        "observations_retained",
+        "exact_duplicate_rows_collapsed",
+        "duplicate_instants",
+    ],
+    "other_sources": (
+        "a duplicate timestamp in the funding or perpetual-price archive remains a "
+        "rejection of the acquisition, with no normalisation of any kind"
+    ),
+    "schema_precedence": (
+        "schema identity is validated before normalisation, so an archive whose "
+        "header is not the preregistered one is refused for its schema and never "
+        "reaches this rule"
+    ),
+}
+
 #: How long an observation may be carried forward before its row leaves the
 #: sample universe. Funding is 8-hourly by construction, so holding the last
 #: settlement is the definition of the feature rather than a repair; one extra
@@ -717,6 +802,18 @@ DEGREES_OF_FREEDOM: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "choice": "whether duplicate source rows may be normalised, and which",
+        "constrained_by": (
+            "OPEN_INTEREST_DUPLICATE_POLICY, amendment A1: exact duplicate rows in the "
+            "daily metrics archive only, collapsed only when the complete published CSV "
+            "row is identical. A conflicting duplicate is still a refusal, funding and "
+            "perpetual klines are unchanged, and every removal is counted in provenance. "
+            "Adopted after source inspection and before any P4 fit — the one rule here "
+            "that is an amendment rather than an original commitment, which is why it "
+            "carries its own supersedes and amendment_status."
+        ),
+    },
+    {
         "choice": "who may spend the holdout, and how often",
         "constrained_by": (
             "HOLDOUT_SPEND_POLICY: once, by one checkpoint, gated on a frozen stage-1 "
@@ -742,6 +839,7 @@ def preregistration() -> dict[str, Any]:
         "warmup_hours": WARMUP_HOURS,
         "data_sources": [dict(source) for source in DATA_SOURCES],
         "funding_csv_column_policy": dict(FUNDING_CSV_COLUMN_POLICY),
+        "open_interest_duplicate_policy": dict(OPEN_INTEREST_DUPLICATE_POLICY),
         "max_staleness_hours": dict(MAX_STALENESS_HOURS),
         "exploratory_outer_blocks": [list(block) for block in EXPLORATORY_OUTER_BLOCKS],
         "exploratory_blocks_read_by": list(EXPLORATORY_BLOCKS_READ_BY),

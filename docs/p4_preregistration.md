@@ -1,6 +1,13 @@
 # P4 — preregistration
 
-**Written before any P4 data was acquired and before any P4 observation existed.**
+**Original preregistration written before any P4 data was acquired and before any
+P4 observation existed. Amendment A1 (§3.4a) adopted after a bounded inspection of
+real source archives and before any P4 model fit, Stage-1 result or outcome.**
+
+The distinction is load-bearing and is not smoothed over anywhere in this
+document: everything below except §3.4a was fixed with no source file open, and
+§3.4a was not. What §3.4a responds to is a *source-format* defect measured in two
+published archives — never a P4 number, of which none exists.
 
 Research checkpoint: **P4** (*does causal derivatives positioning and carry
 information — perpetual funding, open interest and futures basis — add usable
@@ -9,12 +16,22 @@ information beyond OHLCV14?*)
 Machine-readable twin: [`nn/p4_preregistration.py`](../nn/p4_preregistration.py).
 Every constant in this document is a value there, `tests/test_p4_preregistration.py`
 asserts that the two agree, and a P4 cell will record
-`preregistration_hash` = `sha256:68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4`
+`preregistration_hash` = `sha256:e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27f783a5`
 so that a cell produced under an edited preregistration is a different object
 rather than the same one with a different story.
 
-**Nothing has been run.** No funding, open-interest or futures data has been
-acquired. `P4` is deliberately *not* registered in
+**Superseded hash, kept as provenance:**
+`sha256:68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4` was the active hash for
+the original preregistration, before amendment A1 (§3.4a) added
+`open_interest_duplicate_policy` to the hashed payload. It is recorded here as
+history, not as an alternative: no P4 cell, fit or outcome was ever produced
+under it, and nothing may be produced under it now.
+
+**No P4 model has been fitted and no P4 result exists.** No derivatives snapshot
+has been acquired or committed. What *has* happened, and is recorded in §3.4a, is
+a bounded inspection of two published metrics archives to establish their column
+layout and row structure — the `--probe` step §3.5 always intended, carrying no
+outcome information. `P4` is deliberately *not* registered in
 `nn.information_sets.CHECKPOINTS`, so `python -m nn.p2b --checkpoint P4` is
 refused rather than producing a cell from columns that do not exist. There is no
 P4 engine, no P4 arm, and no P4 artifact directory.
@@ -299,9 +316,11 @@ rather than a silent change. A snapshot is exported once, verified, and frozen.
 
 Fail-closed, and identically for every arm:
 
-- A **duplicate** timestamp in any source is a rejection of the acquisition, not
-  a de-duplication. Two rows claiming one instant means the reader cannot tell
-  which is the observation.
+- A **duplicate** timestamp is a rejection of the acquisition, not a
+  de-duplication. Two rows claiming one instant means the reader cannot tell
+  which is the observation. **As originally written this applied to every source
+  without exception; §3.4a narrows it for one case in one source, and states why
+  and when.**
 - A **gap** does not get filled. It becomes staleness, and staleness has a
   bound:
 
@@ -315,6 +334,97 @@ Fail-closed, and identically for every arm:
   the sample universe for every arm, control included** (§6).
 - No forward-fill crosses a boundary the OHLCV14 spine already treats as a
   segment break.
+
+### 3.4a Source-protocol amendment A1 — exact duplicate metrics rows
+
+**Status: amendment, not an original commitment.** Adopted after a bounded
+inspection of real source archives, and before any P4 model fit, Stage-1 result,
+outcome or holdout access existed. Everything else in this document was fixed
+with no source file open. This was not, and that difference is recorded rather
+than smoothed away.
+
+**What the original rule said.** §3.4, as first written: *a duplicate timestamp
+in any source is a rejection of the acquisition, not a de-duplication.* That rule
+was written for the failure it names — two rows that *disagree*, where any choice
+between them is a decision about the data made by the code reading it.
+
+**What was then measured.** The official Binance USD-M `BTCUSDT` daily metrics
+archives dated **2020-09-01** and **2020-09-02**:
+
+| archive | data rows | distinct `create_time` | distinct complete rows |
+| --- | --- | --- | --- |
+| `BTCUSDT-metrics-2020-09-01.zip` | 576 | 288 | 288 |
+| `BTCUSDT-metrics-2020-09-02.zip` | 576 | — | 288 |
+
+Every 5-minute observation is published **twice**, and the paired rows are
+identical across every column of the CSV. The defect is **exact row
+duplication**, not conflicting observations — which is not the case the original
+rule was written for. A reader that cannot tell which of two rows is the
+observation must stop. A reader looking at two copies of one row has nothing to
+tell apart, and nothing to choose between.
+
+**Two archives were inspected. That is all that is claimed.** Nothing here
+asserts that other metrics days are duplicated, that the duplication has a known
+cause, or that it will persist. The rule is written for whatever the source
+actually serves, day by day, and each day's outcome is counted.
+
+**What the amendment permits, and only this.** The machine-readable rule is
+`OPEN_INTEREST_DUPLICATE_POLICY` in
+[`nn/p4_preregistration.py`](../nn/p4_preregistration.py), inside the hashed
+payload:
+
+- **Scope**: the `open_interest` field, from the Binance USD-M daily metrics
+  archive, and no other source.
+- **Grouping key**: `create_time`.
+- **Acceptance**: rows sharing an instant are accepted only when the **complete
+  published CSV row is identical across every column** — compared after schema
+  validation, and including columns no `derivatives_v1` feature consumes. Two
+  rows agreeing on `create_time`, `sum_open_interest` and
+  `sum_open_interest_value` but differing anywhere else are **not** exact
+  duplicates.
+- **Normalisation**: N identical rows at one instant collapse to exactly one
+  logical observation; the N − 1 removed rows are counted.
+- **Conflicts**: if any field differs, **reject the acquisition**. Never the
+  first row, never the last, never an average, never an inference.
+- **Provenance**: `rows_read`, `observations_retained`,
+  `exact_duplicate_rows_collapsed` and `duplicate_instants` are recorded per
+  archive and summed in the snapshot manifest under
+  `acquisition.open_interest_source_integrity`. A collapsed row never disappears
+  silently, and the archive's own `sha256` and raw row count stay recorded beside
+  the logical counts, so normalisation does not pretend the upstream bytes were
+  different.
+- **Other sources unchanged**: a duplicate timestamp in the **funding** or
+  **perpetual klines** archive remains a rejection of the acquisition, with no
+  normalisation of any kind. §3.4 stands unamended for both.
+- **Schema first**: schema identity is validated before normalisation, so an
+  archive whose header is not the preregistered one is refused for its schema and
+  never reaches this rule.
+
+**This intentionally moves the preregistration hash.** The amendment changes
+source-ingest semantics, so it belongs in the hashed payload and not in prose
+alone. The superseded hash — the one the original preregistration carried, before
+`open_interest_duplicate_policy` entered the payload — is
+`sha256:68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af865a4`, and it
+is recorded here and at the top of this document as history. No P4 cell, fit or
+outcome was produced under it, and nothing may be produced under it now.
+
+**This document is where the superseded hash lives.**
+`data/research/p4_stage1_authorisation.json` carries only the *active* hash: it is
+an interlock, and an interlock that names two designs invites the question of
+which one it authorises. The answer is neither — its state is `not_authorised` —
+but the file should not have to be read carefully to establish that.
+
+**No outcome information motivated this.** No P4 model has been fitted, no
+Stage-1 result exists, P4-HOLD is unspent and unread, and the sealed region is
+untouched. The only information that entered this decision is the column layout
+and row structure of two published archives — the same class of information
+`--probe` was always designed to establish (§3.5, §3.6).
+
+**What it does not change.** No feature, no window, no clip, no staleness bound,
+no availability rule, no sample-universe condition, no Stage-1 geometry, no
+holdout rule, no target, no cost model, no model configuration. An archive with
+no duplicate rows produces byte-identically the same hourly table it produced
+before.
 
 ### 3.5 Fail-closed acquisition and integrity
 
@@ -913,6 +1023,7 @@ Every choice P4 introduces, and the sentence that closes it.
 | which derivatives fields | three, fixed in §3: funding, open interest, basis. No others. |
 | which archive path, at what granularity | §3.0a: the daily metrics archive, earliest intended day 2020-09-01. REST is diagnostic only and may never stand in. |
 | how a funding CSV's columns are read | §3.0b: an allow-list fixed before any archive was opened. An unrecognised layout is a refusal. |
+| whether duplicate source rows may be normalised, and which | §3.4a, amendment A1: exact duplicates in the daily metrics archive only, and only when the complete CSV row is identical. Conflicts still refuse; funding and klines unchanged. The one rule here adopted after source inspection rather than before. |
 | what "available in full" means | §8.0: 98% of rows surviving, no contiguous outage over 48 hours. Applied to P4-HOLD under the same rule. |
 | whether a zero delta counts as improvement | §8.2: it does not. `delta > 0`, strictly. |
 | what stage 2 fits, selects and reports on | three row ranges inside the hashed preregistration, §8.3. |

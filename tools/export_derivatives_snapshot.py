@@ -50,6 +50,18 @@ result.
 **No REST row ever enters this table.** ``fapi.binance.com`` retains 30 days and
 cannot build this history; §3.0a forbids it standing in for a missing archive
 day, and there is no code path here that reads it.
+
+**One source defect is normalised, and only one.** The official USD-M daily
+metrics archives for BTCUSDT dated **2020-09-01** and **2020-09-02** were
+observed to hold 576 data rows for 288 five-minute ``create_time`` instants —
+every observation published twice, the paired rows identical across the full CSV
+row. :func:`read_metrics` collapses rows that repeat an instant to one logical
+observation **if and only if every source field in them is identical**, counts
+what it removed in ``acquisition.open_interest_source_integrity``, and still
+stops the acquisition when any field disagrees. Funding and kline archives are
+untouched by this: a duplicate instant in either is a rejection, as §3.4 says.
+Nothing here claims other metrics days are duplicated — two archives were
+measured, and the rule is written for whatever the source actually serves.
 """
 
 from __future__ import annotations
@@ -71,6 +83,7 @@ from typing import Any, Iterator, Sequence
 import numpy as np
 import pandas as pd
 
+from nn import p4_preregistration
 from nn.derivatives_sources import (
     ACQUIRED_FIELDS,
     BASE_URL,
@@ -87,8 +100,10 @@ from nn.derivatives_sources import (
     UNAVAILABLE_AGE_NS,
     Archive,
     DerivativesSourceError,
+    MetricsDuplicateNormalisation,
     canonical_member,
     check_strictly_increasing,
+    collapse_exact_duplicate_metrics_rows,
     parse_instants,
     _utc_day,
     plan_archives,
@@ -316,13 +331,35 @@ def read_funding(
     return instants, rates, {**layout.to_dict(), "settlements": int(len(instants))}
 
 
-def read_metrics(path: Path, archive: Archive) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """One daily metrics archive's open-interest snapshots.
+def read_metrics(
+    path: Path, archive: Archive
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, MetricsDuplicateNormalisation]:
+    """One daily metrics archive's open-interest snapshots, and what was collapsed.
 
-    Only the three columns §3.0a names are read. A file without all three has no
+    Only the three columns §3.0a names are *used*. A file without all three has no
     open interest in it under this schema and is refused rather than read for
-    whatever it does have.
+    whatever it does have — and that refusal happens on the header, before a row
+    is parsed, so normalisation can never reach a file whose schema is not the
+    preregistered one.
+
+    **Every column is read even though three are used.** The exact-duplicate test
+    of :func:`nn.derivatives_sources.collapse_exact_duplicate_metrics_rows`
+    compares the complete source observation, so a column this design ignores
+    still decides whether two rows repeating an instant are the same row. Reading
+    only the three consumed columns would make rows that differ elsewhere look
+    identical, which is the one thing that rule must not do. A daily metrics
+    archive is a few hundred rows, so the whole file costs nothing to hold.
+
+    ``keep_default_na=False`` keeps every field as the literal text the CSV
+    carries, so the comparison is over what the source published rather than over
+    what a NA-sentinel table folded together.
+
+    The column rows are grouped on is
+    :data:`nn.p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY`'s
+    ``grouping_key``, read from the hashed preregistration rather than spelled
+    again here.
     """
+    key = p4_preregistration.OPEN_INTEREST_DUPLICATE_POLICY["grouping_key"]
     zf, member, fields, _ = _open_member(path, archive)
     try:
         missing = [name for name in METRICS_REQUIRED_COLUMNS if name not in fields]
@@ -334,22 +371,30 @@ def read_metrics(path: Path, archive: Archive) -> tuple[np.ndarray, np.ndarray, 
                 "without them is not the preregistered source."
             )
         with zf.open(member) as handle:
-            frame = pd.read_csv(handle, usecols=list(METRICS_REQUIRED_COLUMNS), dtype=str)
+            frame = pd.read_csv(handle, dtype=str, keep_default_na=False)
     finally:
         zf.close()
     if frame.empty:
         raise DerivativesSourceError(f"{archive.name}: {member} holds no snapshots")
-    instants = parse_instants(frame["create_time"], archive, what="create_time")
+    instants = parse_instants(frame[key], archive, what=key)
     order = np.argsort(instants, kind="stable")
     instants = instants[order]
+    rows = [tuple(row) for row in frame.to_numpy()[order]]
+    keep, normalisation = collapse_exact_duplicate_metrics_rows(
+        rows, instants, archive, columns=tuple(frame.columns)
+    )
+    instants = instants[keep]
     contracts = pd.to_numeric(frame["sum_open_interest"], errors="coerce").to_numpy(
         dtype=np.float64
-    )[order]
+    )[order][keep]
     notional = pd.to_numeric(frame["sum_open_interest_value"], errors="coerce").to_numpy(
         dtype=np.float64
-    )[order]
+    )[order][keep]
+    # Still the fail-closed check it always was. A duplicate instant reaching it
+    # now is one the exact-duplicate rule declined to collapse, which cannot
+    # happen — and a non-monotonic archive is refused here exactly as before.
     check_strictly_increasing(instants, archive, what="open-interest snapshots")
-    return instants, contracts, notional
+    return instants, contracts, notional, normalisation
 
 
 def iter_klines(path: Path, archive: Archive) -> Iterator[tuple[np.ndarray, np.ndarray]]:
@@ -836,10 +881,13 @@ def probe(
                 continue
             present.append(day.date().isoformat())
             if schema is None:
-                instants, contracts, notional = read_metrics(fetched.path, archive)
+                instants, contracts, notional, normalisation = read_metrics(
+                    fetched.path, archive
+                )
                 schema = {
                     "columns_read": list(METRICS_REQUIRED_COLUMNS),
                     "snapshots": int(len(instants)),
+                    "normalisation": normalisation.to_dict(),
                     "cadence_minutes_observed": sorted(
                         {int(v) for v in (np.diff(instants) // (60 * 1_000_000_000))}
                     )[:6],
@@ -935,9 +983,18 @@ def acquire(
                 )
                 continue
             path = root / archive.name
-            instants, contracts, notional = read_metrics(path, archive)
+            instants, contracts, notional, normalisation = read_metrics(path, archive)
             open_interest.add(instants, np.column_stack((contracts, notional)))
-            records.append({**record, "rows": int(len(instants))})
+            # "rows" is the logical observations this archive contributed; the
+            # raw row count it was read from is in the normalisation block beside
+            # it, so a collapse is never invisible in the per-archive record.
+            records.append(
+                {
+                    **record,
+                    "rows": int(len(instants)),
+                    "normalisation": normalisation.to_dict(),
+                }
+            )
             path.unlink(missing_ok=True)
     finally:
         if context is not None:
@@ -1059,6 +1116,41 @@ def coverage_report(
     return out
 
 
+def metrics_source_integrity(archives: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """The exact-duplicate accounting for the metrics archives, summed.
+
+    Derived from the per-archive ``normalisation`` blocks rather than counted
+    separately, so the aggregate and the records it came from cannot drift; the
+    verifier re-adds the same sums from the manifest's own records.
+
+    ``conflicting_duplicate_instants`` is 0 in every manifest that exists, and
+    that is a property rather than a measurement: a conflicting duplicate stops
+    the acquisition inside
+    :func:`nn.derivatives_sources.collapse_exact_duplicate_metrics_rows`, so no
+    snapshot can be written after one was seen. It is recorded anyway, because a
+    reader should be able to see the number rather than infer it from the absence
+    of a field.
+
+    The rule these counts were produced under is not restated here: it is
+    ``source.duplicate_rule`` in the same manifest, bound by ``source_spec_hash``,
+    and a second copy could only ever disagree with the first.
+    """
+    entries = [entry["normalisation"] for entry in archives if "normalisation" in entry]
+    return {
+        "archives_read": len(entries),
+        "raw_rows_read": sum(int(e["rows_read"]) for e in entries),
+        "logical_observations_retained": sum(int(e["observations_retained"]) for e in entries),
+        "exact_duplicate_rows_collapsed": sum(
+            int(e["exact_duplicate_rows_collapsed"]) for e in entries
+        ),
+        "duplicate_instants_collapsed": sum(int(e["duplicate_instants"]) for e in entries),
+        "archives_with_exact_duplicates": sum(
+            1 for e in entries if int(e["exact_duplicate_rows_collapsed"])
+        ),
+        "conflicting_duplicate_instants": 0,
+    }
+
+
 def _longest_false_run(flags: np.ndarray) -> int:
     """Longest run of ``False``. The §8.0 outage statistic, computed once."""
     longest = current = 0
@@ -1146,6 +1238,14 @@ def write_snapshot(
                 "leave the sample universe for every arm and are never interpolated",
                 "the public archive is republished from time to time; the per-archive "
                 "sha256 recorded here is what this acquisition read",
+                "the official USD-M daily metrics archives for BTCUSDT dated 2020-09-01 "
+                "and 2020-09-02 were observed to hold 576 data rows for 288 five-minute "
+                "instants, every observation appearing twice with the paired rows "
+                "identical across the full CSV row. Rows like those are collapsed to one "
+                "logical observation and counted under "
+                "acquisition.open_interest_source_integrity; rows sharing an instant "
+                "that disagree in any field still stop the acquisition. No claim is made "
+                "about other days: this is what two archives were measured to contain",
             ],
         },
         "acquisition": {
@@ -1160,6 +1260,7 @@ def write_snapshot(
             ),
             "open_interest_first_available_day": oi_first_available_day,
             "missing_metrics_days": len(missing_days),
+            "open_interest_source_integrity": metrics_source_integrity(archives),
             "archives": list(archives),
         },
         "hourly": {
