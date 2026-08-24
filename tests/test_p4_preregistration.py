@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
+from nn.derivatives_sources import KLINE_COLUMNS
 from nn.information_sets import CHECKPOINTS
 from nn.p4_preregistration import (
     ARMS,
@@ -41,6 +43,7 @@ from nn.p4_preregistration import (
     FEATURES,
     FUNDING_ARCHIVE_INCEPTION_POLICY,
     FEATURE_NAMES,
+    PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY,
     HOLDOUT_ROWS,
     MIN_OUTER_TRADES,
     NULL_PROBABILITY_THREE_OF_FOUR,
@@ -71,6 +74,11 @@ SUPERSEDED_HASH = "68ba94f49099c90772cc29d9ed6ea0cb1c4fb3b49a457924e9c3ca9f9af86
 #: `funding_archive_inception_policy` entered the payload. Historical provenance on the
 #: same terms: no P4 cell, fit or outcome was produced under it either.
 SUPERSEDED_HASH_A1 = "e0c9a7aadd69abd8c6b81abe6d570545dbbf638884740d8d78dab8df27f783a5"
+
+#: The hash the design carried between amendment A2 and amendment A3 (§3.4c), before
+#: `perpetual_kline_archive_inception_policy` entered the payload. Historical provenance
+#: on the same terms: no P4 cell, fit or outcome was produced under it either.
+SUPERSEDED_HASH_A2 = "db0eb78012bae3495c3722f0d3abc37b528f2465c0019b9ff304efcec1febb05"
 
 
 # --- P4 is implemented, registered, and has not been run ---------------------
@@ -472,6 +480,7 @@ def test_the_headerless_case_is_bounded_rather_than_positional_guessing():
         "not_evaluable_outcome",
         "funding_csv_column_policy",
         "funding_archive_inception_policy",
+        "perpetual_kline_archive_inception_policy",
     ],
 )
 def test_every_result_critical_mechanic_is_in_the_hashed_payload(key):
@@ -502,6 +511,7 @@ def test_moving_any_of_them_moves_the_hash(monkeypatch):
         ("FUNDING_CSV_COLUMN_POLICY", {"canonical_fields": []}),
         ("OPEN_INTEREST_DUPLICATE_POLICY", {"grouping_key": "other"}),
         ("FUNDING_ARCHIVE_INCEPTION_POLICY", {"first_protocol_month": "2021-06"}),
+        ("PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY", {"first_protocol_month": "2021-06"}),
     ):
         with monkeypatch.context() as patch:
             patch.setattr(prereg, name, value)
@@ -1048,6 +1058,294 @@ def test_no_p4_result_can_be_produced_under_the_pre_a2_hash(tmp_path):
                 "authorisation_schema": "chimera.p4-stage1-authorisation/1",
                 "state": "authorised",
                 "preregistration_hash": SUPERSEDED_HASH_A1,
+                "authorised_by": "test",
+                "authorised_at": "1970-01-01T00:00:00Z",
+                "reason": "test",
+            }
+        )
+    )
+    with pytest.raises(Stage1Interlock, match="not permission to run another"):
+        assert_fit_authorised(confirm=True, availability={"gate_passed": True}, root=tmp_path)
+
+
+# --- amendment A3: where the perpetual kline archive begins -------------------
+def test_the_perpetual_inception_policy_is_inside_the_hashed_preregistration():
+    """In the payload, not only in a module namespace beside it."""
+    assert preregistration()["perpetual_kline_archive_inception_policy"] == dict(
+        PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+    )
+
+
+def test_the_perpetual_inception_policy_is_scoped_to_klines_and_names_one_month():
+    policy = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+    assert policy["scope"]["field"] == "perpetual_price"
+    assert policy["scope"]["applies_to"] == ["perpetual_price"]
+    assert sorted(policy["scope"]["does_not_apply_to"]) == ["funding_rate", "open_interest"]
+    archive = policy["scope"]["archive"]
+    assert "MONTHLY" in archive and "1h" in archive and "kline" in archive
+    assert policy["first_protocol_month"] == "2020-01"
+    assert policy["first_protocol_instant"].startswith("2020-01-01T00:00:00")
+    assert set(policy["provenance_required"]) == {
+        "generic_requested_from",
+        "source_inception_month",
+        "effective_from",
+        "months_clamped",
+        "not_an_internal_gap",
+        "amendment",
+    }
+
+
+def test_there_is_exactly_one_authoritative_copy_of_the_perpetual_inception_month():
+    """The month is a value in one hashed object, and everything else reads it.
+
+    Checked as identity rather than as agreement: the planner, the provenance and
+    the source spec must all resolve to the *same* object, so an edit cannot leave
+    one of them behind.
+    """
+    from nn.derivatives_sources import perpetual_inception, source_spec
+
+    policy = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+    assert source_spec()["perpetual_inception_rule"] == dict(policy)
+    assert perpetual_inception() == pd.Timestamp(
+        f"{policy['first_protocol_month']}-01", tz="UTC"
+    )
+
+
+def test_the_perpetual_policy_records_that_it_is_an_amendment_and_what_it_replaced():
+    policy = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+    assert policy["amendment"] == "A3"
+    assert "before any P4 model fit" in policy["amendment_status"]
+    assert "continuous" in policy["supersedes"]
+    assert "A2 left this source explicitly untouched" in policy["supersedes"]
+    assert "2019-12" in policy["adopted_because"]
+    assert "404" in policy["adopted_because"] and "200" in policy["adopted_because"]
+
+
+def test_a3_is_a_separate_object_from_a2_and_not_an_extension_of_it():
+    """Two archives, measured separately, each with its own rule.
+
+    They name the same month today. That must be an observation about two sources
+    rather than one rule about a venue, so the objects stay distinct and moving
+    one month moves exactly one plan.
+    """
+    a2 = FUNDING_ARCHIVE_INCEPTION_POLICY
+    a3 = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+    assert a2 is not a3 and dict(a2) != dict(a3)
+    assert a2["amendment"] == "A2" and a3["amendment"] == "A3"
+    assert a2["scope"]["field"] != a3["scope"]["field"]
+    assert "perpetual_price" in a2["scope"]["does_not_apply_to"]
+    assert "funding_rate" in a3["scope"]["does_not_apply_to"]
+    assert "not an extension" in a3["relationship_to_a2"]
+    # Independence, demonstrated: moving A3's month leaves A2's plan alone.
+    import nn.p4_preregistration as prereg
+    from nn.derivatives_sources import funding_inception, perpetual_inception
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY",
+            {**a3, "first_protocol_month": "2021-06"},
+        )
+        assert perpetual_inception() == pd.Timestamp("2021-06-01", tz="UTC")
+        assert funding_inception() == pd.Timestamp("2020-01-01", tz="UTC")
+
+
+def test_the_observed_perpetual_evidence_is_status_codes_and_not_a_conclusion():
+    evidence = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["observed_evidence"]
+    months = {entry["month"]: entry for entry in evidence["months"]}
+    for month in ("2019-09", "2019-10", "2019-11", "2019-12"):
+        assert months[month]["status"] == 404 and months[month]["published"] is False
+    for month in ("2020-01", "2020-02"):
+        assert months[month]["status"] == 200 and months[month]["published"] is True
+    # The first *required* missing archive is before the observed start of the
+    # sequence, which is why A3 is a boundary and not a gap rule.
+    assert max(m for m, e in months.items() if not e["published"]) < min(
+        m for m, e in months.items() if e["published"]
+    )
+    assert evidence["first_observed_row"].startswith("2020-01-01T00:00:00")
+    # The first row of the downloaded January archive, as an open-time in ms.
+    assert evidence["first_observed_open_time_ms"] == 1577836800000
+    assert pd.Timestamp(
+        evidence["first_observed_open_time_ms"], unit="ms", tz="UTC"
+    ) == pd.Timestamp("2020-01-01T00:00:00+00:00")
+    # The layout observed is the one already allowed; A3 changes no column rule.
+    assert evidence["observed_columns"] == len(KLINE_COLUMNS) == 12
+
+
+def test_the_perpetual_claim_is_about_the_archive_and_not_about_the_market():
+    """The generalisation A3 explicitly refuses to make."""
+    limit = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["generalisation_limit"]
+    assert "six months were checked" in limit.lower()
+    assert "monthly 1h kline archive" in limit
+    assert "any kind" in limit
+
+
+def test_a_pre_inception_perpetual_month_is_outside_the_source_and_not_a_gap():
+    policy = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+    assert "not an internal continuity gap" in policy["pre_inception_behaviour"].lower()
+    assert "not counted as a missing month" in policy["pre_inception_behaviour"]
+    assert "max(generic requested start" in policy["acquisition_start_rule"]
+
+
+def test_nothing_may_stand_in_for_the_pre_inception_perpetual_region():
+    substitution = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["no_substitution"]
+    assert substitution.startswith("never")
+    for forbidden in ("synthetic", "REST", "interpolated", "backwards", "spot"):
+        assert forbidden in substitution, forbidden
+    # The spot leg is called out separately, because it is the one substitution
+    # that would look plausible: it is already in the repository and already in
+    # the basis formula, as the DENOMINATOR.
+    spot = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["no_spot_substitution"]
+    assert "DENOMINATOR" in spot and "identically zero" in spot
+
+
+def test_perpetual_continuity_after_inception_is_unchanged_and_fail_closed():
+    after = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["post_inception_continuity"]
+    assert "mandatory" in after and "stops the acquisition" in after
+    for forbidden in (
+        "skipped",
+        "interpolated",
+        "forward-filled",
+        "backward-filled",
+        "replaced",
+    ):
+        assert forbidden in after, forbidden
+
+
+def test_a3_changes_no_basis_feature_window_or_clip():
+    """The scientific degrees of freedom A3 must leave exactly where they were."""
+    windows = {feature["name"]: feature["window"] for feature in FEATURES}
+    clips = {feature["name"]: feature["clip"] for feature in FEATURES}
+    definitions = {feature["name"]: feature["definition"] for feature in FEATURES}
+    assert windows["drv_basis"] is None
+    assert windows["drv_basis_z"] == 168
+    assert clips["drv_basis"] == [-0.02, 0.02]
+    assert clips["drv_basis_z"] == [-5.0, 5.0]
+    assert definitions["drv_basis"] == ("perpetual close at t over spot close at t, minus one")
+    assert definitions["drv_basis_z"] == (
+        "(drv_basis - mean of the last 168h) / (std of the same 168h + 1e-12)"
+    )
+    assert WARMUP_HOURS == 240
+    assert TARGET["horizon"] == 6 and TARGET["timeframe"] == "1h"
+    unchanged = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["windows_unchanged"]
+    assert "drv_basis" in unchanged and "168-hour z-score" in unchanged
+
+
+def test_basis_features_are_available_only_where_their_perpetual_input_is():
+    consequence = PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY["downstream_consequence"]
+    assert "only where their required perpetual-price input is actually present" in (
+        consequence
+    )
+    assert "outside the common sample universe" in consequence
+    assert "EVERY arm" in consequence
+    assert "reported, not repaired" in consequence
+
+
+def test_editing_the_perpetual_inception_policy_moves_both_hashes_together(monkeypatch):
+    """`preregistration says 2020-01, acquisition asks for 2019-12` must be
+    unconstructible — the anti-drift property A1 and A2 have, for A3's rule."""
+    import nn.p4_preregistration as prereg
+    from nn.derivatives_sources import source_spec
+    from tools.export_derivatives_snapshot import source_spec_hash
+
+    before_prereg = preregistration_hash()
+    before_source = source_spec_hash()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            prereg,
+            "PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY",
+            {**PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY, "first_protocol_month": "2021-06"},
+        )
+        assert prereg.preregistration_hash() != before_prereg
+        assert source_spec_hash() != before_source
+        assert source_spec()["perpetual_inception_rule"]["first_protocol_month"] == "2021-06"
+    assert preregistration_hash() == before_prereg
+    assert source_spec_hash() == before_source
+
+
+def test_the_document_records_amendment_a3_and_all_three_superseded_hashes():
+    text = DOCUMENT.read_text()
+    assert "3.4c" in text
+    assert "Source-protocol amendment A3" in text
+    section = " ".join(text.split("### 3.4c", 1)[1].split("### 3.5", 1)[0].split())
+    # The measured status codes, stated factually rather than summarised.
+    for month in ("2019-09", "2019-10", "2019-11", "2019-12", "2020-01", "2020-02"):
+        assert month in section, month
+    assert "404" in section and "200" in section
+    assert "2020-01-01T00:00:00Z" in section
+    assert "12-field kline layout" in section
+    # The active hash, and the three it replaced, all inside the amendment itself.
+    assert f"sha256:{preregistration_hash()}" in section
+    for superseded in (SUPERSEDED_HASH, SUPERSEDED_HASH_A1, SUPERSEDED_HASH_A2):
+        assert superseded in section, superseded
+        assert superseded != preregistration_hash()
+    # And the amendment's own claims, in prose, matching the payload.
+    assert "outside the published archive source and is not an internal continuity gap" in (
+        section.lower()
+    )
+    assert "max(generic requested start, 2020-01)" in section
+    assert "stops the acquisition" in section
+    assert "BTCUSDT-1h-2019-12.zip" in section and "BTCUSDT-1h-2020-01.zip" in section
+    assert "outside the common sample universe" in section
+    # Ordering is preserved rather than rewritten: A1, then A2, then A3, and the
+    # original protocol is not retold as if 2020-01 had always been known.
+    assert text.index("### 3.4a") < text.index("### 3.4b") < text.index("### 3.4c")
+    assert text.index("### 3.4c") < text.index("### 3.5 Fail-closed")
+    assert "Amendment\nA3" in text.split("---", 1)[0]
+    assert "the first version of this preregistration" not in section.lower()
+
+
+def test_the_document_does_not_generalise_past_the_observed_perpetual_months():
+    section = " ".join(
+        DOCUMENT.read_text().split("### 3.4c", 1)[1].split("### 3.5", 1)[0].split()
+    )
+    assert "Six months were checked" in section
+    assert "monthly 1h kline archive" in section
+    assert (
+        "Nothing here asserts that no BTCUSDT perpetual-price data of any kind existed"
+        in section
+    )
+    # And it says why 2019-12 was asked for, rather than implying it was a mistake.
+    assert "generic warm-up/source window begins" in section
+
+
+def test_the_document_says_the_basis_definitions_do_not_change():
+    section = " ".join(
+        DOCUMENT.read_text().split("### 3.4c", 1)[1].split("### 3.5", 1)[0].split()
+    )
+    assert "The basis feature definitions do not change" in section
+    assert "`[-0.02, 0.02]`" in section and "168-hour z-score" in section
+    assert "the spot candle history does not stand in for the missing perpetual leg" in (
+        section
+    )
+
+
+def test_the_stage_one_authorisation_carries_the_a3_hash_and_stays_closed():
+    """Rebinding the interlock for a third amendment must still grant nothing."""
+    path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
+    text = path.read_text()
+    payload = json.loads(text)
+    assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
+    assert payload["state"] == "not_authorised"
+    assert payload["preregistration_hash"] == preregistration_hash()
+    assert payload["authorised_by"] is None and payload["authorised_at"] is None
+    assert payload["reason"] is None
+    for superseded in (SUPERSEDED_HASH, SUPERSEDED_HASH_A1, SUPERSEDED_HASH_A2):
+        assert superseded not in text, "only the active hash belongs in the interlock"
+
+
+def test_no_p4_result_can_be_produced_under_the_pre_a3_hash(tmp_path):
+    """An authorisation granted for the design A3 replaced authorises nothing."""
+    from nn.p4_stage1 import Stage1Interlock, assert_fit_authorised
+
+    research = tmp_path / "data" / "research"
+    research.mkdir(parents=True)
+    (research / "p4_stage1_authorisation.json").write_text(
+        json.dumps(
+            {
+                "authorisation_schema": "chimera.p4-stage1-authorisation/1",
+                "state": "authorised",
+                "preregistration_hash": SUPERSEDED_HASH_A2,
                 "authorised_by": "test",
                 "authorised_at": "1970-01-01T00:00:00Z",
                 "reason": "test",

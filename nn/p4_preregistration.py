@@ -536,6 +536,165 @@ FUNDING_ARCHIVE_INCEPTION_POLICY: dict[str, Any] = {
     ),
 }
 
+#: Where the published perpetual kline archive *begins*, and what a month before
+#: it is.
+#:
+#: **This is amendment A3, and it is not an original preregistration rule.** The
+#: original design planned the perpetual klines exactly as it planned funding: a
+#: continuous monthly source over whatever window the generic warm-up planner
+#: asked for, with every absent month a hard failure and no distinction between a
+#: hole inside a published sequence and a month before the sequence starts. A2
+#: drew that distinction for the funding archive and explicitly left the kline
+#: archive alone, because at that point the kline archive had not been checked.
+#: It has now been, on the next real acquisition attempt, and it has the same
+#: boundary in the same place. The distinction is drawn here for the perpetual
+#: source specifically, before any P4 model fit, Stage-1 result, outcome or
+#: holdout access existed. The original wording is kept in ``supersedes`` rather
+#: than overwritten, and ``docs/p4_preregistration.md`` §3.4c records the same
+#: history in prose.
+#:
+#: **A3 is not A2 and does not extend it.** Two archives were measured separately
+#: and each carries its own object, its own evidence and its own scope. That they
+#: agree on the month is an observation about two sources, not one rule about a
+#: venue: an edit that moved one month would move exactly one plan, which is what
+#: keeping them apart is for.
+#:
+#: **This is a source-inception boundary and not a relaxation of §3.4.** After
+#: 2020-01 every expected month is still mandatory and a missing one still stops
+#: the acquisition. Nothing here permits a synthetic price, a REST backfill, an
+#: interpolation, a carried-back close, or the spot candle history standing in for
+#: the perpetual leg over the months the archive does not publish — the history
+#: simply begins where the source begins, and the existing causality, staleness
+#: and sample-universe rules decide when a basis feature first becomes defined.
+#:
+#: :func:`nn.derivatives_sources.plan_archives` and
+#: :func:`nn.derivatives_sources.source_spec` read this object rather than
+#: restating it, so a checkout in which the design says 2020-01 and the planner
+#: asks for 2019-12 cannot be constructed.
+PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY: dict[str, Any] = {
+    "amendment": "A3",
+    "amendment_status": (
+        "adopted after the next real full-acquisition attempt found the requested "
+        "warm-up month absent from the published monthly kline archive, and before any "
+        "P4 model fit, Stage-1 result, outcome or holdout access existed. This is a "
+        "source-protocol amendment, not an original preregistration rule"
+    ),
+    "supersedes": (
+        "the original rule, under which the perpetual klines were planned as a "
+        "continuous monthly source from whatever month the generic warm-up planner "
+        "requested, and every absent month was an internal continuity gap and a hard "
+        "failure. A2 left this source explicitly untouched; A3 is what touches it"
+    ),
+    "relationship_to_a2": (
+        "separate and parallel, not an extension. A2 measured the monthly fundingRate "
+        "archive and clamps the funding plan; A3 measures the monthly 1h kline archive "
+        "and clamps the perpetual-price plan. The two objects are independent: they "
+        "happen to name the same month because two archives were observed to begin in "
+        "the same month, and moving either month moves exactly one plan"
+    ),
+    "scope": {
+        "field": "perpetual_price",
+        "archive": (
+            "Binance USD-M BTCUSDT MONTHLY 1h perpetual kline archive, "
+            "data/futures/um/monthly/klines/BTCUSDT/1h"
+        ),
+        "applies_to": ["perpetual_price"],
+        "does_not_apply_to": ["funding_rate", "open_interest"],
+    },
+    "first_protocol_month": "2020-01",
+    "first_protocol_instant": "2020-01-01T00:00:00+00:00",
+    "adopted_because": (
+        "the acquisition plan requests perpetual-price history from 2019-12 to provide "
+        "pre-spine warm-up and source overlap, and real checks of the monthly 1h kline "
+        "archive on the acquisition host returned 404 for 2019-12 and 200 for 2020-01. "
+        "The first required missing archive therefore falls BEFORE the observed "
+        "beginning of the published monthly sequence rather than inside an established "
+        "one. The downloaded BTCUSDT-1h-2020-01.zip begins at 2020-01-01T00:00:00Z "
+        "under the already-allowed 12-field Binance kline layout, so no column rule "
+        "changes"
+    ),
+    "observed_evidence": {
+        "checked": "HTTP status of the published monthly archive, one request per month",
+        "months": [
+            {"month": "2019-09", "status": 404, "published": False},
+            {"month": "2019-10", "status": 404, "published": False},
+            {"month": "2019-11", "status": 404, "published": False},
+            {"month": "2019-12", "status": 404, "published": False},
+            {"month": "2020-01", "status": 200, "published": True},
+            {"month": "2020-02", "status": 200, "published": True},
+        ],
+        "first_observed_row": "2020-01-01T00:00:00+00:00",
+        "first_observed_open_time_ms": 1577836800000,
+        "observed_layout": "the existing Binance 12-field kline schema, unchanged",
+        "observed_columns": 12,
+    },
+    "generalisation_limit": (
+        "six months were checked and that is all that is claimed. This says nothing "
+        "about whether BTCUSDT perpetual-price data of any kind existed before January "
+        "2020, only that the preregistered Binance USD-M monthly 1h kline archive is "
+        "not published for the months checked before it and is published from it"
+    ),
+    "pre_inception_behaviour": (
+        "a requested month strictly before first_protocol_month is OUTSIDE the "
+        "published archive source and is NOT an internal continuity gap. It is not "
+        "counted as a missing month, is not requested, and never reaches the "
+        "fail-closed rule that governs the months the source does publish"
+    ),
+    "acquisition_start_rule": (
+        "the perpetual kline archive plan begins at max(generic requested start, "
+        "first_protocol_month). The generic research spine boundary, the requested "
+        "feature warm-up, the spot denominator and the basis formula are unchanged; "
+        "only the perpetual kline archive iterator is clamped"
+    ),
+    "no_substitution": (
+        "never. No synthetic perpetual price is created for the pre-inception region, "
+        "no REST endpoint backfills it, nothing is interpolated or carried backwards, "
+        "the spot candle history does NOT stand in for the missing perpetual leg, and "
+        "no other venue, instrument or archive is read in its place"
+    ),
+    "no_spot_substitution": (
+        "explicitly. The spot close is the basis DENOMINATOR and is not a proxy for its "
+        "numerator: substituting it would make drv_basis identically zero and report a "
+        "measured spread where none was observed. A row whose perpetual input is "
+        "unavailable has no basis, and that is the answer rather than a problem"
+    ),
+    "post_inception_continuity": (
+        "unchanged and fail-closed: every expected month from first_protocol_month "
+        "onward is mandatory, and a month that 404s, fails its checksum or cannot be "
+        "read stops the acquisition. No gap after inception may be skipped, "
+        "interpolated, forward-filled, backward-filled or replaced by a different "
+        "source"
+    ),
+    "downstream_consequence": (
+        "basis-derived features become available only where their required "
+        "perpetual-price input is actually present. The perpetual history begins where "
+        "the source begins, and the unchanged causality, staleness and sample-universe "
+        "rules decide the rest: a row with no perpetual close inside the 1-hour "
+        "staleness bound has no defined drv_basis and no defined drv_basis_z, and is "
+        "outside the common sample universe for EVERY arm, the control included. "
+        "Losing early rows this way is the intended consequence and is reported, not "
+        "repaired"
+    ),
+    "windows_unchanged": (
+        "no feature, window, clip, staleness bound, availability threshold, target, "
+        "horizon, Stage-1 geometry, cost model or comparison rule is changed by this "
+        "amendment. drv_basis is still the perpetual close over the spot close minus "
+        "one, clipped to [-0.02, 0.02], and drv_basis_z is still its 168-hour z-score"
+    ),
+    "provenance_required": [
+        "generic_requested_from",
+        "source_inception_month",
+        "effective_from",
+        "months_clamped",
+        "not_an_internal_gap",
+        "amendment",
+    ],
+    "other_sources": (
+        "funding keeps A2's own inception object and open interest keeps its §3.0a "
+        "first-day rule; A3 clamps the perpetual kline archive plan and nothing else"
+    ),
+}
+
 #: How long an observation may be carried forward before its row leaves the
 #: sample universe. Funding is 8-hourly by construction, so holding the last
 #: settlement is the definition of the feature rather than a repair; one extra
@@ -962,6 +1121,24 @@ DEGREES_OF_FREEDOM: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "choice": "where the perpetual kline archive's history is allowed to begin",
+        "constrained_by": (
+            "PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY, amendment A3: the Binance USD-M "
+            "BTCUSDT monthly 1h kline archive's first protocol month is 2020-01, and "
+            "the perpetual-price plan begins at max(generic requested start, that "
+            "month). A month before it is outside the source rather than an internal "
+            "gap, and is never synthesised, backfilled from REST, interpolated, or "
+            "replaced by the spot candle history that is the basis denominator. Every "
+            "expected month from 2020-01 onward stays mandatory and fail-closed, and "
+            "basis features become available only where their perpetual input actually "
+            "is. A separate object from A2's, measured separately on a separate "
+            "archive. Adopted after the acquisition attempt that met the boundary and "
+            "before any P4 fit — the third rule here that is an amendment rather than "
+            "an original commitment, which is why it carries its own supersedes and "
+            "amendment_status."
+        ),
+    },
+    {
         "choice": "who may spend the holdout, and how often",
         "constrained_by": (
             "HOLDOUT_SPEND_POLICY: once, by one checkpoint, gated on a frozen stage-1 "
@@ -989,6 +1166,9 @@ def preregistration() -> dict[str, Any]:
         "funding_csv_column_policy": dict(FUNDING_CSV_COLUMN_POLICY),
         "open_interest_duplicate_policy": dict(OPEN_INTEREST_DUPLICATE_POLICY),
         "funding_archive_inception_policy": dict(FUNDING_ARCHIVE_INCEPTION_POLICY),
+        "perpetual_kline_archive_inception_policy": dict(
+            PERPETUAL_KLINE_ARCHIVE_INCEPTION_POLICY
+        ),
         "max_staleness_hours": dict(MAX_STALENESS_HOURS),
         "exploratory_outer_blocks": [list(block) for block in EXPLORATORY_OUTER_BLOCKS],
         "exploratory_blocks_read_by": list(EXPLORATORY_BLOCKS_READ_BY),
