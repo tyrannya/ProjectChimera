@@ -26,8 +26,11 @@ import tools.export_derivatives_snapshot as exporter
 from nn.p2b import DEFAULT_HOLDOUT_COVERAGE, load_holdout_coverage
 from nn.p4_holdout import (
     COVERAGE_PATH,
+    COVERAGE_QUERY_METHOD,
     COVERAGE_SCHEMA,
     HOLDOUT_ROWS,
+    coverage_semantic_hash,
+    expected_coverage_binding,
     holdout_archive_days,
     read_ledger,
 )
@@ -380,6 +383,179 @@ def test_a_probe_that_cannot_establish_coverage_writes_nothing(tmp_path, monkeyp
     with pytest.raises(exporter.DerivativesExportError):
         exporter.main(["--probe", "--out-dir", str(tmp_path)])
     assert list(tmp_path.iterdir()) == []
+
+
+# --- one mutated field at a time ----------------------------------------------
+#: Every mutation below is applied to a **pristine probe-generated record** and
+#: its digest is **recomputed afterwards**, so nothing is caught by the digest
+#: alone. What has to catch these is the binding check: each field is compared
+#: against a value `expected_coverage_binding` derives from the ledger, the
+#: preregistration and the published archive layout, never read from the file.
+def _mutate(payload: dict, path: tuple, value) -> dict:
+    forged = json.loads(json.dumps(payload))
+    target = forged
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    forged["semantic_hash"] = coverage_semantic_hash(forged)
+    return forged
+
+
+def _refuses(tmp_path: Path, payload: dict) -> dict:
+    exporter.write_holdout_coverage(payload, tmp_path)
+    entry = load_holdout_coverage(tmp_path / exporter.HOLDOUT_COVERAGE_NAME)
+    assert entry["available"] is False
+    assert entry["basis"] == "refused"
+    assert availability_gate(TWO_AVAILABLE_BLOCKS, entry)["gate_passed"] is False
+    return entry
+
+
+@pytest.fixture
+def pristine(tmp_path, transport):
+    """A record a real probe would have written, with every day published."""
+    payload, _ = _probe(tmp_path, transport, published=set(holdout_archive_days()))
+    return payload
+
+
+def test_the_positive_control_twin_still_passes(tmp_path, pristine):
+    """The other half of every rejection below: unmutated, this record is good."""
+    exporter.write_holdout_coverage(pristine, tmp_path)
+    entry = load_holdout_coverage(tmp_path / exporter.HOLDOUT_COVERAGE_NAME)
+    assert entry["available"] is True
+    assert availability_gate(TWO_AVAILABLE_BLOCKS, entry)["gate_passed"] is True
+    assert pristine["semantic_hash"] == coverage_semantic_hash(pristine)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["false", "true", 1, 0, None, [], {}, 1.0, "yes"],
+    ids=["str-false", "str-true", "int-1", "int-0", "null", "list", "dict", "float", "yes"],
+)
+def test_a_publication_status_that_is_not_a_boolean_fails_closed(tmp_path, pristine, value):
+    """Truthiness is not an answer. ``"false"`` is a true string; ``1`` is not a bool.
+
+    A day whose status arrived as any of these is a day nobody measured, and
+    reading it as a verdict about P4-HOLD would invent one.
+    """
+    day = holdout_archive_days()[9]
+    entry = _refuses(tmp_path, _mutate(pristine, ("published_days", day), value))
+    assert "not a boolean" in entry["reasons"][0]
+    assert day in entry["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("venue", "bybit"),
+        ("symbol", "ETHUSDT"),
+        ("market_type", "cm"),
+        ("field", "funding_rate"),
+        ("provider", "somewhere-else"),
+        ("base_url", "https://example.invalid"),
+        ("archive_family", "futures/um/monthly/metrics"),
+        ("archive_kind", "monthly"),
+        ("url_template", "{base}/data/spot/daily/metrics/{symbol}.zip"),
+    ],
+)
+def test_a_record_about_another_source_is_not_coverage_of_this_one(
+    tmp_path, pristine, field, value
+):
+    entry = _refuses(tmp_path, _mutate(pristine, ("source", field), value))
+    assert "source block" in entry["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("label", "outer_block_0"),
+        ("rows", [45802, 48212]),
+        ("rows", [45801, 48211]),
+        ("first_instant", "2025-05-20T08:00:00+00:00"),
+        ("last_instant", "2025-08-28T16:00:00+00:00"),
+        ("stage_1_last_instant", "2025-05-19T08:00:00+00:00"),
+    ],
+)
+def test_a_record_about_another_region_is_not_coverage_of_this_one(
+    tmp_path, pristine, field, value
+):
+    """Shifted rows or a shifted boundary describe a region this is not."""
+    entry = _refuses(tmp_path, _mutate(pristine, ("region", field), value))
+    assert "region block" in entry["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("method", "HTTP GET on each daily archive URL"),
+        ("method", "HTTP HEAD"),
+        ("first_day", "2025-05-20"),
+        ("last_day", "2025-08-26"),
+        ("days", 100),
+        ("days", 102),
+        ("transport_failure_is_not_an_absent_day", False),
+    ],
+)
+def test_a_record_about_another_query_is_not_coverage_of_this_period(
+    tmp_path, pristine, field, value
+):
+    """Including the flag: a probe that treats a failure as an absence is refused."""
+    entry = _refuses(tmp_path, _mutate(pristine, ("queried", field), value))
+    assert "queried block" in entry["reasons"][0]
+
+
+def test_the_query_method_is_the_one_the_design_names(tmp_path, pristine):
+    assert pristine["queried"]["method"] == COVERAGE_QUERY_METHOD
+    assert expected_coverage_binding()["queried"]["method"] == COVERAGE_QUERY_METHOD
+
+
+# --- the digest -----------------------------------------------------------------
+def test_a_missing_semantic_hash_fails_closed(tmp_path, pristine):
+    forged = json.loads(json.dumps(pristine))
+    forged.pop("semantic_hash")
+    entry = _refuses(tmp_path, forged)
+    assert "semantic_hash" in entry["reasons"][0]
+
+
+def test_a_mismatched_semantic_hash_fails_closed(tmp_path, pristine):
+    """A record edited in one place and left inconsistent in another.
+
+    The edit is to a field no other check reads — the provenance path — so the
+    digest is the only thing standing between it and the gate.
+    """
+    forged = json.loads(json.dumps(pristine))
+    forged["boundary_derived_from"] = "somewhere/else.json"
+    entry = _refuses(tmp_path, forged)
+    assert "different measurements" in entry["reasons"][0]
+
+
+def test_a_stale_digest_left_behind_by_an_edit_fails_closed(tmp_path, pristine):
+    entry = _refuses(tmp_path, {**json.loads(json.dumps(pristine)), "semantic_hash": "0" * 64})
+    assert "different measurements" in entry["reasons"][0]
+
+
+def test_generated_at_is_the_one_field_that_may_move(tmp_path, pristine):
+    """Non-semantic, so re-stamping it neither breaks the digest nor the verdict."""
+    restamped = json.loads(json.dumps(pristine))
+    restamped["generated_at"] = "2027-12-31T23:59:59Z"
+    assert coverage_semantic_hash(restamped) == pristine["semantic_hash"]
+    exporter.write_holdout_coverage(restamped, tmp_path)
+    entry = load_holdout_coverage(tmp_path / exporter.HOLDOUT_COVERAGE_NAME)
+    assert entry["available"] is True
+
+
+def test_day_counts_that_disagree_with_the_day_map_fail_closed(tmp_path, pristine):
+    """The record must describe the measurement it reports."""
+    entry = _refuses(tmp_path, _mutate(pristine, ("days_published",), 7))
+    assert "day counts disagree" in entry["reasons"][0]
+
+
+def test_the_writer_and_the_reader_derive_the_same_binding(pristine):
+    """The bindings are not two hand-kept copies; they are one function's output."""
+    binding = expected_coverage_binding()
+    assert pristine["region"] == binding["region"]
+    assert pristine["source"] == binding["source"]
+    assert pristine["queried"] == binding["queried"]
+    assert set(pristine["published_days"]) == set(binding["days"])
 
 
 # --- what this change did not do ----------------------------------------------

@@ -101,15 +101,11 @@ from nn.derivatives_sources import (
     FUNDING,
     HOUR_NS,
     KLINE_COLUMNS,
-    MARKET_TYPE,
     METRICS_REQUIRED_COLUMNS,
-    METRICS_TEMPLATE,
     OPEN_INTEREST,
     PERPETUAL,
     PROVIDER,
-    SYMBOL,
     UNAVAILABLE_AGE_NS,
-    VENUE,
     Archive,
     DerivativesSourceError,
     MetricsDuplicateNormalisation,
@@ -129,11 +125,11 @@ from nn.derivatives_sources import (
 )
 from nn.p4_holdout import (
     COVERAGE_SCHEMA,
-    HOLDOUT_ROWS,
     assert_stage_one_bound,
     assert_stage_one_instants,
     check_holdout_boundary,
-    holdout_archive_days,
+    coverage_semantic_hash,
+    expected_coverage_binding,
     holdout_first_instant,
 )
 from nn.p4_preregistration import WARMUP_HOURS, preregistration_hash
@@ -167,11 +163,6 @@ PROBE_METRICS_SAMPLES = 12
 #: :data:`nn.p2b.DEFAULT_HOLDOUT_COVERAGE` reads this name out of the default
 #: output directory, and the two are asserted equal in the tests.
 HOLDOUT_COVERAGE_NAME = "p4_holdout_coverage.json"
-
-#: Keys of the coverage file that carry no scientific content. Excluded from
-#: :func:`holdout_coverage_semantic_hash`, so two probes of an unchanged archive
-#: differ in when they ran and in nothing else.
-HOLDOUT_COVERAGE_NON_SEMANTIC = ("generated_at", "semantic_hash")
 
 
 class DerivativesExportError(SystemExit):
@@ -1002,24 +993,6 @@ def probe(
 # --------------------------------------------------------------------------- #
 # P4-HOLD coverage
 # --------------------------------------------------------------------------- #
-def holdout_coverage_semantic_hash(payload: Mapping[str, Any]) -> str:
-    """Digest of everything in the coverage file that means something.
-
-    Two probes of an unchanged archive must produce the same claim, and the only
-    honest way to say so is to hash the claim rather than the file: the
-    generation timestamp is provenance and moves every run, so it is excluded
-    here and nowhere else.
-    """
-    material = {
-        key: value
-        for key, value in payload.items()
-        if key not in HOLDOUT_COVERAGE_NON_SEMANTIC
-    }
-    return hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
 def probe_holdout_coverage(
     *, ohlcv_manifest: Path, timeout: int, generated_at: str
 ) -> dict[str, Any]:
@@ -1039,6 +1012,11 @@ def probe_holdout_coverage(
     get, and the exact figure is recomputed from rows only when the stage-2
     snapshot is exported.
 
+    Everything the record binds itself to — the region, the source identity, the
+    queried period — comes from :func:`nn.p4_holdout.expected_coverage_binding`,
+    which is also what :func:`nn.p2b.load_holdout_coverage` checks the record
+    against. The two sides cannot describe different things.
+
     **A day this tool could not ask about is not a day the archive does not
     publish.** :func:`_request` retries a transport failure and then raises, so
     an unreachable network produces no coverage file at all rather than 101 days
@@ -1046,44 +1024,19 @@ def probe_holdout_coverage(
     about the one region nobody may look at.
     """
     boundary = check_holdout_boundary(ohlcv_manifest)
-    days = holdout_archive_days()
+    binding = expected_coverage_binding()
     published = {
         day: archive_exists(metrics_day(pd.Timestamp(day, tz="UTC")), timeout=timeout)
-        for day in days
+        for day in binding["days"]
     }
-    first = pd.Timestamp(boundary["p4_hold_first_instant"])
     payload: dict[str, Any] = {
         "coverage_schema": COVERAGE_SCHEMA,
         "preregistration_hash": preregistration_hash(),
         "generated_at": generated_at,
-        "region": {
-            "label": "p4_hold",
-            "rows": list(HOLDOUT_ROWS),
-            "first_instant": boundary["p4_hold_first_instant"],
-            "last_instant": (
-                first + pd.Timedelta(hours=HOLDOUT_ROWS[1] - HOLDOUT_ROWS[0] - 1)
-            ).isoformat(),
-            "stage_1_last_instant": boundary["stage_1_last_instant"],
-            "boundary_derived_from": boundary["derived_from"],
-        },
-        "source": {
-            "provider": PROVIDER,
-            "base_url": BASE_URL,
-            "venue": VENUE,
-            "market_type": MARKET_TYPE,
-            "symbol": SYMBOL,
-            "field": OPEN_INTEREST,
-            "archive_family": "futures/um/daily/metrics",
-            "archive_kind": "daily",
-            "url_template": METRICS_TEMPLATE,
-        },
-        "queried": {
-            "method": "HTTP HEAD on each daily archive URL",
-            "first_day": days[0],
-            "last_day": days[-1],
-            "days": len(days),
-            "transport_failure_is_not_an_absent_day": True,
-        },
+        "boundary_derived_from": boundary["derived_from"],
+        "region": binding["region"],
+        "source": binding["source"],
+        "queried": binding["queried"],
         "published_days": published,
         "days_published": sum(1 for value in published.values() if value),
         "days_absent": sorted(day for day, value in published.items() if not value),
@@ -1098,7 +1051,7 @@ def probe_holdout_coverage(
             ),
         },
     }
-    payload["semantic_hash"] = holdout_coverage_semantic_hash(payload)
+    payload["semantic_hash"] = coverage_semantic_hash(payload)
     return payload
 
 

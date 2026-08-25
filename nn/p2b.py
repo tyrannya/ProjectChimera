@@ -104,7 +104,8 @@ from nn.p4_holdout import (
     COVERAGE_SCHEMA,
     assert_stage_one_snapshot,
     check_holdout_boundary,
-    holdout_archive_days,
+    coverage_semantic_hash,
+    expected_coverage_binding,
 )
 from nn.p4_preregistration import preregistration_hash
 from nn.p4_stage1 import assert_fit_authorised, assert_stage_one_geometry
@@ -442,22 +443,20 @@ def load_derivatives_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, dict[s
 def _unusable_holdout_coverage(payload: Any) -> str | None:
     """Why this coverage file may not decide P4-HOLD's availability, or ``None``.
 
-    Four questions, and a file that fails any of them is not a coverage claim
-    about this region under this design:
+    The record ``--probe`` writes binds its day map to a schema, a
+    preregistration hash, a region, a source identity, a queried period and a
+    digest. Checking three of those and trusting the rest would leave the gate
+    reading a day map that could belong to another region, another venue or
+    another period, so every one of them is checked here — and checked against a
+    value derived from :func:`nn.p4_holdout.expected_coverage_binding` rather
+    than read from the file, which is what makes it a check and not a formality.
 
-    * is it the document :data:`nn.p4_holdout.COVERAGE_SCHEMA` names, rather than
-      some other JSON that happens to be at the path;
-    * was it established under the *active* preregistration hash, rather than
-      under a design that has since been amended;
-    * does it map days to a published/absent flag at all;
-    * does it cover **every** day P4-HOLD's hours fall in.
+    The digest is recomputed under the canonical definition both sides share.
+    It is a consistency check, not a seal: anyone who can edit the file can
+    recompute it. The bindings above are what a forged record cannot satisfy.
 
-    The last one is the reason this function exists.
-    :func:`nn.p4_universe.holdout_coverage_from_archive_days` is conservative
-    about the days it is given and says nothing about the days it is not, so a
-    file listing eighty of the region's hundred-and-one days would report the
-    eighty as fully covered and read as *available*. Partial coverage is unknown
-    coverage, and an unknown coverage is not an available one.
+    ``generated_at`` is deliberately not checked. It is provenance, it moves on
+    every run, and it is excluded from the digest for the same reason.
     """
     if not isinstance(payload, Mapping):
         return "the P4-HOLD coverage file is not an object"
@@ -475,13 +474,24 @@ def _unusable_holdout_coverage(payload: Any) -> str | None:
             f"{declared!r} but the active design hashes to {preregistration_hash()!r}. "
             "Coverage established under one design does not carry over to an edited one."
         )
+
+    binding = expected_coverage_binding()
+    for block in ("region", "source", "queried"):
+        if payload.get(block) != binding[block]:
+            return (
+                f"the P4-HOLD coverage file's {block} block is not the one this design "
+                f"derives. Expected {binding[block]!r}; the file says "
+                f"{payload.get(block)!r}. A coverage claim about a different region, "
+                "source or period is not a coverage claim about P4-HOLD."
+            )
+
     published = payload.get("published_days")
     if not isinstance(published, Mapping) or not published:
         return (
             "the P4-HOLD coverage file records no published_days, so which of the "
             "region's archive days exist is still unknown."
         )
-    required = set(holdout_archive_days())
+    required = set(binding["days"])
     missing = sorted(required - set(published))
     extra = sorted(set(published) - required)
     if missing:
@@ -495,6 +505,34 @@ def _unusable_holdout_coverage(payload: Any) -> str | None:
             f"the P4-HOLD coverage file records {len(extra)} day(s) outside the region "
             f"— the first being {extra[0]} — so it is not a claim about P4-HOLD's own "
             "period."
+        )
+    # Exactly a bool, never merely truthy. "false" is a true string and 0 is a
+    # false integer, and a day whose publication status arrived as either is a
+    # day nobody measured — reading it as a verdict would invent one.
+    unspeakable = sorted(day for day in published if not isinstance(published[day], bool))
+    if unspeakable:
+        first = unspeakable[0]
+        return (
+            f"the P4-HOLD coverage file gives {len(unspeakable)} day(s) a publication "
+            f"status that is not a boolean — {first} is {published[first]!r}. Whether "
+            "an archive exists is answered yes or no, and nothing else is that answer."
+        )
+
+    absent = sorted(day for day, value in published.items() if not value)
+    if payload.get("days_absent") != absent or payload.get("days_published") != len(
+        published
+    ) - len(absent):
+        return (
+            "the P4-HOLD coverage file's day counts disagree with its own day map, so "
+            "it does not describe the measurement it reports."
+        )
+
+    recomputed = coverage_semantic_hash(payload)
+    if payload.get("semantic_hash") != recomputed:
+        return (
+            f"the P4-HOLD coverage file's semantic_hash is {payload.get('semantic_hash')!r} "
+            f"but its content hashes to {recomputed!r}, so the record and its own digest "
+            "describe different measurements."
         )
     return None
 

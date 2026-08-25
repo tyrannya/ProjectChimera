@@ -67,6 +67,15 @@ COVERAGE_PATH = Path("data/research/p4_holdout_coverage.json")
 #: one with defaults.
 COVERAGE_SCHEMA = "chimera.p4-holdout-coverage/1"
 
+#: Keys of the coverage record that carry no scientific content, excluded from
+#: :func:`coverage_semantic_hash`. ``generated_at`` is provenance and moves every
+#: run; the hash cannot cover itself.
+COVERAGE_NON_SEMANTIC = ("generated_at", "semantic_hash")
+
+#: How the coverage record is allowed to have been established, spelled exactly.
+#: A record claiming any other method is a record about a different act.
+COVERAGE_QUERY_METHOD = "HTTP HEAD on each daily archive URL"
+
 #: The three states the region can be in. There is no path back to `unspent`.
 UNSPENT = "unspent"
 SPENT = "spent"
@@ -201,6 +210,90 @@ def holdout_archive_days(root: Path | None = None) -> list[str]:
     last = first + pd.Timedelta(hours=HOLDOUT_ROWS[1] - HOLDOUT_ROWS[0] - 1)
     days = pd.date_range(first.normalize(), last.normalize(), freq="D", tz="UTC")
     return [day.date().isoformat() for day in days]
+
+
+def coverage_semantic_hash(payload: Mapping[str, Any]) -> str:
+    """Digest of everything in a coverage record that means something.
+
+    The canonical definition, in the module that owns the region, because the
+    probe that writes the record and the gate that reads it must hash the *same*
+    thing — two copies of this arithmetic would eventually disagree, and the
+    disagreement would read as tampering.
+
+    This is a consistency check and deliberately not a seal: anyone who can edit
+    the file can recompute the digest. What makes the record trustworthy is that
+    every field it binds is checked against a value derived here rather than read
+    from it (:func:`expected_coverage_binding`). The digest catches the mundane
+    failure that check cannot — a record edited in one place and left inconsistent
+    in another.
+    """
+    material = {
+        key: value for key, value in payload.items() if key not in COVERAGE_NON_SEMANTIC
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def expected_coverage_binding(root: Path | None = None) -> dict[str, Any]:
+    """What a coverage record for this region, source and period must say.
+
+    One function, two callers, and that is the point. ``--probe`` builds the
+    record's ``region``, ``source`` and ``queried`` blocks *from* this, and
+    :func:`nn.p2b.load_holdout_coverage` compares the record's blocks *against*
+    it by equality. Neither side can drift from the other, and the reader never
+    takes the file's word for what region, what venue or what period it describes
+    — it derives all three here and refuses anything else.
+
+    Every value is a property of the preregistration, the ledger's declared span
+    and the published archive layout. None is a property of the file being
+    checked, and none is an observation from inside P4-HOLD.
+    """
+    import pandas as pd
+
+    from nn.derivatives_sources import (
+        BASE_URL,
+        MARKET_TYPE,
+        METRICS_TEMPLATE,
+        OPEN_INTEREST,
+        PROVIDER,
+        SYMBOL,
+        VENUE,
+    )
+
+    days = holdout_archive_days(root)
+    first = pd.Timestamp(holdout_first_instant(root)).tz_convert("UTC")
+    last = first + pd.Timedelta(hours=HOLDOUT_ROWS[1] - HOLDOUT_ROWS[0] - 1)
+    return {
+        "days": days,
+        "region": {
+            "label": "p4_hold",
+            "rows": list(HOLDOUT_ROWS),
+            "first_instant": first.isoformat(),
+            "last_instant": last.isoformat(),
+            # The identity check_holdout_boundary proves against the committed
+            # snapshot: the screen's last hour is the region's first, minus one.
+            "stage_1_last_instant": (first - pd.Timedelta(hours=1)).isoformat(),
+        },
+        "source": {
+            "provider": PROVIDER,
+            "base_url": BASE_URL,
+            "venue": VENUE,
+            "market_type": MARKET_TYPE,
+            "symbol": SYMBOL,
+            "field": OPEN_INTEREST,
+            "archive_family": "futures/um/daily/metrics",
+            "archive_kind": "daily",
+            "url_template": METRICS_TEMPLATE,
+        },
+        "queried": {
+            "method": COVERAGE_QUERY_METHOD,
+            "first_day": days[0],
+            "last_day": days[-1],
+            "days": len(days),
+            "transport_failure_is_not_an_absent_day": True,
+        },
+    }
 
 
 def check_holdout_boundary(manifest_path: Path) -> dict[str, Any]:
