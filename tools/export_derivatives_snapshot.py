@@ -23,11 +23,19 @@ already holds.
 
 ``--probe``
     Bounded. Establishes the open-interest availability window from metadata
-    (HEAD requests, binary-searched, ``O(log n)``), reads one archive of each
-    field to match its schema against the preregistered allow-list, and writes
-    nothing. This is where §3.6's "we do not know when the metrics archive
-    begins" stops being an unknown, and it is deliberately the only step allowed
-    to discover it.
+    (HEAD requests, binary-searched, ``O(log n)``), establishes **P4-HOLD's own
+    archive-day coverage** the same way — one HEAD per day of the region, no
+    archive body — and reads one archive of each field to match its schema
+    against the preregistered allow-list. This is where §3.6's "we do not know
+    when the metrics archive begins" stops being an unknown, and it is
+    deliberately the only step allowed to discover it.
+
+    It writes exactly one file, ``p4_holdout_coverage.json``, which is the
+    coverage claim §8.0's availability gate reads for P4-HOLD through
+    :func:`nn.p2b.load_holdout_coverage`. Publication status is metadata: no
+    P4-HOLD price, open interest, label, return, feature, prediction or outcome
+    is read to produce it, and a day this tool could not *ask about* is never
+    recorded as a day the archive does not publish.
 
 acquisition (no flag)
     Streaming and resumable. One archive at a time, reduced to the hourly
@@ -78,7 +86,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -93,11 +101,15 @@ from nn.derivatives_sources import (
     FUNDING,
     HOUR_NS,
     KLINE_COLUMNS,
+    MARKET_TYPE,
     METRICS_REQUIRED_COLUMNS,
+    METRICS_TEMPLATE,
     OPEN_INTEREST,
     PERPETUAL,
     PROVIDER,
+    SYMBOL,
     UNAVAILABLE_AGE_NS,
+    VENUE,
     Archive,
     DerivativesSourceError,
     MetricsDuplicateNormalisation,
@@ -116,9 +128,12 @@ from nn.derivatives_sources import (
     staleness_bound_ns,
 )
 from nn.p4_holdout import (
+    COVERAGE_SCHEMA,
+    HOLDOUT_ROWS,
     assert_stage_one_bound,
     assert_stage_one_instants,
     check_holdout_boundary,
+    holdout_archive_days,
     holdout_first_instant,
 )
 from nn.p4_preregistration import WARMUP_HOURS, preregistration_hash
@@ -147,6 +162,16 @@ BACKOFF_SECONDS = (2, 4, 8, 16)
 #: How many metrics days ``--probe`` samples across the window to report a
 #: missing-day rate. Bounded on purpose: the probe measures, it does not acquire.
 PROBE_METRICS_SAMPLES = 12
+
+#: What ``--probe`` writes P4-HOLD's archive-day coverage to, inside ``--out-dir``.
+#: :data:`nn.p2b.DEFAULT_HOLDOUT_COVERAGE` reads this name out of the default
+#: output directory, and the two are asserted equal in the tests.
+HOLDOUT_COVERAGE_NAME = "p4_holdout_coverage.json"
+
+#: Keys of the coverage file that carry no scientific content. Excluded from
+#: :func:`holdout_coverage_semantic_hash`, so two probes of an unchanged archive
+#: differ in when they ran and in nothing else.
+HOLDOUT_COVERAGE_NON_SEMANTIC = ("generated_at", "semantic_hash")
 
 
 class DerivativesExportError(SystemExit):
@@ -855,6 +880,10 @@ def probe(
     begins, what each field's schema actually is, and how often a metrics day is
     missing across a small sample. Everything it learns narrows the plan; nothing
     it learns may widen what the acquisition is allowed to read.
+
+    P4-HOLD's own coverage is the fourth thing ``--probe`` establishes and is not
+    here: it is metadata over a region this function's sampling must never reach,
+    so it lives in :func:`probe_holdout_coverage`, which downloads nothing at all.
     """
     result: dict[str, Any] = {"preregistration_hash": preregistration_hash(), "fields": {}}
 
@@ -968,6 +997,118 @@ def probe(
         "rows that actually survive the sample-universe conditions, after acquisition."
     )
     return result
+
+
+# --------------------------------------------------------------------------- #
+# P4-HOLD coverage
+# --------------------------------------------------------------------------- #
+def holdout_coverage_semantic_hash(payload: Mapping[str, Any]) -> str:
+    """Digest of everything in the coverage file that means something.
+
+    Two probes of an unchanged archive must produce the same claim, and the only
+    honest way to say so is to hash the claim rather than the file: the
+    generation timestamp is provenance and moves every run, so it is excluded
+    here and nowhere else.
+    """
+    material = {
+        key: value
+        for key, value in payload.items()
+        if key not in HOLDOUT_COVERAGE_NON_SEMANTIC
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def probe_holdout_coverage(
+    *, ohlcv_manifest: Path, timeout: int, generated_at: str
+) -> dict[str, Any]:
+    """Establish P4-HOLD's archive-day coverage from publication metadata alone.
+
+    §8.0 applies the block-availability rule to P4-HOLD as well, and stage 1 has
+    to know the answer before it decides whether to continue — but stage 1's own
+    source file stops at row 45802 and structurally does not contain the region.
+    §3.6 names the only outcome-blind route and this is it: **one HEAD request
+    per day** of the region, asking the archive which days it publishes.
+
+    What that reads is a status line. No archive body is requested, no ZIP is
+    opened, no CSV row is parsed, and no price, open interest, label, return,
+    feature, prediction or outcome from inside P4-HOLD is read by any path from
+    here. :func:`nn.p4_universe.holdout_coverage_from_archive_days` turns the
+    resulting day map into the same availability verdict the exploratory blocks
+    get, and the exact figure is recomputed from rows only when the stage-2
+    snapshot is exported.
+
+    **A day this tool could not ask about is not a day the archive does not
+    publish.** :func:`_request` retries a transport failure and then raises, so
+    an unreachable network produces no coverage file at all rather than 101 days
+    recorded as absent — which would be a fabricated unavailability verdict
+    about the one region nobody may look at.
+    """
+    boundary = check_holdout_boundary(ohlcv_manifest)
+    days = holdout_archive_days()
+    published = {
+        day: archive_exists(metrics_day(pd.Timestamp(day, tz="UTC")), timeout=timeout)
+        for day in days
+    }
+    first = pd.Timestamp(boundary["p4_hold_first_instant"])
+    payload: dict[str, Any] = {
+        "coverage_schema": COVERAGE_SCHEMA,
+        "preregistration_hash": preregistration_hash(),
+        "generated_at": generated_at,
+        "region": {
+            "label": "p4_hold",
+            "rows": list(HOLDOUT_ROWS),
+            "first_instant": boundary["p4_hold_first_instant"],
+            "last_instant": (
+                first + pd.Timedelta(hours=HOLDOUT_ROWS[1] - HOLDOUT_ROWS[0] - 1)
+            ).isoformat(),
+            "stage_1_last_instant": boundary["stage_1_last_instant"],
+            "boundary_derived_from": boundary["derived_from"],
+        },
+        "source": {
+            "provider": PROVIDER,
+            "base_url": BASE_URL,
+            "venue": VENUE,
+            "market_type": MARKET_TYPE,
+            "symbol": SYMBOL,
+            "field": OPEN_INTEREST,
+            "archive_family": "futures/um/daily/metrics",
+            "archive_kind": "daily",
+            "url_template": METRICS_TEMPLATE,
+        },
+        "queried": {
+            "method": "HTTP HEAD on each daily archive URL",
+            "first_day": days[0],
+            "last_day": days[-1],
+            "days": len(days),
+            "transport_failure_is_not_an_absent_day": True,
+        },
+        "published_days": published,
+        "days_published": sum(1 for value in published.values() if value),
+        "days_absent": sorted(day for day, value in published.items() if not value),
+        "reads": {
+            "archive_bodies_requested": 0,
+            "archive_rows_parsed": 0,
+            "p4_hold_rows_read": 0,
+            "note": (
+                "publication status only. Whether an archive exists is metadata about "
+                "the archive; nothing here opens one, and no P4-HOLD price, open "
+                "interest, label, return, feature, prediction or outcome is read"
+            ),
+        },
+    }
+    payload["semantic_hash"] = holdout_coverage_semantic_hash(payload)
+    return payload
+
+
+def write_holdout_coverage(payload: Mapping[str, Any], out_dir: Path) -> Path:
+    """Persist the coverage claim where the availability gate looks for it."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / HOLDOUT_COVERAGE_NAME
+    path.write_text(json.dumps(dict(payload), indent=2) + "\n")
+    return path
 
 
 # --------------------------------------------------------------------------- #
@@ -1441,8 +1582,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--probe",
         action="store_true",
-        help="establish the open-interest availability window from metadata, read one "
-        "archive of each field to match its schema, and write nothing",
+        help="establish the open-interest availability window and P4-HOLD's "
+        "archive-day coverage from metadata, read one archive of each field to match "
+        f"its schema, and write {HOLDOUT_COVERAGE_NAME} into --out-dir",
     )
     parser.add_argument(
         "--oi-first-day",
@@ -1487,11 +1629,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.probe:
-        print(
-            json.dumps(
-                probe(plan_by_field, start=start, end=end, timeout=args.timeout), indent=2
-            )
+        # P4-HOLD's coverage first, and written the moment it is established.
+        # It is HEAD requests over the region's own days and owes nothing to the
+        # schema measurements below, so a transport failure while reading a
+        # sample archive must not discard a coverage claim that already
+        # succeeded. Neither step records an absent day it did not measure.
+        coverage = probe_holdout_coverage(
+            ohlcv_manifest=args.ohlcv_manifest,
+            timeout=args.timeout,
+            generated_at=pd.Timestamp.utcnow().tz_localize(None).isoformat() + "Z",
         )
+        coverage_path = write_holdout_coverage(coverage, args.out_dir)
+        result = probe(plan_by_field, start=start, end=end, timeout=args.timeout)
+        result["p4_hold_coverage"] = {**coverage, "path": str(coverage_path)}
+        print(json.dumps(result, indent=2))
+        print(f"p4_hold_coverage={coverage_path}")
         return 0
 
     frame, records, missing_days = acquire(

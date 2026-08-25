@@ -68,7 +68,7 @@ import platform
 import statistics
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -100,7 +100,13 @@ from nn.information_sets import (
     feature_spec_identity,
     microstructure_spec_identity,
 )
-from nn.p4_holdout import assert_stage_one_snapshot, check_holdout_boundary
+from nn.p4_holdout import (
+    COVERAGE_SCHEMA,
+    assert_stage_one_snapshot,
+    check_holdout_boundary,
+    holdout_archive_days,
+)
+from nn.p4_preregistration import preregistration_hash
 from nn.p4_stage1 import assert_fit_authorised, assert_stage_one_geometry
 from nn.p4_universe import (
     availability_gate,
@@ -433,13 +439,79 @@ def load_derivatives_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, dict[s
     return hourly, manifest
 
 
+def _unusable_holdout_coverage(payload: Any) -> str | None:
+    """Why this coverage file may not decide P4-HOLD's availability, or ``None``.
+
+    Four questions, and a file that fails any of them is not a coverage claim
+    about this region under this design:
+
+    * is it the document :data:`nn.p4_holdout.COVERAGE_SCHEMA` names, rather than
+      some other JSON that happens to be at the path;
+    * was it established under the *active* preregistration hash, rather than
+      under a design that has since been amended;
+    * does it map days to a published/absent flag at all;
+    * does it cover **every** day P4-HOLD's hours fall in.
+
+    The last one is the reason this function exists.
+    :func:`nn.p4_universe.holdout_coverage_from_archive_days` is conservative
+    about the days it is given and says nothing about the days it is not, so a
+    file listing eighty of the region's hundred-and-one days would report the
+    eighty as fully covered and read as *available*. Partial coverage is unknown
+    coverage, and an unknown coverage is not an available one.
+    """
+    if not isinstance(payload, Mapping):
+        return "the P4-HOLD coverage file is not an object"
+    schema = payload.get("coverage_schema")
+    if schema != COVERAGE_SCHEMA:
+        return (
+            f"the P4-HOLD coverage file declares schema {schema!r}, not "
+            f"{COVERAGE_SCHEMA!r}. A document under another schema is a different "
+            "document and is refused rather than read with defaults."
+        )
+    declared = payload.get("preregistration_hash")
+    if declared != preregistration_hash():
+        return (
+            f"the P4-HOLD coverage was established under preregistration hash "
+            f"{declared!r} but the active design hashes to {preregistration_hash()!r}. "
+            "Coverage established under one design does not carry over to an edited one."
+        )
+    published = payload.get("published_days")
+    if not isinstance(published, Mapping) or not published:
+        return (
+            "the P4-HOLD coverage file records no published_days, so which of the "
+            "region's archive days exist is still unknown."
+        )
+    required = set(holdout_archive_days())
+    missing = sorted(required - set(published))
+    extra = sorted(set(published) - required)
+    if missing:
+        return (
+            f"the P4-HOLD coverage file covers {len(published)} day(s) but the region "
+            f"spans {len(required)}; {len(missing)} are unaccounted for, the first "
+            f"being {missing[0]}. Partial coverage is unknown coverage."
+        )
+    if extra:
+        return (
+            f"the P4-HOLD coverage file records {len(extra)} day(s) outside the region "
+            f"— the first being {extra[0]} — so it is not a claim about P4-HOLD's own "
+            "period."
+        )
+    return None
+
+
 def load_holdout_coverage(path: Path) -> dict[str, Any]:
     """P4-HOLD's availability under §8.0, from archive-day metadata alone.
 
     Absent is **not** available. A missing file means nobody has established
     whether the region's own days are published, and an unknown coverage cannot
     satisfy a gate that requires a known one — so this returns an unavailable
-    verdict with the reason rather than an optimistic default.
+    verdict with the reason rather than an optimistic default. A file that is
+    present but cannot be trusted to describe this region under this design is
+    refused on the same terms, by :func:`_unusable_holdout_coverage`.
+
+    The file is written by ``tools.export_derivatives_snapshot --probe`` from
+    one HEAD request per day of the region. Nothing on either side of this
+    function reads a P4-HOLD row.
     """
     path = Path(path)
     if not path.is_file():
@@ -455,9 +527,15 @@ def load_holdout_coverage(path: Path) -> dict[str, Any]:
             "basis": "absent",
         }
     payload = json.loads(path.read_text())
-    if "published_days" in payload:
-        return holdout_coverage_from_archive_days(payload["published_days"])
-    return payload
+    defect = _unusable_holdout_coverage(payload)
+    if defect is not None:
+        return {
+            "label": "p4_hold",
+            "available": False,
+            "reasons": [f"{defect} Re-run tools.export_derivatives_snapshot --probe."],
+            "basis": "refused",
+        }
+    return holdout_coverage_from_archive_days(payload["published_days"])
 
 
 def plan_from_manifest(

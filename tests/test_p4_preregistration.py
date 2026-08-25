@@ -130,11 +130,25 @@ def test_no_p4_market_data_has_been_acquired():
     # market at all.
     #
     # This list is a tripwire, deliberately. Acquiring the derivatives source
-    # adds a third P4 file, and the session that acquires it has to come here
-    # and say so — which is the point: "P4 has data now" should be a diff
-    # somebody wrote, not a directory listing that quietly changed.
+    # adds a P4 *table*, and the session that acquires it has to come here and
+    # say so — which is the point: "P4 has data now" should be a diff somebody
+    # wrote, not a directory listing that quietly changed.
+    #
+    # `p4_holdout_coverage.json` is permitted and is not an acquisition. It is
+    # the third *state* file: which of P4-HOLD's own archive days the source
+    # publishes, established by `tools.export_derivatives_snapshot --probe` from
+    # one HEAD request per day. It carries an existence flag per day and no
+    # observation of any market — the same class of file as the two above, and
+    # the reason it is named here rather than matched by a wildcard.
+    permitted = {
+        "p4_holdout_ledger.json",
+        "p4_holdout_coverage.json",
+        "p4_stage1_authorisation.json",
+    }
     p4_files = sorted(path.name for path in research.glob("*p4*"))
-    assert p4_files == ["p4_holdout_ledger.json", "p4_stage1_authorisation.json"]
+    assert set(p4_files) <= permitted, sorted(set(p4_files) - permitted)
+    assert "p4_holdout_ledger.json" in p4_files
+    assert "p4_stage1_authorisation.json" in p4_files
     authorisation = json.loads((research / "p4_stage1_authorisation.json").read_text())
     assert authorisation["state"] == "not_authorised"
     ledger = json.loads((research / "p4_holdout_ledger.json").read_text())

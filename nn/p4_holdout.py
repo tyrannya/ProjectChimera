@@ -57,6 +57,16 @@ LEDGER_PATH = Path("data/research/p4_holdout_ledger.json")
 #: document and is refused rather than read with defaults.
 LEDGER_SCHEMA = "chimera.p4-holdout-ledger/1"
 
+#: Where the probe records which archive days P4-HOLD's own period publishes.
+#: Relative to the repository root, and the path
+#: :data:`nn.p2b.DEFAULT_HOLDOUT_COVERAGE` reads.
+COVERAGE_PATH = Path("data/research/p4_holdout_coverage.json")
+
+#: The coverage file's schema name. Same rule as the ledger's: a document under
+#: another schema is a different document, and an availability gate must not read
+#: one with defaults.
+COVERAGE_SCHEMA = "chimera.p4-holdout-coverage/1"
+
 #: The three states the region can be in. There is no path back to `unspent`.
 UNSPENT = "unspent"
 SPENT = "spent"
@@ -172,6 +182,25 @@ def holdout_first_instant(root: Path | None = None) -> Any:
             "sources must stop before is unknown. Refusing to guess it."
         )
     return datetime.fromisoformat(first)
+
+
+def holdout_archive_days(root: Path | None = None) -> list[str]:
+    """Every UTC day P4-HOLD's hours fall in, as ``YYYY-MM-DD`` strings.
+
+    The set of daily archives whose *publication status* decides P4-HOLD's
+    availability under §8.0, and the exact set a probe must establish: one day
+    short of it is a coverage claim about a region the claim does not cover.
+
+    Derived from where the region starts and how many rows it is —
+    :data:`HOLDOUT_ROWS` — and from nothing inside it. A day string is not an
+    observation: it names an archive, not what the archive says.
+    """
+    import pandas as pd
+
+    first = pd.Timestamp(holdout_first_instant(root)).tz_convert("UTC")
+    last = first + pd.Timedelta(hours=HOLDOUT_ROWS[1] - HOLDOUT_ROWS[0] - 1)
+    days = pd.date_range(first.normalize(), last.normalize(), freq="D", tz="UTC")
+    return [day.date().isoformat() for day in days]
 
 
 def check_holdout_boundary(manifest_path: Path) -> dict[str, Any]:
