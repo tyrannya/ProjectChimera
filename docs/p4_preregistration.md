@@ -1254,6 +1254,29 @@ A block that fails is **unavailable**, is excluded from stage 1's fold count
 entirely, and is never included at a discount. Per-block coverage is computed
 before any model is fitted and reported whatever the gate decides.
 
+**P4-HOLD's side of that rule is computed from metadata, because it cannot be
+computed from rows.** Stage 1's source file stops at row 45802 and structurally
+does not contain the region — that is §6.3 — so the only outcome-blind way to
+apply the rule to P4-HOLD is to ask the archive which of the region's 101 UTC
+days it publishes: one HEAD request per day, no archive body, no CSV row, no
+price, open interest, label, return, feature, prediction or outcome. `--probe`
+does that and writes `data/research/p4_holdout_coverage.json`;
+`nn.p2b.load_holdout_coverage` reads it and
+`nn.p4_universe.holdout_coverage_from_archive_days` turns it into the same
+verdict the exploratory blocks get, conservatively — an absent day costs its own
+24 hours and the 24 after it, because `drv_oi_log_change_24h` reads `t` and
+`t − 24h`. The estimate is replaced by the exact figure when the stage-2
+snapshot is exported, and a release records both.
+
+Absent, partial and stale coverage are all **unavailable**. A missing file, a
+file covering fewer than the region's own days, and a file established under a
+superseded preregistration hash each mean nobody has established the region's
+coverage under this design, and an unknown coverage is not an available one. A
+day the probe could not *ask about* — a transport failure that outlived its
+retries — is never recorded as a day the archive does not publish: the probe
+stops and writes nothing, because a fabricated absence is a fabricated
+unavailability verdict about the one region nobody may look at.
+
 ### 8.1 Why the old rule is not enough
 
 P2b, P2c and P3 continued on "3 of 4 folds improved". Under an independent

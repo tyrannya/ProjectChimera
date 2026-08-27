@@ -248,8 +248,11 @@ p3-compare:  ## Join the P3 cells: parity proof, recomputation, deltas
 # Run `derivatives-plan` (no network) and then `derivatives-probe` before
 # committing to the bulk download. The probe is where the open-interest
 # availability window stops being an unknown: it binary-searches the archive's
-# first published day from HEAD requests alone, matches each field's schema
-# against the preregistered allow-list, and writes nothing.
+# first published day from HEAD requests alone, and matches each field's schema
+# against the preregistered allow-list. It is also where P4-HOLD's own coverage
+# is established — one HEAD per day of the region, no archive body — and written
+# to `data/research/p4_holdout_coverage.json`, which is the only file the probe
+# writes and the one §8.0's availability gate reads for the region.
 #
 # The window is derived from the committed OHLCV snapshot and closes at the last
 # hour the research spine reaches — which is also the hour before P4-HOLD begins,
@@ -263,7 +266,7 @@ p3-compare:  ## Join the P3 cells: parity proof, recomputation, deltas
 derivatives-plan:  ## List the derivatives archives the acquisition would fetch. No network.
 	$(PYTHON) -m tools.export_derivatives_snapshot --plan
 
-derivatives-probe:  ## Establish the open-interest window and each field's schema. Bounded.
+derivatives-probe:  ## Establish the OI window, each schema and P4-HOLD's coverage. Bounded.
 	$(PYTHON) -m tools.export_derivatives_snapshot --probe
 
 derivatives-snapshot:  ## Acquire the P4 derivatives source and export the hourly snapshot

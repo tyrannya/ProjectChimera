@@ -378,7 +378,7 @@ first of them is the one that is currently blocked.
 
 ```bash
 make derivatives-plan        # networkless: every archive that would be fetched
-make derivatives-probe       # bounded: the OI availability window, and each schema
+make derivatives-probe       # bounded: the OI window, each schema, P4-HOLD's coverage
 make derivatives-snapshot    # the acquisition itself
 make verify-derivatives-snapshot
 make p4-status               # what stage 1 would run, and what is stopping it
@@ -395,6 +395,14 @@ one: it reports that the archive could not be *fetched* rather than that a day i
 not *published*, and stops. That distinction is the whole of §3.0a — a missing
 day is a measurement that feeds the availability gate, and a blocked network is
 not a measurement of anything.
+
+The probe writes exactly one file, and only once the network answers:
+`data/research/p4_holdout_coverage.json`, P4-HOLD's own archive-day coverage
+established from one HEAD request per day of the region. It is what §8.0's
+availability gate reads for P4-HOLD, it is metadata about which archives exist
+and never their contents, and until it exists the gate reports P4-HOLD
+unavailable with that as the reason. That report is a statement about what this
+repository has established, **not** evidence that the region lacks coverage.
 
 **No P4 cell exists, and none can be produced by accident.** `nn.p4_stage1` holds
 a two-part interlock: `data/research/p4_stage1_authorisation.json` must say
