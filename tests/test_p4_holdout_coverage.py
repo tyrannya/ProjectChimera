@@ -573,12 +573,17 @@ def test_the_preregistration_hash_did_not_move():
     assert authorisation["preregistration_hash"] == ACTIVE_HASH
 
 
-def test_stage_one_is_still_not_authorised():
-    assert read_authorisation()["state"] == "not_authorised"
+def test_stage_one_authorisation_is_recorded_but_no_fit_has_run():
+    authorisation = read_authorisation()
+    assert authorisation["state"] == "authorised"
+    assert authorisation["authorised_by"] == "tyrannya"
+    assert authorisation["authorised_at"]
+    assert authorisation["reason"]
+
     described = describe()
-    assert described["interlock"]["state"] == "not_authorised"
+    assert described["interlock"]["state"] == "authorised"
     assert described["fits_run"] == 0
-    assert "not_authorised" in described["fit_would_be_refused_because"]
+    assert "availability gate has not passed" in described["fit_would_be_refused_because"]
 
 
 def test_no_p4_fit_or_result_exists():
