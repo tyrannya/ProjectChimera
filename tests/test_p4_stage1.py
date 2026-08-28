@@ -106,7 +106,14 @@ def test_command_line_confirmation_cannot_open_a_closed_interlock(tmp_path):
     root = tmp_path / "tree"
     (root / "data" / "research").mkdir(parents=True)
     payload = json.loads(AUTHORISATION_PATH.read_text())
-    payload.update({"state": "not_authorised", "authorised_by": None, "authorised_at": None, "reason": None})
+    payload.update(
+        {
+            "state": "not_authorised",
+            "authorised_by": None,
+            "authorised_at": None,
+            "reason": None,
+        }
+    )
     (root / AUTHORISATION_PATH).write_text(json.dumps(payload, indent=2))
     with pytest.raises(Stage1Interlock, match="not_authorised"):
         assert_fit_authorised(confirm=True, availability=PASSING_AVAILABILITY, root=root)
@@ -174,6 +181,7 @@ def test_describe_reports_authorisation_without_running_a_fit():
     assert described["fits_run"] == 0
     assert described["interlock"]["state"] == "authorised"
     assert described["fit_would_be_refused_because"] is None
+
 
 # --- the matrix ---------------------------------------------------------------
 def test_the_matrix_is_three_arms_by_three_models():
