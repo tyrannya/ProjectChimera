@@ -109,7 +109,7 @@ repository can declare a checkpoint unrun while its aggregate is committed here.
 | `P2b` | `btc_p2b_information_set_benchmark` | **answered** |
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
-| `P4` | `btc_p4_derivatives_positioning_benchmark` | **preregistered** |
+| `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 
 <!-- research-state:end -->
 
@@ -133,6 +133,17 @@ one that shares its `research question`.
 | `walkforward/btc_nested_v4_seed_242` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 242) | n/a | current |
 | `walkforward/btc_nested_v4_seed_342` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 342) | n/a | current |
 | `walkforward/btc_nested_v4_seed_442` | v4 | `btc_ohlcv14_mtst_baseline` | CURRENT | `nn.walkforward` | itself (seed 442) | n/a | current |
+| `benchmark/btc_p4_comparison` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b_compare` | the nine `btc_p4_*` Stage-1 cells | **yes** | current |
+| `benchmark/btc_p4_ohlcv14_logistic_regression` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x logistic_regression) | n/a | current |
+| `benchmark/btc_p4_ohlcv14_lightgbm` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x lightgbm) | n/a | current |
+| `benchmark/btc_p4_ohlcv14_xgboost` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x xgboost) | n/a | current |
+| `benchmark/btc_p4_derivatives_v1_logistic_regression` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (derivatives_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p4_derivatives_v1_lightgbm` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (derivatives_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p4_derivatives_v1_xgboost` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (derivatives_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p4_ohlcv14_plus_derivatives_v1_logistic_regression` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_derivatives_v1 x logistic_regression) | n/a | current |
+| `benchmark/btc_p4_ohlcv14_plus_derivatives_v1_lightgbm` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_derivatives_v1 x lightgbm) | n/a | current |
+| `benchmark/btc_p4_ohlcv14_plus_derivatives_v1_xgboost` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14_plus_derivatives_v1 x xgboost) | n/a | current |
+| `benchmark/btc_p4_stage1` | P4 | `btc_p4_derivatives_positioning_benchmark` | CURRENT | `nn.p4_stage1` | `benchmark/btc_p4_comparison` and its nine Stage-1 cells (screen only; no re-fit) | **yes** | current |
 | `benchmark/btc_p3_comparison` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b_compare` | the nine `btc_p3_*` cells | **yes** | current |
 | `benchmark/btc_p3_ohlcv14_logistic_regression` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x logistic_regression) | n/a | current |
 | `benchmark/btc_p3_ohlcv14_lightgbm` | P3 | `btc_p3_information_set_benchmark` | CURRENT | `nn.p2b` | itself (ohlcv14 x lightgbm) | n/a | current |

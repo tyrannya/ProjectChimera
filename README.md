@@ -276,7 +276,7 @@ fail until every front-door document is reconciled with it.
 | `P2b` | `btc_p2b_information_set_benchmark` | **answered** |
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
-| `P4` | `btc_p4_derivatives_positioning_benchmark` | **preregistered** |
+| `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 
 <!-- research-state:end -->
 
@@ -320,19 +320,12 @@ and does not license is [`docs/research_roadmap.md`](docs/research_roadmap.md)'s
 subject; the short version is that it is evidence against another hand-designed
 transformation of the same hourly bars, not a proof about a space.
 
-The next checkpoint, **P4**, is preregistered and has not been run:
-[`docs/p4_preregistration.md`](docs/p4_preregistration.md) fixes its question,
-arms, sources, sample universe, decision rule and stopping rule before any P4
-data is acquired. Its **input path is now implemented** — the acquisition, the
-`derivatives_v1` engine ([`docs/derivatives_v1.md`](docs/derivatives_v1.md)), the
-verifier, the sample universe, the availability gate and the stage-1 runner —
-and none of it has fitted anything. Two things stop it: the derivatives source
-has not been acquired, because the egress policy in force denies
-`data.binance.vision`; and
-[`data/research/p4_stage1_authorisation.json`](data/research/p4_stage1_authorisation.json)
-says `not_authorised`, so beginning a P4 fit is a reviewable commit rather than a
-flag. `make p4-status` reports what would run and what is currently stopping it,
-and fits nothing.
+The fourth checkpoint, **P4**, has completed Stage 1 under its preregistered design. It tested whether causal derivatives positioning/carry information — realised funding, open interest and perpetual basis — added usable information beyond OHLCV14 in the unchanged BTC 1h/6h cost-aware setup.
+
+The deciding XGBoost combined-vs-control comparison had three availability-qualified valid folds. One of three improved; mean net-return delta was `-0.038821333333333326` and the worst-fold delta was `-0.09306799999999998`. P4 therefore failed the preregistered continuation rule and ended as `screened_out`. This is negative evidence for this feature design and horizon, not a claim that derivatives information is generally useless.
+
+There was no Stage 2 or re-fit. P4-HOLD was never opened, scored or evaluated and is now retired unread. Styx remains sealed. The nine primary Stage-1 cells are frozen under `artifacts/btc_p4_stage1_SHA256SUMS.txt`; the deciding screen is frozen under `artifacts/btc_p4_screen_SHA256SUMS.txt`. See [`docs/p4_preregistration.md`](docs/p4_preregistration.md) for the preregistered rules and [`docs/derivatives_v1.md`](docs/derivatives_v1.md) for the information set.
+
 
 `--checkpoint` is a required input rather than something inferred from the arms,
 because `ohlcv14` is the control of all three and cannot say which question a

@@ -32,7 +32,7 @@ definitions: [`smc_v1.md`](smc_v1.md),
 | `P2b` | `btc_p2b_information_set_benchmark` | **answered** |
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
-| `P4` | `btc_p4_derivatives_positioning_benchmark` | **preregistered** |
+| `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 
 <!-- research-state:end -->
 
@@ -148,8 +148,8 @@ Four files plus two manifests under `data/research/`:
 | `btc_usdt_1h_gen1_snapshot_manifest.json` | — | hashes, spans, and the canonical reference |
 | `btc_usdt_1h_gen1_trades_hourly_pre_styx.parquet` | 47,878 | `2019-12-01T00:00` .. `2025-05-19T07:00` |
 | `btc_usdt_1h_gen1_trade_snapshot_manifest.json` | — | P3's second source: hashes, the aggregation spec, the 84 archives, and the binding to the OHLCV snapshot |
-| `p4_holdout_ledger.json` | — | P4-HOLD's state: `unspent`, and the region it governs. Carries no observation of any market |
-| `p4_stage1_authorisation.json` | — | P4's fit interlock: `not_authorised`, and the preregistration hash it would be granted under |
+| `p4_holdout_ledger.json` | — | P4-HOLD's state: `retired`; the region was never opened, scored or evaluated |
+| `p4_stage1_authorisation.json` | — | P4's Stage-1 fit interlock: `authorised`, bound to the preregistration hash under which Stage 1 ran |
 
 The raw file is the unprocessed OHLCV history the market-structure engine is run
 over. The processed file is the OHLCV14 research spine: 14 features, `target`,
@@ -367,55 +367,27 @@ The nine cells land in `btc_p3_<information_set>_<model>/` and are frozen under
 combined arm is 46 columns × 64 timesteps = 2,944 inputs per row.
 
 
-### P4, the fourth checkpoint — implemented, not run
+### P4, the fourth checkpoint — Stage 1 completed, screened out
 
-P4 reads a **third source**: an hourly point-in-time table of Binance USD-M
-funding, open interest and perpetual price. That table is **not committed**,
-because it has not been acquired: outbound access to `data.binance.vision` is
-denied by the egress policy in force, exactly as it was when P3's machinery was
-written. So the steps below are what a reproduction will look like, and the
-first of them is the one that is currently blocked.
+P4 tested whether causal derivatives positioning/carry information from Binance USD-M BTCUSDT perpetual — realised funding, open interest and perpetual basis — added usable information beyond OHLCV14 in the unchanged BTC 1h/6h cost-aware setup.
 
-```bash
-make derivatives-plan        # networkless: every archive that would be fetched
-make derivatives-probe       # bounded: the OI window, each schema, P4-HOLD's coverage
-make derivatives-snapshot    # the acquisition itself
-make verify-derivatives-snapshot
-make p4-status               # what stage 1 would run, and what is stopping it
-```
+All nine preregistered Stage-1 cells ran: three arms (`ohlcv14`, `derivatives_v1`, `ohlcv14_plus_derivatives_v1`) across logistic regression, LightGBM and XGBoost. The nine primary cells are frozen under `artifacts/btc_p4_stage1_SHA256SUMS.txt`; the deciding Stage-1 report is `artifacts/benchmark/btc_p4_stage1/stage1.json`, frozen under `artifacts/btc_p4_screen_SHA256SUMS.txt`. The ordinary P4 comparison is derived evidence.
 
-`make derivatives-plan` runs today and touches nothing: it reports a window of
-`2019-12-01T00:00` to `2025-05-19T08:00` — 47,912 hours — over 66 monthly funding
-archives, 1,722 **daily** open-interest metrics archives and 66 monthly kline
-archives, and asserts that the window ends before both Styx and P4-HOLD's first
-instant.
+Block 0 `[26518, 31339)` failed the preregistered availability rule and did not count. The three valid deciding blocks had combined-minus-control net-return deltas `-0.046462`, `-0.09306799999999998`, and `+0.023066000000000003`. Only one of three improved. Mean delta was `-0.038821333333333326`; worst-fold delta was `-0.09306799999999998`.
 
-`make derivatives-probe` currently fails closed, and the failure is the right
-one: it reports that the archive could not be *fetched* rather than that a day is
-not *published*, and stops. That distinction is the whole of §3.0a — a missing
-day is a measurement that feeds the availability gate, and a blocked network is
-not a measurement of anything.
+The continuation rule required all three valid folds to improve, mean delta > 0, and worst fold >= -0.02. P4 failed all three requirements and therefore ended as `screened_out`.
 
-The probe writes exactly one file, and only once the network answers:
-`data/research/p4_holdout_coverage.json`, P4-HOLD's own archive-day coverage
-established from one HEAD request per day of the region. It is what §8.0's
-availability gate reads for P4-HOLD, it is metadata about which archives exist
-and never their contents, and until it exists the gate reports P4-HOLD
-unavailable with that as the reason. That report is a statement about what this
-repository has established, **not** evidence that the region lacks coverage.
+This is negative evidence for this derivatives feature design at this horizon and cost model. It does not establish that derivatives information in general is uninformative.
 
-**No P4 cell exists, and none can be produced by accident.** `nn.p4_stage1` holds
-a two-part interlock: `data/research/p4_stage1_authorisation.json` must say
-`authorised` — which is a commit, with a name and a reason on it — *and*
-`--authorise-fit` must be passed. `make p4-status` prints both, plus the nine
-cells the matrix would run and which single one of them decides. It fits nothing.
+There was no Stage 2, no re-fit, no threshold rescue and no alternate-model override. P4-HOLD `[45802, 48211)` was not opened, scored or evaluated; it was retired unread after Stage 1 ended the checkpoint. Styx remains sealed.
 
-P4-HOLD, rows `[45802, 48211)`, is `unspent` and has not been read. The committed
-research snapshot stops at row 45802 and the derivatives acquisition window stops
-at the same hour, so stage 1's inputs structurally cannot contain the region
-stage 1 decides whether to open — and `nn.p4_holdout` turns that from a fact
-about today's files into a checked precondition on the snapshot, the fold plan
-and the source's own hours.
+Verification without re-fitting:
+
+`python -m tools.freeze_evidence --verify artifacts/btc_p4_stage1_SHA256SUMS.txt`
+
+`python -m tools.freeze_evidence --verify artifacts/btc_p4_screen_SHA256SUMS.txt`
+
+`python -m pytest tests/test_p4_evidence.py tests/test_p4_holdout.py tests/test_p4_stage1.py -q`
 
 ### Optional, post-hoc
 

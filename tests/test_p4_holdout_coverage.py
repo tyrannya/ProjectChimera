@@ -580,29 +580,31 @@ def test_stage_one_is_authorised_but_no_fit_has_run():
     assert described["fits_run"] == 0
 
 
-def test_no_p4_fit_or_result_exists():
-    assert not (ROOT / "artifacts" / "benchmark" / "btc_p4_comparison").exists()
-    assert not list((ROOT / "artifacts" / "benchmark").glob("btc_p4_*"))
+def test_p4_stage_one_exists_but_no_stage_two_or_holdout_result_exists():
+    """Stage 1 is published; screen-out prevents every later P4 fit."""
+    benchmark = ROOT / "artifacts" / "benchmark"
+
+    assert (benchmark / "btc_p4_comparison" / "p2b_comparison.json").is_file()
+    assert (benchmark / "btc_p4_stage1" / "stage1.json").is_file()
+
+    assert not list(benchmark.glob("btc_p4_stage2*"))
+    assert not list(benchmark.glob("btc_p4_hold*"))
 
 
-def test_the_holdout_ledger_and_styx_are_untouched():
-    """Neither region moved, and neither was reached to establish the coverage.
-
-    The ledger is still `unspent` and still names the same region, and the
-    committed research snapshot still stops before both boundaries — which is
-    what makes the probe's HEAD requests the only thing that looked at P4-HOLD's
-    period at all, and Styx untouched by this change as by every other.
-    """
+def test_the_holdout_is_retired_unread_and_styx_is_untouched():
+    """Screen-out retires P4-HOLD without opening it; Styx stays sealed."""
     import pandas as pd
 
     from nn.research_contract import load_contract
 
     ledger = read_ledger()
-    assert ledger["state"] == "unspent"
+    assert ledger["state"] == "retired"
     assert ledger["checkpoint"] is None
     assert ledger["region"] == list(HOLDOUT_ROWS)
     assert ledger["evaluations_permitted"] == 1
+    assert ledger["retired_if_unspent"] is True
     assert ledger["region_span"].startswith(holdout_archive_days()[0])
+    assert "not opened, scored, or evaluated" in ledger["reason"].lower()
 
     contract = load_contract("btc-usdt-1h-gen1")
     manifest = json.loads(OHLCV_MANIFEST.read_text())

@@ -1,0 +1,337 @@
+{
+  "checkpoint": "P4",
+  "stage": 1,
+  "preregistration_hash": "b52ce5dda17ff065bd70d4f4a62ef6b0e221dd18ed2cf4c0f20017ec3bae59a7",
+  "decided_by": {
+    "model": "xgboost",
+    "comparison": [
+      "ohlcv14_plus_derivatives_v1",
+      "ohlcv14"
+    ],
+    "cost_multiplier": 1.0
+  },
+  "secondary_models": [
+    "logistic_regression",
+    "lightgbm"
+  ],
+  "secondary_models_role": "run and reported in full over all nine cells; descriptive only. A secondary model that improves while the primary does not is reported as exactly that and cannot change the answer or open P4-HOLD",
+  "availability": {
+    "gate_passed": true,
+    "reasons": [],
+    "exploratory_blocks": [
+      {
+        "label": "outer_block_0",
+        "block": [
+          26518,
+          31339
+        ],
+        "rows": 4821,
+        "rows_surviving": 4581,
+        "surviving_fraction": 0.950218,
+        "max_contiguous_missing_hours": 240,
+        "available": false,
+        "reasons": [
+          "4581/4821 rows survive (0.9502); at least 0.98 is required",
+          "the longest contiguous run of excluded rows is 240h; at most 48h is permitted"
+        ],
+        "rule": {
+          "min_surviving_row_fraction": 0.98,
+          "max_contiguous_missing_hours": 48,
+          "applies_to": "each exploratory outer block, and P4-HOLD, under the same rule",
+          "measured_on": "rows surviving the sample-universe conditions, computed before any model is fitted and reported per block whatever the gate decides",
+          "note": "'in full' means this rule and nothing else. A block that fails it is UNAVAILABLE and is excluded from stage 1's fold count entirely; it is never included at a discount"
+        }
+      },
+      {
+        "label": "outer_block_1",
+        "block": [
+          31339,
+          36160
+        ],
+        "rows": 4821,
+        "rows_surviving": 4803,
+        "surviving_fraction": 0.996266,
+        "max_contiguous_missing_hours": 9,
+        "available": true,
+        "reasons": [],
+        "rule": {
+          "min_surviving_row_fraction": 0.98,
+          "max_contiguous_missing_hours": 48,
+          "applies_to": "each exploratory outer block, and P4-HOLD, under the same rule",
+          "measured_on": "rows surviving the sample-universe conditions, computed before any model is fitted and reported per block whatever the gate decides",
+          "note": "'in full' means this rule and nothing else. A block that fails it is UNAVAILABLE and is excluded from stage 1's fold count entirely; it is never included at a discount"
+        }
+      },
+      {
+        "label": "outer_block_2",
+        "block": [
+          36160,
+          40981
+        ],
+        "rows": 4821,
+        "rows_surviving": 4821,
+        "surviving_fraction": 1.0,
+        "max_contiguous_missing_hours": 0,
+        "available": true,
+        "reasons": [],
+        "rule": {
+          "min_surviving_row_fraction": 0.98,
+          "max_contiguous_missing_hours": 48,
+          "applies_to": "each exploratory outer block, and P4-HOLD, under the same rule",
+          "measured_on": "rows surviving the sample-universe conditions, computed before any model is fitted and reported per block whatever the gate decides",
+          "note": "'in full' means this rule and nothing else. A block that fails it is UNAVAILABLE and is excluded from stage 1's fold count entirely; it is never included at a discount"
+        }
+      },
+      {
+        "label": "outer_block_3",
+        "block": [
+          40981,
+          45802
+        ],
+        "rows": 4821,
+        "rows_surviving": 4821,
+        "surviving_fraction": 1.0,
+        "max_contiguous_missing_hours": 0,
+        "available": true,
+        "reasons": [],
+        "rule": {
+          "min_surviving_row_fraction": 0.98,
+          "max_contiguous_missing_hours": 48,
+          "applies_to": "each exploratory outer block, and P4-HOLD, under the same rule",
+          "measured_on": "rows surviving the sample-universe conditions, computed before any model is fitted and reported per block whatever the gate decides",
+          "note": "'in full' means this rule and nothing else. A block that fails it is UNAVAILABLE and is excluded from stage 1's fold count entirely; it is never included at a discount"
+        }
+      }
+    ],
+    "exploratory_blocks_available": 3,
+    "holdout": {
+      "label": "p4_hold",
+      "block": [
+        45802,
+        48211
+      ],
+      "rows": 2409,
+      "rows_surviving": 2409,
+      "surviving_fraction": 1.0,
+      "max_contiguous_missing_hours": 0,
+      "available": true,
+      "reasons": [],
+      "basis": "archive-day metadata only; no P4-HOLD row was read",
+      "days_checked": 101,
+      "days_absent": [],
+      "rule": {
+        "min_surviving_row_fraction": 0.98,
+        "max_contiguous_missing_hours": 48,
+        "applies_to": "each exploratory outer block, and P4-HOLD, under the same rule",
+        "measured_on": "rows surviving the sample-universe conditions, computed before any model is fitted and reported per block whatever the gate decides",
+        "note": "'in full' means this rule and nothing else. A block that fails it is UNAVAILABLE and is excluded from stage 1's fold count entirely; it is never included at a discount"
+      },
+      "exact_figure_recomputed_at": "stage-2 snapshot export"
+    },
+    "rule": {
+      "requires_exploratory_blocks_available": 2,
+      "requires_holdout_available": true,
+      "block_rule": "BLOCK_AVAILABILITY_RULE",
+      "on_failure": "not_evaluable",
+      "note": "two available blocks is below stage 1's three-valid-fold requirement, so an intersection that only just clears this gate fails stage 1 by construction and the holdout is never opened. That is the intended behaviour: the gate stops the acquisition, and stage 1 stops the evaluation"
+    },
+    "preregistration_hash": "b52ce5dda17ff065bd70d4f4a62ef6b0e221dd18ed2cf4c0f20017ec3bae59a7",
+    "outcome": null,
+    "note": "a failed gate is a statement about what public archives contain. It is not evidence about whether derivatives positioning carries information, and it may not be reported as a negative P4"
+  },
+  "universe": {
+    "universe_schema": "chimera.p4-universe/1",
+    "universe_hash": "7ae270bb0def196416600c280868a4b36c4ec0168b8cea2604b5d08ed67ab240",
+    "derivatives_spec_hash": "e9c8018a2b2ff6cce66a34c037e1a92dc4fdcacfc7cbe1cf5a650497698f49c3",
+    "preregistration_hash": "b52ce5dda17ff065bd70d4f4a62ef6b0e221dd18ed2cf4c0f20017ec3bae59a7",
+    "rows_eligible": 38425,
+    "rows_total": 45802,
+    "first_eligible_row": 5370,
+    "last_eligible_row": 45801,
+    "first_eligible_instant": "2020-09-02T00:00:00+00:00",
+    "last_eligible_instant": "2025-05-19T07:00:00+00:00",
+    "excluded_by": {
+      "ohlcv14_row": 0,
+      "derivatives_undefined": 7377,
+      "derivatives_warmup_hours": 3322,
+      "per_column": {
+        "drv_funding_last": 0,
+        "drv_funding_sum_9": 987,
+        "drv_funding_z": 3270,
+        "drv_oi_log_change_24h": 5644,
+        "drv_oi_notional_ratio": 5375,
+        "drv_oi_price_divergence": 5644,
+        "drv_basis": 0,
+        "drv_basis_z": 0
+      },
+      "hourly_frame_rows": 47136,
+      "note": "a missing open-interest day removes its own 24 hours and the 24 hours exactly one day later, because drv_oi_log_change_24h and drv_oi_price_divergence read the snapshot at t and at t - 24h and \u00a73.4 forbids carrying either forward"
+    },
+    "conditions": [
+      {
+        "condition": "ohlcv14_row",
+        "requires": "the row is in the OHLCV14 research spine: past indicator warm-up, no NaN feature, and its 6-candle label knowable without touching a sealed close"
+      },
+      {
+        "condition": "derivatives_defined",
+        "requires": "every one of the eight derivatives_v1 columns is defined at the row, after the 240-hour derivatives warm-up"
+      },
+      {
+        "condition": "within_staleness_bounds",
+        "requires": "no observation the row depends on is stale beyond its MAX_STALENESS_HOURS bound; a missing OI day therefore removes that whole UTC day"
+      },
+      {
+        "condition": "no_segment_bridge",
+        "requires": "no feature's window bridges a spine segment boundary"
+      }
+    ],
+    "applied_to": "every arm identically, with the ohlcv14 control re-run on it",
+    "join_evidence": {
+      "applicable": true,
+      "recomputed": [
+        "drv_basis from the derivatives source, positionally",
+        "drv_basis from the derivatives source, by timestamp"
+      ],
+      "rows": 45802,
+      "matches": true,
+      "matches_under_plus_one_shift": false,
+      "matches_under_minus_one_shift": false,
+      "source_rows_first": 78,
+      "source_rows_last": 47135,
+      "warmup_hours_before_the_spine": 78
+    },
+    "identity": {
+      "universe_hash": "7ae270bb0def196416600c280868a4b36c4ec0168b8cea2604b5d08ed67ab240",
+      "derivatives_spec_hash": "e9c8018a2b2ff6cce66a34c037e1a92dc4fdcacfc7cbe1cf5a650497698f49c3",
+      "preregistration_hash": "b52ce5dda17ff065bd70d4f4a62ef6b0e221dd18ed2cf4c0f20017ec3bae59a7",
+      "rows_eligible": 38425,
+      "rows_total": 45802,
+      "gate_passed": true,
+      "identity": "d3e71350cf8ce3e877fd4415bede8bad72d4a2ac82f297201e13abb00075aadc"
+    }
+  },
+  "provenance": {
+    "control_artifact": "artifacts/benchmark/btc_p4_ohlcv14_xgboost/p2b.json",
+    "combined_artifact": "artifacts/benchmark/btc_p4_ohlcv14_plus_derivatives_v1_xgboost/p2b.json",
+    "code": {
+      "scheme": "git-tracked-source/1",
+      "roots": [
+        "chimera",
+        "nn",
+        "strategies",
+        "tools"
+      ],
+      "revision": "31c45da7522e8e6264a9415f823e3cc114948dce",
+      "dirty": false,
+      "source_digest": "e75c71b00da1c82fd93e2b3776ca6d7df3bc3b65f9ad457e955b546ce8269751",
+      "source_files": 65,
+      "untracked_source_files": 0,
+      "missing_tracked_source_files": 0,
+      "excluded_environment_files": 0,
+      "note": "source_digest is a SHA-256 over the content of every Python file git tracks under ['chimera', 'nn', 'strategies', 'tools'], plus any untracked Python file among them. An installed environment \u2014 a virtualenv inside the checkout, site-packages, a model library imported lazily by one model family and not another \u2014 is not under those roots and cannot move it. An environment is recognised by its shape (a site-packages/dist-packages/node_modules directory, or one holding a pyvenv.cfg) and never by a directory's name, so a Python file sitting under a source root in a directory merely called build or dist is project source and is hashed. revision and dirty are recorded beside the digest because neither one alone says what source ran"
+    }
+  },
+  "min_outer_trades": 10,
+  "improved_rule": {
+    "statistic": "outer net return after costs, combined arm minus control arm",
+    "improved_when": "delta > 0",
+    "zero_is_improved": false,
+    "note": "strict. A fold in which both arms take no trades has delta exactly 0.0 and is not an improvement; it is also invalid under min_outer_trades, and both readings are recorded so neither has to be decided later"
+  },
+  "continuation_rule": {
+    "valid_folds_required": 3,
+    "improved_folds_required": 3,
+    "improved_rule": {
+      "statistic": "outer net return after costs, combined arm minus control arm",
+      "improved_when": "delta > 0",
+      "zero_is_improved": false,
+      "note": "strict. A fold in which both arms take no trades has delta exactly 0.0 and is not an improvement; it is also invalid under min_outer_trades, and both readings are recorded so neither has to be decided later"
+    },
+    "mean_delta_above": 0.0,
+    "mean_delta_strict": true,
+    "worst_fold_delta_at_least": -0.02,
+    "screen_false_positive_rate_under_coin_null": 0.3125,
+    "evaluated_on": "the exploratory blocks that passed BLOCK_AVAILABILITY_RULE",
+    "note": "a screening rule, not a test. Its only job is to decide whether to spend the single-use holdout; a false continuation costs one holdout evaluation and is recorded as such"
+  },
+  "evidence_class": "exploratory screen on burned blocks; not a research result",
+  "folds": [
+    {
+      "block": [
+        31339,
+        36160
+      ],
+      "control_net_return": 0.05149,
+      "combined_net_return": 0.005028,
+      "control_trades": 15,
+      "combined_trades": 20,
+      "delta": -0.046462,
+      "valid": true,
+      "improved": false,
+      "min_outer_trades": 10
+    },
+    {
+      "block": [
+        36160,
+        40981
+      ],
+      "control_net_return": -0.103661,
+      "combined_net_return": -0.196729,
+      "control_trades": 17,
+      "combined_trades": 72,
+      "delta": -0.09306799999999998,
+      "valid": true,
+      "improved": false,
+      "min_outer_trades": 10
+    },
+    {
+      "block": [
+        40981,
+        45802
+      ],
+      "control_net_return": -0.043012,
+      "combined_net_return": -0.019946,
+      "control_trades": 42,
+      "combined_trades": 15,
+      "delta": 0.023066000000000003,
+      "valid": true,
+      "improved": true,
+      "min_outer_trades": 10
+    }
+  ],
+  "frozen_evidence": {
+    "manifest": "artifacts/btc_p4_screen_SHA256SUMS.txt",
+    "report_path": "artifacts/benchmark/btc_p4_stage1/stage1.json"
+  },
+  "screen": {
+    "passed": false,
+    "reasons": [
+      "1 improved fold(s) of 3 valid; 3 required (improved means delta > 0; a zero delta is not an improvement)",
+      "mean delta over valid folds is -0.038821333333333326; must be > 0",
+      "worst valid fold delta is -0.09306799999999998; must be at least -0.02"
+    ],
+    "valid_folds": 3,
+    "invalid_folds": 0,
+    "improved_folds": 1,
+    "mean_delta": -0.038821333333333326,
+    "worst_fold_delta": -0.09306799999999998,
+    "rule": {
+      "valid_folds_required": 3,
+      "improved_folds_required": 3,
+      "improved_rule": {
+        "statistic": "outer net return after costs, combined arm minus control arm",
+        "improved_when": "delta > 0",
+        "zero_is_improved": false,
+        "note": "strict. A fold in which both arms take no trades has delta exactly 0.0 and is not an improvement; it is also invalid under min_outer_trades, and both readings are recorded so neither has to be decided later"
+      },
+      "mean_delta_above": 0.0,
+      "mean_delta_strict": true,
+      "worst_fold_delta_at_least": -0.02,
+      "screen_false_positive_rate_under_coin_null": 0.3125,
+      "evaluated_on": "the exploratory blocks that passed BLOCK_AVAILABILITY_RULE",
+      "note": "a screening rule, not a test. Its only job is to decide whether to spend the single-use holdout; a false continuation costs one holdout evaluation and is recorded as such"
+    },
+    "outcome": "screened_out",
+    "classification": "screened_out: negative for this design at this horizon, on burned blocks. The holdout is not opened and there is no re-fit"
+  }
+}

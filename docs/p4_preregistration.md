@@ -79,7 +79,7 @@ P4 engine, no P4 arm, and no P4 artifact directory.
 | `P2b` | `btc_p2b_information_set_benchmark` | **answered** |
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
-| `P4` | `btc_p4_derivatives_positioning_benchmark` | **preregistered** |
+| `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 
 <!-- research-state:end -->
 
@@ -1623,9 +1623,11 @@ hash:
 
 ---
 
-## 13. What must exist before P4 runs
+## 13. What had to exist before P4 ran
 
-A checklist, so that "preregistered" does not quietly come to mean "started".
+This checklist is preserved as the historical pre-run gate, so that
+"preregistered" cannot quietly come to mean "started". The unchecked boxes below
+record the preregistration-time state; they are not the current repository status.
 
 - [ ] acquisition tool with `--plan` and `--probe`, no network in `--plan`
 - [ ] the availability window established from metadata, and the §3.6/§8.0 gate applied
@@ -1640,7 +1642,26 @@ A checklist, so that "preregistered" does not quietly come to mean "started".
 - [ ] the P4-HOLD snapshot exported, verified, and left uninspected
 - [ ] this document unchanged, and its hash recorded in every cell
 
-Nothing on that list is done. That is the correct state for a preregistration.
+At preregistration time, none of the items above was done. That was the correct
+state for a preregistration.
 
-The ledger at `data/research/p4_holdout_ledger.json` says `unspent`, and no
-Python file in this repository has read a row of `[45802, 48211)`.
+At preregistration time, the ledger at
+`data/research/p4_holdout_ledger.json` said `unspent`, and no Python file in this
+repository had read a row of `[45802, 48211)`.
+
+### Post-run closure
+
+P4 Stage 1 subsequently ran under the preregistered design and **screened out**.
+The deciding XGBoost comparison had three valid availability-qualified folds,
+of which one improved; mean combined-minus-control net-return delta was
+`-0.038821333333333326` and the worst-fold delta was
+`-0.09306799999999998`. The preregistered continuation rule therefore failed.
+
+No Stage 2 fit was performed. P4-HOLD was not opened, scored or evaluated and
+was retired unread. Styx remained sealed.
+
+The supported interpretation is limited to this design and horizon: causal
+derivatives positioning/carry features based on realised funding, open interest
+and perpetual basis did not provide robust incremental value over OHLCV14 in
+the current BTC 1h/6h cost-aware setup. This does not establish that derivatives
+information is generally uninformative.
