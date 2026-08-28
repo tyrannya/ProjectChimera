@@ -86,21 +86,37 @@ def _report(deltas, *, trades=30, availability=None):
 
 
 # --- the interlock ------------------------------------------------------------
-def test_the_committed_interlock_says_stage_one_is_not_authorised():
+def test_the_committed_interlock_authorises_only_the_active_design():
     payload = read_authorisation()
-    assert payload["state"] == "not_authorised"
+    assert payload["state"] == "authorised"
     assert payload["preregistration_hash"] == preregistration_hash()
+    assert payload["authorised_by"]
+    assert payload["authorised_at"]
+    assert payload["reason"]
 
 
-def test_no_fit_is_authorised_while_the_committed_file_says_so():
+def test_committed_authorisation_still_requires_runtime_gates():
+    with pytest.raises(Stage1Interlock, match="did not confirm"):
+        assert_fit_authorised(confirm=False, availability=PASSING_AVAILABILITY)
+    with pytest.raises(Stage1Interlock, match="not_evaluable"):
+        assert_fit_authorised(confirm=True, availability={"gate_passed": False})
+
+
+def test_command_line_confirmation_cannot_open_a_closed_interlock(tmp_path):
+    root = tmp_path / "tree"
+    (root / "data" / "research").mkdir(parents=True)
+    payload = json.loads(AUTHORISATION_PATH.read_text())
+    payload.update(
+        {
+            "state": "not_authorised",
+            "authorised_by": None,
+            "authorised_at": None,
+            "reason": None,
+        }
+    )
+    (root / AUTHORISATION_PATH).write_text(json.dumps(payload, indent=2))
     with pytest.raises(Stage1Interlock, match="not_authorised"):
-        assert_fit_authorised(confirm=True, availability=PASSING_AVAILABILITY)
-
-
-def test_the_command_line_confirmation_alone_does_not_authorise_a_fit(tmp_path):
-    """Two gates, and the flag is the weaker one."""
-    with pytest.raises(Stage1Interlock):
-        assert_fit_authorised(confirm=True, availability=PASSING_AVAILABILITY)
+        assert_fit_authorised(confirm=True, availability=PASSING_AVAILABILITY, root=root)
 
 
 def _authorise(tmp_path, **overrides):
@@ -160,11 +176,11 @@ def test_an_interlock_under_another_schema_does_not_authorise_anything(tmp_path)
         assert_fit_authorised(confirm=True, availability=PASSING_AVAILABILITY, root=root)
 
 
-def test_describe_reports_zero_fits_and_names_what_is_stopping_one():
+def test_describe_reports_authorisation_without_running_a_fit():
     described = describe(PASSING_AVAILABILITY)
     assert described["fits_run"] == 0
-    assert described["interlock"]["state"] == "not_authorised"
-    assert "not_authorised" in described["fit_would_be_refused_because"]
+    assert described["interlock"]["state"] == "authorised"
+    assert described["fit_would_be_refused_because"] is None
 
 
 # --- the matrix ---------------------------------------------------------------

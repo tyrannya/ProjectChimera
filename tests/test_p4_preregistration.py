@@ -103,13 +103,15 @@ def test_p4_is_a_registered_checkpoint_with_its_three_preregistered_arms():
     assert CHECKPOINTS["P4"].family == DERIVATIVES_V1
 
 
-def test_no_p4_fit_is_authorised():
-    """The interlock, in the state it ships in and must stay in until a commit."""
+def test_p4_authorisation_still_requires_runtime_gates():
+    """The committed authorisation does not bypass CLI confirmation or availability."""
     from nn.p4_stage1 import Stage1Interlock, assert_fit_authorised, read_authorisation
 
-    assert read_authorisation()["state"] == "not_authorised"
+    assert read_authorisation()["state"] == "authorised"
     with pytest.raises(Stage1Interlock):
-        assert_fit_authorised(confirm=True, availability={"gate_passed": True})
+        assert_fit_authorised(confirm=False, availability={"gate_passed": True})
+    with pytest.raises(Stage1Interlock):
+        assert_fit_authorised(confirm=True, availability={"gate_passed": False})
 
 
 def test_no_p4_evidence_exists():
@@ -150,7 +152,7 @@ def test_no_p4_market_data_has_been_acquired():
     assert "p4_holdout_ledger.json" in p4_files
     assert "p4_stage1_authorisation.json" in p4_files
     authorisation = json.loads((research / "p4_stage1_authorisation.json").read_text())
-    assert authorisation["state"] == "not_authorised"
+    assert authorisation["state"] == "authorised"
     ledger = json.loads((research / "p4_holdout_ledger.json").read_text())
     assert set(ledger) == {
         "ledger_schema",
@@ -815,8 +817,8 @@ def test_the_document_and_the_policy_agree_on_what_is_out_of_scope():
     assert OPEN_INTEREST_DUPLICATE_POLICY["grouping_key"] in section
 
 
-def test_the_stage_one_authorisation_carries_only_the_active_hash_and_stays_closed():
-    """Rebinding the interlock to the current design must grant nothing.
+def test_the_stage_one_authorisation_carries_only_the_active_hash_and_is_currently_authorised():
+    """The later Stage 1 authorisation remains bound to the current design.
 
     And it names exactly one design. The superseded hash is provenance, and its
     home is the preregistration document — an interlock that carried two hashes
@@ -826,9 +828,9 @@ def test_the_stage_one_authorisation_carries_only_the_active_hash_and_stays_clos
     text = path.read_text()
     payload = json.loads(text)
     assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
-    assert payload["state"] == "not_authorised"
+    assert payload["state"] == "authorised"
     assert payload["preregistration_hash"] == preregistration_hash()
-    assert payload["authorised_by"] is None and payload["authorised_at"] is None
+    assert payload["authorised_by"] and payload["authorised_at"]
     assert SUPERSEDED_HASH not in text, "only the active hash belongs in the interlock"
 
 
@@ -1057,16 +1059,16 @@ def test_the_document_does_not_generalise_past_what_was_observed():
     assert "Nothing here asserts that no BTCUSDT funding data of any kind existed" in text
 
 
-def test_the_stage_one_authorisation_is_rebound_to_the_active_design_and_stays_closed():
-    """Rebinding the interlock for a second amendment must still grant nothing."""
+def test_the_stage_one_authorisation_is_rebound_to_the_active_design_and_is_currently_authorised():
+    """The later Stage 1 authorisation remains bound to the A2-updated active design."""
     path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
     text = path.read_text()
     payload = json.loads(text)
     assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
-    assert payload["state"] == "not_authorised"
+    assert payload["state"] == "authorised"
     assert payload["preregistration_hash"] == preregistration_hash()
-    assert payload["authorised_by"] is None and payload["authorised_at"] is None
-    assert payload["reason"] is None
+    assert payload["authorised_by"] and payload["authorised_at"]
+    assert payload["reason"]
     for superseded in (SUPERSEDED_HASH, SUPERSEDED_HASH_A1):
         assert superseded not in text, "only the active hash belongs in the interlock"
 
@@ -1345,16 +1347,16 @@ def test_the_document_says_the_basis_definitions_do_not_change():
     )
 
 
-def test_the_stage_one_authorisation_carries_the_a3_hash_and_stays_closed():
-    """Rebinding the interlock for a third amendment must still grant nothing."""
+def test_the_stage_one_authorisation_carries_the_a3_hash_and_is_currently_authorised():
+    """The later Stage 1 authorisation remains bound to the A3-updated active design."""
     path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
     text = path.read_text()
     payload = json.loads(text)
     assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
-    assert payload["state"] == "not_authorised"
+    assert payload["state"] == "authorised"
     assert payload["preregistration_hash"] == preregistration_hash()
-    assert payload["authorised_by"] is None and payload["authorised_at"] is None
-    assert payload["reason"] is None
+    assert payload["authorised_by"] and payload["authorised_at"]
+    assert payload["reason"]
     for superseded in (SUPERSEDED_HASH, SUPERSEDED_HASH_A1, SUPERSEDED_HASH_A2):
         assert superseded not in text, "only the active hash belongs in the interlock"
 
@@ -1627,16 +1629,16 @@ def test_the_document_says_the_open_interest_definitions_do_not_change():
     assert "missing-day rule is unamended" in section
 
 
-def test_the_stage_one_authorisation_carries_the_a4_hash_and_stays_closed():
-    """Rebinding the interlock for a fourth amendment must still grant nothing."""
+def test_the_stage_one_authorisation_carries_the_a4_hash_and_is_currently_authorised():
+    """The later Stage 1 authorisation remains bound to the A4-updated active design."""
     path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
     text = path.read_text()
     payload = json.loads(text)
     assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
-    assert payload["state"] == "not_authorised"
+    assert payload["state"] == "authorised"
     assert payload["preregistration_hash"] == preregistration_hash()
-    assert payload["authorised_by"] is None and payload["authorised_at"] is None
-    assert payload["reason"] is None
+    assert payload["authorised_by"] and payload["authorised_at"]
+    assert payload["reason"]
     for superseded in (
         SUPERSEDED_HASH,
         SUPERSEDED_HASH_A1,

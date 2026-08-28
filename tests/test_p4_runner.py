@@ -106,15 +106,25 @@ def test_every_p4_arm_reaches_the_interlock_and_is_refused(runnable_tree, tmp_pa
     directory proves nothing after it did.
     """
     out = tmp_path / f"cell_{arm}"
-    with pytest.raises(Stage1Interlock, match="not_authorised"):
+    with pytest.raises(Stage1Interlock, match="did not confirm"):
         p2b.main(_argv(runnable_tree, out, arm=arm))
     assert not out.exists()
 
 
 def test_the_confirmation_flag_alone_does_not_get_past_the_interlock(runnable_tree, tmp_path):
     out = tmp_path / "cell"
-    with pytest.raises(Stage1Interlock, match="not_authorised"):
-        p2b.main(_argv(runnable_tree, out, extra=("--authorise-fit",)))
+    with pytest.raises(Stage1Interlock, match="availability gate has not passed"):
+        p2b.main(
+            _argv(
+                runnable_tree,
+                out,
+                extra=(
+                    "--authorise-fit",
+                    "--holdout-coverage",
+                    str(tmp_path / "absent-coverage.json"),
+                ),
+            )
+        )
     assert not out.exists()
 
 
