@@ -95,6 +95,106 @@ LAST_INFERENCE_TS = Gauge(
     "Unix timestamp of the last successful inference",
 )
 
+# --- futures execution (dry-run) ----------------------------------------
+# Every label below is a bounded enum from chimera.futures: a side, a purpose, a
+# state, an outcome. None of them carries a free-text reason, an order id, a
+# price or a quantity — a label whose value set grows with traffic is a new time
+# series per event, and Prometheus keeps them forever. The one exception is
+# `symbol`, which is bounded by the configured whitelist in the same way
+# DATA_DELAY's `pair` already is.
+FUT_SIGNALS = Counter(
+    f"{_PREFIX}_futures_signals_total",
+    "Futures signals received, by what happened to them",
+    ["outcome"],
+)
+FUT_RISK_VETOES = Counter(
+    f"{_PREFIX}_futures_risk_vetoes_total",
+    "Futures orders the risk engine refused, by collapsed reason",
+    ["reason"],
+)
+FUT_ORDERS_PLANNED = Counter(
+    f"{_PREFIX}_futures_orders_planned_total",
+    "Futures orders planned, before the risk gate",
+    ["side", "purpose"],
+)
+FUT_ORDERS_SUBMITTED = Counter(
+    f"{_PREFIX}_futures_orders_submitted_total",
+    "Futures orders submitted to the dry-run simulator",
+    ["side", "purpose"],
+)
+FUT_ORDERS_REJECTED = Counter(
+    f"{_PREFIX}_futures_orders_rejected_total",
+    "Futures orders the venue or its constraints refused",
+    ["reason"],
+)
+FUT_FILLS = Counter(
+    f"{_PREFIX}_futures_fills_total",
+    "Simulated futures fills, partial and final counted separately",
+    ["side", "kind"],
+)
+FUT_SLIPPAGE_BPS = Histogram(
+    f"{_PREFIX}_futures_slippage_bps",
+    "Adverse distance from the reference price of each simulated fill, in bps",
+    buckets=(0.0, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0),
+)
+FUT_TRADING_FEES = Counter(
+    f"{_PREFIX}_futures_trading_fees_total", "Simulated futures trading fees paid"
+)
+FUT_FUNDING = Counter(
+    f"{_PREFIX}_futures_funding_total",
+    "Simulated funding, paid and received kept apart",
+    ["direction"],
+)
+FUT_TURNOVER = Counter(
+    f"{_PREFIX}_futures_turnover_total", "Notional traded by the futures executor"
+)
+FUT_POSITION_QUANTITY = Gauge(
+    f"{_PREFIX}_futures_position_quantity",
+    "Open futures position size, as a magnitude",
+    ["symbol", "side"],
+)
+FUT_GROSS_EXPOSURE = Gauge(
+    f"{_PREFIX}_futures_gross_exposure", "Absolute futures notional across positions"
+)
+FUT_NET_EXPOSURE = Gauge(
+    f"{_PREFIX}_futures_net_exposure", "Signed futures notional: LONG adds, SHORT subtracts"
+)
+FUT_REALISED_PNL = Gauge(
+    f"{_PREFIX}_futures_realised_pnl", "Cumulative simulated realised futures PnL"
+)
+FUT_NET_PNL = Gauge(
+    f"{_PREFIX}_futures_net_pnl", "Realised PnL after trading fees and net funding"
+)
+FUT_DRAWDOWN = Gauge(
+    f"{_PREFIX}_futures_drawdown", "Drawdown of simulated net PnL from its own peak"
+)
+FUT_RECONCILIATION = Counter(
+    f"{_PREFIX}_futures_reconciliation_total",
+    "Reconciliation attempts, by whether local and reported agreed",
+    ["outcome"],
+)
+FUT_INVALID_TRANSITIONS = Counter(
+    f"{_PREFIX}_futures_invalid_transitions_total",
+    "Order state transitions refused by the state machine",
+    ["from_state"],
+)
+FUT_EMERGENCY_FLATTEN = Counter(
+    f"{_PREFIX}_futures_emergency_flatten_total",
+    "Emergency flattens, by their declared cause",
+    ["cause"],
+)
+FUT_RECOVERY = Counter(
+    f"{_PREFIX}_futures_recovery_total",
+    "Restart recoveries, by how the persisted state was found",
+    ["outcome"],
+)
+FUT_EXECUTION_LATENCY = Histogram(
+    f"{_PREFIX}_futures_execution_latency_seconds",
+    "Wall time from signal received to the last simulated event applied",
+    buckets=(0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0),
+)
+
+
 # --- system -------------------------------------------------------------
 SERVICE_UP = Gauge(f"{_PREFIX}_service_up", "1 when the component is ready", ["component"])
 API_FAILURES = Counter(

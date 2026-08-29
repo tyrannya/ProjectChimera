@@ -36,6 +36,7 @@ market data → validated dataset → features → leakage-safe training
 | `NNPredictorStrategy` | Working | Fails closed to HOLD on any inference problem |
 | `SwingSpot` | Working | Simple EMA/RSI, long-only spot |
 | Central risk engine + kill switch | Working | On the entry path via `confirm_trade_entry` |
+| Futures execution (`chimera.futures`) | Working, **dry-run only** | USD-M perpetuals, isolated 1x, LONG and SHORT. No live-order path exists and no credential is required |
 | Prometheus + Grafana | Working | Every panel queries a metric this code exports |
 | Telegram notifications | Working, optional | Absent credentials disable it silently |
 | MLflow tracking | Optional | `--mlflow`; artifacts do not depend on it |
@@ -477,6 +478,8 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/p2b_methodology.md](docs/p2b_methodology.md) | Checkpoints P2b, P2c and P3: does any of those families add information beyond OHLCV14? |
 | [docs/p4_preregistration.md](docs/p4_preregistration.md) | Checkpoint P4, preregistered before its data existed and closed after Stage 1 screened out: derivatives positioning and carry |
 | [docs/derivatives_v1.md](docs/derivatives_v1.md) | P4's information set, as implemented: what §5 left open, and two consequences that tighten its gate |
+| [docs/futures_execution_v1.md](docs/futures_execution_v1.md) | Futures Execution v1: dry-run-only USD-M perpetuals, LONG and SHORT, and the risk boundary that does not move |
+| [docs/futures_dry_run_validation.md](docs/futures_dry_run_validation.md) | The operational protocol Futures Execution v1 was validated against, frozen before it was evaluated |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
 | [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, and what is next |
 
@@ -485,6 +488,8 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 ```
 chimera/       Shared, dependency-light core: features, contracts, risk, safety,
                metrics, notifications, inference client. No torch, no freqtrade.
+chimera/futures/  Dry-run USD-M perpetual execution: positions, order state
+               machine, venue constraints, fees and funding, reconciliation.
 nn/            Data pipeline, model, training, evaluation, walk-forward,
                artifact registry, inference service.
 strategies/    Freqtrade strategies and the risk-aware base class.
