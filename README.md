@@ -475,7 +475,7 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/chart_structure_v1.md](docs/chart_structure_v1.md) | The causal classical-pattern information set: 30 exact definitions |
 | [docs/microstructure_v1.md](docs/microstructure_v1.md) | The causal trade-flow information set: 32 exact definitions (checkpoint P3) |
 | [docs/p2b_methodology.md](docs/p2b_methodology.md) | Checkpoints P2b, P2c and P3: does any of those families add information beyond OHLCV14? |
-| [docs/p4_preregistration.md](docs/p4_preregistration.md) | Checkpoint P4, preregistered before its data exists: derivatives positioning and carry |
+| [docs/p4_preregistration.md](docs/p4_preregistration.md) | Checkpoint P4, preregistered before its data existed and closed after Stage 1 screened out: derivatives positioning and carry |
 | [docs/derivatives_v1.md](docs/derivatives_v1.md) | P4's information set, as implemented: what §5 left open, and two consequences that tighten its gate |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
 | [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, and what is next |

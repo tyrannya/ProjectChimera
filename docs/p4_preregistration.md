@@ -51,7 +51,14 @@ after A3 and before amendment A4 (§3.4d) added
 history, not as alternatives: no P4 cell, fit or outcome was ever produced under
 any of them, and nothing may be produced under any of them now.
 
-**No P4 model has been fitted and no P4 result exists.** No derivatives snapshot
+**State at preregistration time, kept verbatim as history.** Everything in the
+paragraph that follows was true when this document was frozen and none of it is
+true now; P4 subsequently ran Stage 1 and screened out, and the *Post-run
+closure* at the foot of this document records the outcome. The paragraph is left
+standing rather than rewritten because a preregistration that edits its own
+pre-run state is no longer a preregistration.
+
+> **No P4 model has been fitted and no P4 result exists.** No derivatives snapshot
 has been committed to this repository. What *has* happened is recorded in §3.4a,
 §3.4b, §3.4c and §3.4d: a bounded inspection of two published metrics archives to
 establish their column layout and row structure — the `--probe` step §3.5 always
@@ -65,6 +72,9 @@ and no outcome information. `P4` is deliberately *not* registered in
 `nn.information_sets.CHECKPOINTS`, so `python -m nn.p2b --checkpoint P4` is
 refused rather than producing a cell from columns that do not exist. There is no
 P4 engine, no P4 arm, and no P4 artifact directory.
+
+*(End of the preregistration-time state. The snapshot, the engine, the arms and
+the nine frozen cells all exist now; see the Post-run closure.)*
 
 <!-- research-state:begin -->
 <!--

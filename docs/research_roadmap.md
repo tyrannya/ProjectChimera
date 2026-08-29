@@ -12,7 +12,7 @@ Rules that apply to every row below:
 - **The Styx boundary never moves.** `2025-08-27T23:00:00+00:00` for
   `btc-usdt-1h-gen1`. A new research generation is a new contract file
   describing a new *question*; it may not manufacture a new holdout.
-- **A negative result is a result.** Three of the five answered checkpoints are
+- **A negative result is a result.** Four of the six answered checkpoints are
   negative, and they are the reason the later ones ask what they ask.
 - **Adaptive evidence is labelled.** Every checkpoint after v4 reuses outer
   blocks whose results have already been seen, which makes them adaptive
@@ -240,43 +240,126 @@ space. It is a reason to change what the next checkpoint spends its budget on.
 
 ---
 
-## Preregistered, not yet run
-
 ### P4 — does derivatives positioning and carry add information beyond OHLCV14?
 
-Preregistered in full at [`p4_preregistration.md`](p4_preregistration.md),
-before any P4 data has been acquired and before any P4 number exists. The short
-version: funding rate, open interest and futures basis are the first information
-this programme would read that is *not* a function of the spot trade tape at
-all — they are the positioning and cost-of-carry of leveraged participants,
-published on their own schedule, and independent of both the candle and the
-execution stream in a way `smc_v1`, `chart_structure_v1` and `microstructure_v1`
-were not.
+**No, on the exploratory screen, and the checkpoint ended there.** P4 was the
+first checkpoint to read information that is not a function of the spot trade
+tape at all: realised perpetual funding, open interest and futures basis, in
+`derivatives_v1` ([`derivatives_v1.md`](derivatives_v1.md)), preregistered in
+full at [`p4_preregistration.md`](p4_preregistration.md) before any P4 datum was
+acquired. Design unchanged from P2b/P2c/P3 in every axis except the columns:
+BTC/USDT, 1h observations, 6-candle horizon, the same cost model, the same four
+outer blocks.
 
-Two constraints the preregistration is built around, and which it does not
-pretend away:
+Unlike its predecessors P4 was a **two-stage** design — an exploratory Stage-1
+screen on the four burned blocks, and, only if the screen continued, a
+single-use holdout evaluation on `P4-HOLD`. **Stage 1 did not continue.**
 
-- **The four outer blocks are burned.** Six checkpoints have read them. They
-  cannot confirm anything, and splitting them into more folds would manufacture
-  independence rather than find it.
-- **The only unobserved pre-Styx region is rows 45,802–48,211** — 2,409 candles,
-  `2025-05-19T08:00` to about `2025-08-27T16:00`, roughly half of one outer fold.
-  It ends at 48,211 and not at the research region's own end of 48,217 because a
-  6-candle label taken any later would close on a sealed price. It has never
-  been scored, and the committed research snapshot is truncated at 45,802 so
-  nothing in the P2b/P2c/P3 path could read it — but it was never *sealed*
-  either, which is precisely why the preregistration classifies P4 as unable to
-  produce confirmatory evidence.
+The deciding comparison was `xgboost x ohlcv14_plus_derivatives_v1` against
+`xgboost x ohlcv14`. Outer block 0 was excluded by the preregistered
+availability rule (§8.0) because the derivatives sources do not reach back that
+far, leaving **three availability-qualified valid folds**:
 
-Styx does not move, is not opened, and is not available to rescue an ambiguous
-P4 result.
+| valid fold | combined − control |
+| --- | --- |
+| 1 | `-0.046462` |
+| 2 | `-0.09306799999999998` |
+| 3 | `+0.023066000000000003` |
+
+**1 of 3 folds improved** against a required **3**; the mean delta was
+`-0.038821333333333326` against a required `> 0`; the worst fold was
+`-0.09306799999999998` against a required `>= -0.02`. All three continuation
+conditions failed and the outcome is `screened_out`. Evidence:
+[`artifacts/benchmark/btc_p4_comparison/`](../artifacts/benchmark/btc_p4_comparison/)
+and [`artifacts/benchmark/btc_p4_stage1/`](../artifacts/benchmark/btc_p4_stage1/),
+over nine primary cells frozen under
+[`artifacts/btc_p4_stage1_SHA256SUMS.txt`](../artifacts/btc_p4_stage1_SHA256SUMS.txt)
+and a deciding screen frozen under
+[`artifacts/btc_p4_screen_SHA256SUMS.txt`](../artifacts/btc_p4_screen_SHA256SUMS.txt).
+
+Four consequences, all of them permanent:
+
+- **There was no Stage 2 and no re-fit.** A failed screen does not get a second
+  look; §8.2 of the preregistration says so in the sentence written to close
+  that door before anyone was standing in front of it.
+- **`P4-HOLD` was retired unread.** The region `[45802, 48211)` was never
+  opened, scored or evaluated. `data/research/p4_holdout_ledger.json` records it
+  as `retired` with `checkpoint: null` — spent by no one, and available to no
+  later checkpoint. P5 may not use it.
+- **Styx remains sealed.** `2025-08-27T23:00:00+00:00` did not move and was not
+  read.
+- **The claim is narrow.** This is evidence against *this* `derivatives_v1`
+  design at *this* 6-candle horizon. It is not evidence that derivatives
+  positioning is uninformative; §7.1 of the preregistration predeclared exactly
+  that limitation before the number existed.
+
+**Do not respond to this by tuning `derivatives_v1`.** Its constants were fixed
+in advance and searching them against these blocks would convert a negative
+result into a fitted one.
+
+---
+
+## What runs next
+
+The programme's next move is deliberately **not** another handcrafted feature
+family on the same hourly bars. Four negative information-set answers in a row
+is the signal to change axis, and to spend the interval between checkpoints on
+the machinery a future strategy will need whatever the research says.
+
+### Futures Execution v1 — engineering, not a checkpoint
+
+**This is not P5 and it is not research.** It adds in-repo, dry-run-only support
+for Binance USD-M perpetual futures: isolated margin, exactly 1x leverage,
+first-class LONG and SHORT, a deterministic order state machine, venue
+constraints that fail closed, separated fee and funding accounting, simulated
+fills, reconciliation, emergency flatten and restart recovery. No live-order
+path, no credentials, no real money.
+
+It exists because every strategy this programme could ever promote is currently
+unable to express SHORT exposure at all, and because P4's negative result is
+about *derivatives as information*, not about *futures as an instrument*. The
+two are independent, and confusing them would leave the execution layer unable
+to act on a positive answer whenever one arrives.
+
+Its acceptance criteria are operational invariants, not profit: a **futures
+dry-run validation** protocol frozen before it is evaluated, exercising
+`Pythia -> Aegis -> Hermes -> Binance futures dry-run` over LONG and SHORT and
+asserting that impossible transitions fail loudly, duplicate events do not
+duplicate exposure, reconciliation fails closed on disagreement, flatten reaches
+zero without reversing, and the authenticated order route stays unreachable.
+Its metrics are descriptive. **Nothing in it may select a model, a feature, a
+threshold, a horizon or a target**, and simulated PnL is not evidence of alpha.
+
+### P5 — does higher-timeframe context add information beyond OHLCV14?
+
+The next research checkpoint changes exactly one axis: **timeframe context**.
+P3's own conclusion named multi-timeframe information as one of the things four
+negative checkpoints had not tested, and it is the cheapest untested axis that
+does not require a new source, a new asset or a new horizon.
+
+P5 asks whether strictly causal higher-timeframe OHLCV context — the existing
+OHLCV14 semantics recomputed over **fully closed** 4h and 1d bars, aligned
+as-of to each 1h decision row — provides robust incremental information beyond
+the current 1h OHLCV14 baseline, in the unchanged BTC/USDT 1h-observation,
+6-candle-horizon, cost-aware setup. Everything else is held fixed: the asset,
+the source family, the base clock, the label, the costs, the folds, the three
+model families, the threshold semantics.
+
+The four outer blocks are burned, P4-HOLD is retired and Styx is shut, so P5 can
+only ever produce **adaptive exploratory evidence**. A negative P5 is a clean
+answer; a positive P5 is a lead, not a confirmation, and nothing about it opens
+the sealed block.
 
 ---
 
 ## Standing constraints
 
 - No live trading, no execution optimisation, no risk-parameter tuning while the
-  research question is open. There is nothing to execute yet.
+  research question is open. Building a dry-run execution layer is none of those
+  three: Futures Execution v1 adds the *ability* to express SHORT exposure
+  safely, tunes nothing, and sends no order to a venue. Nothing it measures is
+  allowed to select a model, a feature, a threshold, a horizon or a target, and
+  its simulated PnL is not evidence about alpha.
 - No hyperparameter search against outer validation. Ever.
 - No coin-switching in response to a disappointing BTC result. A different
   market is a different contract and a different question, not a second attempt
