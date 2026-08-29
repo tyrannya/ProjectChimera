@@ -42,6 +42,7 @@ committed and its evidence is not.
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
+| `P5` | `btc_p5_information_set_benchmark` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -332,7 +333,10 @@ threshold, a horizon or a target**, and simulated PnL is not evidence of alpha.
 
 ### P5 — does higher-timeframe context add information beyond OHLCV14?
 
-The next research checkpoint changes exactly one axis: **timeframe context**.
+**Preregistered in full at [`p5_preregistration.md`](p5_preregistration.md),
+before any P5 model was fitted, before any P5 arm existed in code and before any
+P5 number existed.** The next research checkpoint changes exactly one axis:
+**timeframe context**.
 P3's own conclusion named multi-timeframe information as one of the things four
 negative checkpoints had not tested, and it is the cheapest untested axis that
 does not require a new source, a new asset or a new horizon.
@@ -349,6 +353,22 @@ The four outer blocks are burned, P4-HOLD is retired and Styx is shut, so P5 can
 only ever produce **adaptive exploratory evidence**. A negative P5 is a clean
 answer; a positive P5 is a lead, not a confirmation, and nothing about it opens
 the sealed block.
+
+Two things about the design are settled in the preregistration rather than left
+to the run, and both are the kind of thing that is easy to settle afterwards in
+the direction the result prefers:
+
+- **The bar is 3 of 4 folds improved on `xgboost x ohlcv14_plus_mtf_v1` against
+  `xgboost x ohlcv14`** — P2b's, P2c's and P3's rule unchanged, so P5 is
+  comparable to the four checkpoints it is measured against. The mean delta and
+  the worst fold are reported and are explicitly non-decisive *in both
+  directions*: they may not rescue a fold-count failure and may not veto a pass.
+- **The denominator cannot move.** Higher-timeframe availability was measured
+  from timestamps and bar completeness before any fit — 44,171 of 45,802 spine
+  rows eligible, every ineligible row in the head of the training block, all four
+  inner and outer blocks complete — so all four folds qualify and the
+  preregistration requires all four. If fewer had qualified, P5's outcome would
+  be `not_evaluable` rather than a bar re-derived over the survivors.
 
 ---
 

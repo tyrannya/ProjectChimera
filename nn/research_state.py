@@ -100,6 +100,12 @@ CHECKPOINTS: tuple[Checkpoint, ...] = (
         "artifacts/benchmark/btc_p4_comparison/p2b_comparison.json",
         preregistration="docs/p4_preregistration.md",
     ),
+    Checkpoint(
+        "P5",
+        "btc_p5_information_set_benchmark",
+        "artifacts/benchmark/btc_p5_comparison/p2b_comparison.json",
+        preregistration="docs/p5_preregistration.md",
+    ),
 )
 
 #: The documents a reader meets before any artifact. Each must carry the block.
@@ -110,6 +116,7 @@ FRONT_DOOR_DOCUMENTS: tuple[str, ...] = (
     "docs/research_reproduction.md",
     "docs/microstructure_v1.md",
     "docs/p4_preregistration.md",
+    "docs/p5_preregistration.md",
 )
 
 

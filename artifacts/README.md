@@ -154,6 +154,7 @@ repository can declare a checkpoint unrun while its aggregate is committed here.
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
+| `P5` | `btc_p5_information_set_benchmark` | **preregistered** |
 
 <!-- research-state:end -->
 

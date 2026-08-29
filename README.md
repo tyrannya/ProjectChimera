@@ -278,6 +278,7 @@ fail until every front-door document is reconciled with it.
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
+| `P5` | `btc_p5_information_set_benchmark` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -478,6 +479,7 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/p2b_methodology.md](docs/p2b_methodology.md) | Checkpoints P2b, P2c and P3: does any of those families add information beyond OHLCV14? |
 | [docs/p4_preregistration.md](docs/p4_preregistration.md) | Checkpoint P4, preregistered before its data existed and closed after Stage 1 screened out: derivatives positioning and carry |
 | [docs/derivatives_v1.md](docs/derivatives_v1.md) | P4's information set, as implemented: what §5 left open, and two consequences that tighten its gate |
+| [docs/p5_preregistration.md](docs/p5_preregistration.md) | Checkpoint P5, preregistered before any P5 model was fitted: strictly causal higher-timeframe OHLCV context |
 | [docs/futures_execution_v1.md](docs/futures_execution_v1.md) | Futures Execution v1: dry-run-only USD-M perpetuals, LONG and SHORT, and the risk boundary that does not move |
 | [docs/futures_dry_run_validation.md](docs/futures_dry_run_validation.md) | The operational protocol Futures Execution v1 was validated against, frozen before it was evaluated |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
