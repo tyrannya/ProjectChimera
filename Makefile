@@ -6,6 +6,7 @@
 	p2c-cell p2c-btc p2c-compare freeze-evidence \
 	trade-plan trade-probe trade-snapshot verify-trade-snapshot \
 	p3-cell p3-btc p3-compare \
+	futures-dry-run futures-dry-run-verify \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -64,6 +65,7 @@ check: ## Everything the Definition of Done requires
 	$(PYTHON) -m tools.verify_research_snapshot
 	$(PYTHON) -m tools.verify_trade_snapshot
 	$(PYTHON) -m tools.verify_research_state
+	$(PYTHON) -m tools.futures_dry_run --verify $(FUTURES_DRY_RUN_DIR)
 	pytest
 	pre-commit run --all-files
 	docker compose config --quiet
@@ -146,6 +148,8 @@ P2B_RUNS   = $(foreach s,$(P2B_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2
 P2C_RUNS   = $(foreach s,$(P2C_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2c_$(s)_$(m)))
 P3_RUNS    = $(foreach s,$(P3_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p3_$(s)_$(m)))
 # P4's three arms, in the order docs/p4_preregistration.md §2 reports them.
+FUTURES_DRY_RUN_DIR ?= artifacts/futures_dry_run_v1
+
 P4_SETS    = ohlcv14 derivatives_v1 ohlcv14_plus_derivatives_v1
 P4_RUNS    = $(foreach s,$(P4_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p4_$(s)_$(m)))
 # Where `trade-snapshot` stages one archive at a time. Point it at a large disk:
@@ -296,6 +300,19 @@ p4-compare:  ## Join the P4 cells: parity proof, recomputation, deltas
 # Covers primary evidence only — cells and their per-sample predictions.
 # Comparisons and ablation tables are derived: `tools.freeze_evidence` refuses
 # to hash them, and the test suite regenerates them and checks what they say.
+# --- Futures Execution v1 (engineering, not a research checkpoint) ----------
+# Dry-run only: no credential, no network, no live order. `futures-dry-run` runs
+# the frozen operational protocol in `tools/futures_dry_run.py` and writes the
+# evidence; `futures-dry-run-verify` rechecks a committed report against the
+# protocol hash in this build, which is what stops an invariant being weakened
+# after it failed. Neither target selects a model, a feature or a threshold, and
+# the simulated PnL in the report describes the fill model, not a market.
+futures-dry-run:  ## Run the frozen futures dry-run validation protocol
+	$(PYTHON) -m tools.futures_dry_run --out $(FUTURES_DRY_RUN_DIR)
+
+futures-dry-run-verify:  ## Recheck the committed futures dry-run report
+	$(PYTHON) -m tools.futures_dry_run --verify $(FUTURES_DRY_RUN_DIR)
+
 freeze-evidence:  ## Verify a frozen checksum manifest. Args: MANIFEST=artifacts/....txt
 	$(PYTHON) -m tools.freeze_evidence --verify $(MANIFEST)
 

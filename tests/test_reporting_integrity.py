@@ -532,6 +532,13 @@ def test_the_index_records_that_committed_artifacts_predate_the_metric_change():
     for row in rows:
         if row["generation"] in POST_CORRECTION_GENERATIONS:
             continue
+        # An OPERATIONAL row reports no sharpe and no drawdown-from-a-model, so
+        # "pre-correction" would be a claim about a metric it does not carry.
+        # The research rows are all still checked; this exempts the one class of
+        # artifact the metric-semantics question does not apply to.
+        if row["status"] == "OPERATIONAL":
+            assert row["metric semantics"] != "pre-correction", row["path"]
+            continue
         assert row["metric semantics"] == "pre-correction", row["path"]
     text = INDEX.read_text()
     assert "not comparable" in text

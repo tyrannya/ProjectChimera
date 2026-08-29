@@ -85,6 +85,26 @@ positioning information is useless in general.
 six rows are CURRENT at once and `status` is scoped per research question rather
 than across the index.
 
+### One directory here is not research evidence at all
+
+[`futures_dry_run_v1/`](futures_dry_run_v1/) is the report of an **engineering**
+protocol: the operational validation of Futures Execution v1, described in
+[`../docs/futures_dry_run_validation.md`](../docs/futures_dry_run_validation.md).
+It declares `evidence_class: operational` and it is listed here so that a reader
+walking this index does not have to work out what it is.
+
+It is **not** evidence of trading alpha, not evidence about real exchange
+execution quality, and not evidence about any research checkpoint. Its acceptance
+criteria are operational invariants — a position reached zero, a duplicate event
+changed nothing, a mismatch stopped trading — and every other number in it is
+descriptive with no threshold attached. The simulated PnL it reports is a
+property of `chimera.futures.venue.DeterministicFillModel`, not of a market.
+
+It is pinned differently from everything else here, because it is a different
+kind of thing: the report embeds the protocol it ran under and a SHA-256 of that
+protocol, `make check` re-verifies the pair, and weakening an invariant after
+watching it fail moves the hash and invalidates the report.
+
 ### What the manifests cover, and what pins the rest
 
 `artifacts/*_SHA256SUMS.txt` freeze **primary** evidence: the cells and their
@@ -140,8 +160,16 @@ repository can declare a checkpoint unrun while its aggregate is committed here.
 ## Status table
 
 `status` is one of **CURRENT** (the authoritative result for its question),
-**SUPERSEDED** (a later generation answers the same question), or **HISTORICAL** (kept
-as evidence of what an earlier generation did, not as a result).
+**SUPERSEDED** (a later generation answers the same question), **HISTORICAL** (kept
+as evidence of what an earlier generation did, not as a result), or **OPERATIONAL**
+(an engineering artifact that answers no research question — see
+[`futures_dry_run_v1/`](futures_dry_run_v1/), the only one).
+
+OPERATIONAL is deliberately outside the CURRENT/SUPERSEDED/HISTORICAL vocabulary
+rather than a fourth value inside it. Those three are about *which generation
+answers a research question*, and an engineering report answers none: giving it a
+CURRENT would put an execution artifact into a table whose whole subject is
+research provenance, where a later reader could compare it against a checkpoint.
 
 `research question` names the stable checkpoint identity that `status` is scoped to.
 CURRENT is unique **per research question**, not across the index: two rows answering
@@ -220,6 +248,7 @@ one that shares its `research question`.
 | `walkforward/btc_nested_seed_242` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 242) | n/a | pre-correction |
 | `walkforward/btc_nested_seed_342` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 342) | n/a | pre-correction |
 | `walkforward/btc_nested_seed_442` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 442) | n/a | pre-correction |
+| `futures_dry_run_v1` | fx-v1 | `futures_execution_v1_operational_validation` | OPERATIONAL | `tools.futures_dry_run` | n/a — a deterministic replay of committed 1h candles, rows `[40981, 45802)` | n/a | operational invariants; every other figure descriptive |
 
 ## Current v4 evidence
 

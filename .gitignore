@@ -78,6 +78,14 @@ ray_results/
 *.sqlite
 *.db
 
+# Futures Execution v1 operational evidence. Not research evidence: it is the
+# report of a frozen engineering protocol (`tools/futures_dry_run.py`), and
+# `make check` re-verifies it against the protocol hash in the build reading it.
+# Committed because the whole mechanism is that the report and the protocol are
+# the same object and a checksum says so — an ignored report could not be checked.
+!artifacts/futures_dry_run_v1/
+!artifacts/futures_dry_run_v1/*
+
 # Frozen P3 trade source and primary evidence.
 !data/research/btc_usdt_1h_gen1_trade_snapshot_manifest.json
 !data/research/btc_usdt_1h_gen1_trades_hourly_pre_styx.parquet

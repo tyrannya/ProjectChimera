@@ -1,0 +1,491 @@
+{
+  "descriptive_metrics": {
+    "bars": 4821,
+    "emergency_flattens": 2,
+    "fills": 22,
+    "flat_bars": 1561,
+    "funding_paid": "25.650904420",
+    "funding_received": "25.817651830",
+    "long_bars": 1920,
+    "long_short_balance": 0.588957,
+    "max_simulated_drawdown": "89.891946720",
+    "mean_slippage_bps": 5.000441,
+    "net_exposure_at_end": "0",
+    "net_pnl_simulated": "549.783089410",
+    "orders_planned": 122,
+    "orders_rejected": 100,
+    "orders_submitted": 22,
+    "partial_fills": 22,
+    "peak_gross_exposure": "2165.16780",
+    "period_end": "2025-03-24 17:00:00+00:00",
+    "period_start": "2024-09-04 21:00:00+00:00",
+    "realised_pnl": "562.2820000",
+    "reconciliation_errors": 0,
+    "restart_recoveries": 2,
+    "risk_vetoes": 100,
+    "short_bars": 1340,
+    "signals_rejected": 0,
+    "signals_seen": 4821,
+    "trading_fees": "12.66565800",
+    "turnover": "25331.31600"
+  },
+  "descriptive_metrics_are_not_acceptance_criteria": true,
+  "invariants": [
+    {
+      "claim": "no order or fill ever reverses a position; every close reaches flat",
+      "held": true,
+      "id": "I02",
+      "observations": [
+        "OK   flat -> LONG 0.01",
+        "OK   increase LONG to 0.03",
+        "OK   reduce LONG to 0.01 without changing side",
+        "OK   LONG -> flat reaches exactly zero",
+        "OK   SHORT open/increase/reduce keeps the SHORT side",
+        "OK   SHORT -> flat reaches exactly zero"
+      ],
+      "scenario": "S01_long_lifecycle"
+    },
+    {
+      "claim": "a reversal is executed as two legs, never as one oversized order",
+      "held": true,
+      "id": "I03",
+      "observations": [
+        "OK   a reversal planned 2 legs, expected 2",
+        "OK   no leg carries current+target (0.08); a single oversized order would",
+        "OK   leg 1 is reduce-only and exactly the position it closes",
+        "OK   leg 2 opens exactly the target",
+        "OK   the account ends at exactly the SHORT target"
+      ],
+      "scenario": "S03_reversal_is_two_legs"
+    },
+    {
+      "claim": "an Aegis veto makes execution impossible: the venue is never reached",
+      "held": true,
+      "id": "I05",
+      "observations": [
+        "OK   a halted engine rejects the order",
+        "OK   the venue was never reached",
+        "OK   the position is unchanged",
+        "OK   an exposure-cap veto rejects the order",
+        "OK   the venue was never reached under a limit veto"
+      ],
+      "scenario": "S04_aegis_veto_blocks_execution"
+    },
+    {
+      "claim": "a reduction succeeds while the risk engine is halted",
+      "held": true,
+      "id": "I06",
+      "observations": [
+        "OK   a halted engine can still close to zero",
+        "OK   emergency flatten works while halted"
+      ],
+      "scenario": "S05_reduction_survives_a_halt"
+    },
+    {
+      "claim": "no impossible order state transition is ever accepted",
+      "held": true,
+      "id": "I01",
+      "observations": [
+        "OK   a 0.4 fill ratio produced 2 partial fill(s)",
+        "OK   the order still reached FILLED",
+        "OK   replaying 4 applied event id(s) changed nothing",
+        "OK   an impossible transition on a FILLED order raised"
+      ],
+      "scenario": "S06_partial_fills_and_duplicate_events"
+    },
+    {
+      "claim": "a duplicate venue event changes no position, fee, or ledger entry",
+      "held": true,
+      "id": "I04",
+      "observations": [
+        "OK   a 0.4 fill ratio produced 2 partial fill(s)",
+        "OK   the order still reached FILLED",
+        "OK   replaying 4 applied event id(s) changed nothing",
+        "OK   an impossible transition on a FILLED order raised"
+      ],
+      "scenario": "S06_partial_fills_and_duplicate_events"
+    },
+    {
+      "claim": "reconciliation reports agreement when local and reported agree",
+      "held": true,
+      "id": "I07",
+      "observations": [
+        "OK   agreeing states reconcile",
+        "OK   disagreeing states are reported",
+        "OK   the local position was NOT overwritten by the reported one",
+        "OK   trading stopped while the mismatch stood",
+        "OK   an explicit resolution let trading resume"
+      ],
+      "scenario": "S07_reconciliation_agree_and_mismatch"
+    },
+    {
+      "claim": "reconciliation fails closed on disagreement: it never overwrites local state, and trading stops",
+      "held": true,
+      "id": "I08",
+      "observations": [
+        "OK   agreeing states reconcile",
+        "OK   disagreeing states are reported",
+        "OK   the local position was NOT overwritten by the reported one",
+        "OK   trading stopped while the mismatch stood",
+        "OK   an explicit resolution let trading resume"
+      ],
+      "scenario": "S07_reconciliation_agree_and_mismatch"
+    },
+    {
+      "claim": "emergency flatten reaches zero from LONG, from SHORT, from a partial fill and under a mismatch; is a recorded no-op when already flat; and is safe to repeat",
+      "held": true,
+      "id": "I09",
+      "observations": [
+        "OK   flatten reaches zero from LONG",
+        "OK   repeated flatten from LONG stays flat and never reverses",
+        "OK   flatten reaches zero from SHORT",
+        "OK   repeated flatten from SHORT stays flat and never reverses",
+        "OK   flatten reaches zero after partial fills",
+        "OK   flatten while already flat plans no order",
+        "OK   flatten while already flat still records the reason",
+        "OK   flatten works while a mismatch stands"
+      ],
+      "scenario": "S08_emergency_flatten_every_case"
+    },
+    {
+      "claim": "restart recovery is correct and idempotent at every persistence boundary, and never assumes flat from an empty memory",
+      "held": true,
+      "id": "I10",
+      "observations": [
+        "OK   an empty memory refuses to trade rather than assuming flat",
+        "OK   a persisted state file was loaded",
+        "OK   the recovered position is exactly what was filled",
+        "OK   recovery reconciled against the venue",
+        "OK   applied event ids survived the restart and stayed idempotent",
+        "OK   repeated recovery changed nothing",
+        "OK   the ledger survived the restart intact",
+        "OK   an unreadable state file fails closed",
+        "OK   the unreadable file was left untouched"
+      ],
+      "scenario": "S09_restart_recovery_boundaries"
+    },
+    {
+      "claim": "funding signs are correct for all four (side, rate sign) combinations, paid and received are not netted, and a settlement is booked once",
+      "held": true,
+      "id": "I11",
+      "observations": [
+        "OK   LONG at rate 0.0001 pays (-0.120000)",
+        "OK   a repeated settlement id books nothing",
+        "OK   LONG at rate -0.0001 receives (0.120000)",
+        "OK   a repeated settlement id books nothing",
+        "OK   SHORT at rate 0.0001 receives (0.120000)",
+        "OK   a repeated settlement id books nothing",
+        "OK   SHORT at rate -0.0001 pays (-0.120000)",
+        "OK   a repeated settlement id books nothing",
+        "OK   paid and received are recorded separately, not netted",
+        "OK   a flat position pays and receives nothing"
+      ],
+      "scenario": "S10_funding_signs"
+    },
+    {
+      "claim": "venue constraints fail closed: missing metadata, below minimum quantity and below minimum notional are refused rather than defaulted",
+      "held": true,
+      "id": "I12",
+      "observations": [
+        "OK   an open below the minimum notional is refused",
+        "OK   the refused order moved no exposure",
+        "OK   a symbol with no venue metadata fails closed",
+        "OK   a missing minimum notional is refused rather than defaulted",
+        "OK   a missing maintenance margin rate is refused rather than defaulted",
+        "OK   a zero tick size is refused rather than defaulted",
+        "OK   a negative step size is refused rather than defaulted",
+        "OK   a minimum quantity off the step grid is refused rather than defaulted",
+        "OK   a non-TRADING symbol is refused"
+      ],
+      "scenario": "S11_venue_constraints_fail_closed"
+    },
+    {
+      "claim": "the authenticated live-order route is unreachable, with and without the spot live-trading acknowledgement, and no credential is required",
+      "held": true,
+      "id": "I13",
+      "observations": [
+        "OK   a live config is refused",
+        "OK   a live config is refused even with the spot acknowledgement set; the ack is not the missing piece",
+        "OK   the package source contains no 'api_key'",
+        "OK   the package source contains no 'apiKey'",
+        "OK   the package source contains no 'api_secret'",
+        "OK   the package source contains no 'X-MBX-APIKEY'",
+        "OK   the package source contains no 'fapi.binance.com'",
+        "OK   the package source contains no 'os.environ'"
+      ],
+      "scenario": "S12_live_route_unreachable"
+    },
+    {
+      "claim": "the required telemetry series are emitted by a full replay",
+      "held": true,
+      "id": "I14",
+      "observations": [
+        "OK   no impossible transition appeared in any order history",
+        "OK   no position ever reversed inside a single order",
+        "OK   the replay ended flat",
+        "OK   both LONG and SHORT exposure occurred",
+        "OK   partial fills occurred",
+        "OK   2 mid-replay restart(s) recovered the exact position and ledger",
+        "OK   the scripted halt window produced 100 risk veto(es)",
+        "OK   the halt did not block an exit",
+        "OK   every required telemetry series exists (missing: [])",
+        "OK   the replay's last candle 2025-03-24 17:00:00+00:00 is before Styx (2025-08-27 23:00:00+00:00)",
+        "OK   the replay window ends at or before P4-HOLD's first row"
+      ],
+      "scenario": "S13_replay_over_outer_block_3"
+    },
+    {
+      "claim": "the replay reads no row at or beyond P4-HOLD and no row at or beyond Styx",
+      "held": true,
+      "id": "I15",
+      "observations": [
+        "OK   no impossible transition appeared in any order history",
+        "OK   no position ever reversed inside a single order",
+        "OK   the replay ended flat",
+        "OK   both LONG and SHORT exposure occurred",
+        "OK   partial fills occurred",
+        "OK   2 mid-replay restart(s) recovered the exact position and ledger",
+        "OK   the scripted halt window produced 100 risk veto(es)",
+        "OK   the halt did not block an exit",
+        "OK   every required telemetry series exists (missing: [])",
+        "OK   the replay's last candle 2025-03-24 17:00:00+00:00 is before Styx (2025-08-27 23:00:00+00:00)",
+        "OK   the replay window ends at or before P4-HOLD's first row"
+      ],
+      "scenario": "S13_replay_over_outer_block_3"
+    },
+    {
+      "claim": "over the whole replay: no impossible transition appears in any order's history, no position reverses inside a single order, both LONG and SHORT exposure occur, partial fills occur, restarts recover to the position that was actually filled, a halt produces vetoes and blocks no exit, and the account ends flat",
+      "held": true,
+      "id": "I16",
+      "observations": [
+        "OK   no impossible transition appeared in any order history",
+        "OK   no position ever reversed inside a single order",
+        "OK   the replay ended flat",
+        "OK   both LONG and SHORT exposure occurred",
+        "OK   partial fills occurred",
+        "OK   2 mid-replay restart(s) recovered the exact position and ledger",
+        "OK   the scripted halt window produced 100 risk veto(es)",
+        "OK   the halt did not block an exit",
+        "OK   every required telemetry series exists (missing: [])",
+        "OK   the replay's last candle 2025-03-24 17:00:00+00:00 is before Styx (2025-08-27 23:00:00+00:00)",
+        "OK   the replay window ends at or before P4-HOLD's first row"
+      ],
+      "scenario": "S13_replay_over_outer_block_3"
+    }
+  ],
+  "invariants_declared": 16,
+  "invariants_not_observed": [],
+  "invariants_observed": 16,
+  "outcome": "PASS",
+  "protocol": {
+    "acceptance": {
+      "descriptive_metrics_are_not_criteria": true,
+      "on_failure": "repair the execution defect and re-run this protocol unchanged. Weakening an invariant moves the protocol hash and invalidates the report",
+      "rule": "every invariant holds; there is no partial credit and no scored metric"
+    },
+    "descriptive_metrics": [
+      "signals_seen",
+      "signals_rejected",
+      "orders_planned",
+      "orders_submitted",
+      "orders_rejected",
+      "risk_vetoes",
+      "fills",
+      "partial_fills",
+      "mean_slippage_bps",
+      "trading_fees",
+      "funding_paid",
+      "funding_received",
+      "turnover",
+      "long_bars",
+      "short_bars",
+      "flat_bars",
+      "peak_gross_exposure",
+      "net_exposure_at_end",
+      "reconciliation_errors",
+      "emergency_flattens",
+      "restart_recoveries",
+      "max_simulated_drawdown"
+    ],
+    "evidence_class": "operational",
+    "fill_model": {
+      "class": "chimera.futures.venue.DeterministicFillModel",
+      "max_fill_ratio": "0.6",
+      "note": "adverse and deterministic; partial fills are reachable without a test double",
+      "slippage_bps": "5"
+    },
+    "funding": {
+      "interval_hours": 8,
+      "rate_cycle": [
+        "0.0001",
+        "-0.0001"
+      ],
+      "why": "both signs are exercised against both position sides, so the four rows of the funding sign table are reached by the replay rather than only by unit tests"
+    },
+    "invariants": [
+      {
+        "claim": "no impossible order state transition is ever accepted",
+        "id": "I01",
+        "scenario": "S06_partial_fills_and_duplicate_events"
+      },
+      {
+        "claim": "no order or fill ever reverses a position; every close reaches flat",
+        "id": "I02",
+        "scenario": "S01_long_lifecycle"
+      },
+      {
+        "claim": "a reversal is executed as two legs, never as one oversized order",
+        "id": "I03",
+        "scenario": "S03_reversal_is_two_legs"
+      },
+      {
+        "claim": "a duplicate venue event changes no position, fee, or ledger entry",
+        "id": "I04",
+        "scenario": "S06_partial_fills_and_duplicate_events"
+      },
+      {
+        "claim": "an Aegis veto makes execution impossible: the venue is never reached",
+        "id": "I05",
+        "scenario": "S04_aegis_veto_blocks_execution"
+      },
+      {
+        "claim": "a reduction succeeds while the risk engine is halted",
+        "id": "I06",
+        "scenario": "S05_reduction_survives_a_halt"
+      },
+      {
+        "claim": "reconciliation reports agreement when local and reported agree",
+        "id": "I07",
+        "scenario": "S07_reconciliation_agree_and_mismatch"
+      },
+      {
+        "claim": "reconciliation fails closed on disagreement: it never overwrites local state, and trading stops",
+        "id": "I08",
+        "scenario": "S07_reconciliation_agree_and_mismatch"
+      },
+      {
+        "claim": "emergency flatten reaches zero from LONG, from SHORT, from a partial fill and under a mismatch; is a recorded no-op when already flat; and is safe to repeat",
+        "id": "I09",
+        "scenario": "S08_emergency_flatten_every_case"
+      },
+      {
+        "claim": "restart recovery is correct and idempotent at every persistence boundary, and never assumes flat from an empty memory",
+        "id": "I10",
+        "scenario": "S09_restart_recovery_boundaries"
+      },
+      {
+        "claim": "funding signs are correct for all four (side, rate sign) combinations, paid and received are not netted, and a settlement is booked once",
+        "id": "I11",
+        "scenario": "S10_funding_signs"
+      },
+      {
+        "claim": "venue constraints fail closed: missing metadata, below minimum quantity and below minimum notional are refused rather than defaulted",
+        "id": "I12",
+        "scenario": "S11_venue_constraints_fail_closed"
+      },
+      {
+        "claim": "the authenticated live-order route is unreachable, with and without the spot live-trading acknowledgement, and no credential is required",
+        "id": "I13",
+        "scenario": "S12_live_route_unreachable"
+      },
+      {
+        "claim": "the required telemetry series are emitted by a full replay",
+        "id": "I14",
+        "scenario": "S13_replay_over_outer_block_3"
+      },
+      {
+        "claim": "the replay reads no row at or beyond P4-HOLD and no row at or beyond Styx",
+        "id": "I15",
+        "scenario": "S13_replay_over_outer_block_3"
+      },
+      {
+        "claim": "over the whole replay: no impossible transition appears in any order's history, no position reverses inside a single order, both LONG and SHORT exposure occur, partial fills occur, restarts recover to the position that was actually filled, a halt produces vetoes and blocks no exit, and the account ends flat",
+        "id": "I16",
+        "scenario": "S13_replay_over_outer_block_3"
+      }
+    ],
+    "name": "futures_execution_v1_operational_validation",
+    "not_covered": [
+      "sustained real-time paper operation against a live Binance USD-M feed, over days of wall-clock time. This repository has no mechanism for it and this protocol is a deterministic replay; it is recorded in docs/futures_dry_run_validation.md as a later operational requirement rather than pretended away",
+      "real venue latency, rejection and partial-fill behaviour",
+      "funding rates actually published by Binance; the schedule here is scripted"
+    ],
+    "not_evidence_of": [
+      "trading alpha",
+      "real exchange execution quality",
+      "the profitability of any strategy",
+      "anything about P4, P5 or any research checkpoint"
+    ],
+    "protocol_schema": "chimera.futures-dry-run-protocol/1",
+    "purpose": "validate that the futures dry-run execution layer holds its stated operational invariants. This is engineering validation, not an alpha experiment: no model, feature, threshold, horizon or target may be selected on anything it reports, and its simulated PnL describes the fill model rather than a market",
+    "replay_interventions": {
+      "halt_window_bars": [
+        2200,
+        2300
+      ],
+      "reconcile_every_bars": 1000,
+      "restart_at_bars": [
+        1200,
+        3600
+      ],
+      "why": "a replay that never restarts, never halts and never reconciles reports zero for three of its descriptive metrics and exercises none of the paths behind them. These are scripted at fixed bar indices, declared here before the run, so they are part of the protocol rather than something tuned into it"
+    },
+    "scenarios": [
+      "S01_long_lifecycle",
+      "S02_short_lifecycle",
+      "S03_reversal_is_two_legs",
+      "S04_aegis_veto_blocks_execution",
+      "S05_reduction_survives_a_halt",
+      "S06_partial_fills_and_duplicate_events",
+      "S07_reconciliation_agree_and_mismatch",
+      "S08_emergency_flatten_every_case",
+      "S09_restart_recovery_boundaries",
+      "S10_funding_signs",
+      "S11_venue_constraints_fail_closed",
+      "S12_live_route_unreachable",
+      "S13_replay_over_outer_block_3"
+    ],
+    "signal_source": {
+      "cycle": [
+        "LONG",
+        "LONG",
+        "HOLD",
+        "SHORT",
+        "SHORT",
+        "HOLD"
+      ],
+      "cycle_bars": 240,
+      "increase_quantity": "0.02",
+      "kind": "scripted",
+      "path": "probability vector -> chimera.contracts.decide -> Signal -> TargetPosition",
+      "size_quantity": "0.01",
+      "threshold": 0.55,
+      "why": "signals come from a fixed schedule, not from a model. The point is to reach every position transition deterministically; a model here would invite the reading that the resulting PnL says something about the model"
+    },
+    "source": {
+      "forbidden_rows": {
+        "p4_hold": [
+          45802,
+          48211
+        ],
+        "styx": "everything at or after the committed contract's sealed_test_start; the instant is not restated here because it lives in exactly one place"
+      },
+      "path": "data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet",
+      "rows": [
+        40981,
+        45802
+      ],
+      "why": "outer block 3 of the research fold plan: real observed prices from a region six checkpoints have already read. The sealed Styx region is never opened, and P4-HOLD [45802, 48211) \u2014 retired unread \u2014 is not spent on an engineering test"
+    },
+    "venue": {
+      "constraints": "chimera.futures.venue.default_constraints_table",
+      "execution": "simulated in-process; no network, no credential, no live order",
+      "family": "binance usd-m perpetual",
+      "leverage": "1",
+      "margin_mode": "ISOLATED",
+      "symbol": "BTC/USDT:USDT"
+    }
+  },
+  "protocol_hash": "sha256:17a6a44d1fb5aca5eed16151c63a4b827566d664b1e1e78364357c32c6a44f4d",
+  "report_schema": "chimera.futures-dry-run-report/1"
+}
