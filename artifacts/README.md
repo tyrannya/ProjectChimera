@@ -57,8 +57,32 @@ Its nine source cells are frozen under
 [`btc_p3_SHA256SUMS.txt`](btc_p3_SHA256SUMS.txt). Like P2b and P2c it reuses
 already-observed outer folds and is adaptive research evidence.
 
-**None of these five replaces another.** They answer five different questions, so
-five rows are CURRENT at once and `status` is scoped per research question rather
+**The current P4 derivatives-and-positioning benchmark is
+[`benchmark/btc_p4_comparison/`](benchmark/btc_p4_comparison/), and the decision that
+closed P4 is [`benchmark/btc_p4_stage1/`](benchmark/btc_p4_stage1/).** It answers a sixth
+question — does causal `derivatives_v1` (funding, open interest, basis), alone or
+combined with OHLCV14, add usable information beyond OHLCV14? — and its evidence is
+**negative**: across three models and two derivatives arms, the best result was 2 of 4
+folds improved, against a bar of three fixed before the numbers were read.
+
+P4 ran in stages, and only the first was reached. The deciding Stage-1 screen compared
+the `xgboost` combined arm against its `ohlcv14` control on the three available
+exploratory blocks: 1 of 3 valid folds improved, mean delta `-0.0388`, worst fold
+`-0.0931`, against a rule requiring three improved folds, a positive mean and a worst
+fold no lower than `-0.02`. It did not pass, so there was **no Stage 2 and no re-fit**,
+and the single-use `P4-HOLD` holdout was **retired unread** — never opened, scored or
+evaluated — because publishing this Stage-1 result is what would make a later reuse of
+it adaptive. Its nine source cells are frozen under
+[`btc_p4_stage1_SHA256SUMS.txt`](btc_p4_stage1_SHA256SUMS.txt) and the deciding screen
+under [`btc_p4_screen_SHA256SUMS.txt`](btc_p4_screen_SHA256SUMS.txt).
+
+What P4 is evidence *for* is narrow, and stating it narrowly is the point: the
+`derivatives_v1` design, at this horizon, in the current BTC 1h/6h cost-aware setup, did
+not clear its own preregistered bar. It is **not** evidence that derivatives or
+positioning information is useless in general.
+
+**None of these six replaces another.** They answer six different questions, so
+six rows are CURRENT at once and `status` is scoped per research question rather
 than across the index.
 
 ### What the manifests cover, and what pins the rest

@@ -10,7 +10,7 @@ repos:
       - id: check-toml
       - id: check-added-large-files
         args: ["--maxkb=512"]
-        exclude: '^(data/research/btc_usdt_1h_gen1_trades_hourly_pre_styx[.]parquet|artifacts/benchmark/btc_p3_(microstructure_v1|ohlcv14|ohlcv14_plus_microstructure_v1)_(lightgbm|logistic_regression|xgboost)/outer_predictions[.]parquet)$'
+        exclude: '^(data/research/btc_usdt_1h_gen1_trades_hourly_pre_styx[.]parquet|artifacts/benchmark/btc_p3_(microstructure_v1|ohlcv14|ohlcv14_plus_microstructure_v1)_(lightgbm|logistic_regression|xgboost)/outer_predictions[.]parquet|artifacts/benchmark/btc_p4_(derivatives_v1|ohlcv14|ohlcv14_plus_derivatives_v1)_(lightgbm|logistic_regression|xgboost)/outer_predictions[.]parquet)$'
       - id: check-merge-conflict
       - id: detect-private-key
       - id: debug-statements
