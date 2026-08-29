@@ -78,6 +78,23 @@ ray_results/
 *.sqlite
 *.db
 
+# Frozen P5 primary evidence and its decision record. P5 needs no new data
+# source: its 4h and 1d bars are cut from the OHLCV snapshot already allow-listed
+# above, so only the artifacts are named here.
+!artifacts/btc_p5_SHA256SUMS.txt
+!artifacts/btc_p5_decision_SHA256SUMS.txt
+!artifacts/benchmark/btc_p5_ohlcv14_lightgbm/*
+!artifacts/benchmark/btc_p5_ohlcv14_logistic_regression/*
+!artifacts/benchmark/btc_p5_ohlcv14_xgboost/*
+!artifacts/benchmark/btc_p5_mtf_v1_lightgbm/*
+!artifacts/benchmark/btc_p5_mtf_v1_logistic_regression/*
+!artifacts/benchmark/btc_p5_mtf_v1_xgboost/*
+!artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_lightgbm/*
+!artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_logistic_regression/*
+!artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_xgboost/*
+!artifacts/benchmark/btc_p5_comparison/*
+!artifacts/benchmark/btc_p5_decision/*
+
 # Futures Execution v1 operational evidence. Not research evidence: it is the
 # report of a frozen engineering protocol (`tools/futures_dry_run.py`), and
 # `make check` re-verifies it against the protocol hash in the build reading it.

@@ -7,6 +7,7 @@
 	trade-plan trade-probe trade-snapshot verify-trade-snapshot \
 	p3-cell p3-btc p3-compare \
 	futures-dry-run futures-dry-run-verify \
+	p5-cell p5-btc p5-compare p5-decide \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -148,6 +149,9 @@ P2B_RUNS   = $(foreach s,$(P2B_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2
 P2C_RUNS   = $(foreach s,$(P2C_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p2c_$(s)_$(m)))
 P3_RUNS    = $(foreach s,$(P3_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p3_$(s)_$(m)))
 # P4's three arms, in the order docs/p4_preregistration.md §2 reports them.
+P5_SETS    = ohlcv14 mtf_v1 ohlcv14_plus_mtf_v1
+P5_RUNS    = $(foreach s,$(P5_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p5_$(s)_$(m)))
+
 FUTURES_DRY_RUN_DIR ?= artifacts/futures_dry_run_v1
 
 P4_SETS    = ohlcv14 derivatives_v1 ohlcv14_plus_derivatives_v1
@@ -296,6 +300,39 @@ p4-cell:  ## One P4 cell. Args: SET=derivatives_v1 MODEL=xgboost
 p4-compare:  ## Join the P4 cells: parity proof, recomputation, deltas
 	$(PYTHON) -m nn.p2b_compare --runs $(P4_RUNS) \
 		--out $(P2B_DIR)/btc_p4_comparison
+
+# --- P5: higher-timeframe context -------------------------------------------
+# P5's family is a function of the same candles the control reads, so there is no
+# acquisition step and no second snapshot: `nn.mtf` cuts fully closed 4h and 1d
+# bars from the committed OHLCV history and runs the unchanged OHLCV14 engine
+# over them. What P5 *does* have is a restricted sample universe — neither higher
+# clock has a usable context until it has warmed up — computed once and applied to
+# every arm from the same array object.
+#
+# `p5-decide` is the deciding artifact and it is not optional prose: it recomputes
+# the sample universe, checks its digest against the one every cell recorded,
+# evaluates the availability gate, and applies the preregistered fold-count rule
+# to exactly one cell pair. P2b, P2c and P3 left their bar in a dictionary of
+# verdict strings that nothing enforced; this writes down what the checkpoint
+# answered.
+p5-btc: verify-research-snapshot  ## P5: all nine cells (higher-timeframe context vs OHLCV14)
+	@for s in $(P5_SETS); do for m in $(P2B_MODELS); do \
+		echo "--- $$s x $$m ---"; \
+		$(PYTHON) -m nn.p2b --checkpoint P5 --information-set $$s --model $$m \
+			--out $(P2B_DIR)/btc_p5_$${s}_$${m} || exit 1; \
+	done; done
+
+p5-cell:  ## One P5 cell. Args: SET=mtf_v1 MODEL=xgboost
+	$(PYTHON) -m nn.p2b --checkpoint P5 --information-set $(SET) --model $(MODEL) \
+		--out $(P2B_DIR)/btc_p5_$(SET)_$(MODEL)
+
+p5-compare:  ## Join the P5 cells: parity proof, recomputation, deltas
+	$(PYTHON) -m nn.p2b_compare --runs $(P5_RUNS) \
+		--out $(P2B_DIR)/btc_p5_comparison
+
+p5-decide:  ## Apply P5's preregistered rule to the frozen cells. Decides nothing new.
+	$(PYTHON) -m nn.p5_decision --runs $(P5_RUNS) \
+		--out $(P2B_DIR)/btc_p5_decision
 
 # Covers primary evidence only — cells and their per-sample predictions.
 # Comparisons and ablation tables are derived: `tools.freeze_evidence` refuses

@@ -63,6 +63,18 @@ from nn.chart_structure import (
     chart_feature_columns,
     compute_chart_features_segmented,
 )
+from nn.mtf import (
+    MTF_FEATURE_FAMILIES,
+    MtfSpec,
+    build_mtf_context,
+    mtf_feature_columns,
+)
+from nn.p5_preregistration import (
+    ARMS as P5_ARMS,
+    COMBINED as P5_COMBINED,
+    FAMILY as P5_MTF_V1,
+    RESEARCH_CLASSIFICATION as P5_RESEARCH_CLASSIFICATION,
+)
 from nn.microstructure import (
     MICROSTRUCTURE_FEATURE_FAMILIES,
     MICROSTRUCTURE_SPEC_VERSION,
@@ -101,6 +113,13 @@ DERIVATIVES_V1 = P4_DERIVATIVES_V1
 OHLCV14_PLUS_DERIVATIVES = P4_COMBINED
 #: OHLCV14 plus trade-flow microstructure — P3's combined arm.
 OHLCV14_PLUS_MICROSTRUCTURE = "ohlcv14_plus_microstructure_v1"
+
+#: P5's family, and the arm that adds it to the control. Both names come from the
+#: preregistration rather than being spelled again here, for the reason P4's do: a
+#: run whose arm was called something else would be answering a question nobody
+#: registered.
+MTF_V1 = P5_MTF_V1
+OHLCV14_PLUS_MTF = P5_COMBINED
 
 
 class AlignmentError(AssertionError):
@@ -211,6 +230,24 @@ def ohlcv14_plus_derivatives_set() -> InformationSet:
     )
 
 
+def mtf_v1_set() -> InformationSet:
+    return InformationSet(
+        name=MTF_V1,
+        columns=tuple(mtf_feature_columns()),
+        families={k: tuple(v) for k, v in MTF_FEATURE_FAMILIES.items()},
+    )
+
+
+def ohlcv14_plus_mtf_set() -> InformationSet:
+    ohlcv = ohlcv14_set()
+    mtf = mtf_v1_set()
+    return InformationSet(
+        name=OHLCV14_PLUS_MTF,
+        columns=ohlcv.columns + mtf.columns,
+        families={**ohlcv.families, **mtf.families},
+    )
+
+
 def combined_set() -> InformationSet:
     ohlcv = ohlcv14_set()
     smc = smc_v1_set()
@@ -249,6 +286,17 @@ P3_INFORMATION_SETS = (OHLCV14, MICROSTRUCTURE_V1, OHLCV14_PLUS_MICROSTRUCTURE)
 #: and report the difference as an information set.
 P4_INFORMATION_SETS = tuple(P4_ARMS)
 
+#: The three arms of P5, in report order, taken from the preregistration. The
+#: control is `ohlcv14` for the fifth time, and for the reason P2c, P3 and P4
+#: gave: four families have now failed to improve on it.
+#:
+#: Like P4 this control is **re-run on P5's own sample universe** rather than
+#: reproduced on the full spine. `mtf_v1` is undefined until each higher clock has
+#: warmed up, and comparing an arm scored where its data exists against a control
+#: scored everywhere would measure two market periods and report the difference as
+#: an information set (`docs/p5_preregistration.md` §6.1).
+P5_INFORMATION_SETS = tuple(P5_ARMS)
+
 
 #: Separator between the combined set and the family an ablation removed.
 ABLATION_PREFIX = f"{COMBINED}_minus_"
@@ -272,6 +320,8 @@ def information_set(name: str) -> InformationSet:
         OHLCV14_PLUS_MICROSTRUCTURE: ohlcv14_plus_microstructure_set,
         DERIVATIVES_V1: derivatives_v1_set,
         OHLCV14_PLUS_DERIVATIVES: ohlcv14_plus_derivatives_set,
+        MTF_V1: mtf_v1_set,
+        OHLCV14_PLUS_MTF: ohlcv14_plus_mtf_set,
     }
     if name in builders:
         return builders[name]()
@@ -333,6 +383,18 @@ class Checkpoint:
     #: — otherwise the delta measures two market periods
     #: (`docs/p4_preregistration.md` §6.2).
     derivatives_source: bool = False
+    #: Whether this checkpoint's arms are functions of higher-timeframe bars, and
+    #: therefore against a **restricted sample universe**.
+    #:
+    #: True for every arm of such a checkpoint, its OHLCV14 control included, for
+    #: the reason `derivatives_source` gives: `mtf_v1` is undefined until each
+    #: higher clock has warmed up, so the control has to be re-run on the same
+    #: rows rather than reproduced from an earlier checkpoint's numbers
+    #: (`docs/p5_preregistration.md` §6.1).
+    #:
+    #: Unlike the other two source flags this needs no second snapshot: the bars
+    #: are cut from the candles the control already reads.
+    mtf_source: bool = False
     #: What had already been read when this checkpoint was designed.
     adaptive_status: str = ""
 
@@ -429,8 +491,25 @@ P4 = Checkpoint(
     adaptive_status=P4_RESEARCH_CLASSIFICATION,
 )
 
+#: P5. The first checkpoint whose input is a different *clock* rather than a
+#: different transformation, a different source, or a different market.
+#:
+#: Its family is a function of the same candles the control reads, so it needs no
+#: new snapshot and no acquisition interlock — but it *is* defined against a
+#: restricted sample universe, because neither higher clock has a usable context
+#: until it has warmed up. That mask is computed once and applied to every arm by
+#: object identity, exactly as P4's is.
+P5 = Checkpoint(
+    name="P5",
+    family=MTF_V1,
+    control=OHLCV14,
+    arms=P5_INFORMATION_SETS,
+    mtf_source=True,
+    adaptive_status=P5_RESEARCH_CLASSIFICATION,
+)
+
 #: Every checkpoint this runner can execute, by name.
-CHECKPOINTS: dict[str, Checkpoint] = {c.name: c for c in (P2B, P2C, P3, P4)}
+CHECKPOINTS: dict[str, Checkpoint] = {c.name: c for c in (P2B, P2C, P3, P4, P5)}
 
 
 def checkpoint(name: str) -> Checkpoint:
@@ -471,6 +550,9 @@ class AlignedResearchSamples:
     #: The derivatives constants this run used, when a derivatives source was
     #: supplied. ``None`` for every checkpoint before P4, which reads none.
     derivatives_spec: DerivativesSpec | None = None
+    #: The higher-timeframe constants this run used. ``None`` for every checkpoint
+    #: before P5, which cuts no bar wider than the base clock.
+    mtf_spec: MtfSpec | None = None
     #: P4's sample universe: one flag per spine row, shared by every view **by
     #: object identity** so that "the arms were scored on the same rows" is a
     #: property of construction rather than a claim. ``None`` before P4, which is
@@ -650,6 +732,7 @@ def build_information_set_views(
     micro_spec: MicrostructureSpec | None = None,
     trade_aggregates: pd.DataFrame | None = None,
     derivatives: Any = None,
+    mtf_spec: MtfSpec | None = None,
     extra_sets: Mapping[str, InformationSet] | None = None,
 ) -> AlignedResearchSamples:
     """Build one aligned view per named information set.
@@ -668,6 +751,13 @@ def build_information_set_views(
     data at all, and a run that was handed none may not produce a microstructure
     column — asking for a P3 arm without a trade source is a refusal, not an
     empty matrix.
+
+    ``mtf_spec`` turns P5's family on. It is a *spec* rather than a source because
+    ``mtf_v1`` has no second source: its 4h and 1d bars are cut from ``raw_candles``,
+    the same history OHLCV14 warms up over. Passing it also produces P5's sample
+    universe, because neither higher clock has a usable context until it has warmed
+    up, and that mask travels into every view by object identity for the reason
+    P4's does.
 
     ``derivatives`` is P4's second source, and it arrives as a
     :class:`nn.p4_universe.Universe` rather than as a table. That is deliberate:
@@ -808,9 +898,52 @@ def build_information_set_views(
         derivatives_evidence = dict(derivatives.join_evidence)
         derivatives_evidence["universe"] = derivatives.to_dict()
 
+    mtf_evidence: dict[str, Any] = {"mtf_source": "absent; no P5 arm may be built"}
+    applied_mtf_spec: MtfSpec | None = None
+    mtf_universe: dict[str, Any] | None = None
+    if mtf_spec is not None:
+        applied_mtf_spec = mtf_spec
+        context = build_mtf_context(raw, applied_mtf_spec)
+        row_eligible = np.asarray(context.eligible, dtype=bool)[raw_rows]
+        values = context.values[raw_rows]
+        if not np.isfinite(values).all():
+            bad = np.argwhere(~np.isfinite(values))
+            column = mtf_feature_columns()[int(bad[0][1])]
+            raise ValueError(
+                f"{len(bad)} non-finite mtf_v1 value(s), first in column {column!r} at "
+                f"research row {int(bad[0][0])}. Every row is either eligible with a "
+                "finite context on both clocks or ineligible and filled; a NaN here "
+                "would silently change which rows the information sets are compared on."
+            )
+        if not np.isfinite(values[row_eligible]).all():  # pragma: no cover - implied above
+            raise ValueError("an eligible mtf_v1 row is not finite")
+        for position, name in enumerate(mtf_feature_columns()):
+            columns[name] = values[:, position]
+        mtf_universe = {
+            "rows": int(len(row_eligible)),
+            "rows_eligible": int(np.count_nonzero(row_eligible)),
+            "eligible_fraction": round(float(row_eligible.mean()), 6),
+            "universe_sha256": _universe_hash(row_eligible),
+            "first_eligible_row": int(np.argmax(row_eligible)),
+            "spec_hash": applied_mtf_spec.spec_hash(),
+        }
+        mtf_evidence = dict(context.evidence)
+        mtf_evidence["universe"] = mtf_universe
+        mtf_evidence["context"] = {
+            k: v for k, v in context.to_dict().items() if k != "evidence"
+        }
+        if eligible is not None:
+            raise ValueError(
+                "two sample universes were supplied. A run may be restricted by one "
+                "checkpoint's rule or another's, never by both at once: the arms would "
+                "then be scored on an intersection nobody preregistered."
+            )
+        eligible = row_eligible
+
     evidence = _join_evidence(spine, raw, raw_rows, columns, timeframe)
     evidence["microstructure"] = micro_evidence
     evidence["derivatives"] = derivatives_evidence
+    evidence["mtf"] = mtf_evidence
     degenerate = [
         evidence["matches_under_plus_one_shift"],
         evidence["matches_under_minus_one_shift"],
@@ -831,8 +964,16 @@ def build_information_set_views(
     views: dict[str, ResearchData] = {}
     micro_columns = set(microstructure_feature_columns())
     derivatives_columns = set(derivatives_feature_columns())
+    mtf_columns_set = set(mtf_feature_columns())
     for name, spec in available.items():
         missing = [c for c in spec.columns if c not in columns]
+        if missing and set(missing) <= mtf_columns_set:
+            raise ValueError(
+                f"information set {name!r} needs {len(missing)} higher-timeframe "
+                "column(s) and this run was given no mtf spec. A P5 arm is built from "
+                "the committed candles through nn.mtf; pass mtf_spec=, or run a "
+                "checkpoint whose arms are functions of the 1h bar alone."
+            )
         if missing and set(missing) <= derivatives_columns:
             raise ValueError(
                 f"information set {name!r} needs {len(missing)} derivatives column(s) "
@@ -868,6 +1009,7 @@ def build_information_set_views(
         join_evidence=evidence,
         micro_spec=applied_micro_spec,
         derivatives_spec=applied_derivatives_spec,
+        mtf_spec=applied_mtf_spec,
         eligible=eligible,
     )
 

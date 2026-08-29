@@ -486,6 +486,7 @@ FEATURE_SPECS = (
     ("chart_structure_v1.md", "P2c", "chart_structure_v1"),
     ("microstructure_v1.md", "P3", "microstructure_v1"),
     ("derivatives_v1.md", "P4", "derivatives_v1"),
+    ("mtf_v1.md", "P5", "mtf_v1"),
 )
 
 
@@ -829,7 +830,7 @@ ABLATION_MANIFEST = "btc_p2b_ablation_SHA256SUMS.txt"
 #: checkpoint has no evidence, and
 #: `test_an_unrun_checkpoint_has_no_evidence_directories` fails the moment one
 #: appears without being moved into `CELL_MANIFEST`.
-UNRUN_CHECKPOINTS: dict[str, str] = {}
+UNRUN_CHECKPOINTS: dict[str, str] = {"P5": "btc_p5_SHA256SUMS.txt"}
 
 
 def expected_primary() -> dict[str, str]:
