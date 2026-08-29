@@ -396,20 +396,46 @@ def test_adding_a_success_criterion_after_a_result_is_forbidden_by_name():
     assert "re-running a valid cell because its number is disappointing" in forbidden
 
 
-# --- nothing about P5 has been started --------------------------------------
+# --- P5 has run, and the design above did not move -------------------------
+#
+# Until P5 ran, the two tests below were tripwires asserting that nothing had
+# been started — "P5 has evidence now" should be a diff somebody wrote, not a
+# directory listing that quietly changed. It is that diff. They now assert the
+# other half of the same property: that the evidence exists, and that it was
+# produced under *this* preregistration rather than an edited one.
 
 
-def test_no_p5_cell_or_aggregate_exists_yet():
-    """A tripwire on purpose: 'P5 has evidence now' should be a diff somebody wrote."""
+def test_p5_produced_exactly_the_nine_cells_its_arms_and_models_require():
+    """Three arms times three models. Not eight, and not ten."""
     benchmark = ROOT / "artifacts" / "benchmark"
-    stray = sorted(p.name for p in benchmark.glob("btc_p5_*"))
-    assert stray == [], f"P5 artifacts exist: {stray}"
+    expected = {f"btc_p5_{arm}_{model}" for arm in ARMS for model in MODELS}
+    found = {p.name for p in benchmark.glob("btc_p5_*") if p.is_dir()}
+    assert expected <= found, f"missing cells: {sorted(expected - found)}"
+    assert found - expected == {"btc_p5_comparison", "btc_p5_decision"}, sorted(
+        found - expected
+    )
 
 
-def test_the_checkpoint_is_declared_preregistered_rather_than_answered():
+def test_every_cell_records_this_preregistration_and_not_another():
+    """A cell produced under an edited design is a different object.
+
+    This is what the hash is for, and it is checked against the artifacts rather
+    than only against the module — an edit to the preregistration after the fact
+    would move the hash here and leave nine cells carrying the old one.
+    """
+    benchmark = ROOT / "artifacts" / "benchmark"
+    for arm in ARMS:
+        for model in MODELS:
+            cell = json.loads((benchmark / f"btc_p5_{arm}_{model}" / "p2b.json").read_text())
+            assert (
+                cell["mtf_spec"]["preregistration_hash"] == preregistration_hash()
+            ), f"btc_p5_{arm}_{model} was produced under a different preregistration"
+
+
+def test_the_checkpoint_is_answered_by_its_own_evidence():
     from nn.research_state import checkpoint_states
 
-    assert checkpoint_states(ROOT)["P5"] == "preregistered"
+    assert checkpoint_states(ROOT)["P5"] == "answered"
 
 
 def test_the_document_is_a_front_door_document():

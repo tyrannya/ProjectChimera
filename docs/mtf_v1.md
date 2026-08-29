@@ -4,6 +4,12 @@ Research checkpoint: **P5** (*does strictly causal higher-timeframe OHLCV contex
 — `mtf_v1`, alone or combined with OHLCV14 — add usable information beyond
 OHLCV14?*)
 
+**P5 ran and is negative.** The deciding `xgboost` comparison improved 1 of 4
+temporal outer folds against a bar of 3; fold deltas `+0.11508`, `-0.075359`,
+`-0.039844`, `-0.183647`. §9.2 of the preregistration applies: these constants
+are not tuned, there is no `mtf_v2`, and the next research move changes axis.
+Section 8 below was written before that result existed and is unchanged by it.
+
 Status: **adaptive research evidence**. Not a pristine out-of-sample
 confirmation, and it cannot become one: P5's four outer blocks have been read by
 eight prior passes. See [`p5_preregistration.md`](p5_preregistration.md) §9.

@@ -12,7 +12,7 @@ Rules that apply to every row below:
 - **The Styx boundary never moves.** `2025-08-27T23:00:00+00:00` for
   `btc-usdt-1h-gen1`. A new research generation is a new contract file
   describing a new *question*; it may not manufacture a new holdout.
-- **A negative result is a result.** Four of the six answered checkpoints are
+- **A negative result is a result.** Five of the seven answered checkpoints are
   negative, and they are the reason the later ones ask what they ask.
 - **Adaptive evidence is labelled.** Every checkpoint after v4 reuses outer
   blocks whose results have already been seen, which makes them adaptive
@@ -42,7 +42,7 @@ committed and its evidence is not.
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
-| `P5` | `btc_p5_information_set_benchmark` | **preregistered** |
+| `P5` | `btc_p5_information_set_benchmark` | **answered** |
 
 <!-- research-state:end -->
 
@@ -300,16 +300,117 @@ result into a fitted one.
 
 ---
 
+---
+
+### P5 — does strictly causal higher-timeframe context add information beyond OHLCV14?
+
+**No.** Four families had now failed, and every one of them was computed on **one
+clock**: `smc_v1` and `chart_structure_v1` transform the 1h bar, `microstructure_v1`
+folds trades into 1h buckets, `derivatives_v1` resamples onto the 1h grid. A
+decision taken at 14:00 had never been allowed to see what the 4h bar or the day
+did, as its own bar, on its own clock. P3's own write-up named multi-timeframe
+information as one of the things it had not tested.
+
+So P5 changed exactly that axis and nothing else. `mtf_v1`
+([`mtf_v1.md`](mtf_v1.md)) is not a new feature family: it is
+`chimera.features.compute_features` — the fourteen columns the control is built
+from, unchanged, window lengths included — evaluated over **fully closed** 4h and
+1d bars on the fixed UTC grid, and aligned to each 1h row by the last bar that had
+closed. Twenty-eight columns. No new source: the bars are cut from the OHLCV
+history the control already reads, which is why P5 added no new way to reach Styx.
+
+Preregistered in full at [`p5_preregistration.md`](p5_preregistration.md) before
+any P5 model was fitted, any P5 arm existed in code, or any P5 number existed.
+
+| arm | columns |
+| --- | --- |
+| `ohlcv14` | 14 |
+| `mtf_v1` | 28 |
+| `ohlcv14_plus_mtf_v1` | 42 |
+
+The deciding comparison was `xgboost x ohlcv14_plus_mtf_v1` against
+`xgboost x ohlcv14`, over all four folds:
+
+| fold | period | combined − control |
+| --- | --- | --- |
+| 0 | `2023-03-04` → `2023-09-24` | `+0.11508` |
+| 1 | `2023-09-24` → `2024-04-12` | `-0.075359` |
+| 2 | `2024-04-12` → `2024-10-30` | `-0.039844` |
+| 3 | `2024-10-30` → `2025-05-19` | `-0.183647` |
+
+**1 of 4 folds improved** against the required 3. Mean delta `-0.0459425`, worst
+fold `-0.183647` — both reported and, as preregistered, decisive in neither
+direction. Evidence:
+[`artifacts/benchmark/btc_p5_decision/`](../artifacts/benchmark/btc_p5_decision/)
+and
+[`artifacts/benchmark/btc_p5_comparison/`](../artifacts/benchmark/btc_p5_comparison/),
+over nine primary cells frozen under
+[`artifacts/btc_p5_SHA256SUMS.txt`](../artifacts/btc_p5_SHA256SUMS.txt).
+
+| model | `mtf_v1` − control | `ohlcv14_plus_mtf_v1` − control |
+| --- | --- | --- |
+| logistic regression | 0 of 4 | 2 of 4 |
+| LightGBM | 2 of 4 | 2 of 4 |
+| XGBoost | 1 of 4 | **1 of 4** |
+
+Four things about this result matter more than the numbers:
+
+- **The denominator could not move, and that was settled first.** Higher-timeframe
+  availability was measured from timestamps and bar completeness *before any fit*:
+  44,171 of 45,802 rows eligible, every ineligible row in the head of a training
+  block, all four inner and outer blocks complete. The preregistration then
+  required all four folds, so there was never a surviving-folds arithmetic to fall
+  back on.
+- **One fold is thin and says so.** Fold 2's combined arm took 8 non-overlapping
+  outer trades against the control's 29. The preregistration declared that a flag
+  that changes no denominator, and it did not; it does limit how far that fold
+  generalises.
+- **No secondary model reached the bar either.** The best of the six model-arm
+  comparisons is 2 of 4. Nothing was available to switch to — which the
+  preregistration had already forbidden whatever they showed.
+- **The join needed a witness the other families did not.** A higher-timeframe
+  column is piecewise constant across the rows inside one bar, so the ±1-row shift
+  control this repository uses everywhere else matches on over 95% of rows and
+  proves nothing. The check was moved to the boundary rows, where a shift is
+  detectable, and the count is reported.
+
+**Do not respond to this by tuning `mtf_v1`.** Its constants were predeclared and
+searching them against these four outer blocks would convert a negative result
+into a fitted one. `docs/mtf_v1.md` §8 records five defects and open questions —
+written before the result existed — and none of them is a threshold to search.
+
+### What five negative answers together do and do not license
+
+Five information families have now failed to improve on OHLCV14 in this setup:
+three transformations of the 1h bar, one new source at the 1h clock, and one
+change of clock. That is a broader statement than four made, and it is still
+narrow:
+
+> Under the current BTC/USDT 1h-observation, 6-candle-horizon, cost-aware design,
+> across four adaptive temporal folds of one asset on one exchange, none of
+> `smc_v1`, `chart_structure_v1`, `microstructure_v1`, `derivatives_v1` or
+> `mtf_v1` produced robust incremental performance over the OHLCV14 baseline
+> under three untuned model families.
+
+It is **not** proof that higher-timeframe information is useless — it is evidence
+about *this* representation of it, at *this* horizon, on *this* asset. And it is
+now a strong reason to stop appending handcrafted families to the same design.
+
+**The next research move changes axis rather than adding a sixth family.** The
+axes that remain untested are documented below and none of them is started.
+
+---
+
 ## What runs next
 
 The programme's next move is deliberately **not** another handcrafted feature
-family on the same hourly bars. Four negative information-set answers in a row
-is the signal to change axis, and to spend the interval between checkpoints on
+family on the same hourly bars. Five negative information-set answers in a row
+is the signal to change axis, and the interval between checkpoints was spent on
 the machinery a future strategy will need whatever the research says.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 
-**This is not P5 and it is not research.** It adds in-repo, dry-run-only support
+**This is not a research checkpoint.** It adds in-repo, dry-run-only support
 for Binance USD-M perpetual futures: isolated margin, exactly 1x leverage,
 first-class LONG and SHORT, a deterministic order state machine, venue
 constraints that fail closed, separated fee and funding accounting, simulated
@@ -322,8 +423,17 @@ about *derivatives as information*, not about *futures as an instrument*. The
 two are independent, and confusing them would leave the execution layer unable
 to act on a positive answer whenever one arrives.
 
+**Done.** [`futures_execution_v1.md`](futures_execution_v1.md) is the design and
+[`artifacts/futures_dry_run_v1/`](../artifacts/futures_dry_run_v1/) is the
+operational evidence: 16 of 16 invariants held under a protocol frozen and hashed
+before it was evaluated
+([`futures_dry_run_validation.md`](futures_dry_run_validation.md)). What is *not*
+done, and is recorded there rather than pretended away, is sustained real-time
+paper operation against a live venue over days of wall-clock time — a later
+operational requirement before any real capital is involved.
+
 Its acceptance criteria are operational invariants, not profit: a **futures
-dry-run validation** protocol frozen before it is evaluated, exercising
+dry-run validation** protocol frozen before it was evaluated, exercising
 `Pythia -> Aegis -> Hermes -> Binance futures dry-run` over LONG and SHORT and
 asserting that impossible transitions fail loudly, duplicate events do not
 duplicate exposure, reconciliation fails closed on disagreement, flatten reaches
@@ -331,46 +441,32 @@ zero without reversing, and the authenticated order route stays unreachable.
 Its metrics are descriptive. **Nothing in it may select a model, a feature, a
 threshold, a horizon or a target**, and simulated PnL is not evidence of alpha.
 
-### P5 — does higher-timeframe context add information beyond OHLCV14?
+### Future axes, documented and not started
 
-**Preregistered in full at [`p5_preregistration.md`](p5_preregistration.md),
-before any P5 model was fitted, before any P5 arm existed in code and before any
-P5 number existed.** The next research checkpoint changes exactly one axis:
-**timeframe context**.
-P3's own conclusion named multi-timeframe information as one of the things four
-negative checkpoints had not tested, and it is the cheapest untested axis that
-does not require a new source, a new asset or a new horizon.
+None of the following has been designed, preregistered, implemented or run.
+They are recorded so that "what is left" is a list rather than a memory, and so
+that the next checkpoint is chosen deliberately rather than by whichever idea is
+nearest to hand.
 
-P5 asks whether strictly causal higher-timeframe OHLCV context — the existing
-OHLCV14 semantics recomputed over **fully closed** 4h and 1d bars, aligned
-as-of to each 1h decision row — provides robust incremental information beyond
-the current 1h OHLCV14 baseline, in the unchanged BTC/USDT 1h-observation,
-6-candle-horizon, cost-aware setup. Everything else is held fixed: the asset,
-the source family, the base clock, the label, the costs, the folds, the three
-model families, the threshold semantics.
+- **P6 — horizon.** Five checkpoints have measured one label at one horizon. The
+  6-candle horizon is the one thing every negative result so far shares, and
+  `p4_preregistration.md` §7.1 already named moving it as the first thing a later
+  checkpoint would change. It needs its own control, because the existing one
+  exists at 1h/6h and nowhere else.
+- **P7 — cross-asset and market context.** Everything so far reads one symbol on
+  one exchange. Whether the rest of the market carries information about BTC is
+  untested and would need a new source.
+- **P8 — predefined regime-conditioned modelling.** `btc_p2b_regimes` described
+  the four outer blocks as choppy uptrends; nothing has yet asked whether a model
+  conditioned on a regime declared *in advance* behaves differently.
+- **P9 — representation and model architecture.** v4 tested one architecture and
+  P2a three untuned families. Whether a learned representation extracts more from
+  OHLCV14 than a gradient-boosted tree does is a question about the model rather
+  than about the information.
 
-The four outer blocks are burned, P4-HOLD is retired and Styx is shut, so P5 can
-only ever produce **adaptive exploratory evidence**. A negative P5 is a clean
-answer; a positive P5 is a lead, not a confirmation, and nothing about it opens
-the sealed block.
-
-Two things about the design are settled in the preregistration rather than left
-to the run, and both are the kind of thing that is easy to settle afterwards in
-the direction the result prefers:
-
-- **The bar is 3 of 4 folds improved on `xgboost x ohlcv14_plus_mtf_v1` against
-  `xgboost x ohlcv14`** — P2b's, P2c's and P3's rule unchanged, so P5 is
-  comparable to the four checkpoints it is measured against. The mean delta and
-  the worst fold are reported and are explicitly non-decisive *in both
-  directions*: they may not rescue a fold-count failure and may not veto a pass.
-- **The denominator cannot move.** Higher-timeframe availability was measured
-  from timestamps and bar completeness before any fit — 44,171 of 45,802 spine
-  rows eligible, every ineligible row in the head of the training block, all four
-  inner and outer blocks complete — so all four folds qualify and the
-  preregistration requires all four. If fewer had qualified, P5's outcome would
-  be `not_evaluable` rather than a bar re-derived over the survivors.
-
----
+Naming them is not scheduling them. Each would need its own preregistration, its
+own control and its own account of what evidence these four burned blocks can
+still support — which, after eight readings, is not much.
 
 ## Standing constraints
 

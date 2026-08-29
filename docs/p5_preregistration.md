@@ -36,7 +36,7 @@ rather than the same one with a different story.
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
-| `P5` | `btc_p5_information_set_benchmark` | **preregistered** |
+| `P5` | `btc_p5_information_set_benchmark` | **answered** |
 
 <!-- research-state:end -->
 
@@ -533,5 +533,53 @@ preregistered design at all.
 
 ## Post-run closure
 
-*(Appended after P5 ran. Nothing above this line was edited after the first
-fit.)*
+*(Appended after P5 ran. Nothing above this line was edited after the first fit,
+and the preregistration hash at the top is the one all nine cells record.)*
+
+P5 ran under the preregistered design and is **negative**.
+
+The deciding comparison — `xgboost x ohlcv14_plus_mtf_v1` against
+`xgboost x ohlcv14`, outer-validation cost-aware net return at cost multiplier
+1.0 — over all four temporal outer folds:
+
+| fold | period | delta | improved |
+| --- | --- | --- | --- |
+| 0 | `2023-03-04` → `2023-09-24` | `+0.11508` | yes |
+| 1 | `2023-09-24` → `2024-04-12` | `-0.075359` | no |
+| 2 | `2024-04-12` → `2024-10-30` | `-0.039844` | no |
+| 3 | `2024-10-30` → `2025-05-19` | `-0.183647` | no |
+
+**1 of 4 folds improved, against the required 3.** Mean delta `-0.0459425` and
+worst fold `-0.183647`, both reported and both decisive in neither direction as
+§8.3 requires.
+
+The availability gate **passed**: 44,171 of 45,802 rows eligible, all four folds
+available, every inner and outer block at 1.000 — the figures §6.4 recorded
+before any fit, recomputed from the snapshot and checked against the universe
+digest every cell carries.
+
+**Fold 2's thin-trade flag fired.** The combined arm realised 8 non-overlapping
+outer trades there against the control's 29, below the 10 §8.4 names. As §8.4
+declared before the run, the flag changes no denominator: the arithmetic above is
+over four folds regardless. It does limit how far fold 2 generalises, and saying
+so is the reason the flag exists.
+
+**No secondary model reached the bar either.** Logistic regression and LightGBM
+improved at most 2 of 4 on either arm, so nothing was available to switch to —
+which is a fact about this run rather than a rule, since §8.2 forbade switching
+whatever they showed.
+
+The evidence is **exploratory and adaptive**, as §9 required it to be labelled
+whichever way it came out. Its four outer blocks had been read eight times before
+P5 ran.
+
+Per §9.2: `mtf_v1`'s constants are not tuned, there is no `mtf_v2`, and the next
+research move changes axis. Styx was not opened, read, or planned over. P4-HOLD
+was not touched — it remains `retired` with `checkpoint: null`.
+
+Evidence: nine primary cells frozen under
+[`../artifacts/btc_p5_SHA256SUMS.txt`](../artifacts/btc_p5_SHA256SUMS.txt), the
+decision record under
+[`../artifacts/btc_p5_decision_SHA256SUMS.txt`](../artifacts/btc_p5_decision_SHA256SUMS.txt),
+and the derived comparison at
+[`../artifacts/benchmark/btc_p5_comparison/`](../artifacts/benchmark/btc_p5_comparison/).

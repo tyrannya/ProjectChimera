@@ -37,7 +37,7 @@ The reading is §8's; the scope of the conclusion is
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
-| `P5` | `btc_p5_information_set_benchmark` | **preregistered** |
+| `P5` | `btc_p5_information_set_benchmark` | **answered** |
 
 <!-- research-state:end -->
 

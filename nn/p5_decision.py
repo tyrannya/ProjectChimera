@@ -229,14 +229,29 @@ def recompute_availability(manifest_path: Path, universe_sha256: str) -> dict[st
 
 
 def _fold_returns(cell: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """Per-fold outer-validation trading figures, read the way the cell writes them.
+
+    ``outer_validation`` is keyed by model name — the cell reports its own model
+    alongside the majority and momentum baselines and the economic references —
+    so the model is looked up rather than assumed, and a cell whose block does not
+    carry its own model is refused rather than silently read from a baseline.
+    """
+    model = cell["model"]
     out: dict[int, dict[str, Any]] = {}
     for record in cell["folds"]:
-        report = record["outer_validation"]
+        block = record["outer_validation"]
+        if model not in block:
+            raise DecisionError(
+                f"{cell['_dir']} fold {record['fold']}: the outer block reports "
+                f"{sorted(block)} and not {model!r}"
+            )
+        trading = block[model]["trading"]
+        periods = record["periods"]["outer_validation"]
         out[int(record["fold"])] = {
-            "net_return": float(report["trading"]["net_return"]),
-            "n_trades": int(report["trading"]["n_trades"]),
-            "period_start": record.get("period_start") or report.get("start"),
-            "period_end": record.get("period_end") or report.get("end"),
+            "net_return": float(trading["net_return"]),
+            "n_trades": int(trading["n_trades"]),
+            "period_start": str(periods["start"]),
+            "period_end": str(periods["end"]),
         }
     return out
 

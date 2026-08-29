@@ -81,9 +81,34 @@ What P4 is evidence *for* is narrow, and stating it narrowly is the point: the
 not clear its own preregistered bar. It is **not** evidence that derivatives or
 positioning information is useless in general.
 
-**None of these six replaces another.** They answer six different questions, so
-six rows are CURRENT at once and `status` is scoped per research question rather
-than across the index.
+**The current P5 higher-timeframe benchmark is
+[`benchmark/btc_p5_comparison/`](benchmark/btc_p5_comparison/), and the decision
+that closed P5 is [`benchmark/btc_p5_decision/`](benchmark/btc_p5_decision/).**
+It answers a seventh question — does strictly causal higher-timeframe OHLCV
+context (`mtf_v1`: the unchanged OHLCV14 engine over fully closed 4h and 1d bars),
+alone or combined with OHLCV14, add usable information beyond OHLCV14? — and its
+evidence is **negative**.
+
+The deciding comparison is `xgboost x ohlcv14_plus_mtf_v1` against its `ohlcv14`
+control, over all four folds: `+0.11508`, `-0.075359`, `-0.039844`, `-0.183647`.
+**1 of 4 improved** against a bar of three fixed before any number was read. Mean
+delta `-0.0459425` and worst fold `-0.183647` are reported and, as preregistered,
+decisive in neither direction. The availability gate passed with all four folds
+available. Its nine source cells are frozen under
+[`btc_p5_SHA256SUMS.txt`](btc_p5_SHA256SUMS.txt) and the decision record under
+[`btc_p5_decision_SHA256SUMS.txt`](btc_p5_decision_SHA256SUMS.txt).
+
+Two things about P5's evidence differ from its predecessors' and are worth
+finding here rather than discovering later. Its `ohlcv14` control is **re-run on
+P5's own sample universe** — `mtf_v1` is undefined until each higher clock has
+warmed up — so it is deliberately *not* byte-identical to the P2b, P2c and P3
+controls, for the reason P4 §6.2 gives. And `btc_p5_decision` is frozen while
+`btc_p5_comparison` is not: the decision record is what the checkpoint answered,
+and the comparison is regenerated whenever the aggregator improves.
+
+**None of these seven replaces another.** They answer seven different questions,
+so seven rows are CURRENT at once and `status` is scoped per research question
+rather than across the index.
 
 ### One directory here is not research evidence at all
 
@@ -154,7 +179,7 @@ repository can declare a checkpoint unrun while its aggregate is committed here.
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
-| `P5` | `btc_p5_information_set_benchmark` | **preregistered** |
+| `P5` | `btc_p5_information_set_benchmark` | **answered** |
 
 <!-- research-state:end -->
 
@@ -249,6 +274,17 @@ one that shares its `research question`.
 | `walkforward/btc_nested_seed_242` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 242) | n/a | pre-correction |
 | `walkforward/btc_nested_seed_342` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 342) | n/a | pre-correction |
 | `walkforward/btc_nested_seed_442` | v1 | `btc_ohlcv14_mtst_baseline` | HISTORICAL | `nn.walkforward` | itself (seed 442) | n/a | pre-correction |
+| `benchmark/btc_p5_comparison` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b_compare` | the nine `btc_p5_*` cells | **yes** | current |
+| `benchmark/btc_p5_decision` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p5_decision` | the nine `btc_p5_*` cells | **yes** | current |
+| `benchmark/btc_p5_ohlcv14_logistic_regression` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
+| `benchmark/btc_p5_ohlcv14_lightgbm` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
+| `benchmark/btc_p5_ohlcv14_xgboost` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
+| `benchmark/btc_p5_mtf_v1_logistic_regression` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
+| `benchmark/btc_p5_mtf_v1_lightgbm` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
+| `benchmark/btc_p5_mtf_v1_xgboost` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
+| `benchmark/btc_p5_ohlcv14_plus_mtf_v1_logistic_regression` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
+| `benchmark/btc_p5_ohlcv14_plus_mtf_v1_lightgbm` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
+| `benchmark/btc_p5_ohlcv14_plus_mtf_v1_xgboost` | P5 | `btc_p5_information_set_benchmark` | CURRENT | `nn.p2b` | itself (one cell) | n/a | current |
 | `futures_dry_run_v1` | fx-v1 | `futures_execution_v1_operational_validation` | OPERATIONAL | `tools.futures_dry_run` | n/a — a deterministic replay of committed 1h candles, rows `[40981, 45802)` | n/a | operational invariants; every other figure descriptive |
 
 ## Current v4 evidence
