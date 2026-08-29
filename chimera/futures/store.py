@@ -163,7 +163,12 @@ class FuturesStore:
         try:
             data = json.loads(location.read_text())
             state = FuturesState.from_dict(data)
-        except (OSError, ValueError, StoreError, KeyError) as exc:
+        # ArithmeticError is in the tuple because the likeliest corruption of all
+        # is a mangled number in a persisted field, and `Decimal("0.5O")` raises
+        # `decimal.InvalidOperation` — whose MRO is DecimalException ->
+        # ArithmeticError, never ValueError. Without it the one outcome this
+        # module promises for an unreadable file escaped to the caller instead.
+        except (OSError, ValueError, ArithmeticError, StoreError, KeyError) as exc:
             logger.critical(
                 "Futures execution state at %s could not be read (%s). Starting "
                 "UNBOOTSTRAPPED and leaving the file untouched: it is the only record "
@@ -203,7 +208,23 @@ class FuturesStore:
         silently resolving a reconciliation mismatch in the venue's favour, and
         :mod:`chimera.futures.executor` is the only thing allowed to decide what
         happens to a mismatch — by refusing to trade through it.
+
+        It is also illegal **after a state file that was unreadable rather than
+        absent**. The refusal exists because the obvious call — ``recover({})``
+        on a cold start — is byte-for-byte the same call in both cases, so
+        without it the load path's careful decision to leave a corrupt file alone
+        was undone one line later by this method's own ``save``.
+        :meth:`adopt_after_unreadable` is the deliberate way through, and it
+        takes a written reason and preserves the file.
         """
+        if self.outcome is LoadOutcome.UNREADABLE:
+            raise StoreError(
+                f"the state file at {self.path} exists and could not be read, so an "
+                "empty or venue-reported view is not something this process may adopt "
+                "as fact — the account may hold a position that file was the only "
+                "record of. An operator resolves this with adopt_after_unreadable(), "
+                "which takes a reason and preserves the unreadable file."
+            )
         if self.state.bootstrapped:
             raise StoreError(
                 "already bootstrapped; adopting a reported state twice is not a no-op"
@@ -222,6 +243,45 @@ class FuturesStore:
             self.state.set_position(position)
         self.state.bootstrapped = True
         self.save()
+
+    def adopt_after_unreadable(
+        self, reported: Mapping[str, Position], note: str
+    ) -> Path | None:
+        """An operator's explicit decision to start over from an unreadable file.
+
+        Moves the unreadable file aside — to ``<name>.corrupt`` — rather than
+        overwriting it, because it is the only record of what the account was
+        doing and a later investigation needs it. Returns where it was put.
+
+        Requires a written reason for the same purpose
+        :meth:`chimera.futures.executor.FuturesExecutor.resolve_reconciliation`
+        does: the decision is a human one, and the log should say who made it and
+        why rather than merely that state appeared.
+        """
+        if self.outcome is not LoadOutcome.UNREADABLE:
+            raise StoreError(
+                "adopt_after_unreadable() is for a state file that exists and could "
+                f"not be read; this store loaded {self.outcome.value}"
+            )
+        if not note:
+            raise StoreError(
+                "adopting state after an unreadable file requires a stated reason"
+            )
+
+        preserved: Path | None = None
+        if self.path is not None and self.path.exists():
+            preserved = self.path.with_suffix(self.path.suffix + ".corrupt")
+            self.path.replace(preserved)
+        logger.critical(
+            "Operator adopted a fresh futures state after an unreadable file. Reason: "
+            "%s. The unreadable file was preserved at %s.",
+            note,
+            preserved,
+        )
+        self.outcome = LoadOutcome.MISSING
+        self.state = FuturesState()
+        self.bootstrap(reported)
+        return preserved
 
     def record_flatten(self, symbol: str, reason: str, at: str) -> None:
         self.state.flatten_reasons.append({"symbol": symbol, "reason": reason, "at": at})

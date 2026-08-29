@@ -394,15 +394,6 @@ def test_an_open_position_publishes_its_size_on_its_own_side_and_zero_on_the_oth
 
 
 @requires_prometheus
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FuturesExecutor._publish_position_metrics iterates only "
-        "self.store.state.positions, and FuturesState.set_position drops a flat "
-        "position from that dict, so chimera_futures_position_quantity is never "
-        "written again once the symbol goes flat and keeps its last open size"
-    ),
-)
 def test_closing_a_position_returns_its_quantity_gauge_to_zero():
     """The gauge a dashboard reads per symbol, on an account that holds nothing.
 

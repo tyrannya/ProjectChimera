@@ -158,8 +158,12 @@ class Ledger:
         self.applied_funding.append(event.settlement_id)
         if flow < ZERO:
             self.funding_paid += -flow
-        else:
+        elif flow > ZERO:
             self.funding_received += flow
+        # Exactly zero is neither paid nor received. Routing it into `received`
+        # would leave a settlement recorded as an inflow of nothing, which reads
+        # in a dashboard as a settlement that happened rather than one that
+        # applied to no position.
         return flow
 
     def to_dict(self) -> dict[str, Any]:

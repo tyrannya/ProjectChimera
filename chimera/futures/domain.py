@@ -234,6 +234,14 @@ class Position:
             )
         if self.leverage <= ZERO:
             raise PositionError(f"{self.symbol}: leverage {self.leverage} is not positive")
+        if self.side is not PositionSide.FLAT and self.entry_price <= ZERO:
+            raise PositionError(
+                f"{self.symbol}: a {self.side.value} position of {self.quantity} has "
+                f"entry_price {self.entry_price}. An open position was entered at some "
+                "price; a zero entry makes `unrealised_pnl` report the whole notional as "
+                "profit, and `liquidation_price` refuses the same position outright — so "
+                "the two would disagree about whether it can exist at all."
+            )
 
     @property
     def is_flat(self) -> bool:
@@ -447,17 +455,54 @@ class OrderRecord:
     #: Volume-weighted average fill price so far. Zero while nothing has filled.
     average_price: Decimal = ZERO
     fees: Decimal = ZERO
+    #: Set when a venue reported more fills than the order asked for. The record
+    #: keeps the over-delivery visible rather than letting `remaining_quantity`
+    #: go negative, which downstream sizing would read as a negative order.
+    over_delivered: bool = False
     applied_events: list[str] = field(default_factory=list)
     history: list[str] = field(default_factory=list)
     reason: str = ""
 
     @property
     def remaining_quantity(self) -> Decimal:
-        return self.intent.quantity - self.filled_quantity
+        """What is still outstanding. Never negative.
+
+        Clamped at zero rather than allowed to go negative, and
+        :attr:`over_delivered` records that it was clamped. A venue that reports
+        more fills than the order carried is a reconciliation problem — the
+        record-level analogue of the reversal guard
+        :meth:`Position.apply_fill` enforces — and a negative remainder read by
+        any cancel-the-rest or resize path is a negative order size.
+        """
+        outstanding = self.intent.quantity - self.filled_quantity
+        return outstanding if outstanding > ZERO else ZERO
 
     @property
     def is_terminal(self) -> bool:
         return self.state in TERMINAL_STATES
+
+    def book_fill(self, quantity: Decimal, price: Decimal, fee: Decimal) -> None:
+        """Record one fill against this order, refusing an over-delivery.
+
+        The one place ``filled_quantity`` moves, so the invariant
+        ``filled_quantity <= intent.quantity`` has somewhere to live.
+        """
+        if quantity <= ZERO:
+            raise PositionError(f"order {self.order_id}: fill quantity {quantity} <= 0")
+        if self.filled_quantity + quantity > self.intent.quantity:
+            self.over_delivered = True
+            raise PositionError(
+                f"order {self.order_id}: a fill of {quantity} on top of "
+                f"{self.filled_quantity} would exceed the order's {self.intent.quantity}. "
+                "A venue that over-delivers is a reconciliation problem, not a larger "
+                "order."
+            )
+        total = self.filled_quantity + quantity
+        self.average_price = (
+            self.average_price * self.filled_quantity + price * quantity
+        ) / total
+        self.filled_quantity = total
+        self.fees += fee
 
     def transition(self, target: OrderState, reason: str = "") -> None:
         """Move to ``target``, or raise saying which move was refused."""
@@ -480,6 +525,7 @@ class OrderRecord:
             "filled_quantity": str(self.filled_quantity),
             "average_price": str(self.average_price),
             "fees": str(self.fees),
+            "over_delivered": self.over_delivered,
             "applied_events": list(self.applied_events),
             "history": list(self.history),
             "reason": self.reason,
@@ -494,6 +540,7 @@ class OrderRecord:
             filled_quantity=Decimal(str(data["filled_quantity"])),
             average_price=Decimal(str(data["average_price"])),
             fees=Decimal(str(data["fees"])),
+            over_delivered=bool(data.get("over_delivered", False)),
             applied_events=[str(e) for e in data.get("applied_events", [])],
             history=[str(h) for h in data.get("history", [])],
             reason=str(data.get("reason", "")),
@@ -644,14 +691,31 @@ def plan_flatten(current: Position) -> list[OrderIntent]:
     ]
 
 
+def _priced(positions: Iterable[Position], prices: Mapping[str, Decimal]) -> list[Position]:
+    """The positions, or a refusal naming the ones with no price.
+
+    Fails closed. Skipping an unpriced position silently under-reports exposure,
+    and it under-reports it by the most exactly when a symbol's feed is broken —
+    which is the moment a risk check reading the number most needs it to be
+    right. Everything else in this package refuses missing data; so does this.
+    """
+    held = [p for p in positions if not p.is_flat]
+    missing = sorted({p.symbol for p in held if p.symbol not in prices})
+    if missing:
+        raise PositionError(
+            f"no price for {missing}, which hold open positions. Dropping them would "
+            "report an exposure smaller than the one that exists."
+        )
+    return held
+
+
 def net_exposure(positions: Iterable[Position], prices: Mapping[str, Decimal]) -> Decimal:
     """Signed notional across positions: LONG adds, SHORT subtracts."""
     return sum(
-        (p.signed_quantity * prices[p.symbol] for p in positions if p.symbol in prices),
-        ZERO,
+        (p.signed_quantity * prices[p.symbol] for p in _priced(positions, prices)), ZERO
     )
 
 
 def gross_exposure(positions: Iterable[Position], prices: Mapping[str, Decimal]) -> Decimal:
     """Absolute notional across positions. LONG and SHORT both add."""
-    return sum((p.notional(prices[p.symbol]) for p in positions if p.symbol in prices), ZERO)
+    return sum((p.notional(prices[p.symbol]) for p in _priced(positions, prices)), ZERO)

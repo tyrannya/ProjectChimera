@@ -103,8 +103,12 @@ coincidence: the guard is real, and 1x is where it happens to be slack.
 ## 3. Position semantics
 
 `PositionSide` is `FLAT | LONG | SHORT`, and `Position.quantity` is a
-**magnitude** — the invariant `side is FLAT <=> quantity == 0` is checked on
-construction. SHORT is never a negative number.
+**magnitude** — the invariants `side is FLAT <=> quantity == 0` and, for an open
+position, `entry_price > 0` are both checked on construction. SHORT is never a
+negative number, and a position that was never entered at a price cannot be
+built: `(mark − 0) × quantity` reports the whole notional as profit, and
+`liquidation_price` refuses the same object, so the two would disagree about
+whether it can exist.
 
 That is not stylistic. With a signed quantity, "reduce by 3" applied to a
 position of 2 becomes a SHORT of 1, and no arithmetic can distinguish that from
@@ -191,6 +195,18 @@ because the failure it would hide — an order that fills after it was cancelled
 is exactly the one that duplicates exposure.
 
 ### 5.1 Idempotency
+
+`OrderRecord.book_fill` is the one place `filled_quantity` moves, so
+`filled_quantity <= intent.quantity` has somewhere to live: a venue that reports
+more fills than the order carried is refused and flagged `over_delivered`, rather
+than driving `remaining_quantity` negative — which any cancel-the-rest or resize
+path downstream reads as a negative order size. It is the record-level analogue
+of the reversal guard `Position.apply_fill` enforces.
+
+`net_exposure` and `gross_exposure` refuse a position they have no price for.
+Skipping one silently under-reports exposure, and by the most exactly when a
+symbol's feed is broken — the moment a risk check reading the number most needs
+it to be right.
 
 `OrderEvent.event_id` is required and is the idempotency key.
 `FuturesExecutor.apply_event` returns immediately for an id already in
@@ -296,11 +312,22 @@ three cases a plain `dict.get` would flatten into one:
 | --- | --- | --- |
 | `LOADED` | a state file was read | act on it, after reconciling |
 | `MISSING` | no state file exists | start **unbootstrapped**; refuse to plan |
-| `UNREADABLE` | a state file exists and would not parse | start unbootstrapped **and leave the file exactly where it is** |
+| `UNREADABLE` | a state file exists and would not parse | start unbootstrapped, **leave the file exactly where it is**, and refuse to adopt anything |
 
 The `UNREADABLE` case leaves the file untouched on purpose: overwriting the one
 record of what the account was doing is how a recoverable incident becomes an
-unrecoverable one.
+unrecoverable one. It also refuses `bootstrap`, and `recover()` returns without
+adopting — because `recover({})` on a cold start is byte-for-byte the same call
+whether the file was missing or corrupt, so an adoption there would undo the load
+path's decision one line after it was taken, *while* overwriting the file.
+`FuturesStore.adopt_after_unreadable(reported, note)` is the deliberate way
+through: it takes a written reason, moves the unreadable file to `<name>.corrupt`
+rather than over it, and only then adopts.
+
+The parse guard catches `ArithmeticError` as well as `ValueError`, because the
+likeliest corruption of all is a mangled number in a persisted field and
+`Decimal("0.5O")` raises `decimal.InvalidOperation` — whose MRO reaches
+`ArithmeticError` and never `ValueError`.
 
 Writes are atomic — temp file, `fsync`, `os.replace` — so a crash midway leaves
 the previous state rather than half of the new one. Every mutation is followed by
@@ -331,6 +358,12 @@ free-text reason, an order id, a price or a quantity. An Aegis veto reaches
 grows with traffic is a new time series per event and Prometheus keeps them
 forever. The one non-enum label is `symbol`, bounded by the configured whitelist
 exactly as `chimera_data_delay_seconds{pair}` already is.
+
+The position gauge is zeroed for every symbol it has ever published before the
+current positions are written, because `FuturesState.set_position` removes a flat
+position from the map — so a gauge published only for what is still there keeps
+its last non-zero value forever after a close, and a panel reads an open position
+on a flat account.
 
 Emitted: signals by outcome, risk vetoes by reason, orders planned / submitted /
 rejected, fills split into partial and full, slippage in bps, trading fees,

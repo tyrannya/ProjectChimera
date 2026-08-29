@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -194,6 +194,9 @@ class FuturesExecutor:
     _order_seq: int = 0
     #: Peak simulated net PnL, for the drawdown gauge. Descriptive only.
     _peak_net_pnl: Decimal = ZERO
+    #: Symbols whose position gauge has ever been published, so it can be zeroed
+    #: when the position goes away.
+    _published_symbols: set[str] = field(default_factory=set)
 
     # ------------------------------------------------------------------
     # state
@@ -255,12 +258,24 @@ class FuturesExecutor:
         **compared**, never overwritten.
         """
         metrics.FUT_RECOVERY.labels(outcome=self.store.outcome.value).inc()
-        if self.store.outcome is LoadOutcome.UNREADABLE:
-            logger.critical(
-                "Recovering from an unreadable futures state file. Nothing will be "
-                "planned until an operator adopts a position explicitly."
-            )
         reported = dict(reported or {})
+
+        if self.store.outcome is LoadOutcome.UNREADABLE:
+            # Returns unbootstrapped rather than adopting anything. `recover({})`
+            # on a cold start is byte-for-byte the same call whether the file was
+            # missing or corrupt, so adopting here would undo the load path's
+            # decision to leave a corrupt file alone — and would do it while
+            # overwriting the only record of what the account was holding.
+            # `execute_target` then refuses with NotBootstrapped until an operator
+            # calls `FuturesStore.adopt_after_unreadable`, which takes a reason.
+            logger.critical(
+                "Recovering from an unreadable futures state file at %s. NOTHING will "
+                "be planned: the account may hold a position that file was the only "
+                "record of. An operator resolves this with "
+                "FuturesStore.adopt_after_unreadable(reported, reason).",
+                self.store.path,
+            )
+            return None
 
         if not self.store.state.bootstrapped:
             self.store.bootstrap(reported)
@@ -309,7 +324,12 @@ class FuturesExecutor:
     # ------------------------------------------------------------------
     # reconciliation
     # ------------------------------------------------------------------
-    def reconcile(self, symbol: str, reported: Position | None = None) -> ReconciliationReport:
+    def reconcile(
+        self,
+        symbol: str,
+        reported: Position | None = None,
+        mark_price: Decimal | None = None,
+    ) -> ReconciliationReport:
         """Compare local and reported state. Never replaces one with the other.
 
         On disagreement the *symbol* is marked disputed and every open order for
@@ -371,10 +391,22 @@ class FuturesExecutor:
             detail=detail,
         )
         if self.config.reconciliation_policy is ReconciliationPolicy.FLATTEN:
+            # `mark_price` when the caller has one. Falling back to an entry price
+            # books the flatten's fill, realised PnL and slippage against a price
+            # unrelated to the market at flatten time, so the fallback is used
+            # only when there is nothing better and the report says which it was.
+            reference = mark_price or venue_view.entry_price or local.entry_price
+            report = replace(
+                report,
+                detail=report.detail
+                + (
+                    "; flattened at a mark price"
+                    if mark_price
+                    else "; flattened at an entry price, no mark was supplied"
+                ),
+            )
             self.emergency_flatten(
-                symbol,
-                FlattenCause.RECONCILIATION_MISMATCH,
-                reference_price=venue_view.entry_price or local.entry_price,
+                symbol, FlattenCause.RECONCILIATION_MISMATCH, reference_price=reference
             )
         return report
 
@@ -806,11 +838,7 @@ class FuturesExecutor:
         after, realised = before.apply_fill(intent.side, event.quantity, event.price)
         self.store.state.set_position(after)
 
-        record.average_price = (
-            record.average_price * record.filled_quantity + event.price * event.quantity
-        ) / (record.filled_quantity + event.quantity)
-        record.filled_quantity += event.quantity
-        record.fees += event.fee
+        record.book_fill(event.quantity, event.price, event.fee)
 
         self.ledger.book_fee(event.fee)
         self.ledger.book_turnover(event.quantity * event.price)
@@ -836,6 +864,14 @@ class FuturesExecutor:
     def _publish_position_metrics(self, mark_price: Decimal | None = None) -> None:
         gross = ZERO
         net = ZERO
+        # Zeroed first, not merely rewritten. `FuturesState.set_position` removes
+        # a flat position from the map, so a gauge published only for the symbols
+        # still in it keeps its last non-zero value forever after a close — and a
+        # panel or alert reading it reports an open position on a flat account.
+        for symbol in self._published_symbols:
+            for side in (PositionSide.LONG, PositionSide.SHORT):
+                metrics.FUT_POSITION_QUANTITY.labels(symbol=symbol, side=side.value).set(0.0)
+        self._published_symbols.update(self.store.state.positions)
         for symbol, position in self.store.state.positions.items():
             price = mark_price if mark_price and mark_price > ZERO else position.entry_price
             for side in (PositionSide.LONG, PositionSide.SHORT):
