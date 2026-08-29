@@ -26,7 +26,6 @@ from nn.research_state import (
     CHECKPOINTS,
     Checkpoint,
     FRONT_DOOR_DOCUMENTS,
-    PREREGISTERED,
     UNRUN,
     checkpoint_states,
     existing_block,
@@ -66,11 +65,13 @@ def test_p3_is_answered_here_because_its_comparison_is_committed():
     assert checkpoint_states(ROOT)["P3"] == ANSWERED
 
 
-def test_p4_is_preregistered_and_not_answered():
-    """Its design is committed; its evidence is not, and must not be."""
+def test_p4_is_answered_here_because_stage1_evidence_exists():
+    """P4 ran its preregistered Stage 1 and screened out before P4-HOLD."""
     states = checkpoint_states(ROOT)
-    assert states["P4"] == PREREGISTERED
-    assert not (ROOT / "artifacts" / "benchmark" / "btc_p4_comparison").exists()
+    assert states["P4"] == ANSWERED
+    assert (
+        ROOT / "artifacts" / "benchmark" / "btc_p4_comparison" / "p2b_comparison.json"
+    ).is_file()
 
 
 # --- the guard has to be able to fail ----------------------------------------

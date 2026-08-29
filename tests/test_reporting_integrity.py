@@ -38,10 +38,11 @@ P2A_QUESTION = "btc_p2a_model_family_benchmark"
 P2B_QUESTION = "btc_p2b_information_set_benchmark"
 P2C_QUESTION = "btc_p2c_information_set_benchmark"
 P3_QUESTION = "btc_p3_information_set_benchmark"
+P4_QUESTION = "btc_p4_derivatives_positioning_benchmark"
 
 #: Generations produced after the reporting-integrity metric-semantics fix,
 #: whose `sharpe`/`max_drawdown` are directly comparable across runs.
-POST_CORRECTION_GENERATIONS = {"v4", "P2a", "P2b", "P2c", "P3"}
+POST_CORRECTION_GENERATIONS = {"v4", "P2a", "P2b", "P2c", "P3", "P4"}
 
 #: The current generation's aggregate for the baseline research question.
 CURRENT_BASELINE = "diagnostics/btc_regimes_v4"
@@ -91,6 +92,18 @@ CURRENT_P3_SOURCE_RUNS = {
     for arm in ("ohlcv14", "microstructure_v1", "ohlcv14_plus_microstructure_v1")
     for model in ("logistic_regression", "lightgbm", "xgboost")
 }
+
+#: The current generation's aggregate for the P4 derivatives-and-positioning
+#: question, and its nine Stage-1 cells. `btc_p4_stage1` is CURRENT for the same
+#: question but is the preregistered continuation decision rather than the
+#: aggregate result, so it is listed beside them — the same way
+#: `btc_p2b_regimes` is above.
+CURRENT_P4 = "benchmark/btc_p4_comparison"
+CURRENT_P4_SOURCE_RUNS = {
+    f"benchmark/btc_p4_{arm}_{model}"
+    for arm in ("ohlcv14", "derivatives_v1", "ohlcv14_plus_derivatives_v1")
+    for model in ("logistic_regression", "lightgbm", "xgboost")
+} | {"benchmark/btc_p4_stage1"}
 
 #: The prior generation's aggregate, whose own source runs are absent.
 V3_BASELINE = "diagnostics/btc_regimes_v3"
@@ -361,6 +374,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
         P2B_QUESTION: "P2b",
         P2C_QUESTION: "P2c",
         P3_QUESTION: "P3",
+        P4_QUESTION: "P4",
     }
 
     def paths_for(question: str) -> set[str]:
@@ -371,6 +385,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
     assert paths_for(P2B_QUESTION) == {CURRENT_P2B, *CURRENT_P2B_SOURCE_RUNS}
     assert paths_for(P2C_QUESTION) == {CURRENT_P2C, *CURRENT_P2C_SOURCE_RUNS}
     assert paths_for(P3_QUESTION) == {CURRENT_P3, *CURRENT_P3_SOURCE_RUNS}
+    assert paths_for(P4_QUESTION) == {CURRENT_P4, *CURRENT_P4_SOURCE_RUNS}
 
 
 def test_current_aggregates_are_backed_by_their_committed_source_runs():

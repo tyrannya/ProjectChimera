@@ -59,6 +59,7 @@ DERIVED_DIRS = (
     BENCHMARK / "btc_p2b_ablation_xgboost",
     BENCHMARK / "btc_p2b_regimes",
     BENCHMARK / "btc_p3_comparison",
+    BENCHMARK / "btc_p4_comparison",
 )
 
 
@@ -100,7 +101,7 @@ def test_the_regenerated_reports_declare_themselves_derived():
         assert freeze_evidence.evidence_class_of(directory) == DERIVED
 
 
-def test_every_frozen_cell_is_primary_to_the_tool_that_froze_it():
+def test_every_frozen_directory_would_be_accepted_by_the_freeze_tool():
     """Nothing a manifest covers would be excluded if it were frozen again.
 
     The committed cells declare no evidence class: they were written before the
@@ -117,7 +118,7 @@ def test_every_frozen_cell_is_primary_to_the_tool_that_froze_it():
     }
     assert covered, "the manifests cover nothing"
     for directory in covered:
-        assert freeze_evidence.evidence_class_of(directory) in (None, PRIMARY)
+        assert freeze_evidence.evidence_class_of(directory) != DERIVED
 
 
 # --------------------------------------------------------------------------- #
@@ -560,6 +561,8 @@ def test_the_repository_has_the_manifests_these_tests_think_it_has():
         "btc_p2b_ablation_SHA256SUMS.txt",
         "btc_p2c_SHA256SUMS.txt",
         "btc_p3_SHA256SUMS.txt",
+        "btc_p4_screen_SHA256SUMS.txt",
+        "btc_p4_stage1_SHA256SUMS.txt",
         "btc_v4_SHA256SUMS.txt",
     )
 
@@ -812,6 +815,7 @@ CELL_MANIFEST = {
     "P2b": "btc_p2b_SHA256SUMS.txt",
     "P2c": "btc_p2c_SHA256SUMS.txt",
     "P3": "btc_p3_SHA256SUMS.txt",
+    "P4": "btc_p4_stage1_SHA256SUMS.txt",
 }
 ABLATION_MANIFEST = "btc_p2b_ablation_SHA256SUMS.txt"
 
@@ -825,17 +829,7 @@ ABLATION_MANIFEST = "btc_p2b_ablation_SHA256SUMS.txt"
 #: checkpoint has no evidence, and
 #: `test_an_unrun_checkpoint_has_no_evidence_directories` fails the moment one
 #: appears without being moved into `CELL_MANIFEST`.
-UNRUN_CHECKPOINTS: dict[str, str] = {
-    # P4. Registered in `nn.information_sets.CHECKPOINTS` because
-    # `docs/p4_preregistration.md` §13 requires it before P4 may run, and holding
-    # no evidence because no P4 model has been fitted: the derivatives source has
-    # not been acquired, `nn.p4_stage1`'s interlock says `not_authorised`, and
-    # the P4-HOLD ledger says `unspent`. The moment a cell appears,
-    # `test_an_unrun_checkpoint_has_no_evidence_directories` fails and the fix is
-    # to move P4 into CELL_MANIFEST — which immediately demands all nine cells
-    # and every file in each of them.
-    "P4": "btc_p4_SHA256SUMS.txt",
-}
+UNRUN_CHECKPOINTS: dict[str, str] = {}
 
 
 def expected_primary() -> dict[str, str]:
@@ -1009,13 +1003,13 @@ def test_a_cell_covered_by_the_wrong_manifest_is_reported():
 def test_the_inventory_grows_with_the_checkpoint_definitions():
     """It is derived from `nn.information_sets`, not from a directory listing.
 
-    Nine cells per checkpoint, three checkpoints, plus six ablation arms and
+    Nine cells per checkpoint, four checkpoints, plus six ablation arms and
     the determinism re-run. If a checkpoint gained an arm this would require
     a cell for it, which is the point of deriving it from the declaration
     rather than from what exists.
     """
     expected = expected_primary()
-    assert len(expected) == 9 + 9 + 9 + 6 + 1
+    assert len(expected) == 9 + 9 + 9 + 9 + 6 + 1
     assert sum(1 for m in expected.values() if m == "btc_p2b_SHA256SUMS.txt") == 9
     assert sum(1 for m in expected.values() if m == "btc_p2c_SHA256SUMS.txt") == 9
     assert sum(1 for m in expected.values() if m == "btc_p3_SHA256SUMS.txt") == 9

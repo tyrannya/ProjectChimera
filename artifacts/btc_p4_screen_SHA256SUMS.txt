@@ -1,0 +1,1 @@
+cd52e106155a375ba130a0f5488d59f285ba52544b759747cb2278dfb908dee2  artifacts/benchmark/btc_p4_stage1/stage1.json

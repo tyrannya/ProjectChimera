@@ -118,18 +118,23 @@ def _freeze(root, report):
 
 @pytest.fixture
 def tree(tmp_path):
-    """A repository root holding only the ledger, so writes are throwaway."""
+    """A throwaway pre-decision ledger for exercising release/spend mechanics."""
     (tmp_path / "data" / "research").mkdir(parents=True)
-    (tmp_path / p4_holdout.LEDGER_PATH).write_text((ROOT / p4_holdout.LEDGER_PATH).read_text())
+    ledger = json.loads((ROOT / p4_holdout.LEDGER_PATH).read_text())
+    ledger.update({"state": UNSPENT, "checkpoint": None, "reason": None})
+    (tmp_path / p4_holdout.LEDGER_PATH).write_text(json.dumps(ledger, indent=2) + "\n")
     return tmp_path
 
 
 # --- the committed ledger ----------------------------------------------------
-def test_the_committed_ledger_says_the_region_is_unspent():
+def test_the_committed_ledger_says_the_region_is_retired_unread():
     ledger = read_ledger(ROOT)
     assert ledger["ledger_schema"] == LEDGER_SCHEMA
     assert ledger["region"] == list(HOLDOUT_ROWS)
-    assert ledger["state"] == UNSPENT
+    assert ledger["state"] == RETIRED
+    assert ledger["checkpoint"] is None
+    assert "Stage 1 screened out" in ledger["reason"]
+    assert "not opened, scored, or evaluated" in ledger["reason"]
     assert ledger["evaluations_permitted"] == 1
     assert ledger["checkpoints_permitted"] == 1
     assert ledger["retired_if_unspent"] is True

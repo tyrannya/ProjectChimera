@@ -5,9 +5,9 @@
     48211
   ],
   "region_span": "2025-05-19T08:00:00+00:00 .. 2025-08-27T16:00:00+00:00",
-  "state": "unspent",
+  "state": "retired",
   "checkpoint": null,
-  "reason": null,
+  "reason": "P4 Stage 1 screened out under the preregistered continuation rule: 3 valid folds, 1 improved; mean delta -0.038821333333333326; worst fold delta -0.09306799999999998. P4-HOLD was not opened, scored, or evaluated.",
   "evaluations_permitted": 1,
   "checkpoints_permitted": 1,
   "retired_if_unspent": true,

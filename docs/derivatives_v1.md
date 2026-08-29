@@ -12,15 +12,10 @@ confirmation.** P4 cannot produce confirmatory evidence under any outcome; the
 ceiling is *single-region supported*, and
 [`p4_preregistration.md`](p4_preregistration.md) §12 says why.
 
-**Status of the evidence: P4 has not run, and no P4 model has been fitted.**
-This document, the engine, the acquisition, the verifier and the runner beside
-it were committed *before* the derivatives source could be acquired — outbound
-access to `data.binance.vision` and `fapi.binance.com` is denied by the egress
-policy in force, exactly as it was when `microstructure_v1` was written — which
-is what makes everything below predeclared rather than fitted. There is no P4
-cell, no P4 comparison and no P4 result artifact. The interlock at
-[`../data/research/p4_stage1_authorisation.json`](../data/research/p4_stage1_authorisation.json)
-says `not_authorised`, and the P4-HOLD ledger says `unspent`.
+**Status of the evidence: P4 Stage 1 completed and screened out.** All nine preregistered cells were fitted and recorded. The deciding XGBoost combined-vs-OHLCV14 comparison used the three availability-qualified blocks; one of three improved, with mean net-return delta `-0.038821333333333326` and worst-fold delta `-0.09306799999999998`. The preregistered continuation rule therefore failed.
+
+This result is evidence against this `derivatives_v1` design in the current BTC 1h/6h cost-aware setup; it is not evidence that derivatives information in general is uninformative. No Stage 2 fit was performed. P4-HOLD was not opened, scored or evaluated and was retired unread. Styx remains sealed.
+
 
 ---
 

@@ -41,7 +41,7 @@ committed and its evidence is not.
 | `P2b` | `btc_p2b_information_set_benchmark` | **answered** |
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
-| `P4` | `btc_p4_derivatives_positioning_benchmark` | **preregistered** |
+| `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 
 <!-- research-state:end -->
 

@@ -114,12 +114,18 @@ def test_p4_authorisation_still_requires_runtime_gates():
         assert_fit_authorised(confirm=True, availability={"gate_passed": False})
 
 
-def test_no_p4_evidence_exists():
-    assert not (ROOT / "artifacts" / "benchmark" / "btc_p4_comparison").exists()
-    assert not list((ROOT / "artifacts" / "benchmark").glob("btc_p4_*"))
+def test_p4_stage1_evidence_exists():
+    comparison = ROOT / "artifacts" / "benchmark" / "btc_p4_comparison" / "p2b_comparison.json"
+    assert comparison.is_file()
+    cells = [
+        path
+        for path in (ROOT / "artifacts" / "benchmark").glob("btc_p4_*")
+        if path.is_dir() and path.name not in {"btc_p4_comparison", "btc_p4_stage1"}
+    ]
+    assert len(cells) == 9
 
 
-def test_no_p4_market_data_has_been_acquired():
+def test_p4_local_acquisition_never_implies_holdout_acquisition():
     research = ROOT / "data" / "research"
     assert not list(research.glob("*funding*"))
     assert not list(research.glob("*open_interest*"))
@@ -146,6 +152,9 @@ def test_no_p4_market_data_has_been_acquired():
         "p4_holdout_ledger.json",
         "p4_holdout_coverage.json",
         "p4_stage1_authorisation.json",
+        # Optional local Stage-1 acquisition. CI need not carry this large table;
+        # when present it is structurally bounded before P4-HOLD.
+        "btc_usdt_1h_gen1_derivatives_hourly_pre_p4hold.parquet",
     }
     p4_files = sorted(path.name for path in research.glob("*p4*"))
     assert set(p4_files) <= permitted, sorted(set(p4_files) - permitted)
@@ -626,7 +635,9 @@ def test_the_committed_ledger_matches_the_preregistered_policy():
     assert ledger["evaluations_permitted"] == HOLDOUT_SPEND_POLICY["evaluations_permitted"]
     assert ledger["checkpoints_permitted"] == HOLDOUT_SPEND_POLICY["checkpoints_permitted"]
     assert ledger["retired_if_unspent"] == HOLDOUT_SPEND_POLICY["retired_if_unspent"]
-    assert ledger["state"] == "unspent"
+    assert ledger["state"] == "retired"
+    assert ledger["checkpoint"] is None
+    assert "Stage 1 screened out" in ledger["reason"]
 
 
 # --- there is no escape hatch ------------------------------------------------
