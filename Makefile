@@ -50,13 +50,13 @@ setup:  ## Install everything and the pre-commit hooks
 	pre-commit install
 
 lint:  ## Run all pre-commit hooks over the repository
-	pre-commit run --all-files
+	$(PYTHON) -m pre_commit run --all-files
 
 format:  ## Auto-format with black
 	black chimera nn strategies tools tests
 
 test:  ## Run the test suite
-	pytest
+	$(PYTHON) -m pytest
 
 smoke:  ## End-to-end smoke: data -> features -> training -> service -> risk
 	$(PYTHON) -m tools.smoke
@@ -67,8 +67,8 @@ check: ## Everything the Definition of Done requires
 	$(PYTHON) -m tools.verify_trade_snapshot
 	$(PYTHON) -m tools.verify_research_state
 	$(PYTHON) -m tools.futures_dry_run --verify $(FUTURES_DRY_RUN_DIR)
-	pytest
-	pre-commit run --all-files
+	$(PYTHON) -m pytest
+	$(PYTHON) -m pre_commit run --all-files
 	docker compose config --quiet
 	@echo "All acceptance checks passed."
 
