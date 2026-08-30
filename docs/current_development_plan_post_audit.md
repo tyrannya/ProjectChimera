@@ -2,7 +2,9 @@
 
 Status: **authoritative supplement to `docs/current_development_plan.md` after the independent Fable 5 post-merge audit of `main` at `a72f94e021be61df2851b746d9d3ee741df09d0d`.**
 
-This file records decisions discovered after the current development plan was written. Where this addendum conflicts with an older roadmap sentence, this addendum controls until the documents are consolidated. It is a planning/governance document, **not** a research preregistration and not evidence that any future strategy works.
+This file records decisions discovered after the current development plan was written. It is a planning/governance document, **not** a research preregistration and not evidence that any future strategy works.
+
+**Consolidated.** Its authoritative conclusions — the four required historical disclosures, the narrowed P6/P7 readings, the futures-versus-Freqtrade live-capability distinction, and the selection of structural carry as the next axis — now live in the normal front-door documents: [`current_development_plan.md`](current_development_plan.md), [`research_roadmap.md`](research_roadmap.md) and [`../README.md`](../README.md). This addendum is retained as the fuller record of *how* each conclusion was reached and of the contract requirements the structural screen had to satisfy; it is no longer the only place any of them is stated, and the front-door documents are not "older" than it.
 
 ## START HERE — post-audit state
 

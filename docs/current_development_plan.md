@@ -1,6 +1,8 @@
 # ProjectChimera — current development plan
 
-Status: **working development plan after P6/P6-EXT/P7**. This document is intentionally **not** a research preregistration. It records the intended system direction and the order in which future questions should be formalised. Exact horizons, targets, model families, weighting rules and success criteria still have to be preregistered before the corresponding research run.
+Status: **working development plan after P6/P6-EXT/P7 and the independent Fable 5 post-merge audit of `main` at `a72f94e021be61df2851b746d9d3ee741df09d0d`.** This document is intentionally **not** a research preregistration. It records the intended system direction and the order in which future questions should be formalised. Exact horizons, targets, model families, weighting rules and success criteria still have to be preregistered before the corresponding research run.
+
+The audit's conclusions have been consolidated into this document; [`current_development_plan_post_audit.md`](current_development_plan_post_audit.md) remains the fuller record of how each was reached and is not superseded.
 
 <!-- research-state:begin -->
 <!--
@@ -38,13 +40,15 @@ This section is authoritative for a developer arriving without prior conversatio
 - The trading-mode controller exists and therefore returns **FLAT** under current committed evidence.
 - The futures path remains dry-run only. The committed paper artifact is an engineering smoke, not sustained paper validation.
 - `P4-HOLD` is retired and unread; Styx is sealed; live trading is disabled.
+- **The independent post-merge audit has been performed** and returned *COHERENT WITH REQUIRED REPAIRS*. It reopened no verdict. Its required historical disclosures are recorded under "Post-audit historical disclosures" below and are part of the record from here on.
+- **The mandatory decision review has been performed.** The selected next research axis is **structural / non-directional alpha**: a preregistered BTC spot/perpetual delta-hedged funding/basis carry feasibility screen.
 
 **Do now**
 
-1. Independently audit P6/P6-EXT/P7/P8 chronology, artifacts, data boundaries and accounting claims.
-2. Treat the chain as having reached a valid scientific boundary: P8 was not opened because its preregistered eligibility precondition failed.
-3. Run the mandatory decision review in this document **before opening another alpha checkpoint**.
-4. Choose **one** next research axis with the highest information value. Do not launch several rescue experiments in parallel merely because P6/P7 were negative.
+1. Treat the directional chain as having reached a valid scientific boundary: P8 was not opened because its preregistered eligibility precondition failed.
+2. Carry the post-audit historical disclosures below into any description of P6, P7 or Styx. They are not optional colour.
+3. Work the **selected** next axis — the structural carry feasibility screen — and only that one. The decision review that selected it is recorded below and does not need re-running.
+4. Preregister the structural screen, push the preregistration, and only then calculate its first economic number.
 
 **Do not do now**
 
@@ -55,17 +59,55 @@ This section is authoritative for a developer arriving without prior conversatio
 - do not read `P4-HOLD` or Styx;
 - do not enable authenticated/live order routing or increase leverage.
 
-**Likely next candidates, to be chosen one at a time after the review**
+**The axis chosen by the review: structural / non-directional alpha**
+
+The review selected a preregistered **BTC spot/perpetual delta-hedged funding/basis carry feasibility screen** as the single next checkpoint. The reasoning:
+
+- the directional line has now read the same four adaptive historical windows eight times, so another target/model/gating variation on those blocks adds an adaptive design point whose positive result would be hard to interpret;
+- funding/basis carry asks a question whose payoff mechanism is not "predict the next BTC direction", so it is genuinely orthogonal to everything P2a–P8 measured;
+- **P4 does not answer it.** P4 used funding, open interest and basis as *predictive information* for directional trading. A hedged carry position uses funding and basis as the *payoff mechanism itself*. Those are different hypotheses and a negative P4 does not bear on this one.
+
+The remaining candidates stay in the roadmap and are **not** deleted — they are simply not next:
 
 - external replication + cost-aware abstention / prediction-to-trade gating;
 - target/horizon redesign;
 - a separately preregistered fast-clock model-family follow-up motivated by the secondary P6 results;
 - adaptive retraining / model expiration / distribution-shift rejection;
 - native short-horizon trade-flow or L1/L2 microstructure;
-- neural specialists against strong simple baselines;
-- structural/non-directional alpha such as funding/basis arbitrage or market making.
+- neural specialists against strong simple baselines.
+
+One research question at a time. Do not mix structural carry with directional feature or model rescue in the same checkpoint.
 
 Only after a coherent alpha architecture exists should the project proceed through sustained paper validation → mature-system freeze → Styx → very small live allocation.
+
+## Post-audit historical disclosures
+
+These four disclosures are conclusions of the independent audit. They change the *precision* of the historical record; they reopen no verdict and rewrite no frozen number.
+
+### 1. Styx is an internal non-read seal, not a truly prospective blind holdout
+
+The fixed Styx instant is `2025-08-27T23:00:00+00:00` and the multi-clock research-visible cutoff is `2025-05-19T08:00:00+00:00` — but this repository's formal research programme and its sealing machinery were authored in **August 2026**, after those market dates had already passed.
+
+So the seal is genuinely valuable against *subsequent in-repository adaptivity and accidental reads*, and it does **not** establish that the designers were historically blind to what the market did after the boundary when the protocol was written. Any future Styx result must therefore be described as a one-shot, repository-sealed historical evaluation with a **hindsight-era ceiling** — never as pristine prospective evidence. A genuinely stronger confirmation is a strategy frozen before **wall-clock data that has not yet occurred**, followed by sustained prospective paper observation.
+
+This caps future positive claims made from Styx. It does not invalidate any P1–P8 negative finding.
+
+### 2. P6's primary fits have a source-provenance ceiling
+
+The fifteen primary P6 cells record preregistration revision `a56df4641d0b3b1f9ea2554373ce23e4f6dfdef2` and also record `dirty: true`, two untracked Python source files, and a source digest of that dirty tree.
+
+The committed per-sample predictions and their gate arithmetic replay exactly, so **the P6 verdict stands as the historical verdict**. But do not claim the *fit itself* can be reconstructed exactly from a clean checkout — it cannot. P6-EXT and P7 have stronger source pinning and do not inherit this defect by association. Future research cells must refuse, or loudly fail, a primary-evidence fit from a dirty or uncommitted source tree.
+
+### 3. "Frozen evidence is never rewritten" is era-dependent
+
+Earlier P2b/P2c-era derived reports and manifests were regenerated, and some operational evidence was replaced after repairs; later generations became progressively stricter. Documentation must therefore distinguish immutable **primary economic evidence** under the modern discipline, derived reports regenerable from immutable inputs, historical exceptions already visible in Git history, and post-closure code/document repairs that changed no frozen economic outcome. Old primary numbers are not rewritten to make the history look cleaner.
+
+### 4. P6's and P7's negatives are narrower than they read
+
+- **P6's negative is deciding-family-specific.** XGBoost was named the deciding family before fitting, and it found no viable clock. Secondary cells — Logistic Regression clearing the screen on `1m`, `5m`, `15m`; LightGBM on `1m`, `5m`; a stronger Logistic Regression on `4h` in P6-EXT — are **post-selection leads, not promoted evidence**. The design correctly refused winner-shopping. A new checkpoint that simply declares one of those already-seen families the winner **on the same four burned blocks** is not fresh confirmation and carries little information.
+- **P7 remains negative against its preregistered benchmark**, the fold-wise hindsight-best constituent: SCALPING improved in `1/4` folds with mean delta `-0.0265515`; DAY_TRADING in `1/4` with mean delta `-0.034336`.
+- **P7's consensus did beat the *mean* constituent** in all four folds of both modes under independent reconstruction. That weaker benchmark was not the preregistered decision rule and cannot rescue P7 — but it does mean "consensus destroyed component value" is too broad a statement to make.
+- **P7's reach is limited by sparse trading and staleness**: day trading realised 13 trades across four folds and one fold traded zero times, and the frozen alignment rule had no staleness bound, so an observed slower vote could be nearly four days old. If cross-timeframe fusion is revisited, staleness, minimum effective sample and benchmark choice must be fixed in a *new* preregistration before new evidence is read.
 
 ## Where the project is now
 
@@ -419,7 +461,9 @@ P7's negative result stays negative, but future consensus research should explic
 
 Do not add those rules to P7 after seeing its deltas. If revisited, they belong to a new preregistration.
 
-## Mandatory post-P6/P7/P8-boundary decision review
+## Mandatory post-P6/P7/P8-boundary decision review — performed
+
+**This review has been carried out**, with the independent external audit as its input, and it selected the structural carry axis recorded in START HERE. Question 14 was decisive: a structural, non-directional strategy is a more orthogonal and more testable source of edge than a ninth reading of the same four burned blocks. The questions are kept below because the *next* review — after the structural screen closes — asks them again against whatever the screen returns.
 
 P8 was not opened because its eligibility precondition failed; that is a valid endpoint for the chain. Before opening another checkpoint, answer:
 
@@ -491,7 +535,13 @@ Initial live operation remains conservative: isolated futures semantics, low lev
 22. **Robustness analysis is diagnostic, not a tuning surface.**
 23. **Short green paper runs do not authorize promotion.** Forward-validation requirements are frozen before judging the campaign.
 24. **P8 remains NOT OPENED until its preregistered eligibility condition is genuinely met by future evidence.**
+25. **The August-2026 authorship date versus the 2025 data and seal dates is disclosed every time Styx or historical confirmation strength is described.** Styx carries a hindsight-era ceiling.
+26. **P6's dirty-tree fitting provenance is never silently upgraded to exact clean-checkout reproducibility.**
+27. **P7's better-than-mean-constituent behaviour is descriptive only.** The preregistered fold-wise-best verdict remains negative.
+28. **"Frozen evidence is never rewritten" is era-dependent.** Distinguish immutable primary economic evidence, regenerable derived reports, disclosed historical exceptions, and post-closure repairs that changed no economic outcome.
+29. **"No live route" is two distinct claims, and they are not interchangeable.** The `chimera.futures` chain has **no authenticated live order path at all**. Separately, the legacy Freqtrade spot pathway *is* live-capable in principle and is deliberately double-gated (`ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK` **and** `--mode live`), with every committed config pinned to `dry_run: true`. Never collapse these into a repository-wide claim that no live-capable code exists. Nothing in current evidence authorises enabling either path.
+30. **The next research mechanism is structural carry**, chosen by the completed decision review. Do not mix it with directional feature or model rescue in the same checkpoint.
 
 ## Current one-line roadmap
 
-**Merged P5 baseline → P6/P6-EXT specialists answered negative → P7 consensus-v1 answered negative → P8 preregistered but NOT OPENED → mandatory independent audit + decision review → choose ONE next high-information axis (external replication/cost-aware abstention, target redesign, fast-clock model-family follow-up, adaptive retraining/OOD, native microstructure, neural specialists, or structural alpha) → sustained Futures Paper Validation once a coherent alpha path exists → mature-system freeze → Styx → very small live allocation.**
+**Merged P5 baseline → P6/P6-EXT specialists answered negative → P7 consensus-v1 answered negative → P8 preregistered but NOT OPENED → independent audit returned COHERENT WITH REQUIRED REPAIRS → disclosures + positive-control tests + pandas-2.x constraint merged → decision review selected structural carry → preregister ONE exploratory BTC spot/perpetual delta-hedged funding/basis carry feasibility screen → run and close it → independent audit → if warranted, build a structural dry-run path and freeze a prospective paper protocol before future data arrives → sustained future paper → mature-system freeze → carefully decide whether the hindsight-era-capped Styx adds value → only then consider a separately authorised very small live allocation.**
