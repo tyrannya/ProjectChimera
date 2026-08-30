@@ -42,10 +42,22 @@ P4_QUESTION = "btc_p4_derivatives_positioning_benchmark"
 P5_QUESTION = "btc_p5_information_set_benchmark"
 P6_QUESTION = "btc_p6_multiclock_specialist_screen"
 P7_QUESTION = "btc_p7_cross_timeframe_consensus"
+P6EXT_QUESTION = "btc_p6ext_swing_clock_specialist_screen"
 
 #: Generations produced after the reporting-integrity metric-semantics fix,
 #: whose `sharpe`/`max_drawdown` are directly comparable across runs.
-POST_CORRECTION_GENERATIONS = {"v4", "P2a", "P2b", "P2c", "P3", "P4", "P5", "P6", "P7"}
+POST_CORRECTION_GENERATIONS = {
+    "v4",
+    "P2a",
+    "P2b",
+    "P2c",
+    "P3",
+    "P4",
+    "P5",
+    "P6",
+    "P6-EXT",
+    "P7",
+}
 
 #: The current generation's aggregate for the baseline research question.
 CURRENT_BASELINE = "diagnostics/btc_regimes_v4"
@@ -136,6 +148,14 @@ CURRENT_P7 = "benchmark/btc_p7_decision"
 CURRENT_P7_SOURCE_RUNS = {
     "benchmark/btc_p7_scalping",
     "benchmark/btc_p7_day_trading",
+}
+
+#: P6-EXT is P6's screen on the two slow clocks a SWING mode names.
+CURRENT_P6EXT = "benchmark/btc_p6ext_decision"
+CURRENT_P6EXT_SOURCE_RUNS = {
+    f"benchmark/btc_p6ext_{clock}_{model}"
+    for clock in ("4h", "1d")
+    for model in ("logistic_regression", "lightgbm", "xgboost")
 }
 
 #: The prior generation's aggregate, whose own source runs are absent.
@@ -411,6 +431,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
         P5_QUESTION: "P5",
         P6_QUESTION: "P6",
         P7_QUESTION: "P7",
+        P6EXT_QUESTION: "P6-EXT",
     }
 
     def paths_for(question: str) -> set[str]:
@@ -425,6 +446,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
     assert paths_for(P5_QUESTION) == {CURRENT_P5, *CURRENT_P5_SOURCE_RUNS}
     assert paths_for(P6_QUESTION) == {CURRENT_P6, *CURRENT_P6_SOURCE_RUNS}
     assert paths_for(P7_QUESTION) == {CURRENT_P7, *CURRENT_P7_SOURCE_RUNS}
+    assert paths_for(P6EXT_QUESTION) == {CURRENT_P6EXT, *CURRENT_P6EXT_SOURCE_RUNS}
 
 
 def test_current_aggregates_are_backed_by_their_committed_source_runs():

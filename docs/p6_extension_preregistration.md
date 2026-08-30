@@ -24,7 +24,7 @@ The machine-readable twin is
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
-| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **preregistered** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
@@ -115,3 +115,70 @@ verbatim. Cells land under `artifacts/benchmark/btc_p6ext_{clock}_{model}/`, the
 decision under `artifacts/benchmark/btc_p6ext_decision/`, and primary evidence is
 frozen under `artifacts/btc_p6ext_SHA256SUMS.txt`. A valid negative cell is never
 re-run.
+
+---
+
+## Post-run closure
+
+*(Appended after P6-EXT ran. No constant, clock, horizon, fold or gate condition
+above this line moved after the first fit; the payload hash is still
+`sha256:f0ce8bb4281389df5c877f20c88228350b2a20477ce36ad77da4acb7719c5804` and
+both cells and the decision record it. The generated research-state block changed
+from `preregistered` to `answered`.)*
+
+### Neither slow clock is viable. SWING is NOT ELIGIBLE.
+
+| clock | horizon | positive folds | mean net return | beats momentum | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `4h` | 1 day | **0 of 4** | `-0.201455` | **2 of 4** | **not viable** |
+| `1d` | 6 days | **1 of 4** | `-0.192055` | **2 of 4** | **not viable** |
+
+Per-fold outer net returns, deciding family:
+
+| clock | fold 0 | fold 1 | fold 2 | fold 3 | outer trades |
+| --- | --- | --- | --- | --- | --- |
+| `4h` | `-0.1279` | `-0.1743` | `-0.4710` | `-0.0327` | 308 |
+| `1d` | `-0.3295` | `-0.1366` | `-0.3767` | `+0.0745` | 93 |
+
+Evidence:
+[`artifacts/benchmark/btc_p6ext_decision/`](../artifacts/benchmark/btc_p6ext_decision/),
+over six primary cells frozen under
+[`artifacts/btc_p6ext_SHA256SUMS.txt`](../artifacts/btc_p6ext_SHA256SUMS.txt).
+
+### Three things about this result
+
+**These two failed the momentum condition, and the five short clocks did not.**
+Every P6 clock beat its native momentum baseline 4 of 4, because on a fast clock
+that baseline trades itself to death against a 20 bps round trip. On 4h and 1d it
+does not: a momentum rule that takes a position every four hours or every day
+pays the cost model tens of times, not thousands, and becomes a real competitor.
+Both slow specialists lost to it in half the folds. That contrast is the most
+informative thing here, and it is a caution about how much condition 3 was worth
+on the fast clocks rather than a rescue for anything.
+
+**The 4h specialist was negative in every fold.** Not close, and not thin: 308
+outer trades across the four blocks. Whatever the 4h bar carries, this
+specialist under this design did not extract it.
+
+**The 1d universe is as thin as §4 said it would be**, and it is the one clock
+where that caveat now has to be applied to a *negative*: 93 trades over four
+folds, one positive block, and a mean dragged by two large negative ones. The
+caveat was recorded before the verdict and it cuts the way it always did — it
+limits confidence in the *size* of this result, not in its direction.
+
+**Two secondary families are again the shape the design forbids acting on.**
+Logistic regression cleared all three conditions on `4h` and had the largest mean
+of any cell in this checkpoint on `1d` (`+0.28241`) while improving only 2 of 4
+folds. XGBoost decides, as it did in P6, and §7 forbids switching.
+
+### The consequence for trading modes
+
+`SWING` names `30m`, `1h` and `4h` as primary clocks with `1d` as slow context.
+None of those four has a viable specialist: P6 found `30m` and `1h` not viable,
+and this finds `4h` and `1d` not viable. **`SWING` is therefore `NOT_ELIGIBLE`,
+and `docs/trading_modes_v1.md` records it as such** — not because the machinery
+is missing, but because the specialists a mode is defined in terms of did not
+clear the bar the programme set before it looked.
+
+That is the intended use of an eligibility rule. A mode whose specialists were
+never screened would have been ineligible for a different and worse reason.

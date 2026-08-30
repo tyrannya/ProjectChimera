@@ -30,7 +30,7 @@ rewritten; the forward plan is.
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
-| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **preregistered** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
@@ -143,6 +143,19 @@ its own constituents in 1 of 4 folds with mean delta `-0.0265515`; day trading i
 decision-clock specialist reproduced its frozen P6 cell exactly — so these are
 comparisons within one accounting. The closure is in the preregistration
 document.
+
+### P6-EXT — swing-clock specialists
+
+Do the two slow clocks a SWING mode needs — `4h` and `1d` — carry signal? P6's
+design, imported rather than restated, on the two clocks it did not cover.
+Preregistered after P6 closed in
+[`p6_extension_preregistration.md`](p6_extension_preregistration.md).
+
+**Answered: neither is viable.** `4h` was negative in all four folds and `1d` in
+three of four, and — unlike every short clock — both also lost to their own
+native momentum baseline in half the folds. `SWING` names `30m`, `1h` and `4h`
+with `1d` as slow context, none of which has a viable specialist, so `SWING` is
+`NOT_ELIGIBLE`.
 
 ### Trading-mode controller — engineering, not a checkpoint
 

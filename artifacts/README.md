@@ -181,7 +181,7 @@ repository can declare a checkpoint unrun while its aggregate is committed here.
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
-| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **preregistered** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
@@ -308,6 +308,13 @@ one that shares its `research question`.
 | `benchmark/btc_p7_decision` | P7 | `btc_p7_cross_timeframe_consensus` | CURRENT | `nn.p7_decision` | the two `btc_p7_*` mode artifacts | **yes** | current |
 | `benchmark/btc_p7_scalping` | P7 | `btc_p7_cross_timeframe_consensus` | CURRENT | `nn.p7` | itself (one mode) | n/a | current |
 | `benchmark/btc_p7_day_trading` | P7 | `btc_p7_cross_timeframe_consensus` | CURRENT | `nn.p7` | itself (one mode) | n/a | current |
+| `benchmark/btc_p6ext_decision` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6_decision` | the six `btc_p6ext_*` cells | **yes** | current |
+| `benchmark/btc_p6ext_4h_logistic_regression` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
+| `benchmark/btc_p6ext_4h_lightgbm` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
+| `benchmark/btc_p6ext_4h_xgboost` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
+| `benchmark/btc_p6ext_1d_logistic_regression` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
+| `benchmark/btc_p6ext_1d_lightgbm` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
+| `benchmark/btc_p6ext_1d_xgboost` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `futures_dry_run_v1` | fx-v1 | `futures_execution_v1_operational_validation` | OPERATIONAL | `tools.futures_dry_run` | n/a — a deterministic replay of committed 1h candles, rows `[40981, 45802)` | n/a | operational invariants; every other figure descriptive |
 
 ## Current v4 evidence

@@ -37,7 +37,6 @@ import pandas as pd
 from nn.p6 import ARTIFACT_NAME, Registration, registration
 from nn.p6_preregistration import (
     FOLD_PERIODS,
-    HORIZONS,
     MODELS,
     PRIMARY_MODEL,
     STOPPING_RULE,
@@ -236,7 +235,10 @@ def verdict_for(cell: dict[str, Any]) -> dict[str, Any]:
     return {
         "clock": cell["clock"],
         "model": cell["model"],
-        "horizon": HORIZONS[cell["clock"]],
+        # Read from the cell, not from a module constant: the cell records the
+        # horizon it was actually fitted at, and a decision module that looked it
+        # up by clock could only ever describe the clocks its own import knew.
+        "horizon": cell["horizon"],
         "folds": rows,
         "conditions": conditions,
         "viable": viable,

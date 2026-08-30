@@ -44,7 +44,7 @@ committed and its evidence is not.
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
-| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **preregistered** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
@@ -494,6 +494,41 @@ concludes. It is not evidence that a different agreement count, veto, specialist
 set or cadence would fail the same way.
 
 **Do not respond to this by writing `consensus_v2`.** Every rule was predeclared.
+
+---
+
+### P6-EXT — do the two slow clocks a SWING mode needs carry signal?
+
+**No. Neither is viable, so `SWING` is not eligible.** P6's design, imported
+rather than restated, on the two clocks it did not cover. Preregistered in
+[`p6_extension_preregistration.md`](p6_extension_preregistration.md) after P6
+closed and before any 4h or 1d specialist was fitted. **It is not P5**: P5 read 4h
+and 1d bars as context columns on a 1h row, and this fits a model on 4h samples
+and a model on 1d samples.
+
+| clock | horizon | positive folds | mean net return | beats momentum | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `4h` | 1 day | **0 of 4** | `-0.201455` | **2 of 4** | **not viable** |
+| `1d` | 6 days | **1 of 4** | `-0.192055` | **2 of 4** | **not viable** |
+
+Evidence:
+[`artifacts/benchmark/btc_p6ext_decision/`](../artifacts/benchmark/btc_p6ext_decision/),
+over six primary cells frozen under
+[`artifacts/btc_p6ext_SHA256SUMS.txt`](../artifacts/btc_p6ext_SHA256SUMS.txt).
+
+The informative part is the contrast with P6: **these two failed the momentum
+condition and the five short clocks did not.** On a fast clock a momentum rule
+that takes a position every bar trades itself to death against a 20 bps round
+trip, so "beats momentum" was nearly free there. At 4h and 1d it pays that cost
+tens of times rather than thousands and becomes a real competitor — and both slow
+specialists lost to it in half the folds. That is a caution about how much
+condition 3 was worth on the fast clocks, not a rescue for anything.
+
+`SWING` names `30m`, `1h` and `4h` as primary clocks with `1d` as slow context,
+and none of those four has a viable specialist. It is recorded `NOT_ELIGIBLE` in
+[`trading_modes_v1.md`](trading_modes_v1.md) — because the specialists it is
+defined in terms of did not clear a bar set before anyone looked, which is what
+an eligibility rule is for.
 
 ### What the five information-set answers together do and do not license
 

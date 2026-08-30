@@ -137,6 +137,18 @@ ray_results/
 !artifacts/benchmark/btc_p7_day_trading/*
 !artifacts/benchmark/btc_p7_decision/*
 
+# Frozen P6-EXT primary evidence and its decision record: the same screen on the
+# two slow clocks a SWING mode names, under its own preregistration.
+!artifacts/btc_p6ext_SHA256SUMS.txt
+!artifacts/btc_p6ext_decision_SHA256SUMS.txt
+!artifacts/benchmark/btc_p6ext_4h_lightgbm/*
+!artifacts/benchmark/btc_p6ext_4h_logistic_regression/*
+!artifacts/benchmark/btc_p6ext_4h_xgboost/*
+!artifacts/benchmark/btc_p6ext_1d_lightgbm/*
+!artifacts/benchmark/btc_p6ext_1d_logistic_regression/*
+!artifacts/benchmark/btc_p6ext_1d_xgboost/*
+!artifacts/benchmark/btc_p6ext_decision/*
+
 # Futures Execution v1 operational evidence. Not research evidence: it is the
 # report of a frozen engineering protocol (`tools/futures_dry_run.py`), and
 # `make check` re-verifies it against the protocol hash in the build reading it.

@@ -569,6 +569,8 @@ def test_the_repository_has_the_manifests_these_tests_think_it_has():
         "btc_p5_decision_SHA256SUMS.txt",
         "btc_p6_SHA256SUMS.txt",
         "btc_p6_decision_SHA256SUMS.txt",
+        "btc_p6ext_SHA256SUMS.txt",
+        "btc_p6ext_decision_SHA256SUMS.txt",
         "btc_p7_SHA256SUMS.txt",
         "btc_p7_decision_SHA256SUMS.txt",
         "btc_v4_SHA256SUMS.txt",

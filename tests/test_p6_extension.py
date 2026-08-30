@@ -142,7 +142,7 @@ def test_p6_ext_was_registered_after_p6_closed():
     )
 
 
-P6EXT_EVIDENCE_EXPECTED = False
+P6EXT_EVIDENCE_EXPECTED = True
 
 
 def test_no_p6ext_artifact_exists_before_the_evidence_commit():
