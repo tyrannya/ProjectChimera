@@ -187,13 +187,14 @@ If the specialist/consensus/router line remains insufficient, change one axis at
 - different target formulations, if separately preregistered;
 - cost-aware abstention / prediction-to-trade gating;
 - adaptive retraining and model-expiry rules;
-- explicit distribution-shift / out-of-distribution rejection.
+- explicit distribution-shift / out-of-distribution rejection;
+- structural/non-directional alpha such as funding/basis arbitrage or market making, under separate contracts.
 
 Do not return to an endless sequence of handcrafted feature families on the same fixed setup merely because the previous family was negative.
 
 ## External research lessons — apply after the in-flight P6/P7/P8 chain
 
-This section records external leads and engineering/research lessons found while comparing Chimera with other crypto-ML/trading projects and papers. These are **not ProjectChimera evidence** and do not override an already-frozen checkpoint. They exist so the next roadmap revision does not forget the lessons.
+This section records external leads and engineering/research lessons found while comparing Chimera with other crypto-ML/trading projects, papers, Habr write-ups and community implementations. These are **not ProjectChimera evidence** and do not override an already-frozen checkpoint. They exist so the next roadmap revision does not forget the lessons.
 
 ### A. Prediction quality is not the same thing as tradable edge
 
@@ -356,14 +357,159 @@ If yes, we learn that target/execution formulation can dominate another feature-
 These are working references, not authority rankings:
 
 - Freqtrade / FreqAI documentation and source — adaptive retraining, feature expansion, outlier/dissimilarity handling, model expiration, lookahead analysis and recursive analysis;
-- Hummingbot — separation of controllers/strategy logic from executors;
-- Jesse — backtesting/optimization workflow and overfitting cautions;
+- Hummingbot — separation of controllers/strategy logic from executors and examples of non-directional strategies;
+- Jesse — backtesting/optimization workflow, Monte Carlo tooling and overfitting cautions;
 - BTC walk-forward ML-under-transaction-costs work using XGBoost/LSTM/Transformer-like models — prediction-to-trade gating / cost-aware abstention;
 - high-frequency BTC/crypto limit-order-book studies — distinction between predictive classification and executable economic value;
 - multi-timeframe confirmation studies — confirmation can reduce activity/drawdown without creating positive expectancy;
-- FinRL / ensemble-RL work — useful later for architecture comparison, but not evidence that reinforcement learning automatically solves alpha.
+- FinRL / ensemble-RL work — useful later for architecture comparison, but not evidence that reinforcement learning automatically solves alpha;
+- Habr/community trading-bot write-ups — useful as implementation/postmortem evidence, not as proof of claimed returns.
 
 Before using any numerical claim from these sources in a future preregistration, re-open the original source, verify the exact methodology and record the citation in the corresponding design document.
+
+### L. Fast positive backtests are often selection stories, not finished evidence
+
+The second external search found many examples advertised as profitable trading bots after days or weeks. Common patterns include:
+
+- broad grids of TP/SL/indicator parameters with only the best result reported;
+- choosing coins or periods after seeing which ones worked;
+- calling a per-bar causal simulation "walk-forward" even when model/strategy selection occurred on the same history;
+- very short paper/testnet samples with tens of trades;
+- showing the best equity curve without a genuinely untouched validation period.
+
+These examples do not prove dishonesty; many are useful prototypes. But they are **not comparable to a preregistered out-of-period claim**.
+
+Project rule:
+
+> A quick positive result is a hypothesis generator until the full selection path, untouched evidence and cost/execution semantics are accounted for.
+
+Do not lower Chimera's evidence standard merely because another bot reports profit after one or two weeks.
+
+### M. Backtest accounting itself requires an adversarial dimensional audit
+
+Public bot code can contain economically important accounting mistakes even when the trading logic looks plausible. Examples found in external write-ups include leverage effectively entering more than once, fee bases inconsistent with notional, and ambiguous position-size units.
+
+Before promoting any future strategy, add an independent **accounting/dimensional audit** that traces one synthetic trade by hand through:
+
+```text
+capital
+→ desired exposure
+→ leverage
+→ quantity
+→ notional
+→ entry/exit price
+→ maker/taker fee base
+→ funding
+→ realised PnL
+→ equity
+```
+
+Required properties:
+
+- leverage is applied exactly once to exposure semantics;
+- quantity and quote notional cannot be confused;
+- fees are charged on the correct exchange-defined base;
+- LONG and SHORT PnL signs are symmetric where they should be;
+- partial fills do not duplicate exposure or fees;
+- funding signs and intervals are correct;
+- liquidation/margin approximations are never presented as exact exchange accounting;
+- unit tests include hand-calculable reference trades.
+
+This audit is separate from alpha research: a profitable strategy with incorrect accounting is an invalid result.
+
+### N. Fail closed on market/account state; never invent operational truth
+
+External bot examples sometimes substitute a dummy balance, default position or other fabricated state after an API failure so the program can continue. That is unacceptable for Chimera.
+
+Standing operational rule:
+
+> Unknown exchange/account state is not equivalent to zero, flat or a safe default.
+
+On timeout, malformed response, missing balance, unreadable persisted state or reconciliation disagreement:
+
+- block exposure-increasing actions;
+- preserve the disputed evidence;
+- surface an Argus alert/metric;
+- require explicit recovery/reconciliation;
+- keep emergency risk reduction available where safe.
+
+The existing Futures Execution v1 fail-closed design is the precedent; later live/paper integrations must preserve it.
+
+### O. Data venue and execution venue mismatch is a research variable
+
+Some public bots compute signals from one exchange while executing on another without measuring the basis, latency or candle differences between venues.
+
+If Chimera ever does this intentionally, it must be explicit. Before using exchange A to predict/explain execution on exchange B, measure at least:
+
+- timestamp alignment;
+- price/basis divergence;
+- spread and liquidity differences;
+- symbol/contract semantics;
+- funding differences for perpetuals;
+- outage/gap behaviour;
+- latency from observed market state to executable decision.
+
+The default for a new checkpoint should be **same-venue data and execution semantics** unless the cross-venue relationship is itself the preregistered hypothesis.
+
+### P. Structural/non-directional alpha is a distinct branch worth preserving
+
+A major lesson from Hummingbot and arbitrage implementations is that a crypto bot does not have to earn money by forecasting the next directional move.
+
+Potential future structural strategies include:
+
+- spot-perpetual basis/funding capture;
+- cross-exchange funding arbitrage;
+- cross-exchange/triangular arbitrage where executable;
+- passive market making / spread capture;
+- hedged liquidity provision.
+
+These are **not free money**. Their failure modes include adverse selection, maker/taker economics, queue position, inventory risk, changing funding, leg risk, slippage, latency and liquidation of one hedge leg.
+
+P4 does not rule this branch out: P4 tested funding/OI/basis as **predictive information for BTC direction**, not funding or basis as the payoff mechanism of a hedged strategy.
+
+If pursued, each structural-alpha strategy receives its own contract, data requirements, execution model, cost model and evidence. Do not combine its PnL with directional ML and call the aggregate proof of either component.
+
+Longer-term architecture may therefore support multiple independent alpha engines under one risk authority:
+
+```text
+Directional ML ───────────────┐
+Native microstructure ────────┤
+Funding/basis arbitrage ──────┼─> Aegis portfolio risk authority → Hermes
+Market making / liquidity ────┘
+```
+
+This is a future architectural option, not authorisation to start all branches at once.
+
+### Q. Monte Carlo and perturbation robustness should complement temporal OOS
+
+Walk-forward validation remains primary because time ordering matters. But a mature candidate should also be challenged against the possibility that its attractive equity curve depends on one fortunate ordering or a handful of trades.
+
+Following the kind of robustness tooling exposed by frameworks such as Jesse, later validation should consider preregistered diagnostics such as:
+
+- trade-order/bootstrap Monte Carlo for drawdown/tail sensitivity where statistically meaningful;
+- deletion of the largest winning trades as a descriptive fragility check;
+- plausible fee/slippage stress;
+- small execution-delay perturbations;
+- threshold/input perturbations fixed before evaluation;
+- alternative candle-path scenarios only when they preserve causal semantics.
+
+These diagnostics do not manufacture additional independent folds and must not be used to tune the strategy after the fact. They answer **how fragile is this frozen result?**, not **which perturbation makes it profitable?**
+
+### R. Short live/testnet success is not a promotion gate by itself
+
+A week or two of green paper/testnet performance can be useful operational evidence but is generally too small to establish a persistent edge, especially with a low trade count or one market regime.
+
+Before promotion toward Styx/live capital, sustained forward evidence should cover:
+
+- enough wall-clock time to encounter materially different conditions;
+- adequate trade/sample count for the intended style;
+- fees, funding and realistic slippage;
+- model ageing/retraining behaviour;
+- outages/restarts/reconciliation;
+- comparison of paper/live feature values with replay values;
+- explicit reporting of losing as well as winning periods.
+
+No fixed duration is declared here because scalping and swing produce very different sample counts. The future paper-validation contract must freeze its minimum duration/sample/regime requirements **before** the campaign is judged.
 
 ## Post-P8 decision review
 
@@ -378,7 +524,12 @@ When the current P6/P7/P8 chain is complete, do **not** immediately start anothe
 7. Is adaptive retraining/model expiration justified as the next independent axis?
 8. Does scalping require native trade/L1/L2 data rather than candle-only inputs?
 9. Is there enough signal to justify neural-specialist work, or would neural complexity merely obscure a weak target?
-10. Which single next checkpoint has the highest information value?
+10. Can Chimera reproduce at least one serious external qualitative result under its own data/accounting machinery?
+11. Has the accounting engine passed an independent dimensional/hand-calculation audit for the strategy being evaluated?
+12. Is any apparent edge dominated by a few trades or fragile to realistic fee/slippage/delay perturbations?
+13. Would a structural/non-directional strategy provide a more orthogonal, testable source of edge than another directional feature/model checkpoint?
+14. Does the contemplated data venue exactly match execution semantics, or is cross-venue divergence part of the hypothesis and measured explicitly?
+15. Which **single** next checkpoint has the highest information value after answering the above?
 
 That review, not excitement about whichever cell happens to look best, determines the next roadmap revision.
 
@@ -434,11 +585,17 @@ Initial live operation remains conservative: isolated futures semantics, low lev
 9. **Operational paper metrics do not select alpha.** Execution validation and research evaluation remain separate evidence classes.
 10. **Negative results stay visible.** The objective is a defensible system, not a sequence of experiments edited until one looks profitable.
 11. **Do not modify in-flight P6/P7/P8 because of later external research.** Finish or invalidate each checkpoint under its own chronology, then revise the roadmap.
-12. **Cost-aware abstention, adaptive retraining, model expiration, target redesign and native short-horizon microstructure are now explicit post-P8 candidates.** They must each be tested under their own preregistered semantics rather than smuggled into an already-read experiment.
+12. **Cost-aware abstention, adaptive retraining, model expiration, target redesign and native short-horizon microstructure are explicit post-P8 candidates.** They must each be tested under their own preregistered semantics rather than smuggled into an already-read experiment.
 13. **Consensus and AUTO routing are filters/selectors, not assumed sources of alpha.** Their value must be measured against strong frozen controls.
 14. **Neural complexity is conditional.** Neural specialists are promoted only if they improve robust economic evidence over simpler baselines.
 15. **Backtest/live parity must be proven operationally.** A mathematically causal backtest is necessary but not sufficient for live equivalence.
+16. **Backtest accounting receives an independent dimensional audit.** Leverage, notional, quantity, fees, funding and realised PnL must reconcile against hand-calculable reference trades.
+17. **Unknown operational state fails closed.** Missing balances, unreadable state or reconciliation disagreement never become invented flat/zero defaults.
+18. **Cross-venue data/execution is explicit, measured and preregistered.** Same-venue semantics are the default.
+19. **Structural alpha remains a separate research branch.** Funding/basis arbitrage and market making are not evidence for directional ML, and vice versa.
+20. **Robustness analysis is diagnostic, not a tuning surface.** Monte Carlo and perturbation tests may challenge a frozen strategy but may not select a profitable variant from the same evidence.
+21. **Short green paper runs do not authorize promotion.** Forward-validation duration/sample requirements are frozen before judging the campaign.
 
 ## Current one-line roadmap
 
-**Merged P5 baseline → finish and independently audit the already-started P6 timeframe specialists → P7 Pythia cross-timeframe consensus → P8 automatic scalping/day-trading/swing/FLAT routing → post-P8 external-lessons decision review (cost-aware abstention, target formulation, adaptive retraining/model expiration, distribution shift, native short-horizon microstructure, external replication, neural specialists as warranted) → sustained Futures Paper Validation → mature-system freeze → Styx → very small live allocation.**
+**Merged P5 baseline → finish and independently audit the already-started P6 timeframe specialists → P7 Pythia cross-timeframe consensus → P8 automatic scalping/day-trading/swing/FLAT routing → post-P8 external-lessons decision review (cost-aware abstention, target formulation, adaptive retraining/model expiration, distribution shift, native short-horizon microstructure, external replication, accounting audit, robustness/Monte Carlo, structural/non-directional alpha, neural specialists as warranted) → sustained Futures Paper Validation → mature-system freeze → Styx → very small live allocation.**
