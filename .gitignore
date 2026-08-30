@@ -102,6 +102,31 @@ ray_results/
 !artifacts/benchmark/btc_p5_comparison/*
 !artifacts/benchmark/btc_p5_decision/*
 
+# Frozen P6 primary evidence and its decision record. Fifteen cells — five
+# clocks times three model families — plus the decision that applies the frozen
+# viability gate to the five deciding XGBoost cells. Every clock is named
+# individually and none is omitted: P6 publishes all five verdicts, and a
+# .gitignore that quietly dropped a directory would be the winner-shopping the
+# preregistration forbids, implemented in a config file.
+!artifacts/btc_p6_SHA256SUMS.txt
+!artifacts/btc_p6_decision_SHA256SUMS.txt
+!artifacts/benchmark/btc_p6_1m_lightgbm/*
+!artifacts/benchmark/btc_p6_1m_logistic_regression/*
+!artifacts/benchmark/btc_p6_1m_xgboost/*
+!artifacts/benchmark/btc_p6_5m_lightgbm/*
+!artifacts/benchmark/btc_p6_5m_logistic_regression/*
+!artifacts/benchmark/btc_p6_5m_xgboost/*
+!artifacts/benchmark/btc_p6_15m_lightgbm/*
+!artifacts/benchmark/btc_p6_15m_logistic_regression/*
+!artifacts/benchmark/btc_p6_15m_xgboost/*
+!artifacts/benchmark/btc_p6_30m_lightgbm/*
+!artifacts/benchmark/btc_p6_30m_logistic_regression/*
+!artifacts/benchmark/btc_p6_30m_xgboost/*
+!artifacts/benchmark/btc_p6_1h_lightgbm/*
+!artifacts/benchmark/btc_p6_1h_logistic_regression/*
+!artifacts/benchmark/btc_p6_1h_xgboost/*
+!artifacts/benchmark/btc_p6_decision/*
+
 # Futures Execution v1 operational evidence. Not research evidence: it is the
 # report of a frozen engineering protocol (`tools/futures_dry_run.py`), and
 # `make check` re-verifies it against the protocol hash in the build reading it.

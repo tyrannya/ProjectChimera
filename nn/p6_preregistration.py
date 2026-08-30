@@ -26,6 +26,9 @@ import hashlib
 import json
 from typing import Any
 
+from nn.multiclock import BASE_CONTRACT_ID
+from nn.research_contract import load_contract
+
 CHECKPOINT = "P6"
 
 QUESTION = (
@@ -366,8 +369,14 @@ MEASURED_UNIVERSE_NOTE = (
 # 8. Boundaries
 # --------------------------------------------------------------------------- #
 
+#: The instant is *resolved* from the committed contract rather than restated.
+#: `tests/test_research_contracts.py` forbids a second copy of the sealed anchor
+#: anywhere under `nn/` or `chimera/`, and it is right to: two constants that
+#: agree today are two constants that can disagree tomorrow. The rendered string
+#: — and therefore the preregistration hash — is unchanged by this.
 STYX_PROHIBITION = (
-    "Styx (2025-08-27T23:00:00+00:00) is not read, scored, inspected or planned over by "
+    f"Styx ({load_contract(BASE_CONTRACT_ID).sealed_test_start.isoformat()}) is not "
+    "read, scored, inspected or planned over by "
     "P6. The research-visible boundary binds three months earlier, so no P6 code path "
     "reaches within three months of it."
 )

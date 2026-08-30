@@ -9,6 +9,7 @@
 	p3-cell p3-btc p3-compare \
 	futures-dry-run futures-dry-run-verify \
 	p5-cell p5-btc p5-compare p5-decide \
+	p6-clock p6-btc p6-decide \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -92,6 +93,18 @@ verify-research-snapshot:  ## Check the committed research snapshot: hashes, sea
 
 verify-research-state:  ## Check the front-door documents against the committed evidence
 	$(PYTHON) -m tools.verify_research_state
+
+p6-clock:  ## P6: one clock's three specialists. Args: CLOCK
+	$(PYTHON) -m nn.p6 --clock $(CLOCK) --out-root artifacts/benchmark
+
+p6-btc:  ## P6: every clock, five specialists times three families
+	$(PYTHON) -m nn.p6 --all --out-root artifacts/benchmark
+
+p6-decide:  ## P6: apply the frozen viability gate to the fifteen cells
+	$(PYTHON) -m nn.p6_decision --runs artifacts/benchmark/btc_p6_1m_* \
+		artifacts/benchmark/btc_p6_5m_* artifacts/benchmark/btc_p6_15m_* \
+		artifacts/benchmark/btc_p6_30m_* artifacts/benchmark/btc_p6_1h_* \
+		--out artifacts/benchmark/btc_p6_decision
 
 multiclock-acquire:  ## Download and verify the Binance 1m source every clock is cut from
 	$(PYTHON) -m tools.acquire_multiclock_source --archive-dir $(MULTICLOCK_ARCHIVE_DIR)
