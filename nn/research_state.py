@@ -106,14 +106,43 @@ CHECKPOINTS: tuple[Checkpoint, ...] = (
         "artifacts/benchmark/btc_p5_comparison/p2b_comparison.json",
         preregistration="docs/p5_preregistration.md",
     ),
+    Checkpoint(
+        "P6",
+        "btc_p6_multiclock_specialist_screen",
+        "artifacts/benchmark/btc_p6_decision/decision.json",
+        preregistration="docs/p6_preregistration.md",
+    ),
+    Checkpoint(
+        "P6-EXT",
+        "btc_p6ext_swing_clock_specialist_screen",
+        "artifacts/benchmark/btc_p6ext_decision/decision.json",
+        preregistration="docs/p6_extension_preregistration.md",
+    ),
+    Checkpoint(
+        "P7",
+        "btc_p7_cross_timeframe_consensus",
+        "artifacts/benchmark/btc_p7_decision/decision.json",
+        preregistration="docs/p7_preregistration.md",
+    ),
+    Checkpoint(
+        "P8",
+        "btc_p8_automatic_trading_mode_router",
+        "artifacts/benchmark/btc_p8_decision/decision.json",
+        preregistration="docs/p8_preregistration.md",
+    ),
 )
 
 #: The documents a reader meets before any artifact. Each must carry the block.
+#:
+#: A preregistration joins this list in the commit that creates it, not before:
+#: a front-door document that does not exist yet is a missing file rather than a
+#: silent omission, and the verifier says so either way.
 FRONT_DOOR_DOCUMENTS: tuple[str, ...] = (
     "README.md",
     "artifacts/README.md",
     "docs/research_roadmap.md",
     "docs/research_reproduction.md",
+    "docs/current_development_plan.md",
     "docs/microstructure_v1.md",
     "docs/p4_preregistration.md",
     "docs/p5_preregistration.md",

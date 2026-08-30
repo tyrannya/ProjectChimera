@@ -43,6 +43,10 @@ committed and its evidence is not.
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
+| `P6` | `btc_p6_multiclock_specialist_screen` | **unrun** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **unrun** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
 <!-- research-state:end -->
 
@@ -441,6 +445,38 @@ zero without reversing, and the authenticated order route stays unreachable.
 Its metrics are descriptive. **Nothing in it may select a model, a feature, a
 threshold, a horizon or a target**, and simulated PnL is not evidence of alpha.
 
+### The axis the next checkpoints change: the clock
+
+Five information families failed on **one clock**. That is the thing every
+negative result so far has in common, and it is the thing none of them varied.
+`P5` came closest and did not vary it: `mtf_v1` read 4h and 1d bars as *context
+columns on a 1h row*, so the decision was still taken hourly by a model fitted on
+hourly samples. No checkpoint has ever fitted a model on 1m, 5m, 15m or 30m
+samples, and no checkpoint has ever asked whether separately trained specialists
+agree.
+
+That is also the architecture this system was designed around and never tested.
+The forward plan is set out in
+[`current_development_plan.md`](current_development_plan.md); the two checkpoints
+it opens are:
+
+- **P6 — multi-clock timeframe specialists.** Independent native-timeframe
+  specialists on 1m, 5m, 15m, 30m and 1h, each predicting six of *its own* bars
+  ahead, under the same fourteen features, the same cost model, the same three
+  untuned model families and the same four real-world temporal periods. Five
+  separate verdicts, all reported. Preregistered before its first fit in
+  `docs/p6_preregistration.md`.
+- **P7 — Pythia cross-timeframe consensus.** Whether causal agreement between the
+  frozen P6 specialists adds cost-aware value over the corresponding individual
+  specialists, in two separately reported trading modes. Preregistered after P6
+  closes in `docs/p7_preregistration.md`.
+
+**The old `P6`–`P9` labels moved, and nothing that had evidence was renamed.**
+This file previously sketched four future axes under those numbers. None had been
+designed, preregistered, implemented or run; they were notes about what was left.
+Unspent labels are free to be reassigned, and the axes themselves survive below
+with later numbers and their content unchanged.
+
 ### Future axes, documented and not started
 
 None of the following has been designed, preregistered, implemented or run.
@@ -448,18 +484,25 @@ They are recorded so that "what is left" is a list rather than a memory, and so
 that the next checkpoint is chosen deliberately rather than by whichever idea is
 nearest to hand.
 
-- **P6 — horizon.** Five checkpoints have measured one label at one horizon. The
-  6-candle horizon is the one thing every negative result so far shares, and
-  `p4_preregistration.md` §7.1 already named moving it as the first thing a later
-  checkpoint would change. It needs its own control, because the existing one
-  exists at 1h/6h and nowhere else.
-- **P7 — cross-asset and market context.** Everything so far reads one symbol on
+- **P8 — automatic trading-mode router.** Whether a causal router can choose among
+  eligible trading modes with incremental cost-aware value over fixed-mode
+  operation. Its design is committed at `docs/p8_preregistration.md` and P8 is
+  **not opened**: no P8 fit has been made and no P8 number exists.
+- **P9 — alternative target and horizon families.** Five checkpoints measured one
+  label at one horizon, and `P6` deliberately keeps six bars while changing what a
+  bar is, so the horizon question is untouched. `p4_preregistration.md` §7.1
+  already named moving it as the first thing a later checkpoint would change. It
+  needs its own control, because the existing one exists at 1h/6h and nowhere
+  else.
+- **P10 — cross-asset and market context.** Everything so far reads one symbol on
   one exchange. Whether the rest of the market carries information about BTC is
   untested and would need a new source.
-- **P8 — predefined regime-conditioned modelling.** `btc_p2b_regimes` described
-  the four outer blocks as choppy uptrends; nothing has yet asked whether a model
-  conditioned on a regime declared *in advance* behaves differently.
-- **P9 — representation and model architecture.** v4 tested one architecture and
+- **P11 — causal market-regime conditioning.** `btc_p2b_regimes` described the
+  four outer blocks as choppy uptrends; nothing has yet asked whether a model
+  conditioned on a regime declared *in advance* behaves differently. This is a
+  different axis from the P8 router, which selects a trading *style* from causal
+  state and is forbidden from selecting on realised profit.
+- **P12 — representation and model architecture.** v4 tested one architecture and
   P2a three untuned families. Whether a learned representation extracts more from
   OHLCV14 than a gradient-boosted tree does is a question about the model rather
   than about the information.

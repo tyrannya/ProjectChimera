@@ -279,6 +279,10 @@ fail until every front-door document is reconciled with it.
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
+| `P6` | `btc_p6_multiclock_specialist_screen` | **unrun** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **unrun** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
 <!-- research-state:end -->
 
