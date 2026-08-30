@@ -218,7 +218,7 @@ def test_the_document_has_no_unresolved_placeholder():
 # --------------------------------------------------------------------------- #
 
 #: Flipped in the commit that produces P7 evidence.
-P7_EVIDENCE_EXPECTED = False
+P7_EVIDENCE_EXPECTED = True
 
 
 def test_no_p7_artifact_exists_before_the_evidence_commit():

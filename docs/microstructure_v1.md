@@ -40,7 +40,7 @@ The reading is §8's; the scope of the conclusion is
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
-| `P7` | `btc_p7_cross_timeframe_consensus` | **preregistered** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
 <!-- research-state:end -->

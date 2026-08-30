@@ -31,7 +31,7 @@ rewritten; the forward plan is.
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
-| `P7` | `btc_p7_cross_timeframe_consensus` | **preregistered** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
 <!-- research-state:end -->
@@ -133,9 +133,16 @@ Two trading-mode experiments with separate verdicts — scalping on a 1m decisio
 clock and day trading on a 5m decision clock — over the **frozen** P6 specialists
 and their frozen predictions. Nothing is refitted, retuned or reweighted.
 Preregistered after P6 closed and before any P7 number was computed, in
-[`p7_preregistration.md`](p7_preregistration.md). A negative P6 does not cancel P7: agreement
-among individually unprofitable specialists is a separate question, and P6 §9.4
-predeclared that P7 must not depend on which specialists cleared the gate.
+[`p7_preregistration.md`](p7_preregistration.md). A negative P6 did not cancel P7:
+agreement among individually unprofitable specialists is a separate question, and
+P6 §9.4 predeclared that P7 must not depend on which specialists cleared the gate.
+
+**Answered: neither mode supportive.** Scalping improved on the fold-wise best of
+its own constituents in 1 of 4 folds with mean delta `-0.0265515`; day trading in
+1 of 4 with mean delta `-0.034336`. Both validity gates passed — each mode's own
+decision-clock specialist reproduced its frozen P6 cell exactly — so these are
+comparisons within one accounting. The closure is in the preregistration
+document.
 
 ### Trading-mode controller — engineering, not a checkpoint
 

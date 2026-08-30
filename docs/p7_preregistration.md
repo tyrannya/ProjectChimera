@@ -25,7 +25,7 @@ The machine-readable twin is [`nn/p7_preregistration.py`](../nn/p7_preregistrati
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
-| `P7` | `btc_p7_cross_timeframe_consensus` | **preregistered** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
 <!-- research-state:end -->
@@ -289,3 +289,103 @@ asserts the check catches it.
 
 **A valid negative mode is never re-run.** A mode invalidated by a software
 defect may be repaired, and only that mode re-run.
+
+---
+
+## Post-run closure
+
+*(Appended after P7 ran. No constant, rule, mode, specialist set, alignment,
+control or success criterion above this line moved after the first delta was
+computed. The checkable form of that claim is
+`nn/p7_preregistration.py`, whose payload hash is still
+`sha256:b79365ce0c6a8d1464b2420e589fd502cf3520daba775c2da5430497be12cb50`, which
+both mode artifacts and the decision record. The generated research-state block
+above changed from `preregistered` to `answered`, which is what it is for.)*
+
+### Neither mode is supportive.
+
+The validity gate passed on both: each mode's own decision-clock specialist
+aligned to itself as the identity, over 1,161,875 rows for scalping and 232,285
+for day trading, and reproduced its frozen P6 cell exactly. The deltas that
+follow are therefore comparisons within one accounting.
+
+| mode | decision clock | improved folds | mean fold delta | verdict |
+| --- | --- | --- | --- | --- |
+| `SCALPING` | `1m` | **1 of 4** | `-0.0265515` | **negative** |
+| `DAY_TRADING` | `5m` | **1 of 4** | `-0.034336` | **negative** |
+
+Both failed both conditions. Evidence:
+[`artifacts/benchmark/btc_p7_decision/`](../artifacts/benchmark/btc_p7_decision/),
+over two mode artifacts frozen under
+[`artifacts/btc_p7_SHA256SUMS.txt`](../artifacts/btc_p7_SHA256SUMS.txt).
+
+#### P7A — scalping, 2 of 3, `15m` vetoes
+
+| fold | consensus | fold-wise best constituent | delta | consensus trades |
+| --- | --- | --- | --- | --- |
+| 0 | `-0.031842` | `5m` `-0.012302` | `-0.019540` | 18 |
+| 1 | `+0.031669` | `1m` `+0.080876` | `-0.049207` | 9 |
+| 2 | `-0.063037` | `1m` `-0.016257` | `-0.046780` | 31 |
+| 3 | `+0.113459` | `1m` `+0.104138` | `+0.009321` | 11 |
+
+#### P7B — day trading, 3 of 4, `1h` vetoes
+
+| fold | consensus | fold-wise best constituent | delta | consensus trades |
+| --- | --- | --- | --- | --- |
+| 0 | `+0.044898` | `5m` `-0.007995` | `+0.052893` | 6 |
+| 1 | `-0.001485` | `5m` `+0.073974` | `-0.075459` | 1 |
+| 2 | `+0.005206` | `15m` `+0.061887` | `-0.056681` | 6 |
+| 3 | `0.000000` | `5m` `+0.058097` | `-0.058097` | 0 |
+
+### Four things about this result
+
+**Agreement mostly removed trades rather than improving them.** The scalping
+consensus took 9 to 31 trades per fold where its own 1m constituent took 16 to
+46, and the day-trading consensus took 0 to 6 where its 5m constituent took 8 to
+43. Requiring a majority *and* clearing a veto is a filter, and on these folds
+the trades it removed were, on balance, the ones worth keeping.
+
+**Day-trading fold 3 took no trade at all.** Over 57,840 five-minute decision
+rows, three of four specialists never agreed with the `1h` specialist not
+opposing. A consensus that cannot find a position is a real outcome of the rule
+and is reported as `0.000000` — a flat quarter, not a missing number. It is also
+the single largest contributor to that mode's negative mean, and no condition
+was relaxed for it.
+
+**The bar was deliberately the hardest fair one.** The comparison is against the
+*fold-wise best* constituent, chosen mechanically inside each fold after the
+fact. Against a weaker benchmark — the average constituent, or a fixed one named
+in advance — scalping would look better on more folds. §5.1 predeclared the
+fold-wise best precisely so that "beats one of its members" could not be
+reported as "adds value", and it is not being relaxed now that it bound.
+
+**The one improvement is one fold.** Scalping's fold 3 delta is `+0.009321` and
+day trading's fold 0 is `+0.052893`. Two positive folds across eight is what the
+3-of-4 condition exists to refuse, and it refused them.
+
+### What this licenses, and what it does not
+
+> Under this design — the frozen P6 XGBoost specialists, `consensus_v1`'s
+> majority-plus-veto rules, causal last-closed alignment, a 20 bps round trip,
+> and four adaptive temporal folds of one asset on one exchange — cross-timeframe
+> agreement did not add cost-aware value over the fold-wise best of its own
+> components, in either the scalping or the day-trading composition.
+
+It is **not** proof that consensus is useless, that a different agreement count,
+a different veto, a different specialist set, a different decision cadence, or a
+consensus over *individually viable* specialists would fail the same way. P6 had
+already found no viable clock, so this is agreement among components that were
+themselves not viable — which is exactly the experiment that was preregistered,
+and exactly the limit on what it can conclude.
+
+**Do not respond to this by writing `consensus_v2`.** The rules, the agreement
+counts, the vetoes, the specialist sets and the decision rule were all
+predeclared, and searching any of them against these four outer blocks would
+convert a negative result into a fitted one. §8 lists them.
+
+### What survives
+
+The machinery, which is the more durable half. `chimera/consensus.py` is a pure,
+deterministic decision the live trading-mode controller calls directly, so the
+scaffold that follows expresses the same rule this checkpoint measured — and,
+because the answer was negative, expresses it while claiming no alpha for it.

@@ -1,4 +1,6 @@
-# P6 — decision
+# CURRENT
+
+## P6 — decision
 
 **the preregistered gate, applied to frozen cells; the P6 outcome**
 

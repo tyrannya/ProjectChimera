@@ -297,7 +297,12 @@ def decide(cells: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
 
 def to_markdown(payload: dict[str, Any]) -> str:
     lines = [
-        f"# {payload['checkpoint']} — decision",
+        # `# CURRENT` on the first line, because this file is also the
+        # directory's STATUS marker and `artifacts/README.md`'s index is
+        # checked against it. The heading below says which checkpoint.
+        "# CURRENT",
+        "",
+        f"## {payload['checkpoint']} — decision",
         "",
         f"**{payload['evidence_class']}**",
         "",

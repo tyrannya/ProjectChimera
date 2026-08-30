@@ -40,10 +40,12 @@ P2C_QUESTION = "btc_p2c_information_set_benchmark"
 P3_QUESTION = "btc_p3_information_set_benchmark"
 P4_QUESTION = "btc_p4_derivatives_positioning_benchmark"
 P5_QUESTION = "btc_p5_information_set_benchmark"
+P6_QUESTION = "btc_p6_multiclock_specialist_screen"
+P7_QUESTION = "btc_p7_cross_timeframe_consensus"
 
 #: Generations produced after the reporting-integrity metric-semantics fix,
 #: whose `sharpe`/`max_drawdown` are directly comparable across runs.
-POST_CORRECTION_GENERATIONS = {"v4", "P2a", "P2b", "P2c", "P3", "P4", "P5"}
+POST_CORRECTION_GENERATIONS = {"v4", "P2a", "P2b", "P2c", "P3", "P4", "P5", "P6", "P7"}
 
 #: The current generation's aggregate for the baseline research question.
 CURRENT_BASELINE = "diagnostics/btc_regimes_v4"
@@ -117,6 +119,24 @@ CURRENT_P5_SOURCE_RUNS = {
     for arm in ("ohlcv14", "mtf_v1", "ohlcv14_plus_mtf_v1")
     for model in ("logistic_regression", "lightgbm", "xgboost")
 } | {"benchmark/btc_p5_decision"}
+
+#: P6's decision is the aggregate: the screen has no comparison table, because
+#: there is no control arm to compare against. Its fifteen cells are the source
+#: runs, and all five clocks are listed — a clock missing from the index would be
+#: a verdict with no stated status, which is how a screen quietly loses a result.
+CURRENT_P6 = "benchmark/btc_p6_decision"
+CURRENT_P6_SOURCE_RUNS = {
+    f"benchmark/btc_p6_{clock}_{model}"
+    for clock in ("1m", "5m", "15m", "30m", "1h")
+    for model in ("logistic_regression", "lightgbm", "xgboost")
+}
+
+#: P7's decision is the aggregate and its two mode artifacts are the source runs.
+CURRENT_P7 = "benchmark/btc_p7_decision"
+CURRENT_P7_SOURCE_RUNS = {
+    "benchmark/btc_p7_scalping",
+    "benchmark/btc_p7_day_trading",
+}
 
 #: The prior generation's aggregate, whose own source runs are absent.
 V3_BASELINE = "diagnostics/btc_regimes_v3"
@@ -389,6 +409,8 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
         P3_QUESTION: "P3",
         P4_QUESTION: "P4",
         P5_QUESTION: "P5",
+        P6_QUESTION: "P6",
+        P7_QUESTION: "P7",
     }
 
     def paths_for(question: str) -> set[str]:
@@ -401,6 +423,8 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
     assert paths_for(P3_QUESTION) == {CURRENT_P3, *CURRENT_P3_SOURCE_RUNS}
     assert paths_for(P4_QUESTION) == {CURRENT_P4, *CURRENT_P4_SOURCE_RUNS}
     assert paths_for(P5_QUESTION) == {CURRENT_P5, *CURRENT_P5_SOURCE_RUNS}
+    assert paths_for(P6_QUESTION) == {CURRENT_P6, *CURRENT_P6_SOURCE_RUNS}
+    assert paths_for(P7_QUESTION) == {CURRENT_P7, *CURRENT_P7_SOURCE_RUNS}
 
 
 def test_current_aggregates_are_backed_by_their_committed_source_runs():

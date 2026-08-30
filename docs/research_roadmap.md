@@ -45,7 +45,7 @@ committed and its evidence is not.
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
-| `P7` | `btc_p7_cross_timeframe_consensus` | **preregistered** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
 <!-- research-state:end -->
@@ -439,6 +439,61 @@ Five things about this matter more than the numbers:
 `seq_len`, the cost model, the class definition and the gate were predeclared;
 searching any of them against these four blocks would convert a negative result
 into a fitted one.
+
+---
+
+### P7 — does causal agreement between temporal specialists add value over the specialists?
+
+**No, in neither trading mode.** P6 screened five specialists individually; P7
+asks whether *agreement between* them is worth more than any of them alone.
+Preregistered in full at [`p7_preregistration.md`](p7_preregistration.md) **after
+P6 closed** and before any consensus was computed.
+
+P7 fits nothing: it replays the frozen P6 XGBoost cells' committed per-sample
+predictions, reading each specialist's own `selected_action` and never its
+probabilities. Alignment is causal and referenced to the decision bar's close —
+the instant the trade is entered — so no row reads a specialist bar that had not
+printed, and a specialist with nothing closed yet makes the whole consensus HOLD
+rather than allowing a partial vote.
+
+| mode | decision clock | rule | improved folds | mean fold delta | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `SCALPING` | `1m` | 2 of {`1m`,`5m`,`15m`}, `15m` vetoes | **1 of 4** | `-0.0265515` | **negative** |
+| `DAY_TRADING` | `5m` | 3 of {`5m`,`15m`,`30m`,`1h`}, `1h` vetoes | **1 of 4** | `-0.034336` | **negative** |
+
+Each consensus is compared against the **fold-wise best of its own
+constituents**, every one of them replayed on that mode's decision clock through
+the same alignment and the same cost model — because a consensus taken every
+minute cannot be compared against a 15m specialist's native P6 return, which was
+measured under a different execution cadence. Evidence:
+[`artifacts/benchmark/btc_p7_decision/`](../artifacts/benchmark/btc_p7_decision/),
+over two mode artifacts frozen under
+[`artifacts/btc_p7_SHA256SUMS.txt`](../artifacts/btc_p7_SHA256SUMS.txt).
+
+Four things about this matter more than the numbers:
+
+- **A validity gate ran before any delta was read.** Each mode's own
+  decision-clock specialist aligns to itself as the identity, so replaying it
+  must reproduce its frozen P6 cell exactly. Both did, over 1,161,875 and
+  232,285 rows. A replay that could not would have made P7 invalid rather than
+  negative.
+- **Agreement mostly removed trades.** The scalping consensus took 9-31 trades
+  per fold where its own `1m` constituent took 16-46; on these folds the trades
+  the filter removed were, on balance, the ones worth keeping.
+- **Day-trading fold 3 took no trade at all** over 57,840 decision rows: three of
+  four specialists never agreed with `1h` not opposing. A flat quarter is a real
+  outcome of the rule, reported as `0.000000`, and no condition was relaxed for it.
+- **The benchmark was deliberately the hardest fair one.** Against the fold-wise
+  best constituent rather than the average or a fixed member — predeclared in
+  §5.1 precisely so "beats one of its members" could not be reported as "adds
+  value", and not relaxed now that it bound.
+
+This is agreement among components P6 had already found individually non-viable,
+which is exactly the experiment preregistered and exactly the limit on what it
+concludes. It is not evidence that a different agreement count, veto, specialist
+set or cadence would fail the same way.
+
+**Do not respond to this by writing `consensus_v2`.** Every rule was predeclared.
 
 ### What the five information-set answers together do and do not license
 

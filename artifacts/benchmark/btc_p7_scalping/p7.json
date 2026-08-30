@@ -1,0 +1,447 @@
+{
+  "checkpoint": "P7",
+  "question": "Does causal agreement between independently trained temporal specialists add robust cost-aware value beyond the corresponding individual specialists?",
+  "evidence_class": "one trading mode's consensus and its components; P7 primary evidence",
+  "evidence_ceiling": "Exploratory, adaptive, and a rung lower than P6's. These are the same four real-world windows v4, P2a, P2b, P2c, P3, P4, P5 and P6 have read \u2014 the ninth reading \u2014 and P7 is designed with P6's results already known. No P7 result is confirmatory. A positive P7 would need confirmation these blocks cannot supply; a negative one needs no discounting.",
+  "preregistration_hash": "sha256:b79365ce0c6a8d1464b2420e589fd502cf3520daba775c2da5430497be12cb50",
+  "specialist_source": {
+    "checkpoint": "P6",
+    "model": "xgboost",
+    "p6_preregistration_hash": "sha256:2785b1a7b19ecceca58cd0e936d14a5cbbbe6eb10f7ddf2796800409a0eaaaf2",
+    "cells": "artifacts/benchmark/btc_p6_{clock}_xgboost/",
+    "predictions": "outer_predictions.parquet",
+    "frozen_under": "artifacts/btc_p6_SHA256SUMS.txt",
+    "column": "selected_action",
+    "semantics": "each specialist's own predetermined decision, produced by its own frozen threshold on its own inner block during P6. P7 reads the action and never the probabilities, so there is no second threshold anywhere in this checkpoint."
+  },
+  "mode": {
+    "mode": "SCALPING",
+    "decision_clock": "1m",
+    "specialists": [
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "veto_specialist": "15m",
+    "agreement_required": 2,
+    "of": 3,
+    "rule": "LONG when at least 2 of the 3 specialists are actively LONG and the 15m specialist is not actively SHORT; SHORT when at least 2 of the 3 are actively SHORT and the 15m specialist is not actively LONG; otherwise HOLD",
+    "horizon_bars": 6,
+    "horizon": "6 minutes"
+  },
+  "consensus_rule": {
+    "specialists": [
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "veto_specialist": "15m",
+    "agreement_required": 2,
+    "decided_by": "chimera.consensus.decide"
+  },
+  "target": {
+    "horizon": 6,
+    "fee_rate": 0.0005,
+    "slippage_rate": 0.0005,
+    "cost_threshold": 0.002
+  },
+  "validity_gate": {
+    "decision_clock": "1m",
+    "identity_rows": 289248,
+    "passed": true
+  },
+  "code": {
+    "scheme": "git-tracked-source/1",
+    "roots": [
+      "chimera",
+      "nn",
+      "strategies",
+      "tools"
+    ],
+    "revision": "9bfc76644a7f46f7a4e043d3f539bd0c84aa8ca3",
+    "dirty": true,
+    "source_digest": "bda4761767e0d594f3c0cb8b4a997a7ff7c3ddd86f67e3ef7c08a8de2c3f34c3",
+    "source_files": 85,
+    "untracked_source_files": 3,
+    "missing_tracked_source_files": 0,
+    "excluded_environment_files": 0,
+    "note": "source_digest is a SHA-256 over the content of every Python file git tracks under ['chimera', 'nn', 'strategies', 'tools'], plus any untracked Python file among them. An installed environment \u2014 a virtualenv inside the checkout, site-packages, a model library imported lazily by one model family and not another \u2014 is not under those roots and cannot move it. An environment is recognised by its shape (a site-packages/dist-packages/node_modules directory, or one holding a pyvenv.cfg) and never by a directory's name, so a Python file sitting under a source root in a directory merely called build or dist is project source and is hashed. revision and dirty are recorded beside the digest because neither one alone says what source ran"
+  },
+  "numerics": {
+    "python": "3.11.15",
+    "python_implementation": "CPython",
+    "libraries": {
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "scikit-learn": "1.9.0",
+      "pandas": "2.3.3",
+      "lightgbm": "4.7.0",
+      "xgboost": "3.2.0"
+    },
+    "blas": [
+      {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "version": "0.3.31.188.0",
+        "filepath": "libscipy_openblas64_-32a4b2a6.so",
+        "threading_layer": "pthreads"
+      },
+      {
+        "user_api": "openmp",
+        "internal_api": "openmp",
+        "version": null,
+        "filepath": "libgomp.so.1",
+        "threading_layer": null
+      }
+    ],
+    "platform": {
+      "system": "Linux",
+      "release": "6.18.44-fc-v22",
+      "machine": "x86_64",
+      "processor": "x86_64"
+    },
+    "note": "recorded to diagnose numerical drift, not to claim determinism. This repository has not demonstrated that a logistic_regression cell reproduces bit-for-bit across environments, and does not assert that it does; see docs/p2b_methodology.md section 8"
+  },
+  "folds": [
+    {
+      "fold": 0,
+      "period_start": "2023-03-04T07:00:00+00:00",
+      "period_end": "2023-09-24T16:53:00+00:00",
+      "decision_rows": 294119,
+      "unavailable_rows": {
+        "1m": 0,
+        "5m": 4,
+        "15m": 14
+      },
+      "consensus": {
+        "net_return": -0.031842,
+        "n_trades": 18,
+        "turnover": 36.0,
+        "total_costs": 0.036,
+        "gross_return": 0.004036,
+        "max_drawdown": 0.0415,
+        "exposure": 0.0004,
+        "cost_per_trade": 0.002,
+        "rows": 294119,
+        "signal_counts": {
+          "SHORT": 11,
+          "HOLD": 294059,
+          "LONG": 49
+        }
+      },
+      "constituents": {
+        "1m": {
+          "net_return": -0.048409,
+          "n_trades": 46,
+          "turnover": 92.0,
+          "total_costs": 0.092,
+          "gross_return": 0.043535,
+          "max_drawdown": 0.0565,
+          "exposure": 0.0009,
+          "cost_per_trade": 0.002,
+          "rows": 294119,
+          "signal_counts": {
+            "SHORT": 43,
+            "HOLD": 294004,
+            "LONG": 72
+          }
+        },
+        "5m": {
+          "net_return": -0.012302,
+          "n_trades": 13,
+          "turnover": 26.0,
+          "total_costs": 0.026,
+          "gross_return": 0.013964,
+          "max_drawdown": 0.0353,
+          "exposure": 0.0003,
+          "cost_per_trade": 0.002,
+          "rows": 294119,
+          "signal_counts": {
+            "SHORT": 20,
+            "HOLD": 294054,
+            "LONG": 45
+          }
+        },
+        "15m": {
+          "net_return": -0.53169,
+          "n_trades": 349,
+          "turnover": 698.0,
+          "total_costs": 0.698,
+          "gross_return": -0.057091,
+          "max_drawdown": 0.5317,
+          "exposure": 0.0071,
+          "cost_per_trade": 0.002,
+          "rows": 294119,
+          "signal_counts": {
+            "SHORT": 900,
+            "HOLD": 292244,
+            "LONG": 975
+          }
+        }
+      },
+      "best_constituent": {
+        "clock": "5m",
+        "net_return": -0.012302
+      },
+      "delta": -0.01954
+    },
+    {
+      "fold": 1,
+      "period_start": "2023-09-24T17:00:00+00:00",
+      "period_end": "2024-04-12T13:53:00+00:00",
+      "decision_rows": 289254,
+      "unavailable_rows": {
+        "1m": 0,
+        "5m": 4,
+        "15m": 14
+      },
+      "consensus": {
+        "net_return": 0.031669,
+        "n_trades": 9,
+        "turnover": 18.0,
+        "total_costs": 0.018,
+        "gross_return": 0.049425,
+        "max_drawdown": 0.0041,
+        "exposure": 0.0002,
+        "cost_per_trade": 0.002,
+        "rows": 289254,
+        "signal_counts": {
+          "SHORT": 0,
+          "HOLD": 289225,
+          "LONG": 29
+        }
+      },
+      "constituents": {
+        "1m": {
+          "net_return": 0.080876,
+          "n_trades": 16,
+          "turnover": 32.0,
+          "total_costs": 0.032,
+          "gross_return": 0.110302,
+          "max_drawdown": 0.0044,
+          "exposure": 0.0003,
+          "cost_per_trade": 0.002,
+          "rows": 289254,
+          "signal_counts": {
+            "SHORT": 0,
+            "HOLD": 289230,
+            "LONG": 24
+          }
+        },
+        "5m": {
+          "net_return": 0.014124,
+          "n_trades": 27,
+          "turnover": 54.0,
+          "total_costs": 0.054,
+          "gross_return": 0.070004,
+          "max_drawdown": 0.0577,
+          "exposure": 0.0006,
+          "cost_per_trade": 0.002,
+          "rows": 289254,
+          "signal_counts": {
+            "SHORT": 10,
+            "HOLD": 289119,
+            "LONG": 125
+          }
+        },
+        "15m": {
+          "net_return": -0.122406,
+          "n_trades": 93,
+          "turnover": 186.0,
+          "total_costs": 0.186,
+          "gross_return": 0.056906,
+          "max_drawdown": 0.1451,
+          "exposure": 0.0019,
+          "cost_per_trade": 0.002,
+          "rows": 289254,
+          "signal_counts": {
+            "SHORT": 165,
+            "HOLD": 288774,
+            "LONG": 315
+          }
+        }
+      },
+      "best_constituent": {
+        "clock": "1m",
+        "net_return": 0.080876
+      },
+      "delta": -0.049207
+    },
+    {
+      "fold": 2,
+      "period_start": "2024-04-12T14:00:00+00:00",
+      "period_end": "2024-10-30T10:53:00+00:00",
+      "decision_rows": 289254,
+      "unavailable_rows": {
+        "1m": 0,
+        "5m": 4,
+        "15m": 14
+      },
+      "consensus": {
+        "net_return": -0.063037,
+        "n_trades": 31,
+        "turnover": 62.0,
+        "total_costs": 0.062,
+        "gross_return": -0.000311,
+        "max_drawdown": 0.0884,
+        "exposure": 0.0006,
+        "cost_per_trade": 0.002,
+        "rows": 289254,
+        "signal_counts": {
+          "SHORT": 0,
+          "HOLD": 289107,
+          "LONG": 147
+        }
+      },
+      "constituents": {
+        "1m": {
+          "net_return": -0.016257,
+          "n_trades": 19,
+          "turnover": 38.0,
+          "total_costs": 0.038,
+          "gross_return": 0.024598,
+          "max_drawdown": 0.0738,
+          "exposure": 0.0004,
+          "cost_per_trade": 0.002,
+          "rows": 289254,
+          "signal_counts": {
+            "SHORT": 0,
+            "HOLD": 289213,
+            "LONG": 41
+          }
+        },
+        "5m": {
+          "net_return": -0.09883,
+          "n_trades": 80,
+          "turnover": 160.0,
+          "total_costs": 0.16,
+          "gross_return": 0.060005,
+          "max_drawdown": 0.1212,
+          "exposure": 0.0017,
+          "cost_per_trade": 0.002,
+          "rows": 289254,
+          "signal_counts": {
+            "SHORT": 70,
+            "HOLD": 288844,
+            "LONG": 340
+          }
+        },
+        "15m": {
+          "net_return": -0.086427,
+          "n_trades": 73,
+          "turnover": 146.0,
+          "total_costs": 0.146,
+          "gross_return": 0.057309,
+          "max_drawdown": 0.0896,
+          "exposure": 0.0015,
+          "cost_per_trade": 0.002,
+          "rows": 289254,
+          "signal_counts": {
+            "SHORT": 15,
+            "HOLD": 288864,
+            "LONG": 375
+          }
+        }
+      },
+      "best_constituent": {
+        "clock": "1m",
+        "net_return": -0.016257
+      },
+      "delta": -0.04678
+    },
+    {
+      "fold": 3,
+      "period_start": "2024-10-30T11:00:00+00:00",
+      "period_end": "2025-05-19T07:47:00+00:00",
+      "decision_rows": 289248,
+      "unavailable_rows": {
+        "1m": 0,
+        "5m": 4,
+        "15m": 14
+      },
+      "consensus": {
+        "net_return": 0.113459,
+        "n_trades": 11,
+        "turnover": 22.0,
+        "total_costs": 0.022,
+        "gross_return": 0.13064,
+        "max_drawdown": 0.0057,
+        "exposure": 0.0002,
+        "cost_per_trade": 0.002,
+        "rows": 289248,
+        "signal_counts": {
+          "SHORT": 2,
+          "HOLD": 289228,
+          "LONG": 18
+        }
+      },
+      "constituents": {
+        "1m": {
+          "net_return": 0.104138,
+          "n_trades": 20,
+          "turnover": 40.0,
+          "total_costs": 0.04,
+          "gross_return": 0.140448,
+          "max_drawdown": 0.0252,
+          "exposure": 0.0004,
+          "cost_per_trade": 0.002,
+          "rows": 289248,
+          "signal_counts": {
+            "SHORT": 7,
+            "HOLD": 289220,
+            "LONG": 21
+          }
+        },
+        "5m": {
+          "net_return": 0.012458,
+          "n_trades": 67,
+          "turnover": 134.0,
+          "total_costs": 0.134,
+          "gross_return": 0.147632,
+          "max_drawdown": 0.0602,
+          "exposure": 0.0014,
+          "cost_per_trade": 0.002,
+          "rows": 289248,
+          "signal_counts": {
+            "SHORT": 40,
+            "HOLD": 288913,
+            "LONG": 295
+          }
+        },
+        "15m": {
+          "net_return": -0.042598,
+          "n_trades": 41,
+          "turnover": 82.0,
+          "total_costs": 0.082,
+          "gross_return": 0.039262,
+          "max_drawdown": 0.0462,
+          "exposure": 0.0009,
+          "cost_per_trade": 0.002,
+          "rows": 289248,
+          "signal_counts": {
+            "SHORT": 0,
+            "HOLD": 289038,
+            "LONG": 210
+          }
+        }
+      },
+      "best_constituent": {
+        "clock": "1m",
+        "net_return": 0.104138
+      },
+      "delta": 0.009321
+    }
+  ],
+  "summary": {
+    "fold_deltas": [
+      -0.01954,
+      -0.049207,
+      -0.04678,
+      0.009321
+    ],
+    "mean_delta": -0.0265515,
+    "improved_folds": 1,
+    "total_folds": 4,
+    "consensus_digest": "559bdcbab8b284651d5e344acaeff08ebafee835348c906cc6826c7ae445d470"
+  }
+}
