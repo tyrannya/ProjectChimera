@@ -94,7 +94,7 @@ the nine frozen cells all exist now; see the Post-run closure.)*
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
-| `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 
 <!-- research-state:end -->
 

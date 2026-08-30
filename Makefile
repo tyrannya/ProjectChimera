@@ -11,6 +11,7 @@
 	p5-cell p5-btc p5-compare p5-decide \
 	p6-clock p6-btc p6-decide \
 	p7-mode p7-btc p7-decide \
+	paper-smoke \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -116,6 +117,9 @@ p7-btc:  ## P7: both trading modes over the frozen P6 specialists
 p7-decide:  ## P7: apply the frozen decision rule to both modes
 	$(PYTHON) -m nn.p7_decision --runs artifacts/benchmark/btc_p7_scalping \
 		artifacts/benchmark/btc_p7_day_trading --out artifacts/benchmark/btc_p7_decision
+
+paper-smoke:  ## Engineering smoke of Pythia -> mode -> Aegis -> Hermes -> dry-run venue
+	$(PYTHON) -m tools.paper_run --smoke --bars 2000 --out artifacts/paper_smoke
 
 multiclock-acquire:  ## Download and verify the Binance 1m source every clock is cut from
 	$(PYTHON) -m tools.acquire_multiclock_source --archive-dir $(MULTICLOCK_ARCHIVE_DIR)

@@ -183,7 +183,7 @@ repository can declare a checkpoint unrun while its aggregate is committed here.
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
-| `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -315,6 +315,7 @@ one that shares its `research question`.
 | `benchmark/btc_p6ext_1d_logistic_regression` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `benchmark/btc_p6ext_1d_lightgbm` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `benchmark/btc_p6ext_1d_xgboost` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
+| `paper_smoke` | paper-v1 | `paper_path_engineering_smoke` | OPERATIONAL | `tools.paper_run` | n/a — a deterministic replay of frozen P6 predictions through the dry-run execution chain | n/a | engineering only; claims no alpha, no live run and no sustained paper validation |
 | `futures_dry_run_v1` | fx-v1 | `futures_execution_v1_operational_validation` | OPERATIONAL | `tools.futures_dry_run` | n/a — a deterministic replay of committed 1h candles, rows `[40981, 45802)` | n/a | operational invariants; every other figure descriptive |
 
 ## Current v4 evidence

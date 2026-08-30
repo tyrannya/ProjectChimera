@@ -149,6 +149,16 @@ ray_results/
 !artifacts/benchmark/btc_p6ext_1d_xgboost/*
 !artifacts/benchmark/btc_p6ext_decision/*
 
+# The paper-path engineering smoke. Committed because the point of it is that a
+# reader can check what it claims — and what it does not: the report carries
+# claims.sustained_paper_validation=false, claims.live=false and
+# claims.alpha=false, and a test asserts all three. The futures state file is
+# runtime state and stays ignored.
+!artifacts/paper_smoke/
+artifacts/paper_smoke/*
+!artifacts/paper_smoke/paper_run.json
+!artifacts/paper_smoke/STATUS.md
+
 # Futures Execution v1 operational evidence. Not research evidence: it is the
 # report of a frozen engineering protocol (`tools/futures_dry_run.py`), and
 # `make check` re-verifies it against the protocol hash in the build reading it.
