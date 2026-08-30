@@ -26,7 +26,7 @@ story.
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
-| `P6` | `btc_p6_multiclock_specialist_screen` | **preregistered** |
+| `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **unrun** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
@@ -320,3 +320,115 @@ may be repaired, and only the affected cells re-run.
 A screen over five clocks whose every verdict is published whatever it says. P6
 selects nothing for deployment; a clock that passes has earned the right to be
 carried into P7's consensus test, not a claim of profitability.
+
+---
+
+## Post-run closure
+
+*(Appended after P6 ran. No constant, rule, clock, horizon, fold or success
+criterion above this line moved after the first fit. The checkable form of that
+claim is `nn/p6_preregistration.py`, whose payload hash is still
+`sha256:2785b1a7b19ecceca58cd0e936d14a5cbbbe6eb10f7ddf2796800409a0eaaaf2` and
+which every one of the fifteen cells records. One thing above the line did
+change and it is not part of the design: `STYX_PROHIBITION` now resolves the
+sealed instant from the committed contract instead of restating it, because
+`tests/test_research_contracts.py` forbids a second copy of that anchor under
+`nn/`. The rendered string — and therefore the hash — is byte-identical, so no
+cell's identity moved. The generated research-state block above also changed
+from `preregistered` to `answered`, which is what it is for.)*
+
+### P6 is negative. No clock is viable.
+
+Fifteen cells — five clocks times three untuned families — over the four frozen
+periods. The deciding XGBoost verdicts:
+
+| clock | horizon | positive folds | mean net return | beats native momentum | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `1m` | 6 minutes | **2 of 4** | `+0.030087` | 4 of 4 | **not viable** |
+| `5m` | 30 minutes | **2 of 4** | `+0.011442` | 4 of 4 | **not viable** |
+| `15m` | 90 minutes | **2 of 4** | `+0.009264` | 4 of 4 | **not viable** |
+| `30m` | 3 hours | **2 of 4** | `-0.009106` | 4 of 4 | **not viable** |
+| `1h` | 6 hours | **2 of 4** | `-0.026770` | 4 of 4 | **not viable** |
+
+Every clock failed on condition 1 — three of four folds with positive
+cost-aware net return — and every clock failed it at exactly the same count.
+`30m` and `1h` failed condition 2 as well. Evidence:
+[`artifacts/benchmark/btc_p6_decision/`](../artifacts/benchmark/btc_p6_decision/),
+over fifteen primary cells frozen under
+[`artifacts/btc_p6_SHA256SUMS.txt`](../artifacts/btc_p6_SHA256SUMS.txt).
+
+Per-fold outer net returns, deciding family:
+
+| clock | fold 0 | fold 1 | fold 2 | fold 3 | outer trades |
+| --- | --- | --- | --- | --- | --- |
+| `1m` | `-0.0484` | `+0.0809` | `-0.0163` | `+0.1041` | 101 |
+| `5m` | `-0.0080` | `+0.0740` | `-0.0783` | `+0.0581` | 109 |
+| `15m` | `-0.1161` | `-0.0174` | `+0.0949` | `+0.0757` | 121 |
+| `30m` | `-0.0926` | `-0.0224` | `+0.0300` | `+0.0486` | 180 |
+| `1h` | `+0.0433` | `+0.0274` | `-0.0774` | `-0.1004` | 136 |
+
+### Five things about this result matter more than the numbers
+
+**The mean would have lied, for the third time in this programme.** Three of the
+five clocks — `1m`, `5m` and `15m` — have a *positive* mean outer net return
+while improving only two of four folds. Pooling four periods would have reported
+them as gains. The count-the-folds condition was predeclared for exactly this,
+in P2b, and it has now fired on real data at four different temporal scales.
+
+**Condition 3 was nearly free, and saying so is part of the result.** Every clock
+beat its native momentum baseline in all four folds — but on the fast clocks
+that baseline returns about `-1.000`. `MomentumBaseline` takes a position on the
+sign of `ema_cross` at every bar it is allowed to, and at a 6-minute horizon with
+a 20 bps round trip it pays the cost model roughly a hundred times per fold. On
+these clocks "beats momentum" therefore means "does not trade itself to death",
+which is a real floor and a very low one. It should not be read as evidence of
+skill, and the gate did not let it be: condition 1 is what bound.
+
+**Buy-and-hold beat every specialist on every fold**, at full exposure — `+0.186`,
+`+1.628`, `+0.034` and `+0.425` across the four periods. It is a reference and
+not a competitor, exactly as it has been since P2a, and it is not a reason to
+select anything.
+
+**Two secondary families would have passed, and the design forbade taking them.**
+Logistic regression cleared all three conditions on `1m`, `5m` and `15m`, and
+LightGBM on `1m` and `5m`. §7 named XGBoost the deciding family before any P6 fit
+existed and §9.3 forbade switching to whichever family passed. This is the
+winner-shopping the design exists to prevent, it was available, and it was
+declined. The full secondary table is in the decision artifact, deciding nothing.
+
+**The trade counts are thin, and thinner than the row counts suggest.** The `1m`
+specialist scored 1.16 million outer rows and took 101 trades. That is the frozen
+threshold selector and the 80.5% HOLD class balance doing what they were always
+going to do at a six-minute horizon under a fixed cost threshold: the model is
+mostly certain of nothing, and the trades it does take are rare enough that four
+folds of them are a small sample. No condition was changed for it; it limits how
+far these folds generalise and it is reported rather than argued away.
+
+### What this licenses, and what it does not
+
+> Under this BTC/USDT design — the same fourteen causal OHLCV columns, a
+> six-*native*-bar cost-aware label, a 20 bps round-trip cost model, three untuned
+> model families and four adaptive temporal folds of one asset on one exchange —
+> independent native-timeframe specialists on 1m, 5m, 15m, 30m and 1h did not
+> produce robust cost-aware signal. Every clock reached exactly two of the four
+> folds required.
+
+It is **not** proof that fast clocks are uninformative, that minute data carries
+no signal, or that a different horizon, information set, cost assumption or model
+class would fail the same way. None of those was tested. It *is* evidence that
+changing the clock alone, holding everything else at the values five previous
+checkpoints used, does not rescue the programme.
+
+**Do not respond to this by tuning anything.** The clock set, the six-native-bar
+horizon, `seq_len`, the cost model, the class definition and the gate were all
+predeclared, and searching any of them against these four outer blocks would
+convert a negative result into a fitted one. §10 lists them.
+
+### P7 still runs
+
+P6 screened the specialists individually. P7 asks a different question — whether
+causal *agreement* between independently trained specialists adds cost-aware
+value over the corresponding individual specialists — and §9.4 predeclared that
+the answer must not depend on which specialists happened to clear an absolute
+floor. The frozen P6 XGBoost specialists and their frozen predictions are what
+P7 replays. Nothing is refitted.

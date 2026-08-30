@@ -29,7 +29,7 @@ rewritten; the forward plan is.
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
-| `P6` | `btc_p6_multiclock_specialist_screen` | **preregistered** |
+| `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **unrun** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
@@ -114,7 +114,15 @@ predictive signal at temporal scales the 1h/6h programme never tested?
 Five clocks, three untuned model families, one verdict per clock, all five
 reported. It changes the **clock** and nothing else: same fourteen features, same
 cost model, same six-*native*-bar label, same four real-world temporal periods.
-Its preregistration is committed at `docs/p6_preregistration.md` before its first fit.
+Preregistered before its first fit in
+[`p6_preregistration.md`](p6_preregistration.md).
+
+**Answered: negative.** Not one of the five clocks is viable. Every clock reached
+exactly two of the four folds the gate required, and `30m` and `1h` also failed
+the positive-mean condition. Three clocks have a positive *mean* while improving
+two of four folds — the count-the-folds rule, predeclared in P2b, firing for the
+third time. Two secondary families would have passed on the fast clocks and the
+design forbade taking them. The closure is in the preregistration document.
 
 ### P7 — Pythia cross-timeframe consensus
 
@@ -124,8 +132,10 @@ cost-aware value beyond the corresponding individual specialists?
 Two trading-mode experiments with separate verdicts — scalping on a 1m decision
 clock and day trading on a 5m decision clock — over the **frozen** P6 specialists
 and their frozen predictions. Nothing is refitted, retuned or reweighted.
-Its preregistration is committed at `docs/p7_preregistration.md` after P6 closes and
-before any P7 number is computed.
+Its preregistration is committed at `docs/p7_preregistration.md` after P6 closed
+and before any P7 number is computed. A negative P6 does not cancel P7: agreement
+among individually unprofitable specialists is a separate question, and P6 §9.4
+predeclared that P7 must not depend on which specialists cleared the gate.
 
 ### Trading-mode controller — engineering, not a checkpoint
 

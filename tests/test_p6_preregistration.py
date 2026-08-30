@@ -219,7 +219,7 @@ def test_the_measured_universe_covers_every_clock():
 
 #: Flipped in the commit that produces P6 evidence. While it is False, a P6
 #: artifact appearing anywhere fails the suite.
-P6_EVIDENCE_EXPECTED = False
+P6_EVIDENCE_EXPECTED = True
 
 
 def test_no_p6_artifact_exists_before_the_evidence_commit():
