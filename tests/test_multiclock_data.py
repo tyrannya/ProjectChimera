@@ -9,10 +9,13 @@ shifted by one minute, a bar completed from the period after it, or a boundary
 crossed by a single row all produce a frame that sorts, plots and trains without
 complaint.
 
-The five mutations `docs/current_development_plan.md` requires are each here:
-a higher-timeframe bar shifted one period into the future, an incomplete bar
-injected, the research boundary crossed, a constituent candle corrupted, and an
-alignment boundary moved.
+`docs/current_development_plan.md` step 2 requires the multi-clock contract to
+carry leakage tests, and `docs/p6_preregistration.md` §11 names them. Five
+mutations discharge that here: a higher-timeframe bar shifted one period into the
+future, an incomplete bar injected, the research boundary crossed, a constituent
+candle corrupted, and an alignment boundary moved — plus the controls for a
+duplicate timestamp, an unordered grid, a sub-minute offset, and a candle whose
+high does not contain its own body.
 """
 
 from __future__ import annotations
