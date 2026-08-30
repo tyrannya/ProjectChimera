@@ -50,7 +50,7 @@ This section is authoritative for a developer arriving without prior conversatio
 1. Treat the directional chain as having reached a valid scientific boundary: P8 was not opened because its preregistered eligibility precondition failed.
 2. Carry the post-audit historical disclosures below into any description of P6, P7 or Styx. They are not optional colour.
 3. Work the **selected** next axis — the structural carry feasibility screen — and only that one. The decision review that selected it is recorded below and does not need re-running.
-4. Preregister the structural screen, push the preregistration, and only then calculate its first economic number.
+4. **Done, and not to be redone:** the structural screen is preregistered and pushed. Do not re-preregister it, and do not re-specify it against whatever data happens to be reachable — its own stopping rule forbids that. What remains is egress plus the machinery listed under "P13 — preregistered, not evaluable".
 
 **Do not do now**
 
@@ -93,12 +93,12 @@ Only after a coherent alpha architecture exists should the project proceed throu
 
 **What NOT EVALUABLE does and does not mean.**
 
-- It **does** establish that the design was frozen and pushed before any data was in hand — the strongest pre-commitment this repository has achieved, since the designer could not have seen a result to fit it to — and that the screen is executable, unchanged, the moment egress exists.
+- It **does** establish that the design was frozen and pushed before any data was in hand — the strongest pre-commitment this repository has achieved, since the designer could not have seen a result to fit it to — and that no further **design** decision is required to run it.
 - It **does not** establish anything economic. No P13 return, funding total, basis figure, block result or gate decision was computed. The viability gate was never evaluated. **It is not a negative result and must never be cited as one.**
 
 **What was deliberately not done**, each of which would have produced a number at the cost of the checkpoint's meaning: no substitution of another venue for Binance, no REST endpoint standing in for the historical archive, no synthetic or reconstructed perpetual or funding series, no relaxation of the frozen source set to fit reachable data, and no read of `P4-HOLD` or Styx.
 
-**The next step for P13 is egress, not redesign.** `python -m tools.acquire_p13_sources --plan` runs without a network and names every object required. Redesigning P13 against whatever data happens to be reachable is forbidden by its own stopping rule.
+**The next step for P13 is egress plus implementation, not redesign.** `python -m tools.acquire_p13_sources --plan` runs without a network and names every object required, and `nn/p13_carry.py` is the accounting core with its dimensional controls in place. What does **not** yet exist: the downloader and its checksum verification, the loader and its truncating read, the source manifests, the block runner, the G1–G6 gate, the S1–S4 stress runners, the event ledger and the decision writer. Redesigning P13 against whatever data happens to be reachable is forbidden by its own stopping rule; building the missing machinery against the frozen design is not.
 
 ## Post-audit historical disclosures
 

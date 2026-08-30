@@ -24,7 +24,6 @@ from chimera.futures.domain import Position, PositionSide
 from nn.p13_carry import (
     Allocation,
     CarryError,
-    CarryPosition,
     Costs,
     FundingSettlement,
     Quote,
@@ -249,31 +248,42 @@ def test_entry_equity_is_capital_minus_entry_frictions_and_nothing_else():
 
 
 def test_double_applied_leverage_would_be_caught():
-    """Margin is notional/1x. Halving it (2x) changes free cash, and the test sees it."""
+    """Asserted against what open_carry ACTUALLY posts as margin.
+
+    The earlier form hand-constructed the levered object and so passed under a
+    real `perp_margin = perp_notional / 2` bug in open_carry. Margin at 1x IS the
+    entry notional; anything less is leverage the capital did not authorise, and
+    equity alone cannot see it — the freed margin reappears as free cash — which
+    is why margin and free cash are both pinned.
+    """
     entry = quote(0, "100", "100")
     position = open_carry(entry, CAPITAL, REAL, VENUE)
-    honest = position.free_cash
 
-    levered = CarryPosition(
-        quantity=position.quantity,
-        spot_entry=position.spot_entry,
-        perp_entry=position.perp_entry,
-        perp_margin=position.perp_margin / D("2"),
-        free_cash=honest + position.perp_margin / D("2"),
+    assert position.perp_margin == position.quantity * entry.perp_fill
+    assert position.perp_margin / position.leverage == position.quantity * entry.perp_fill
+
+    spot_out = (
+        position.quantity * entry.spot_fill * (D(1) + REAL.spot_fee + REAL.spot_slippage)
     )
-    assert levered.free_cash != honest
-    assert levered.perp_margin != position.perp_margin
-    # Equity is unchanged by the bug, which is exactly why free cash and margin
-    # must both be asserted rather than only the total.
-    assert levered.equity(entry) == position.equity(entry)
+    perp_out = position.perp_margin + position.quantity * entry.perp_fill * (
+        REAL.perp_fee + REAL.perp_slippage
+    )
+    assert position.free_cash == CAPITAL.total_capital - spot_out - perp_out
 
 
 def test_a_fee_charged_on_quantity_instead_of_notional_is_off_by_the_price():
+    """Asserted against what open_carry ACTUALLY booked, not against arithmetic
+    on this test's own locals — the earlier form passed under a real
+    fee-on-quantity bug because it never read position.fees."""
     position = open_carry(quote(0, "100", "100"), CAPITAL, REAL, VENUE)
-    on_notional = position.quantity * D("100") * REAL.spot_fee
-    on_quantity = position.quantity * REAL.spot_fee
-    assert on_notional == on_quantity * D("100")
-    assert on_notional != on_quantity
+    notional = position.quantity * D("100")
+
+    expected = notional * REAL.spot_fee + notional * REAL.perp_fee
+    assert position.fees == expected
+
+    on_quantity = position.quantity * (REAL.spot_fee + REAL.perp_fee)
+    assert position.fees != on_quantity
+    assert position.fees == on_quantity * D("100")  # off by exactly the price
 
 
 def test_a_reversed_funding_sign_flips_paid_and_received():
@@ -531,7 +541,11 @@ def test_the_plan_uses_binances_own_path_grammar():
 def test_every_object_has_a_published_checksum_companion():
     from tools.acquire_p13_sources import plan_objects
 
-    for obj in plan_objects("BTCUSDT")[:8]:
+    objects = plan_objects("BTCUSDT")
+    # Every family, not just the first — slicing the head covered spot_price
+    # alone, so removing the funding family's companion left the suite green.
+    assert len({o.field for o in objects}) == 4
+    for obj in objects:
         assert obj.checksum_url == obj.url + ".CHECKSUM"
 
 

@@ -636,8 +636,10 @@ evidence, which is exactly what that state means. **NOT EVALUABLE is not a
 negative result** — no return, funding total, basis figure or gate decision was
 computed, and the viability gate was never evaluated. Nothing was substituted to
 manufacture one: not another venue, not a REST endpoint, not a reconstructed
-series, and not a relaxation of the frozen source set. The next step is egress,
-not redesign; the screen runs unchanged the moment it has one.
+series, and not a relaxation of the frozen source set. The next step is egress
+and the remaining machinery — the accounting core and the networkless plan exist;
+the downloader, loader, block runner, gate and stress runners do not — but no
+further *design* decision is required, which is what freezing it early bought.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 

@@ -5,10 +5,19 @@ result is a small number obtained by subtracting large, nearly equal ones — th
 two legs' price PnL cancels to the basis — and binary floating point loses
 exactly the digits that survive that cancellation.
 
-The engine implements :mod:`nn.p13_preregistration` and adds nothing to it. In
-particular it holds **no threshold, no filter and no parameter**: sizing, costs,
-the funding rule and the gate are all read from the frozen preregistration, so
-this module cannot quietly become a second place where the design lives.
+The engine implements :mod:`nn.p13_preregistration` and adds nothing to it: it
+holds **no threshold, no filter and no parameter of its own**. Sizing, costs, the
+allocation and the venue constraints are all **caller-supplied** — they arrive as
+:class:`Costs`, :class:`Allocation` and :class:`Venue` — so this module cannot
+invent one, but it does not read them from the preregistration either, and a
+caller passing the wrong numbers is a caller bug rather than something this file
+can prevent. The one thing it does read from the frozen design is the research
+boundary, which it asserts rather than trusts.
+
+The viability gate is **not implemented here at all**. Nor is the downloader, the
+checksum verification, the loader and its truncating read, the source manifests,
+the block runner, the stress runners, the event ledger or the decision writer.
+This is the accounting core the rest of that will be built on.
 
 **Where the money is.** For an equal-quantity hedge the two legs' price PnL
 telescopes to ``Q x (basis_in - basis_out)``: everything the price does in
@@ -32,9 +41,22 @@ from typing import Iterable, Sequence
 
 from chimera.futures.accounting import liquidation_price
 from chimera.futures.domain import PositionSide
+from nn.p13_preregistration import DATA_BOUNDARY
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
+
+#: The research boundary, read from the frozen preregistration rather than
+#: restated. ``DATA_BOUNDARY["enforcement"]`` says "the acquisition AND THE
+#: EVALUATOR both assert it"; only the acquisition did, so the frozen sentence
+#: was true of half the system. Reading it here rather than copying the literal
+#: also means the two cannot drift apart.
+RESEARCH_BOUNDARY_NS = int(
+    __import__("datetime")
+    .datetime.fromisoformat(DATA_BOUNDARY["span_end_exclusive"])
+    .timestamp()
+    * 1_000_000_000
+)
 
 
 class CarryError(RuntimeError):
@@ -504,6 +526,21 @@ def evaluate_block(
     flow — and only ever at its own instant, which is the whole of the causality
     story for a strategy that takes no funding signal.
     """
+    for quote in quotes:
+        if quote.instant_ns >= RESEARCH_BOUNDARY_NS:
+            raise CarryError(
+                f"quote at {quote.instant_ns} is at or after the research boundary "
+                f"{DATA_BOUNDARY['span_end_exclusive']}. A row past the boundary is a "
+                "refusal, not something to filter: reaching here means a loader admitted "
+                "one."
+            )
+    for settlement in (settlements := list(settlements)):
+        if settlement.instant_ns >= RESEARCH_BOUNDARY_NS:
+            raise CarryError(
+                f"funding settlement at {settlement.instant_ns} is at or after the research "
+                f"boundary {DATA_BOUNDARY['span_end_exclusive']}"
+            )
+
     empty = BlockResult(
         label=label,
         opened=False,

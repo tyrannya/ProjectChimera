@@ -43,10 +43,14 @@ actions, spot `future_return` — and no source data.
 
 Per the preregistration's stopping rule, NOT EVALUABLE is **terminal for this
 design in this environment**, not an invitation to redesign it against whatever
-data happens to be reachable. The design stays frozen and executable exactly as
-written: given egress to `data.binance.vision`, `python -m
-tools.acquire_p13_sources --plan` names every object required and the screen can
-be run without any further design decision.
+data happens to be reachable. The design stays frozen and needs **no further design decision**: given egress to
+`data.binance.vision`, `python -m tools.acquire_p13_sources --plan` names every
+object required. That is a statement about the *design*, not about readiness —
+substantial implementation remains before the screen can run. Absent today: the
+downloader and its checksum verification, the loader and its truncating read, the
+source manifests, the block runner, the G1–G6 gate, the S1–S4 stress runners, the
+event ledger and the decision writer. What exists is the accounting core
+(`nn/p13_carry.py`), its dimensional controls, and the networkless plan.
 
 ### What this is not
 
