@@ -176,17 +176,24 @@ def test_every_gate_threshold_is_pinned():
 
 def test_the_gate_is_a_conjunction_of_all_six_conditions():
     gate = prereg.VIABILITY_GATE
-    for condition in ("G1_breadth", "G2_central_tendency", "G3_downside", "G4_sample",
-                      "G5_stress", "G6_minimum_effect_size"):
+    for condition in (
+        "G1_breadth",
+        "G2_central_tendency",
+        "G3_downside",
+        "G4_sample",
+        "G5_stress",
+        "G6_minimum_effect_size",
+    ):
         assert condition in gate["conditions"], f"{condition} is missing from the gate"
     assert gate["conjunction"].startswith("ALL of G1, G2, G3, G4, G5 and G6")
 
 
 def test_the_gate_demands_a_minimum_effect_size_not_merely_a_positive_mean():
     """Without G6 the gate could emit VIABLE on a few basis points a year."""
-    assert prereg.MIN_MEAN_NET_RETURN == prereg.COST_MODEL[
-        "per_block_round_trip_cost_of_total_capital"
-    ].split()[1]
+    assert (
+        prereg.MIN_MEAN_NET_RETURN
+        == prereg.COST_MODEL["per_block_round_trip_cost_of_total_capital"].split()[1]
+    )
 
 
 def test_the_breadth_requirement_is_not_a_copy_of_p6s_three_of_four():
@@ -225,7 +232,9 @@ def test_the_predicted_funding_rate_is_never_read():
 
 
 def test_the_strategy_takes_no_funding_signal():
-    assert prereg.FUNDING_CAUSALITY["does_the_strategy_use_funding_as_a_signal"].startswith("NO")
+    assert prereg.FUNDING_CAUSALITY["does_the_strategy_use_funding_as_a_signal"].startswith(
+        "NO"
+    )
 
 
 def test_the_remaining_hindsight_parameter_is_disclosed():
@@ -475,9 +484,9 @@ def test_the_committed_spot_snapshot_is_described_as_pre_styx_not_pre_boundary()
 
 
 def test_the_truncating_carve_out_does_not_extend_to_freshly_acquired_archives():
-    carve = next(
-        s for s in prereg.DATA_SOURCES if s["field"] == "spot_price"
-    )["truncating_read_carve_out"]
+    carve = next(s for s in prereg.DATA_SOURCES if s["field"] == "spot_price")[
+        "truncating_read_carve_out"
+    ]
     assert "freshly acquired archive is still refused" in carve
 
 
@@ -550,7 +559,9 @@ def test_the_exit_search_is_bounded_by_the_block_end():
 
 def test_the_gate_states_that_its_hurdle_is_zero_yield_cash():
     assert "ZERO" in prereg.VIABILITY_GATE["the_hurdle_is_zero_yield_cash"]
-    assert "not an economic hurdle rate" in prereg.VIABILITY_GATE["the_hurdle_is_zero_yield_cash"]
+    assert (
+        "not an economic hurdle rate" in prereg.VIABILITY_GATE["the_hurdle_is_zero_yield_cash"]
+    )
 
 
 def test_the_human_document_quotes_the_hash_the_module_computes():

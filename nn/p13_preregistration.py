@@ -117,7 +117,10 @@ FIRST_PARTY_SOURCE_EVIDENCE = {
     },
     "base_url": "python/enums.py: BASE_URL = 'https://data.binance.vision/'",
     "object_naming": {
-        "evidence": "python/download-kline.py line 45 and download-futures-markPriceKlines.py line 48",
+        "evidence": (
+            "python/download-kline.py line 45 and "
+            "download-futures-markPriceKlines.py line 48"
+        ),
         "monthly": "{SYMBOL}-{interval}-{YYYY}-{MM}.zip",
         "daily": "{SYMBOL}-{interval}-{YYYY-MM-DD}.zip",
     },
@@ -142,7 +145,8 @@ FIRST_PARTY_SOURCE_EVIDENCE = {
         "binance-public-data ships no download-futures-fundingRate.py, so the fundingRate "
         "archive is NOT covered by an official downloader script. Its existence rests on "
         "nn.p4_preregistration.FUNDING_ARCHIVE_INCEPTION_POLICY, which records real HTTP "
-        "checks against data/futures/um/monthly/fundingRate/BTCUSDT returning 200 for 2020-01. "
+        "checks against data/futures/um/monthly/fundingRate/BTCUSDT returning 200 for "
+        "2020-01. "
         "This is stated plainly rather than glossed: it is the one source whose path is "
         "corroborated by measurement rather than by Binance's published code."
     ),
@@ -254,7 +258,8 @@ DATA_SOURCES: tuple[dict[str, Any], ...] = (
             "asserts the maximum surviving instant is strictly below the boundary, and the "
             "surviving row count and maximum instant are recorded in the evidence manifest. "
             "This is the ONE place DATA_BOUNDARY's 'a row at or after the boundary is a "
-            "refusal, not a filter' is relaxed, it is relaxed only for a file whose extra rows "
+            "refusal, not a filter' is relaxed, it is relaxed only for a file whose extra "
+            "rows "
             "were committed long before P13 existed, and it is relaxed loudly rather than "
             "silently. A freshly acquired archive is still refused rather than truncated."
         ),
@@ -527,7 +532,8 @@ FUNDING_CAUSALITY = {
     "the_one_parameter_that_remains": (
         "HONESTLY STATED, because the sentence it replaces ('an always-on rule has none to "
         "trust') was false. One parameter survives and cannot be removed by any construction: "
-        "the LEG DIRECTION. Under the imported sign convention a SHORT perpetual receives when "
+        "the LEG DIRECTION. Under the imported sign convention a SHORT perpetual receives "
+        "when "
         "funding is positive and pays when it is negative, so choosing LONG spot / SHORT "
         "perpetual rather than the reverse fixes the SIGN of the entire funding payoff. That "
         "choice is hindsight-informed: perpetual funding on major crypto pairs has been "
@@ -538,7 +544,8 @@ FUNDING_CAUSALITY = {
     ),
     "the_instrument_for_that_disclosure": (
         "funding received and funding paid are reported as two separate magnitudes per block, "
-        "never netted, precisely so a reader can see how much of any positive result came from "
+        "never netted, precisely so a reader can see how much of any positive result came "
+        "from "
         "the direction being right about the era rather than from the carry paying for its "
         "frictions."
     ),
@@ -651,7 +658,8 @@ CAPITAL_CONTRACT = {
         "exactly zero in BTC terms, by construction, for the whole holding period under S0, "
         "S1 and S3. Under S2 the legs are opened and closed one bar apart by design, so delta "
         "is zero only BETWEEN the perpetual leg's open and close, and the zero-delta control "
-        "is scoped accordingly — the same trap identity_scope closes for the basis identity. The two "
+        "is scoped accordingly — the same trap identity_scope closes for the basis "
+        "identity. The two "
         "legs' VALUES still differ, and that difference is the basis — which is the quantity "
         "under study, not an error."
     ),
@@ -1035,7 +1043,8 @@ MARGIN_AND_LIQUIDATION = {
     "what_the_portfolio_model_assumes_operationally": (
         "STATED because it is the model's weakest operational assumption. Treating the spot "
         "holding as collateral for the perpetual short requires an account arrangement that "
-        "actually does that — Binance Portfolio Margin, or an operator moving quote collateral "
+        "actually does that — Binance Portfolio Margin, or an operator moving quote "
+        "collateral "
         "between the spot and USD-M wallets in time. A plain USD-M cross-margin account does "
         "NOT automatically collateralise from spot BTC holdings. The primary model therefore "
         "describes a carry book financed as one pool, which is how such a book is run, and "
@@ -1232,7 +1241,8 @@ VIABILITY_GATE = {
     "excluded_blocks": (
         "a block in which the position could not be opened — required source rows absent or "
         "invalid at every candidate instant, the quantity flooring to zero at the step size, "
-        "or either leg falling below the venue minimum notional — is EXCLUDED from the denominators of G1 and G2 and is "
+        "or either leg falling below the venue minimum notional — is EXCLUDED from the "
+        "denominators of G1 and G2 and is "
         "reported with its reason. If fewer than 5 blocks remain, the screen is INVALID "
         "rather than PASS or FAIL: too little was measured to decide."
     ),
