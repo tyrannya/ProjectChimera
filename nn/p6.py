@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,58 @@ DEFAULT_OUT_ROOT = REPO_ROOT / "artifacts" / "benchmark"
 #: `tools.freeze_evidence` hashes it: a cell is primary evidence that cannot be
 #: rebuilt without re-fitting.
 EVIDENCE_CLASS = "one native-timeframe specialist, fitted once; P6 primary evidence"
+
+
+@dataclass(frozen=True)
+class Registration:
+    """Which preregistration a run is executing, and where its cells go.
+
+    P6-EXT is the same runner on two further clocks under its own frozen design.
+    Selecting the registration rather than copying the runner is what keeps the
+    two checkpoints one code path: a change to how a cell is fitted cannot reach
+    one and miss the other.
+    """
+
+    name: str
+    checkpoint: str
+    question: str
+    evidence_ceiling: str
+    clocks: tuple[str, ...]
+    horizons: dict[str, str]
+    prefix: str
+    preregistration_hash: str
+    manifest: str
+
+
+def registration(name: str) -> Registration:
+    """The frozen design a run executes, by name."""
+    if name == "p6":
+        return Registration(
+            name="p6",
+            checkpoint=CHECKPOINT,
+            question=QUESTION,
+            evidence_ceiling=EVIDENCE_CEILING,
+            clocks=tuple(CLOCKS),
+            horizons=dict(HORIZONS),
+            prefix="btc_p6",
+            preregistration_hash=preregistration_hash(),
+            manifest="artifacts/btc_p6_SHA256SUMS.txt",
+        )
+    if name == "p6ext":
+        from nn import p6_extension_preregistration as ext
+
+        return Registration(
+            name="p6ext",
+            checkpoint=ext.CHECKPOINT,
+            question=ext.QUESTION,
+            evidence_ceiling=ext.EVIDENCE_CEILING,
+            clocks=tuple(ext.CLOCKS),
+            horizons=dict(ext.HORIZONS),
+            prefix="btc_p6ext",
+            preregistration_hash=ext.preregistration_hash(),
+            manifest="artifacts/btc_p6ext_SHA256SUMS.txt",
+        )
+    raise SystemExit(f"unknown registration {name!r}; this runner executes 'p6' or 'p6ext'")
 
 
 def contract_id(clock: str) -> str:
@@ -257,6 +310,7 @@ def cell_payload(
     records: list[dict[str, Any]],
     *,
     manifest: dict[str, Any],
+    registered: Registration,
 ) -> dict[str, Any]:
     """Everything a P6 cell records about how it was produced."""
     contract = load_contract(contract_id(clock))
@@ -266,15 +320,15 @@ def cell_payload(
     ]
     trades = [record["outer_validation"][model]["trading"]["n_trades"] for record in records]
     return {
-        "checkpoint": CHECKPOINT,
-        "question": QUESTION,
+        "checkpoint": registered.checkpoint,
+        "question": registered.question,
         "evidence_class": EVIDENCE_CLASS,
-        "preregistration_hash": preregistration_hash(),
-        "evidence_ceiling": EVIDENCE_CEILING,
+        "preregistration_hash": registered.preregistration_hash,
+        "evidence_ceiling": registered.evidence_ceiling,
         "clock": clock,
         "model": model,
         "horizon_bars": HORIZON_BARS,
-        "horizon": HORIZONS[clock],
+        "horizon": registered.horizons[clock],
         "source": {
             "manifest": str(DEFAULT_MANIFEST.relative_to(REPO_ROOT)),
             "minutes_digest": manifest["minutes"]["digest"],
@@ -387,12 +441,12 @@ def to_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def status_markdown(payload: dict[str, Any]) -> str:
+def status_markdown(payload: dict[str, Any], registered: Registration) -> str:
     return (
         f"# CURRENT — {payload['checkpoint']} {payload['clock']} x {payload['model']}\n\n"
         f"{payload['evidence_class']}.\n\n"
         f"Preregistration `{payload['preregistration_hash']}`.\n"
-        f"Frozen under `artifacts/btc_p6_SHA256SUMS.txt`.\n"
+        f"Frozen under `{registered.manifest}`.\n"
     )
 
 
@@ -403,9 +457,11 @@ def run_clock(
     manifest: dict[str, Any],
     out_root: Path,
     models: tuple[str, ...] = MODELS,
+    registered: Registration | None = None,
 ) -> dict[str, Path]:
     """Every model on one clock, fitted once against the same arrays."""
-    logger.info("=== %s specialist ===", clock)
+    registered = registered or registration("p6")
+    logger.info("=== %s %s specialist ===", registered.checkpoint, clock)
     data = clock_research_data(minutes, clock)
     plans = plan_folds(data, clock)
     run = RunConfig(seed=SEED, seq_len=SEQ_LEN)
@@ -440,7 +496,7 @@ def run_clock(
     written: dict[str, Path] = {}
     predictions = pd.concat(frames, ignore_index=True)
     for spec in specs:
-        out_dir = out_root / f"btc_p6_{clock}_{spec.name}"
+        out_dir = out_root / f"{registered.prefix}_{clock}_{spec.name}"
         out_dir.mkdir(parents=True, exist_ok=True)
         payload = cell_payload(
             clock,
@@ -448,11 +504,12 @@ def run_clock(
             data,
             [split_record(record, spec.name) for record in records],
             manifest=manifest,
+            registered=registered,
         )
         payload["numerics"]["threadpools"] = threads
         (out_dir / ARTIFACT_NAME).write_text(json.dumps(payload, indent=2) + "\n")
         (out_dir / MARKDOWN_NAME).write_text(to_markdown(payload))
-        (out_dir / STATUS_NAME).write_text(status_markdown(payload))
+        (out_dir / STATUS_NAME).write_text(status_markdown(payload, registered))
         predictions.loc[predictions["model"] == spec.name].reset_index(drop=True).to_parquet(
             out_dir / PREDICTIONS_NAME, index=False
         )
@@ -469,8 +526,14 @@ def run_clock(
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--clock", choices=list(CLOCKS))
-    parser.add_argument("--all", action="store_true", help="every clock in CLOCKS")
+    parser.add_argument(
+        "--registration",
+        choices=("p6", "p6ext"),
+        default="p6",
+        help="which frozen design to execute (default: p6)",
+    )
+    parser.add_argument("--clock")
+    parser.add_argument("--all", action="store_true", help="every clock in the registration")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     parser.add_argument("--models", nargs="+", choices=list(MODELS), default=list(MODELS))
@@ -483,7 +546,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.all and not args.clock:
         raise SystemExit("pass --clock CLOCK or --all")
 
-    clocks = list(CLOCKS) if args.all else [args.clock]
+    registered = registration(args.registration)
+    if args.clock and args.clock not in registered.clocks:
+        raise SystemExit(
+            f"{registered.checkpoint} registered {list(registered.clocks)}, not {args.clock!r}"
+        )
+    clocks = list(registered.clocks) if args.all else [args.clock]
     minutes = load_minutes(args.manifest)
     manifest = json.loads(args.manifest.read_text())
     for clock in clocks:
@@ -493,6 +561,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest=manifest,
             out_root=args.out_root,
             models=tuple(args.models),
+            registered=registered,
         )
     return 0
 

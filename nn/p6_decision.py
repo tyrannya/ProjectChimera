@@ -34,19 +34,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from nn.p6 import ARTIFACT_NAME
+from nn.p6 import ARTIFACT_NAME, Registration, registration
 from nn.p6_preregistration import (
-    CHECKPOINT,
-    CLOCKS,
-    EVIDENCE_CEILING,
     FOLD_PERIODS,
     HORIZONS,
     MODELS,
     PRIMARY_MODEL,
-    QUESTION,
     STOPPING_RULE,
     VIABILITY_GATE,
-    preregistration_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,42 +64,59 @@ class DecisionError(SystemExit):
     """The cells cannot be decided on, and saying so beats deciding anyway."""
 
 
-def load_cells(run_dirs: list[Path]) -> dict[tuple[str, str], dict[str, Any]]:
-    """Every P6 cell, keyed by (clock, model), with its directory recorded."""
+def load_cells(
+    run_dirs: list[Path], registered: Registration
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Every cell, keyed by (clock, model), with its directory recorded.
+
+    A duplicate ``(clock, model)`` is refused rather than resolved. Two
+    directories claiming the same cell is not a situation with a right answer:
+    whichever sorted last would silently replace the committed one, and the
+    checkpoint's outcome would depend on a directory name.
+    """
     cells: dict[tuple[str, str], dict[str, Any]] = {}
     for directory in sorted(run_dirs):
         artifact = directory / ARTIFACT_NAME
         if not artifact.is_file():
             continue
         payload = json.loads(artifact.read_text())
-        if payload.get("checkpoint") != CHECKPOINT:
+        if payload.get("checkpoint") != registered.checkpoint:
             raise DecisionError(
                 f"{directory} reports checkpoint {payload.get('checkpoint')!r}; this "
-                f"decides {CHECKPOINT} and refuses to read another checkpoint's cells"
+                f"decides {registered.checkpoint} and refuses another checkpoint's cells"
+            )
+        key = (payload["clock"], payload["model"])
+        if key in cells:
+            raise DecisionError(
+                f"{directory} and {cells[key]['_dir']} both claim the {key[0]} x {key[1]} "
+                "cell. A duplicate cell would let a directory name decide the outcome."
             )
         payload["_dir"] = str(directory)
-        cells[(payload["clock"], payload["model"])] = payload
+        cells[key] = payload
 
+    clocks = registered.clocks
     missing = [
-        (clock, model) for clock in CLOCKS for model in MODELS if (clock, model) not in cells
+        (clock, model) for clock in clocks for model in MODELS if (clock, model) not in cells
     ]
     if missing:
         raise DecisionError(
-            f"{len(missing)} of {len(CLOCKS) * len(MODELS)} cells are absent: {missing}. "
-            "P6 reports every clock; deciding on a subset is the winner-shopping this "
-            "design forbids."
+            f"{len(missing)} of {len(clocks) * len(MODELS)} cells are absent: {missing}. "
+            f"{registered.checkpoint} reports every clock; deciding on a subset is the "
+            "winner-shopping this design forbids."
         )
     return cells
 
 
-def check_cells_agree(cells: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+def check_cells_agree(
+    cells: dict[tuple[str, str], dict[str, Any]], registered: Registration
+) -> dict[str, Any]:
     """One design, one source, one set of periods — checked, not assumed."""
     hashes = {cell["preregistration_hash"] for cell in cells.values()}
-    if hashes != {preregistration_hash()}:
+    if hashes != {registered.preregistration_hash}:
         raise DecisionError(
             f"the cells were produced under {sorted(hashes)} and this repository's "
-            f"preregistration is {preregistration_hash()}. A cell fitted under an edited "
-            "design is a different object and may not be decided with these."
+            f"preregistration is {registered.preregistration_hash}. A cell fitted under "
+            "an edited design is a different object and may not be decided with these."
         )
     minutes = {cell["source"]["minutes_digest"] for cell in cells.values()}
     if len(minutes) != 1:
@@ -143,11 +155,12 @@ def check_cells_agree(cells: dict[tuple[str, str], dict[str, Any]]) -> dict[str,
                     f"which is not inside the frozen period {low} .. {high}"
                 )
     return {
-        "preregistration_hash": preregistration_hash(),
+        "preregistration_hash": registered.preregistration_hash,
         "minutes_digest": minutes.pop(),
         "cells": len(cells),
         "clock_digests": {
-            clock: cells[(clock, PRIMARY_MODEL)]["source"]["clock_digest"] for clock in CLOCKS
+            clock: cells[(clock, PRIMARY_MODEL)]["source"]["clock_digest"]
+            for clock in registered.clocks
         },
     }
 
@@ -240,10 +253,12 @@ def verdict_for(cell: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def secondary_context(cells: dict[tuple[str, str], dict[str, Any]]) -> list[dict[str, Any]]:
+def secondary_context(
+    cells: dict[tuple[str, str], dict[str, Any]], registered: Registration
+) -> list[dict[str, Any]]:
     """The two non-deciding families, reported in full and deciding nothing."""
     rows = []
-    for clock in CLOCKS:
+    for clock in registered.clocks:
         for model in MODELS:
             if model == PRIMARY_MODEL:
                 continue
@@ -265,33 +280,42 @@ def secondary_context(cells: dict[tuple[str, str], dict[str, Any]]) -> list[dict
     return rows
 
 
-def decide(cells: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
-    """Five verdicts, one per clock, and no summary row."""
-    verdicts = [verdict_for(cells[(clock, PRIMARY_MODEL)]) for clock in CLOCKS]
+def decide(
+    cells: dict[tuple[str, str], dict[str, Any]], registered: Registration
+) -> dict[str, Any]:
+    """One verdict per clock, and no summary row."""
+    verdicts = [verdict_for(cells[(clock, PRIMARY_MODEL)]) for clock in registered.clocks]
     viable = [row["clock"] for row in verdicts if row["viable"]]
     outcome = OUTCOME_SUPPORTIVE if viable else OUTCOME_NEGATIVE
     return {
-        "checkpoint": CHECKPOINT,
-        "question": QUESTION,
+        "checkpoint": registered.checkpoint,
+        "question": registered.question,
         "evidence_class": EVIDENCE_CLASS,
-        "evidence_ceiling": EVIDENCE_CEILING,
-        "preregistration_hash": preregistration_hash(),
+        "evidence_ceiling": registered.evidence_ceiling,
+        "preregistration_hash": registered.preregistration_hash,
         "decided_by": PRIMARY_MODEL,
         "gate": dict(VIABILITY_GATE),
         "clocks": verdicts,
         "viable_clocks": viable,
         "outcome": outcome,
         "answer_is": (
-            "the five per-clock verdicts above. `outcome` says only whether any clock "
+            "the per-clock verdicts above, one for every clock the checkpoint registered. "
+            "`outcome` says only whether any clock "
             "cleared the absolute gate; it is not a checkpoint-level score and there is "
             "deliberately no best-clock row."
         ),
-        "secondary_context": secondary_context(cells),
+        "secondary_context": secondary_context(cells, registered),
         "secondary_context_note": (
             "reported for every clock and decisive for none. A clock whose verdict is "
             "not viable stays not viable if another family would have passed."
         ),
-        "interpretation": STOPPING_RULE["on_pass" if viable else "on_all_fail"],
+        "interpretation": STOPPING_RULE[
+            (
+                "on_pass"
+                if len(viable) == len(verdicts)
+                else "on_fail" if viable else "on_all_fail"
+            )
+        ],
     }
 
 
@@ -334,10 +358,11 @@ def to_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build(run_dirs: list[Path]) -> dict[str, Any]:
-    cells = load_cells(run_dirs)
-    identity = check_cells_agree(cells)
-    payload = decide(cells)
+def build(run_dirs: list[Path], registered: Registration | None = None) -> dict[str, Any]:
+    registered = registered or registration("p6")
+    cells = load_cells(run_dirs, registered)
+    identity = check_cells_agree(cells, registered)
+    payload = decide(cells, registered)
     payload["identity"] = identity
     return payload
 
@@ -346,13 +371,14 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", nargs="+", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--registration", choices=("p6", "p6ext"), default="p6")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = build_argparser().parse_args(argv)
-    payload = build(list(args.runs))
+    payload = build(list(args.runs), registration(args.registration))
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / DECISION_NAME).write_text(json.dumps(payload, indent=2) + "\n")
     (args.out / STATUS_NAME).write_text(to_markdown(payload))
