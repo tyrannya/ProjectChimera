@@ -43,6 +43,7 @@ This section is authoritative for a developer arriving without prior conversatio
 - `P4-HOLD` is retired and unread; Styx is sealed; live trading is disabled.
 - **The independent post-merge audit has been performed** and returned *COHERENT WITH REQUIRED REPAIRS*. It reopened no verdict. Its required historical disclosures are recorded under "Post-audit historical disclosures" below and are part of the record from here on.
 - **The mandatory decision review has been performed.** The selected next research axis is **structural / non-directional alpha**: a preregistered BTC spot/perpetual delta-hedged funding/basis carry feasibility screen.
+- **P13 is preregistered and NOT EVALUABLE in the environment it was attempted in.** Its design is frozen, hashed and pushed; its sources could not be obtained, so no economic number exists. See "P13 — preregistered, not evaluable" below. This is **not** a negative economic result.
 
 **Do now**
 
@@ -80,6 +81,24 @@ The remaining candidates stay in the roadmap and are **not** deleted — they ar
 One research question at a time. Do not mix structural carry with directional feature or model rescue in the same checkpoint.
 
 Only after a coherent alpha architecture exists should the project proceed through sustained paper validation → mature-system freeze → Styx → very small live allocation.
+
+## P13 — preregistered, not evaluable
+
+**State: `preregistered`.** Design frozen at
+`sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767`, committed and pushed at `939f38151cfa607e04c4d74846e081a8ab91ed49` **before any attempt to obtain data**. Result state: `P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE`.
+
+**What P13 asks.** Whether a mechanically defined delta-hedged BTC spot/perpetual carry position — LONG Binance spot BTCUSDT against SHORT Binance USD-M BTCUSDT perpetual, equal BTC quantity, 1x gross, always-on within each of six UTC calendar-year blocks from 2020-01-01 to the research boundary — earns robust positive net returns from funding and basis after **both** legs' frictions. It is the structural axis the decision review selected. It is **not** P4: P4 read funding, open interest and basis as *predictive information* and was screened out at Stage 1; P13 uses them as the *payoff mechanism itself*, and neither result bears on the other.
+
+**Why it could not be run.** The frozen design requires 260 archive objects across four Binance source families. All four were probed and all four refused: `data.binance.vision` answers `403` to `CONNECT` under the execution environment's organisation egress policy, as do `api.binance.com`, `fapi.binance.com` and `www.binance.com`. The repository holds no substitute, and this was established rather than assumed — across the entire git object database, all branches and all history, the only non-artifact parquet files ever committed are four spot-derived research files. **No funding rate, perpetual price, mark price, index price or premium series has ever been committed**, and P4's derivatives artifacts contain model outputs, not source data. Evidence: [`artifacts/benchmark/btc_p13_carry/`](../artifacts/benchmark/btc_p13_carry/), frozen under `artifacts/btc_p13_SHA256SUMS.txt`.
+
+**What NOT EVALUABLE does and does not mean.**
+
+- It **does** establish that the design was frozen and pushed before any data was in hand — the strongest pre-commitment this repository has achieved, since the designer could not have seen a result to fit it to — and that the screen is executable, unchanged, the moment egress exists.
+- It **does not** establish anything economic. No P13 return, funding total, basis figure, block result or gate decision was computed. The viability gate was never evaluated. **It is not a negative result and must never be cited as one.**
+
+**What was deliberately not done**, each of which would have produced a number at the cost of the checkpoint's meaning: no substitution of another venue for Binance, no REST endpoint standing in for the historical archive, no synthetic or reconstructed perpetual or funding series, no relaxation of the frozen source set to fit reachable data, and no read of `P4-HOLD` or Styx.
+
+**The next step for P13 is egress, not redesign.** `python -m tools.acquire_p13_sources --plan` runs without a network and names every object required. Redesigning P13 against whatever data happens to be reachable is forbidden by its own stopping rule.
 
 ## Post-audit historical disclosures
 

@@ -617,6 +617,28 @@ designed, so any result is **exploratory and adaptive**, never confirmatory. And
 the reserved axes below — `P9` through `P12` — are not cancelled by this choice;
 they are not next.
 
+### P13 — structural funding/basis carry: preregistered, **not evaluable**
+
+The screen is designed, frozen, hashed and pushed at
+[`p13_preregistration.md`](p13_preregistration.md) — before any attempt to obtain
+data, which is the strongest pre-commitment this programme has managed, since
+there was no result available to fit the design to.
+
+It has **not run**, and the reason is not scientific. All four preregistered
+Binance source families were probed and all four refused: `data.binance.vision`
+answers `403` to `CONNECT` under the execution environment's organisation egress
+policy. The repository holds no substitute — across the entire git object
+database, all branches and all history, no funding rate, perpetual price, mark
+price or premium series has ever been committed.
+
+So `P13` stays **`preregistered`**, not `answered`: a committed design and no
+evidence, which is exactly what that state means. **NOT EVALUABLE is not a
+negative result** — no return, funding total, basis figure or gate decision was
+computed, and the viability gate was never evaluated. Nothing was substituted to
+manufacture one: not another venue, not a REST endpoint, not a reconstructed
+series, and not a relaxation of the frozen source set. The next step is egress,
+not redesign; the screen runs unchanged the moment it has one.
+
 ### Futures Execution v1 — engineering, not a checkpoint
 
 **This is not a research checkpoint.** It adds in-repo, dry-run-only support
