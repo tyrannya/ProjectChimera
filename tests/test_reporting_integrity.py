@@ -43,6 +43,12 @@ P5_QUESTION = "btc_p5_information_set_benchmark"
 P6_QUESTION = "btc_p6_multiclock_specialist_screen"
 P7_QUESTION = "btc_p7_cross_timeframe_consensus"
 P6EXT_QUESTION = "btc_p6ext_swing_clock_specialist_screen"
+P13_QUESTION = "btc_p13_structural_carry_feasibility"
+
+#: P13's only committed artifact. It carries the acquisition refusal and the
+#: networkless plan behind a NOT EVALUABLE determination, not an economic
+#: result — the checkpoint produced no fit, no block and no decision aggregate.
+CURRENT_P13 = "benchmark/btc_p13_carry"
 
 #: Generations produced after the reporting-integrity metric-semantics fix,
 #: whose `sharpe`/`max_drawdown` are directly comparable across runs.
@@ -57,6 +63,7 @@ POST_CORRECTION_GENERATIONS = {
     "P6",
     "P6-EXT",
     "P7",
+    "P13",
 }
 
 #: The current generation's aggregate for the baseline research question.
@@ -432,6 +439,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
         P6_QUESTION: "P6",
         P7_QUESTION: "P7",
         P6EXT_QUESTION: "P6-EXT",
+        P13_QUESTION: "P13",
     }
 
     def paths_for(question: str) -> set[str]:
@@ -442,6 +450,9 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
     assert paths_for(P2B_QUESTION) == {CURRENT_P2B, *CURRENT_P2B_SOURCE_RUNS}
     assert paths_for(P2C_QUESTION) == {CURRENT_P2C, *CURRENT_P2C_SOURCE_RUNS}
     assert paths_for(P3_QUESTION) == {CURRENT_P3, *CURRENT_P3_SOURCE_RUNS}
+    # P13 has one artifact and no source runs: nothing was fitted, so there is
+    # no cell for an aggregate to be built from.
+    assert paths_for(P13_QUESTION) == {CURRENT_P13}
     assert paths_for(P4_QUESTION) == {CURRENT_P4, *CURRENT_P4_SOURCE_RUNS}
     assert paths_for(P5_QUESTION) == {CURRENT_P5, *CURRENT_P5_SOURCE_RUNS}
     assert paths_for(P6_QUESTION) == {CURRENT_P6, *CURRENT_P6_SOURCE_RUNS}
