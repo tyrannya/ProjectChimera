@@ -1,6 +1,6 @@
 # ProjectChimera — current development plan
 
-Status: **working development plan after P5**. This document is intentionally **not** a research preregistration. It records the intended system direction and the order in which future questions should be formalised. Exact horizons, targets, model families, weighting rules and success criteria still have to be preregistered before the corresponding research run.
+Status: **working development plan after P6/P6-EXT/P7**. This document is intentionally **not** a research preregistration. It records the intended system direction and the order in which future questions should be formalised. Exact horizons, targets, model families, weighting rules and success criteria still have to be preregistered before the corresponding research run.
 
 <!-- research-state:begin -->
 <!--
@@ -24,6 +24,49 @@ Status: **working development plan after P5**. This document is intentionally **
 
 <!-- research-state:end -->
 
+## START HERE — current state and next action
+
+This section is authoritative for a developer arriving without prior conversation context.
+
+**Current state**
+
+- P1/v4 through P5 are closed historical research.
+- **P6 is answered, negative under its preregistered deciding family (XGBoost):** none of `1m`, `5m`, `15m`, `30m`, `1h` cleared the 3-of-4 viability gate.
+- **P6-EXT is answered, negative:** neither `4h` nor `1d` is viable, so `SWING` is currently `NOT_ELIGIBLE`.
+- **P7 is answered, negative for the exact preregistered consensus-v1 rules:** neither scalping nor day-trading consensus added robust value beyond the fold-wise best constituent.
+- **P8 is preregistered but NOT OPENED:** it requires at least two eligible modes and there are none.
+- The trading-mode controller exists and therefore returns **FLAT** under current committed evidence.
+- The futures path remains dry-run only. The committed paper artifact is an engineering smoke, not sustained paper validation.
+- `P4-HOLD` is retired and unread; Styx is sealed; live trading is disabled.
+
+**Do now**
+
+1. Independently audit P6/P6-EXT/P7/P8 chronology, artifacts, data boundaries and accounting claims.
+2. Treat the chain as having reached a valid scientific boundary: P8 was not opened because its preregistered eligibility precondition failed.
+3. Run the mandatory decision review in this document **before opening another alpha checkpoint**.
+4. Choose **one** next research axis with the highest information value. Do not launch several rescue experiments in parallel merely because P6/P7 were negative.
+
+**Do not do now**
+
+- do not reinterpret P6 as proof that all short-timeframe model families fail: XGBoost was the preregistered deciding family, while secondary Logistic Regression / LightGBM cells on fast clocks are leads only and may justify a new preregistered checkpoint;
+- do not reinterpret P7 as proof that all cross-timeframe fusion is useless: it is evidence against this consensus-v1, with disclosed low-trade and staleness limitations;
+- do not retrofit a staleness bound, different vote threshold, different deciding model, target, horizon, cost gate or router rule into closed evidence;
+- do not open P8 on ineligible modes;
+- do not read `P4-HOLD` or Styx;
+- do not enable authenticated/live order routing or increase leverage.
+
+**Likely next candidates, to be chosen one at a time after the review**
+
+- external replication + cost-aware abstention / prediction-to-trade gating;
+- target/horizon redesign;
+- a separately preregistered fast-clock model-family follow-up motivated by the secondary P6 results;
+- adaptive retraining / model expiration / distribution-shift rejection;
+- native short-horizon trade-flow or L1/L2 microstructure;
+- neural specialists against strong simple baselines;
+- structural/non-directional alpha such as funding/basis arbitrage or market making.
+
+Only after a coherent alpha architecture exists should the project proceed through sustained paper validation → mature-system freeze → Styx → very small live allocation.
+
 ## Where the project is now
 
 The merged research line through P5 established a reproducible BTC/USDT baseline on **1h observations with a 6h prediction horizon** and then tested five incremental information directions around that same setup.
@@ -36,27 +79,14 @@ The merged research line through P5 established a reproducible BTC/USDT baseline
 
 Those results are evidence about that **1h / 6h research design**. They are not evidence that the original multi-timeframe specialist architecture is useless.
 
-**Since this document was written, steps 2, 3, 4 and 5 below have been executed,
-and the architecture it describes has now been tested.** The answers are negative
-and they are recorded against each step rather than only here:
+The multi-clock architecture has now also been tested under its frozen P6/P7 contracts:
 
-- **P6** — five independent native-timeframe specialists (`1m`, `5m`, `15m`,
-  `30m`, `1h`), one verdict per clock, all five reported: **no clock is viable**.
-- **P6-EXT** — the same design on `4h` and `1d`, the two clocks a swing mode
-  needs: **neither is viable**, so `SWING` is `NOT_ELIGIBLE`.
-- **P7** — cross-timeframe consensus over the frozen P6 specialists, in two
-  separately reported trading modes: **neither is supportive**.
-- **The trading-mode controller exists** (`chimera/modes.py`) and, under that
-  evidence, every mode is ineligible and it returns `FLAT` on every bar. That is
-  the eligibility rule working, not a defect.
-- **P8**, the automatic mode router, is **preregistered and not opened**: its
-  precondition is two eligible modes and there are none.
+- **P6** — five independent native-timeframe specialists (`1m`, `5m`, `15m`, `30m`, `1h`): the preregistered XGBoost deciding family found **no clock viable**.
+- **P6-EXT** — `4h` and `1d`: **neither viable**, so `SWING` is `NOT_ELIGIBLE`.
+- **P7** — cross-timeframe consensus over frozen P6 predictions: **neither scalping nor day-trading consensus is supportive**.
+- **P8** — automatic mode router: **preregistered and not opened** because no mode is eligible.
 
-What has *not* happened is step 1: sustained futures paper validation. An
-engineering smoke of the whole chain exists and is labelled as one.
-
-None of this changes the sequence below or the constraints at the end. It
-changes which steps are answered, and every answer is negative.
+What has *not* happened is sustained futures paper validation. An engineering smoke of the whole chain exists and is labelled as one.
 
 ### What P5 did *not* test
 
@@ -94,21 +124,21 @@ Pythia should consume the specialists' calibrated outputs rather than treating t
 - a fast model should not be able to blindly override strongly contradictory slower context;
 - the consensus logic must itself be deterministic and preregistered before it is evaluated as an alpha component.
 
-Aegis remains the sole central risk authority. Hermes remains responsible for execution semantics. Argus records the operational state and evidence. Futures Execution v1 remains dry-run only until the later live-safety gates are explicitly passed.
+Aegis remains the sole central risk authority. Hermes remains responsible for execution semantics. Argus records the operational state and evidence. Futures Execution v1 remains dry-run only until later live-safety gates are explicitly passed.
 
 ## Trading modes
 
 "Mode" here means **trading style / temporal operating mode**, not market-regime labels such as trend/range/high-volatility.
 
-The current working mapping is:
+The working mapping is:
 
 | trading mode | primary specialists | slower context / confirmation | purpose |
 | --- | --- | --- | --- |
 | **Scalping** | 1m, 5m | 15m | short-lived entries and precise timing |
 | **Day trading** | 5m, 15m | 30m, 1h | intraday setups and direction |
-| **Longer / swing** | 30m, 1h | higher context only if separately introduced later | multi-hour / longer setups |
+| **Longer / swing** | 30m, 1h | 4h / 1d if separately eligible | multi-hour / longer setups |
 
-This table is architectural intent, **not a frozen research matrix**. Exact horizons, thresholds, weights and which specialists are mandatory for agreement must be preregistered rather than selected after seeing results.
+This table is architectural intent, not permission to override the frozen P6/P7 evidence. Exact horizons, thresholds, weights and mandatory specialists must be preregistered for any future generation.
 
 Market-regime conditioning — trend/range, volatility state, bullish/bearish context, transition state — is a separate possible research axis and must not be confused with these trading modes.
 
@@ -116,27 +146,15 @@ Market-regime conditioning — trend/range, volatility state, bullish/bearish co
 
 ### 1. Sustained Futures Paper Validation v1
 
-> **Status: not started.** What exists is `tools/paper_run.py` — the whole chain
-> from specialists through consensus, the mode controller, Aegis and Hermes into
-> the dry-run USD-M venue — and a committed engineering smoke of it under
-> `artifacts/paper_smoke/`. The smoke replays frozen predictions offline; it is
-> not a live feed and not wall-clock operation, and its report denies being
-> sustained paper validation, live, real money or evidence about alpha in fields
-> rather than only in prose. Under the committed evidence it places zero orders,
-> because no mode is eligible. The procedure for the sustained run that has not
-> happened is `docs/paper_operation_runbook.md`, which also lists the two pieces
-> still missing: a live market-data source and specialists that serve predictions
-> (P6 measured its specialists but did not persist estimators).
+> **Status: not started.** What exists is `tools/paper_run.py` — the chain from specialists through consensus, the mode controller, Aegis and Hermes into the dry-run USD-M venue — and a committed engineering smoke under `artifacts/paper_smoke/`. The smoke replays frozen predictions offline; it is not a live feed and not wall-clock operation. Under committed evidence it places zero orders because no mode is eligible.
 
-Before real capital, move beyond the deterministic historical replay already completed for Futures Execution v1.
-
-Run the dry-run execution stack for sustained wall-clock operation against a live market-data feed while keeping order placement simulated and real-money routing impossible.
+Before real capital, move beyond deterministic historical replay and run the dry-run execution stack for sustained wall-clock operation against a live market-data feed while keeping order placement simulated and real-money routing impossible.
 
 Evidence should cover at least:
 
 - restart and recovery across real process lifetimes;
 - reconciliation over time;
-- LONG and SHORT operation;
+- LONG and SHORT operation when a future eligible strategy exists;
 - Aegis vetoes and exposure limits;
 - funding accounting;
 - simulated partial fills and slippage;
@@ -149,183 +167,288 @@ Paper-trading PnL is descriptive operational evidence. It must not be used to ch
 
 ### 2. Multi-clock data and research contracts
 
-> **Status: done.** One canonical source — Binance's own published spot
-> `BTCUSDT` 1m archive, every monthly object held to the SHA-256 Binance
-> publishes beside it — with `5m`, `15m`, `30m`, `1h`, `4h` and `1d` cut from it
-> on the fixed UTC grid. A bar exists only if every constituent minute closed;
-> incomplete bars are dropped rather than forward-completed. Seven `gen2`
-> research contracts, one per clock, all carrying the unchanged sealed instant.
-> Design, derivation rules, gap table and the 1h parity investigation:
-> `docs/multiclock_v1.md`. Verified offline by
-> `make verify-multiclock-snapshot`, which recomputes its claims rather than
-> reading them.
->
-> **No new holdout was manufactured.** Acquisition stops before
-> `2025-05-19T08:00:00+00:00`, the first instant of the retired `P4-HOLD` region,
-> and Styx was not approached.
+> **Status: done.** One canonical source — Binance's published spot `BTCUSDT` 1m archive — with `5m`, `15m`, `30m`, `1h`, `4h` and `1d` cut from it on the fixed UTC grid. A bar exists only if every constituent minute closed. Seven `gen2` research contracts carry the unchanged sealed instant. Acquisition stops before `2025-05-19T08:00:00+00:00`, the first instant of retired `P4-HOLD`.
 
-Build the causal data layer required for the intended clocks:
-
-- 1m;
-- 5m;
-- 15m;
-- 30m;
-- 1h.
-
-The contract must define, before model comparison:
-
-- exact candle/source semantics;
-- causal resampling/alignment rules;
-- costs appropriate to the intended trading frequency;
-- target construction per clock;
-- temporal split design;
-- leakage tests;
-- what data is research-visible;
-- what remains sealed.
-
-Do not manufacture a new holdout merely because the clock changes. P4-HOLD remains retired and Styx remains sealed unless a later mature-system protocol explicitly authorises its one-time use.
+The contract defines source semantics, causal resampling/alignment, target construction, temporal split design, leakage tests, costs, research-visible boundaries and sealed regions. No new holdout was manufactured.
 
 ### 3. Timeframe specialist baselines
 
-> **Status: answered, negative — `P6` and `P6-EXT`.** Separate specialists, not a
-> pooled matrix: one model per clock, the same fourteen causal columns, the same
-> cost model, the same four real-world periods, and a label of six of *that
-> clock's own* bars. Three untuned families per clock with XGBoost named the
-> deciding one before any fit existed.
+> **Status: answered, negative — `P6` and `P6-EXT`.** Separate specialists, not a pooled matrix: one model per clock, the same fourteen causal columns, the same cost model, the same four real-world periods, and a label of six of that clock's own bars. Three untuned families per clock with XGBoost named deciding before any fit.
 >
-> Every clock cleared exactly **2 of the 4** folds against a bar fixed at 3.
-> Means: `1m` `+0.030087`, `5m` `+0.0114415`, `15m` `+0.00926375`, `30m`
-> `-0.0091055`, `1h` `-0.0267705`. `P6-EXT` found `4h` positive in 0 of 4 and
-> `1d` in 1 of 4, and both — unlike every fast clock — also lost to their own
-> native momentum baseline in half the folds.
+> P6 XGBoost: every fast clock cleared exactly **2 of 4** positive folds against a gate fixed at 3. Means: `1m +0.030087`, `5m +0.0114415`, `15m +0.00926375`, `30m -0.0091055`, `1h -0.0267705`.
 >
-> **The matrix was fixed in advance and every planned result is visible**, which
-> is what this step asked for: all five clocks are reported with no best-clock
-> row, and the two secondary families that *would* have passed on the fast clocks
-> are reported in full and decide nothing. `docs/p6_preregistration.md` and
-> `docs/p6_extension_preregistration.md` carry the designs and the closures.
+> P6-EXT: `4h` positive in 0/4 and `1d` in 1/4; neither is viable.
+>
+> Secondary Logistic Regression / LightGBM results remain fully visible. Some fast-clock secondary cells would have passed the screen, but they do not retroactively replace the preregistered deciding family. They are a legitimate lead for a **new** checkpoint, not a rescue of P6.
 
-Train and evaluate **separate specialists**, not one pooled multi-timeframe feature matrix.
-
-Each specialist receives its own preregistered research question and appropriate horizon. The goal is to learn whether a usable signal exists at each temporal scale before a consensus layer is allowed to hide individual weaknesses.
-
-The programme must not choose the winning timeframe by trying many clocks/horizons and reporting only the best. The candidate matrix and decision rule must be fixed in advance, and all planned results must remain visible.
-
-At the end of this phase the project should know, for every candidate timeframe:
-
-- whether the specialist has evidence of useful cost-aware predictability;
-- its calibrated confidence behaviour;
-- its turnover/cost sensitivity;
-- whether its failure modes are independent enough to make ensemble agreement meaningful.
+The candidate matrix and decision rule were fixed in advance and all planned results remain visible. Do not report a post-hoc best timeframe/model as the P6 answer.
 
 ### 4. Pythia cross-timeframe consensus
 
-> **Status: answered, negative — `P7`.** Preregistered after `P6` closed and
-> before any consensus number existed, in `docs/p7_preregistration.md`. It fits
-> nothing: it replays the frozen `P6` cells' committed per-sample predictions,
-> aligns each specialist onto the decision clock by the last bar that had closed,
-> and applies a strict-majority rule with a veto. A specialist with no closed bar
-> is unavailable, and unavailable is not a `HOLD` — the whole consensus holds.
+> **Status: answered, negative — `P7`.** It fits nothing: it replays frozen P6 XGBoost predictions, aligns each specialist onto the decision clock by the last bar that had closed, and applies the preregistered strict-majority/veto rule.
 >
-> Against the fold-wise best of its own constituents, the hardest fair bar:
-> scalping improved in **1 of 4** folds, mean delta `-0.0265515`; day trading in
-> **1 of 4**, mean delta `-0.034336`. Both validity gates passed. Read the trade
-> counts before the deltas — the day-trading consensus took 6, 1, 6 and **0**
-> trades — and the closure's disclosure of the alignment's unbounded staleness.
+> Against the fold-wise best constituent: scalping improved in **1/4** folds, mean delta `-0.0265515`; day trading improved in **1/4**, mean delta `-0.034336`.
 >
-> **That `P6` was negative did not cancel `P7`.** Agreement among individually
-> unprofitable specialists is a separate question, and `P6` §9.4 predeclared that
-> `P7` must not depend on which specialists cleared the gate.
+> Caveats are part of the result: day trading took only 6, 1, 6 and 0 trades across its four folds; the original alignment contract had no staleness bound and an aligned vote could be as old as 3d 20h 55m. These limitations do not invalidate or rescue the frozen P7-v1 verdict; they inform future designs.
 
-Only after the specialist definitions are frozen should Chimera test the central original idea: **agreement between independently trained temporal specialists**.
-
-The consensus experiment should compare a preregistered fusion rule against appropriate frozen specialist controls. Candidate behaviours may include confidence-weighted agreement, veto/confirmation by slower models and HOLD under material disagreement, but the exact rule must be fixed before its evaluation.
-
-The important question is not "can another model be added?" It is:
-
-> Does cross-timeframe agreement provide robust incremental value beyond the best relevant specialist while controlling costs and turnover?
-
-Do not tune consensus weights against the same outer results used to judge success.
+Do not write `consensus_v2` against the same four read blocks merely to repair the result. A future consensus generation may preregister a staleness bound, different fusion method or different eligible specialists only under a new contract.
 
 ### 5. Trading-mode controller
 
-> **Status: built, and it selects nothing today.** `chimera/modes.py` defines
-> `SCALPING`, `DAY_TRADING`, `SWING` and `FLAT` as operating states with the
-> specialist set, decision cadence and handoffs each requires, and
-> `docs/trading_modes_v1.md` records them. The decision rule inside an eligible
-> mode is `chimera.consensus.decide` — the same function `P7` measured — so the
-> scaffold expresses the rule that was tested rather than a second one that
-> agrees with it today.
->
-> It "must not silently swap models after seeing which one happens to be
-> profitable that week", and that is enforced rather than promised: eligibility
-> is read from committed research evidence, and `assert_no_profit_input` scans
-> every function on the selection path for a profit input and fails a test if one
-> appears. There is deliberately **no `AUTO` mode** — choosing automatically
-> between eligible modes is `P8`.
->
-> Under the committed evidence every mode is `NOT_ELIGIBLE`, so the controller
-> returns `FLAT` with `specialist_not_viable` on every bar.
+> **Status: built, and it selects nothing today.** `chimera/modes.py` defines `SCALPING`, `DAY_TRADING`, `SWING` and `FLAT`; there is deliberately no `AUTO` mode because AUTO is P8. Eligibility comes from committed evidence, and realised-profit inputs are forbidden along the selection path.
 
-After specialists and consensus are understood, formalise the operating modes:
+Under committed evidence every mode is `NOT_ELIGIBLE`, so the controller returns `FLAT` with `specialist_not_viable`.
 
-- scalping;
-- day trading;
-- longer / swing.
+### 6. Later research axes — choose one after the decision review
 
-A mode defines which frozen specialists are active, which act as confirmation/context, the decision cadence and the risk/execution envelope. It must not silently swap models after seeing which one happens to be profitable that week.
-
-This phase is where the architecture becomes a coherent trading system rather than a collection of research models.
-
-### 6. Later research axes only if still needed
-
-> **Status: not started, with one exception that is a design and not a run.**
-> `P8`, the automatic trading-mode router, is preregistered at
-> `docs/p8_preregistration.md` and is **not opened**: no router exists, no `P8`
-> fit has been made and no `P8` number exists. Its design is committed now
-> because that is the only moment at which a routing rule can be fixed without
-> being fitted to the answer, and its opening condition — at least two eligible
-> modes — is unmet.
->
-> **The old `P6`–`P9` labels moved.** `docs/research_roadmap.md` carried four
-> future axes sketched as `P6` (horizon), `P7` (cross-asset), `P8` (regime) and
-> `P9` (representation). None had been designed, preregistered, implemented or
-> run, and unspent labels are cheaper to reassign than to carry two numbering
-> schemes alongside. The axes below keep their content and take later numbers.
-> Nothing that had evidence was renamed.
+P8 is preregistered and **not opened**. Its opening condition — at least two eligible modes — is unmet.
 
 If the specialist/consensus line remains insufficient, change one axis at a time. Candidate later questions include:
 
+- external replication of a serious public BTC/ML result;
+- cost-aware abstention / prediction-to-trade gating;
+- different target formulations or horizon family;
+- a separately preregistered deciding-model-family question on fast clocks;
+- adaptive retraining and model-expiry rules;
+- explicit distribution-shift / out-of-distribution rejection;
+- native short-horizon trade-flow / L1-L2 microstructure;
 - cross-asset / market context;
 - causal market-regime conditioning;
-- deeper representation / model-architecture redesign;
-- new data sources such as richer order-book information;
-- different target formulations, if separately preregistered.
+- deeper representation / neural model redesign;
+- structural/non-directional alpha such as funding/basis arbitrage or market making.
 
 Do not return to an endless sequence of handcrafted feature families on the same fixed setup merely because the previous family was negative.
 
+## External research lessons — apply to the next roadmap decision
+
+This section records external leads and engineering/research lessons found while comparing Chimera with crypto-ML/trading projects, papers, Habr write-ups and community implementations. These are **not ProjectChimera evidence**. They are inputs to the next preregistered question, not permission to rewrite closed checkpoints.
+
+### A. Prediction quality is not the same thing as tradable edge
+
+External work repeatedly shows useful forecasts becoming poor trading systems after turnover, fees and slippage. The important object is not only the forecast but the **forecast-to-position policy**.
+
+A particularly relevant BTC/USDT walk-forward line reports that unrestricted trading can be destroyed by transaction costs while a cost-aware abstention gate can drastically reduce turnover and change the economic result.
+
+Future action:
+
+- create a clean external-replication/sanity benchmark rather than borrowing the conclusion;
+- test a preregistered rule such as "trade only when predicted edge exceeds an explicit multiple of expected transaction cost";
+- compare it with the same frozen prediction stream without the gate;
+- never tune the multiplier on the same outer folds used for the verdict.
+
+### B. HOLD / FLAT should be a core alpha decision, not only a risk fallback
+
+Mature ML-trading systems often reject predictions when the current state is unlike the training distribution or when the model is stale.
+
+Chimera should distinguish:
+
+```text
+model predicts direction
+≠
+model is sufficiently in-distribution, fresh and confident to justify a trade
+```
+
+Future questions may include model age/expiration, distance from training distribution, confidence calibration and abstention under disagreement or distribution shift.
+
+### C. Adaptive retraining may be part of the hypothesis
+
+Crypto is non-stationary. A future checkpoint should explicitly compare a **predeclared rolling retraining schedule** with a frozen/less-frequently-refit control. Retraining cadence is itself a research variable and must not be changed after observing decay.
+
+### D. Target formulation is a major unresolved axis
+
+External work uses materially different targets: continuous future return, next-bar return, local extrema/events, barrier outcomes and order-book price-movement labels.
+
+P6's six-native-bar labels stay valid as the experiment that was run, but they are not established as the correct target family. Target/horizon design should be its own preregistered axis rather than quietly changed inside another checkpoint.
+
+### E. Native short-horizon microstructure deserves a real short-horizon test
+
+P3 compressed `aggTrades` into hourly features and evaluated them under the 1h/6h programme. That does not answer whether microstructure is useful at seconds/minutes horizons.
+
+For genuine scalping research, later candidates may include aggressive trade-flow imbalance, spread changes, microprice, order-book imbalance, queue/depth dynamics and short-horizon liquidity/slippage state. Richer L1/L2 data requires a new source contract with strict sequencing and execution-parity checks.
+
+### F. Multi-timeframe consensus can filter risk without creating alpha
+
+External confirmation experiments show that stricter timeframe agreement can slash trade count and drawdown while leaving expectancy negative. P7 now gives Chimera its own version of this warning.
+
+Consensus may reduce false positives, activity and turnover, but multiple weak specialists can still produce a weak ensemble. A negative P7 must not be rescued by trying more voting rules against the same evidence.
+
+### G. Neural networks are not an automatic upgrade
+
+External BTC and order-book studies repeatedly show simple/tree baselines matching or beating LSTM/Transformer/DeepLOB-style systems once costs and implementation details are included.
+
+The neural roadmap therefore is:
+
+1. keep a clean specialist/control interface;
+2. freeze the same data universe, target, folds and accounting;
+3. compare neural sequence specialists against strong simple/tree baselines;
+4. promote a neural model only if it adds robust economic value.
+
+Candidate future classes include TCN/dilated CNN, GRU/LSTM and PatchTST/Transformer-like sequence models. Avoid a large post-hoc architecture search.
+
+### H. Backtest/live parity is a separate source of failure
+
+Freqtrade-style lookahead and recursive-analysis tooling exists because profitable-looking strategies often rely on future leakage or on indicator values that cannot be reproduced with live history limits.
+
+Later production gates should compare actual live/paper features and decisions against replay/backtest values, including candle-close semantics, finite lookback, preprocessing state, rounding/exchange constraints, realistic fills, slippage/spread, unfilled orders and restart parity.
+
+### I. Complexity escalation is a known trap
+
+Do not answer a negative checkpoint by automatically increasing model complexity, leverage or feature count.
+
+First identify which layer failed: information, target, calibration, prediction-to-trade gate, costs, regime/distribution shift, execution parity or risk sizing. Then change one axis under a new contract.
+
+### J. External replication should become a formal sanity tool
+
+A proposed sanity task is:
+
+```text
+BTC/USDT
++ XGBoost
++ continuous/next-horizon return target matching the external paper
++ strict walk-forward
++ explicit trading costs
++ unrestricted prediction-to-trade conversion
+vs
++ preregistered cost-aware abstention
+```
+
+The point is not to import somebody else's claimed return. The point is to ask whether Chimera's data, walk-forward and accounting machinery reproduces the same qualitative finding under independently implemented semantics.
+
+### K. Sources/leads to revisit during design
+
+Working references, not authority rankings:
+
+- Freqtrade / FreqAI — adaptive retraining, feature expansion, outlier/dissimilarity handling, model expiration, lookahead and recursive analysis;
+- Hummingbot — controller/executor separation and non-directional strategies;
+- Jesse — backtesting/optimization, Monte Carlo tooling and overfitting cautions;
+- BTC walk-forward ML-under-transaction-costs work — prediction-to-trade gating;
+- high-frequency BTC/crypto LOB studies — predictive classification versus executable economic value;
+- multi-timeframe confirmation studies — filtering without guaranteed positive expectancy;
+- FinRL / ensemble-RL work — architecture comparison, not proof RL solves alpha;
+- Habr/community bot write-ups — implementation/postmortem evidence, not proof of claimed returns.
+
+Before using a numerical claim in a future preregistration, re-open the original source and verify its exact methodology.
+
+### L. Fast positive backtests are often selection stories, not finished evidence
+
+Common patterns in public "profitable bot" examples include broad TP/SL/indicator grids with only the winner reported, choosing coins/periods after seeing results, calling a causal simulation walk-forward despite selection on the same history, and very short paper/testnet samples.
+
+Project rule:
+
+> A quick positive result is a hypothesis generator until the full selection path, untouched evidence and cost/execution semantics are accounted for.
+
+Do not lower Chimera's evidence standard merely because another bot reports profit after one or two weeks.
+
+### M. Backtest accounting requires an adversarial dimensional audit
+
+Public bot code can contain leverage applied twice, fee bases inconsistent with notional and ambiguous position-size units.
+
+Before promoting a strategy, independently trace hand-calculable trades through:
+
+```text
+capital
+→ desired exposure
+→ leverage
+→ quantity
+→ notional
+→ entry/exit price
+→ maker/taker fee base
+→ funding
+→ realised PnL
+→ equity
+```
+
+Required properties include leverage applied exactly once, quantity/notional separation, correct fee bases, correct LONG/SHORT signs, correct partial-fill accounting, correct funding sign/interval and no presentation of approximate liquidation formulas as exact exchange accounting.
+
+### N. Fail closed on market/account state; never invent operational truth
+
+Unknown exchange/account state is not equivalent to zero, flat or a safe default.
+
+On timeout, malformed response, missing balance, unreadable persisted state or reconciliation disagreement: block exposure increases, preserve evidence, alert through Argus, require recovery/reconciliation and keep safe risk reduction available.
+
+### O. Data venue and execution venue mismatch is a research variable
+
+Same-venue data and execution semantics are the default. If exchange A supplies signals for execution on exchange B, timestamp alignment, price/basis divergence, liquidity/spread, contract semantics, funding, outage behaviour and latency must be measured and the cross-venue relationship must be part of the preregistered hypothesis.
+
+### P. Structural/non-directional alpha is a distinct branch worth preserving
+
+A crypto bot does not have to earn money by forecasting the next directional move.
+
+Potential future structural strategies include spot-perpetual basis/funding capture, cross-exchange funding arbitrage, executable cross-exchange/triangular arbitrage, passive market making/spread capture and hedged liquidity provision.
+
+These are not free money: adverse selection, queue position, inventory risk, funding changes, leg risk, slippage, latency and liquidation can dominate.
+
+P4 does **not** rule this branch out: P4 tested funding/OI/basis as predictive information for BTC direction, not funding or basis as the payoff mechanism of a hedged strategy.
+
+Longer-term architecture may support multiple independent alpha engines under one risk authority:
+
+```text
+Directional ML ───────────────┐
+Native microstructure ────────┤
+Funding/basis arbitrage ──────┼─> Aegis portfolio risk authority → Hermes
+Market making / liquidity ────┘
+```
+
+Each engine needs its own contract, data requirements, execution model, cost model and evidence.
+
+### Q. Monte Carlo and perturbation robustness should complement temporal OOS
+
+Walk-forward validation remains primary. A mature frozen candidate should also be challenged for dependence on one fortunate ordering or a handful of trades.
+
+Possible preregistered diagnostics include trade/bootstrap Monte Carlo where meaningful, deletion of the largest winners as descriptive fragility, plausible fee/slippage stress, small execution-delay perturbations and small threshold/input perturbations fixed before evaluation.
+
+These diagnostics are not additional independent folds and must not become a tuning surface.
+
+### R. Short live/testnet success is not a promotion gate by itself
+
+A week or two of green paper/testnet performance can be useful operational evidence but is generally too small to establish persistent edge.
+
+Before promotion toward Styx/live capital, a future paper-validation contract must freeze minimum wall-clock duration/sample/regime requirements and cover fees, funding, realistic slippage, model ageing/retraining, outages/restarts/reconciliation, replay/live parity and losing as well as winning periods.
+
+### S. P6's negative answer is deciding-family-specific
+
+P6 correctly declined to switch models after XGBoost failed its preregistered gate. That discipline must remain.
+
+However, secondary Logistic Regression / LightGBM cells on fast clocks are a genuine **lead**. The correct follow-up, if selected by the decision review, is a new preregistered question such as whether a different deciding family is robust on a fixed fast-clock subset — not a rewrite saying P6 was positive.
+
+The near-collapse of the native momentum baseline on several fast clocks also means "beats momentum" was not a demanding discriminator there. P6 still failed or passed on its other required conditions, so this does not invalidate P6; it does motivate stronger future controls.
+
+### T. P7-v1 exposed staleness and sparse-trading failure modes
+
+P7's negative result stays negative, but future consensus research should explicitly decide before evaluation whether slower votes have a maximum age and what minimum effective trade/sample requirement is needed for interpretation.
+
+Do not add those rules to P7 after seeing its deltas. If revisited, they belong to a new preregistration.
+
+## Mandatory post-P6/P7/P8-boundary decision review
+
+P8 was not opened because its eligibility precondition failed; that is a valid endpoint for the chain. Before opening another checkpoint, answer:
+
+1. Did any native timeframe specialist show useful cost-aware signal under the deciding family?
+2. Which secondary model-family results are strong enough to justify a new preregistered follow-up rather than being dismissed or post-hoc promoted?
+3. Did Pythia consensus add value, or mainly reduce activity/risk?
+4. How much did P7's sparse trade count and unbounded staleness limit what the negative result says?
+5. Was failure mainly predictive, cost/turnover-related, target-related or execution-related?
+6. Would a cost-aware abstention gate materially change turnover without using future outcomes?
+7. Is target formulation now the most suspicious common assumption?
+8. Is adaptive retraining/model expiration justified as the next independent axis?
+9. Does scalping require native trade/L1/L2 data rather than candle-only inputs?
+10. Is there enough signal to justify neural-specialist work, or would neural complexity obscure a weak target?
+11. Can Chimera reproduce at least one serious external qualitative result under its own data/accounting machinery?
+12. Has the accounting engine passed an independent dimensional/hand-calculation audit for the strategy being evaluated?
+13. Is any apparent edge dominated by a few trades or fragile to realistic fee/slippage/delay perturbations?
+14. Would a structural/non-directional strategy provide a more orthogonal, testable source of edge than another directional feature/model checkpoint?
+15. Does contemplated data venue exactly match execution semantics, or is cross-venue divergence part of the hypothesis and measured explicitly?
+16. Which **single** next checkpoint has the highest information value after answering the above?
+
+That review, not excitement about whichever cell happens to look best, determines the next roadmap revision.
+
 ### 7. Mature-system freeze
 
-Before spending the sealed final evidence, freeze the candidate system closely enough that a result cannot trigger another round of selection. At minimum freeze:
-
-- active temporal specialists;
-- feature/information sets;
-- model families and training procedure;
-- per-timeframe targets/horizons;
-- Pythia consensus logic;
-- thresholds;
-- trading-mode definitions;
-- Aegis risk rules;
-- execution semantics;
-- operational recovery behaviour.
-
-The sustained paper evidence should already be understood at this point.
+Before spending sealed final evidence, freeze the candidate system closely enough that a result cannot trigger another round of selection. At minimum freeze active specialists, information sets, model/training procedure, targets/horizons, Pythia logic, thresholds, trading modes, Aegis risk rules, execution semantics and recovery behaviour.
 
 ### 8. Styx — one maximally independent evaluation
 
-Styx remains sealed throughout ordinary iteration. It is not a checkpoint to view after every idea.
-
-Only a mature frozen candidate may spend it under a predeclared one-time protocol. A disappointing Styx result is a result; it may not be followed by tuning against Styx and another claim of independent validation.
+Styx remains sealed throughout ordinary iteration. Only a mature frozen candidate may spend it under a predeclared one-time protocol. A disappointing Styx result may not be followed by tuning against Styx and another claim of independent validation.
 
 ### 9. Very small live allocation
 
@@ -333,35 +456,42 @@ Real money comes only after:
 
 ```text
 research evidence
-→ multi-timeframe specialists
-→ Pythia consensus
+→ validated alpha architecture
 → sustained futures paper operation
 → mature-system freeze
 → Styx
 → very small live allocation
 ```
 
-Initial live operation remains conservative: isolated futures semantics, low leverage, strict Aegis authority, emergency flatten/recovery and continuous telemetry. Larger leverage or allocation is a separate future decision, not an automatic consequence of a positive research result.
+Initial live operation remains conservative: isolated futures semantics, low leverage, strict Aegis authority, emergency flatten/recovery and continuous telemetry. Larger leverage or allocation is a separate future decision.
 
 ## Standing constraints
 
-1. **No real money during the current development stages.**
+1. **No real money during current development.**
 2. **P4-HOLD remains retired and unread.** It is not a spare validation set.
 3. **Styx remains sealed** until the mature-system one-time evaluation.
-4. **P5 did not test specialist-model consensus.** Its negative result applies to causal 4h/1d features supplied to the 1h/6h benchmark design.
-5. **Every timeframe has its own model in the target architecture.** Do not collapse the intended design back into one universal model merely for convenience.
-6. **Trading modes and market regimes are different concepts.** Scalping/day trading/swing describe how the system operates; trend/range/volatility conditioning is a separate research axis.
-7. **No timeframe or horizon shopping.** Candidate clocks, horizons and success rules are fixed before results.
-8. **Aegis is the sole risk authority.** Pythia expresses desired action/confidence; Hermes executes only what risk permits.
-9. **Operational paper metrics do not select alpha.** Execution validation and research evaluation remain separate evidence classes.
-10. **Negative results stay visible.** The objective is a defensible system, not a sequence of experiments edited until one looks profitable.
-11. **The research-visible region ends at `2025-05-19T08:00:00+00:00`**, the first instant of the retired `P4-HOLD` region. No multi-clock training, validation, feature construction or model selection reads a row at or after it.
-12. **A closed checkpoint does not rewrite its own evidence.** Where a frozen artifact carries a defect, the code is corrected and the defect is disclosed in that checkpoint's closure, with a test pinning what differs. Editing the record to make a sentence right is a worse habit than a visible defect.
-13. **`consensus_v2` and `auto_router_v2` are not written in the task that produced a negative `v1`.**
+4. **P5 did not test specialist-model consensus.**
+5. **P6 negative means the preregistered XGBoost deciding screen failed; it does not erase secondary-model leads.**
+6. **P7 negative applies to consensus-v1, not every possible fusion rule.**
+7. **Trading modes and market regimes are different concepts.**
+8. **No timeframe, horizon, model-family or rule shopping after results.**
+9. **Aegis is the sole risk authority.** Pythia expresses desired action/confidence; Hermes executes only what risk permits.
+10. **Operational paper metrics do not select alpha.**
+11. **Negative results stay visible.**
+12. **The research-visible region ends at `2025-05-19T08:00:00+00:00`.** No multi-clock research reads rows at or after it.
+13. **A closed checkpoint does not rewrite its own evidence.** Defects are corrected in code/docs and disclosed; frozen result artifacts remain historical evidence.
+14. **`consensus_v2` and `auto_router_v2` are not written to rescue negative/unopened v1 against the same evidence.**
+15. **Cost-aware abstention, adaptive retraining, model expiration, target redesign and native short-horizon microstructure are explicit future candidates.**
+16. **Neural complexity is conditional on robust economic improvement over strong baselines.**
+17. **Backtest/live parity must be proven operationally.**
+18. **Backtest accounting receives an independent dimensional audit.**
+19. **Unknown operational state fails closed.**
+20. **Cross-venue data/execution is explicit, measured and preregistered.** Same-venue semantics are the default.
+21. **Structural alpha remains a separate research branch.** Funding/basis arbitrage and market making are not evidence for directional ML, and vice versa.
+22. **Robustness analysis is diagnostic, not a tuning surface.**
+23. **Short green paper runs do not authorize promotion.** Forward-validation requirements are frozen before judging the campaign.
+24. **P8 remains NOT OPENED until its preregistered eligibility condition is genuinely met by future evidence.**
 
 ## Current one-line roadmap
 
-**Merged P5 baseline → sustained Futures Paper Validation *(not started)* → causal 1m/5m/15m/30m/1h contracts *(done)* → separate timeframe specialists *(answered: `P6`, `P6-EXT`, negative)* → Pythia cross-timeframe consensus *(answered: `P7`, negative)* → scalping/day-trading/longer-mode controller *(built; every mode ineligible)* → later research axes only if needed *(`P8` preregistered, not opened)* → mature-system freeze → Styx → very small live allocation.**
-
-The sequence did not change and the constraints did not move. Four of its steps
-now have answers, and every one of them is negative.
+**Merged P5 baseline → P6/P6-EXT specialists answered negative → P7 consensus-v1 answered negative → P8 preregistered but NOT OPENED → mandatory independent audit + decision review → choose ONE next high-information axis (external replication/cost-aware abstention, target redesign, fast-clock model-family follow-up, adaptive retraining/OOD, native microstructure, neural specialists, or structural alpha) → sustained Futures Paper Validation once a coherent alpha path exists → mature-system freeze → Styx → very small live allocation.**
