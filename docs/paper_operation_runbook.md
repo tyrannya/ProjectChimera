@@ -114,7 +114,7 @@ an incident, not a metric.
 | slippage | `chimera_futures_slippage_bps` | drift above the 5 bps the fill model assumes |
 | exposure | `chimera_futures_gross_exposure`, `_net_exposure` | gross above net with one mode active |
 | turnover | `chimera_futures_turnover_total` | growth without matching fills |
-| mode dwell | `chimera_mode_active_seconds_total{mode}` | churn between modes, or 100% in one |
+| mode churn | `chimera_mode_transitions_total{from_mode,to_mode}` | a rising rate, or transitions that always flatten |
 | FLAT fraction | `chimera_mode_selected{mode="FLAT"}` | **1.0 is correct today** |
 | latency | `chimera_futures_execution_latency_seconds` | tail beyond the decision cadence |
 | data delay | `chimera_data_delay_seconds{pair}` | past `max_data_delay_s` (300s) — Aegis vetoes on it |

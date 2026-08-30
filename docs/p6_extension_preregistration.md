@@ -200,9 +200,11 @@ Two consequences worth stating plainly. The 1d training block **starts
 and the segment cuts consume the first eight and a half months of the region, so
 the earliest usable daily row is later than the calendar boundary the fold plan
 asks for. The cells report the period they actually trained on, and this is what
-that period is. And `4h` XGBoost fold 3 took **9 outer trades**, below the
-10-trade line P6's imported `trade_count` diagnostic said would be flagged; no
-flag field was emitted, so it is flagged here. Neither changes a condition, and neither was
+that period is. And two of the six cell-folds are below the 10-trade line P6's imported
+`trade_count` diagnostic said would be flagged — `4h` XGBoost fold 3 and `4h`
+logistic regression fold 0, both at **9 outer trades**, the first of which
+carries a deciding verdict. No flag field was emitted, so they are flagged
+here. Neither changes a condition, and neither was
 known before the verdicts were computed.
 
 ### Three things about this result

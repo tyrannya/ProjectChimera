@@ -509,9 +509,13 @@ publishes, and their declared row total for being at least the committed file's.
 Recomputing those digests means re-downloading the archives, which is
 `make multiclock-acquire` and needs a network.
 The 29 mismatching hours it confirms are an inconsistency inside Binance's own
-archive, all before 2022-05 and none inside any outer block;
-[`multiclock_v1.md`](multiclock_v1.md) §7 has the three-way comparison that
-established that.
+archive. They run from `2020-04-09T08:00Z` to `2022-05-01T08:00Z` and every one
+of them falls in a **training** window: none is inside any inner or outer block
+of any fold, which
+`tests/test_p6_preregistration.py::test_the_upstream_parity_disagreements_reach_no_scored_block`
+asserts against the frozen periods.
+[`multiclock_v1.md`](multiclock_v1.md) §6 has the three-way comparison that
+established the cause.
 
 **Re-acquiring the source needs a network and is not needed to reproduce
 anything.** `make multiclock-acquire` downloads each monthly object and holds it

@@ -271,3 +271,39 @@ def test_zero_bars_means_the_whole_fold_not_an_empty_run():
     unbounded = ReplaySource("1m", ("1m", "5m", "15m"), limit=bar_limit(0), fold=0)
     bounded = ReplaySource("1m", ("1m", "5m", "15m"), limit=bar_limit(20), fold=0)
     assert sum(1 for _ in unbounded.bars()) > sum(1 for _ in bounded.bars()) == 20
+
+
+# --------------------------------------------------------------------------- #
+# E. restarting on the same state file
+# --------------------------------------------------------------------------- #
+
+
+def test_a_restart_reads_the_state_file_instead_of_overwriting_it(tmp_path, monkeypatch):
+    """The runbook tells an operator to point a restart at the same file."""
+    monkeypatch.setattr(paper_run, "committed_specialist_status", viable_status)
+    state = tmp_path / "state.json"
+
+    first = build_executor(state)
+    run(ScriptedSource([{"1m": L, "5m": L, "15m": H}] * 3), TradingMode.SCALPING, first)
+    held = first.position(paper_run.SYMBOL)
+    assert not held.is_flat
+
+    second = build_executor(state)
+    assert second.store.state.positions, "the restart read no position from the state file"
+    recovered = second.position(paper_run.SYMBOL)
+    assert recovered.side == held.side
+    assert recovered.quantity == held.quantity
+
+
+def test_a_corrupt_state_file_stops_the_run_rather_than_being_replaced(tmp_path):
+    """`open` reports UNREADABLE; the constructor would report MISSING and clobber."""
+    from chimera.futures.store import LoadOutcome
+
+    state = tmp_path / "state.json"
+    state.write_text("{ this is not json")
+    before = state.read_bytes()
+
+    executor = build_executor(state)
+    assert executor.store.outcome is LoadOutcome.UNREADABLE
+    assert not executor.store.state.bootstrapped
+    assert state.read_bytes() == before, "an unreadable state file was overwritten"

@@ -189,16 +189,37 @@ def test_no_frozen_instant_reaches_the_boundary_or_styx():
         assert pd.Timestamp(row["outer_end"]) <= RESEARCH_VISIBLE_END
 
 
-def test_the_upstream_parity_disagreements_reach_no_outer_block():
-    """The claim `docs/multiclock_v1.md` §6 makes, checked against the folds."""
+def test_the_upstream_parity_disagreements_reach_no_scored_block():
+    """The claim `docs/multiclock_v1.md` §6 makes, checked against every block.
+
+    Outer blocks are what the verdicts rest on, but they are not the only blocks
+    whose numbers a cell publishes: the inner block selects each fold's
+    threshold, and a cell records its size and period. A guard that checked only
+    the outer blocks would leave "no block whose numbers a checkpoint reports"
+    half-proved, so this checks the inner blocks too. All 29 fall in training
+    windows alone.
+    """
     manifest = json.loads(
         (REPO / "data/research/btc_usdt_multiclock_gen2_manifest.json").read_text()
     )
     stamps = [pd.Timestamp(v) for v in manifest["parity_1h"]["mismatching_timestamps"]]
     assert stamps
-    for start, end in OUTER_PERIODS:
-        inside = [s for s in stamps if pd.Timestamp(start) <= s < pd.Timestamp(end)]
-        assert inside == [], f"{len(inside)} disagreeing hours inside outer {start}"
+
+    for row in FOLD_PERIODS:
+        for name, start, end in (
+            ("inner", row["inner_start"], row["outer_start"]),
+            ("outer", row["outer_start"], row["outer_end"]),
+        ):
+            inside = [s for s in stamps if pd.Timestamp(start) <= s < pd.Timestamp(end)]
+            assert inside == [], (
+                f"{len(inside)} disagreeing hour(s) inside fold {row['fold']}'s "
+                f"{name} block {start} .. {end}"
+            )
+
+    # Every one of them precedes the earliest instant any fold scores or selects
+    # on, which is fold 0's inner block.
+    earliest_scored = min(pd.Timestamp(row["inner_start"]) for row in FOLD_PERIODS)
+    assert max(stamps) < earliest_scored
     assert max(stamps) < pd.Timestamp(OUTER_PERIODS[0][0])
 
 

@@ -237,11 +237,6 @@ MODE_TRANSITION_FLATTENS = Counter(
     "Mode changes that required flattening an inherited position first",
     ["from_mode", "to_mode"],
 )
-MODE_ACTIVE_SECONDS = Counter(
-    f"{_PREFIX}_mode_active_seconds_total",
-    "Wall time spent in each mode, including FLAT",
-    ["mode"],
-)
 MODE_CONSENSUS_STATE = Counter(
     f"{_PREFIX}_mode_consensus_state_total",
     "Consensus outcomes inside an eligible mode, by mode and reason",
@@ -266,8 +261,16 @@ def mark_mode_decision(decision: Any) -> None:
     reason = decision.reason.value
     MODE_DECISIONS.labels(mode=mode, reason=reason).inc()
     MODE_CONSENSUS_STATE.labels(mode=mode, reason=reason).inc()
-    for candidate in decision.eligible_modes:
-        MODE_ELIGIBLE.labels(mode=candidate.value).set(1)
+
+    # Both gauges are set across *every* mode, not only the ones that qualify.
+    # A gauge that is only ever set to 1 never comes back down: the mode that was
+    # eligible an hour ago would still read eligible, and two modes would read
+    # selected at once. The label set is the TradingMode enum, so writing all of
+    # them costs nothing and bounds nothing differently.
+    eligible = {candidate.value for candidate in decision.eligible_modes}
+    for candidate in type(decision.mode):
+        MODE_ELIGIBLE.labels(mode=candidate.value).set(1 if candidate.value in eligible else 0)
+        MODE_SELECTED.labels(mode=candidate.value).set(1 if candidate.value == mode else 0)
 
 
 def mark_mode_transition(plan: Any) -> None:
@@ -278,6 +281,18 @@ def mark_mode_transition(plan: Any) -> None:
     MODE_TRANSITIONS.labels(**labels).inc()
     if plan.must_flatten:
         MODE_TRANSITION_FLATTENS.labels(**labels).inc()
+
+
+def mark_mode_veto(mode: str, reason: str) -> None:
+    """One Aegis veto, attributed to the mode that was active when it fired.
+
+    `chimera_futures_risk_vetoes_total` already counts vetoes by reason; this is
+    the same event split by mode, which is what says whether one mode is being
+    refused far more often than the others. Both labels are bounded enums —
+    a TradingMode value and a RiskEngine reason — and neither carries an order,
+    a price or a free-text string.
+    """
+    MODE_RISK_VETOES.labels(mode=mode, reason=reason).inc()
 
 
 # --- system -------------------------------------------------------------

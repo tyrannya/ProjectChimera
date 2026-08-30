@@ -450,16 +450,21 @@ PROFIT_TOKENS: tuple[str, ...] = (
 def selection_source() -> str:
     """The text of every function that can influence which mode is entered.
 
-    Deliberately these three and not the whole module: the tripwire below names
-    the very words it is looking for, and a scan of the file that contained the
-    list would only ever find the list. Read through `inspect` so that a new
-    branch added to any of them is covered without anyone updating a path.
+    Deliberately these and not the whole module: the tripwire below names the
+    very words it is looking for, and a scan of the file that contained the list
+    would only ever find the list. Read through `inspect` so that a new branch
+    added to any of them is covered without anyone updating a path.
+
+    `_absent` is here because it is on the eligibility path — it supplies the
+    status of a specialist nobody reported — and a helper that decided
+    eligibility by how a mode had been doing would be as much of a profit input
+    as the three public functions.
     """
     import inspect
 
     return "\n".join(
         inspect.getsource(function)
-        for function in (evaluate_eligibility, decide_mode, plan_mode_transition)
+        for function in (evaluate_eligibility, _absent, decide_mode, plan_mode_transition)
     )
 
 

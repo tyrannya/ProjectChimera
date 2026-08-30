@@ -316,6 +316,10 @@ def test_the_selection_source_covers_every_function_that_can_choose_a_mode():
         "plan_mode_transition",
     }, f"a function that can choose a mode is outside the tripwire's reach: {selectors}"
 
+    # And the private helpers those three delegate to. `_absent` supplies the
+    # status of an unreported specialist, which is an eligibility decision.
+    assert inspect.getsource(module._absent) in selection_source()
+
     source = selection_source()
     for name in selectors:
         assert inspect.getsource(getattr(module, name)) in source
@@ -434,3 +438,67 @@ def test_the_document_does_not_claim_alpha_for_any_mode():
         assert phrase not in text
     assert "nothing here claims alpha for any mode" in text
     assert "flat is a first-class successful outcome" in text
+
+
+# --------------------------------------------------------------------------- #
+# H. the telemetry the runbook tells an operator to watch
+# --------------------------------------------------------------------------- #
+
+
+def test_every_mode_series_the_runbook_names_is_written_by_something():
+    """A metric nothing writes is a dashboard panel that is always empty."""
+    from chimera import metrics
+
+    runbook = (REPO / "docs" / "paper_operation_runbook.md").read_text()
+    named = set(re.findall(r"chimera_mode_[a-z_]+", runbook))
+    assert named, "the runbook names no mode series at all"
+
+    source = inspect.getsource(metrics) + inspect.getsource(paper_run_module())
+    for series in sorted(named):
+        # `prometheus_client` appends `_total` to a Counter's exposed name, so
+        # the series an operator greps for is not spelled like the constant.
+        stem = series[len("chimera_") :]
+        attribute = stem[: -len("_total")].upper() if stem.endswith("_total") else stem.upper()
+        assert hasattr(metrics, attribute), f"{series} is not defined"
+        # Defined is not enough: something has to write it.
+        written = re.search(rf"\b{attribute}\.labels\(", source)
+        assert written, f"{series} is defined and nothing ever writes it"
+
+
+def test_selected_and_eligible_come_back_down():
+    """Both are gauges, so a mode that stops being selected must read 0.
+
+    A gauge only ever set to 1 is worse than no gauge: the mode that was active
+    an hour ago still reads selected, and two modes read selected at once.
+    """
+    from chimera import metrics
+
+    def value(gauge, mode):
+        return gauge.labels(mode=mode)._value.get()
+
+    clocks = tuple(MODE_SPECS[TradingMode.SCALPING].specialists)
+    status = {clock: SpecialistStatus(clock, True, True) for clock in clocks}
+    eligibility = evaluate_eligibility(status)
+    actions = {clock: Signal.LONG for clock in clocks}
+
+    metrics.mark_mode_decision(decide_mode(TradingMode.SCALPING, actions, eligibility))
+    assert value(metrics.MODE_SELECTED, "SCALPING") == 1
+    assert value(metrics.MODE_SELECTED, "FLAT") == 0
+    assert value(metrics.MODE_ELIGIBLE, "SCALPING") == 1
+
+    metrics.mark_mode_decision(decide_mode(TradingMode.FLAT, actions, eligibility))
+    assert value(metrics.MODE_SELECTED, "SCALPING") == 0
+    assert value(metrics.MODE_SELECTED, "FLAT") == 1
+
+    # And an eligibility that goes away comes back down too.
+    dead = {clock: SpecialistStatus(clock, True, False) for clock in clocks}
+    metrics.mark_mode_decision(
+        decide_mode(TradingMode.SCALPING, actions, evaluate_eligibility(dead))
+    )
+    assert value(metrics.MODE_ELIGIBLE, "SCALPING") == 0
+
+
+def paper_run_module():
+    from tools import paper_run
+
+    return paper_run

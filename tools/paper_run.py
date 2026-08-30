@@ -57,6 +57,7 @@ from chimera.futures import (
     StaticConstraintSource,
     default_constraints_table,
 )
+from chimera.futures.executor import _veto_label as veto_label
 from chimera.modes import (
     MODE_SPECS,
     ModeDecision,
@@ -216,7 +217,15 @@ def build_executor(state_path: Path) -> FuturesExecutor:
         source=StaticConstraintSource.from_mapping(default_constraints_table()),
         fill_model=DeterministicFillModel(),
     )
-    store = FuturesStore(state_path)
+    # `FuturesStore.open`, not the constructor. The bare dataclass starts with an
+    # empty state and `LoadOutcome.MISSING` and never reads the file, so a restart
+    # pointed at a state file — which is exactly what the runbook tells an
+    # operator to do — would bootstrap flat, forget the position it held, and
+    # overwrite the file. On a *corrupt* file it is worse: `open` reports
+    # `UNREADABLE` and the executor refuses to plan anything until an operator
+    # adopts it deliberately, and the constructor path skips that stop and
+    # overwrites the only record of what the account was doing.
+    store = FuturesStore.open(state_path)
     executor = FuturesExecutor(
         venue=venue,
         risk=RiskEngine(),
@@ -311,7 +320,14 @@ def run(
         )
         totals.orders_planned += len(records)
         totals.orders_filled += sum(1 for record in records if record.state.name == "FILLED")
-        totals.risk_vetoes += sum(1 for record in records if record.state.name == "REJECTED")
+        rejected = [record for record in records if record.state.name == "REJECTED"]
+        totals.risk_vetoes += len(rejected)
+        for record in rejected:
+            # `_veto_label` is the same collapse `chimera_futures_risk_vetoes_total`
+            # uses. The record's own `reason` is free text and would be an
+            # unbounded label; the two series must also agree about what a
+            # reason is called, or one dashboard contradicts the other.
+            metrics.mark_mode_veto(decision.mode.value, veto_label(record.reason))
         logger.debug("%s %s -> %s", close_time, decision.mode.value, decision.signal.value)
 
     return totals

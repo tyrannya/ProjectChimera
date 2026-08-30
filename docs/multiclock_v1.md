@@ -196,13 +196,17 @@ those two rows therefore means downloading those objects and running
 ones the manifest publishes and the verifier enforces, need nothing but the
 repository.
 
-**Where they are.** All 29 lie between `2020-04-09` and `2022-05-01`. The
-earliest reported outer block begins `2023-03-04T07:00Z`, so **none of them
-falls in any block whose numbers a checkpoint reports**; they lie in the
-training region alone. The 29 timestamps are enumerated in the manifest so that
-the claim can be re-checked rather than believed, and it is asserted
-mechanically against the fold periods in the P6 preregistration's own tests once
-those periods are frozen.
+**Where they are.** All 29 lie between `2020-04-09T08:00Z` and
+`2022-05-01T08:00Z` inclusive. The earliest instant any fold *selects* on is
+fold 0's inner block at `2022-08-15T10:00Z` and the earliest it *scores* on is
+`2023-03-04T07:00Z`, so **none of them falls in any block whose numbers a
+checkpoint reports**; they lie in the training region alone. The 29 timestamps
+are enumerated in the manifest so that the claim can be re-checked rather than
+believed, and
+`tests/test_p6_preregistration.py::test_the_upstream_parity_disagreements_reach_no_scored_block`
+asserts it mechanically against every inner and outer block of all four frozen
+folds — inner as well as outer, because a cell publishes its inner block's
+period and its threshold too.
 
 This is a resolution, not a tolerance widened until the problem disappeared: the
 cause is located in a specific upstream series, the effect is bounded by
