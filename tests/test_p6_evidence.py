@@ -73,7 +73,9 @@ def decision() -> dict:
 
 def test_all_fifteen_cells_are_committed():
     assert len(CELLS) == 15
-    missing = [f"{clock}x{model}" for clock, model in CELLS if not cell_dir(clock, model).is_dir()]
+    missing = [
+        f"{clock}x{model}" for clock, model in CELLS if not cell_dir(clock, model).is_dir()
+    ]
     assert missing == []
 
 
@@ -140,9 +142,11 @@ def test_every_clock_scores_the_same_four_real_world_windows(cells):
     """Five clocks, one experiment: the windows coincide to within one bar."""
     for position in range(4):
         starts = {
-            pd.Timestamp(cells[(clock, PRIMARY_MODEL)]["folds"][position]["periods"][
-                "outer_validation"
-            ]["start"])
+            pd.Timestamp(
+                cells[(clock, PRIMARY_MODEL)]["folds"][position]["periods"][
+                    "outer_validation"
+                ]["start"]
+            )
             for clock in CLOCKS
         }
         # Every clock's outer block opens at the frozen instant; a clock whose
@@ -193,11 +197,13 @@ def test_every_deciding_verdict_recomputes_from_the_predictions(cells, decision,
         fold = int(record["fold"])
         recomputed = _recompute_net_return(predictions.loc[predictions["fold"] == fold], spec)
         published = float(record["outer_validation"][PRIMARY_MODEL]["trading"]["net_return"])
-        assert recomputed == pytest.approx(published, abs=1e-6), (
-            f"{clock} fold {fold}: predictions replay to {recomputed}, cell says {published}"
-        )
+        assert recomputed == pytest.approx(
+            published, abs=1e-6
+        ), f"{clock} fold {fold}: predictions replay to {recomputed}, cell says {published}"
         returns.append(published)
-        momentum = float(record["outer_validation"]["momentum_baseline"]["trading"]["net_return"])
+        momentum = float(
+            record["outer_validation"]["momentum_baseline"]["trading"]["net_return"]
+        )
         beats += published > momentum
 
     positive = sum(1 for value in returns if value > 0.0)
@@ -212,9 +218,9 @@ def test_every_deciding_verdict_recomputes_from_the_predictions(cells, decision,
     assert published_verdict["verdict"] == (VERDICT_VIABLE if viable else VERDICT_NOT_VIABLE)
     assert published_verdict["conditions"]["positive_folds"]["observed"] == positive
     assert published_verdict["conditions"]["beats_native_momentum_folds"]["observed"] == beats
-    assert published_verdict["conditions"]["mean_outer_net_return"]["observed"] == pytest.approx(
-        mean, abs=1e-9
-    )
+    assert published_verdict["conditions"]["mean_outer_net_return"][
+        "observed"
+    ] == pytest.approx(mean, abs=1e-9)
 
 
 def test_the_decision_reports_all_five_clocks_and_no_summary_row(decision):
@@ -264,15 +270,18 @@ def test_secondary_families_decide_nothing(decision):
         assert verdict["verdict"] == VERDICT_NOT_VIABLE
         folds = [float(fold["net_return"]) for fold in verdict["folds"]]
         conditions = verdict["conditions"]
-        assert conditions["positive_folds"]["observed"] == sum(1 for value in folds if value > 0.0)
+        assert conditions["positive_folds"]["observed"] == sum(
+            1 for value in folds if value > 0.0
+        )
         assert conditions["mean_outer_net_return"]["observed"] == pytest.approx(
             float(np.mean(folds)), abs=1e-9
         )
         # ... and that arithmetic is not the passing family's, so a substitution
         # would have been visible here rather than silent.
-        assert (conditions["positive_folds"]["observed"], conditions["mean_outer_net_return"][
-            "observed"
-        ]) != (row["positive_folds"], row["mean_outer_net_return"])
+        assert (
+            conditions["positive_folds"]["observed"],
+            conditions["mean_outer_net_return"]["observed"],
+        ) != (row["positive_folds"], row["mean_outer_net_return"])
 
 
 # --------------------------------------------------------------------------- #

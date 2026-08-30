@@ -407,11 +407,15 @@ def test_the_secondary_context_covers_every_clock_and_every_other_family():
     assert len(rows) == len(P6.clocks) * (len(MODELS) - 1)
     assert {row["model"] for row in rows} == set(MODELS) - {PRIMARY_MODEL}
     assert {row["clock"] for row in rows} == set(P6.clocks)
-    assert all(set(row) == {
-        "clock",
-        "model",
-        "would_have_passed",
-        "positive_folds",
-        "mean_outer_net_return",
-        "beats_momentum_folds",
-    } for row in rows)
+    assert all(
+        set(row)
+        == {
+            "clock",
+            "model",
+            "would_have_passed",
+            "positive_folds",
+            "mean_outer_net_return",
+            "beats_momentum_folds",
+        }
+        for row in rows
+    )
