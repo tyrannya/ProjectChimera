@@ -36,6 +36,13 @@ data/research/*
 !data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet
 !data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet.meta.json
 !data/research/btc_usdt_1h_gen1_snapshot_manifest.json
+
+# Research generation 2: the causal multi-clock source. One canonical 1m file
+# and one manifest; 5m/15m/30m/1h/4h/1d are cut from the 1m file deterministically
+# by nn.multiclock rather than committed, so there is one source of truth for
+# every clock and no derived file that can drift away from it.
+!data/research/btc_usdt_multiclock_gen2_1m_pre_boundary.parquet
+!data/research/btc_usdt_multiclock_gen2_manifest.json
 # The P4-HOLD ledger: which checkpoint, if any, has spent the one pre-Styx
 # region nothing has scored. It is a state file rather than data, and the
 # guard in nn/p4_holdout.py has nothing to read without it.

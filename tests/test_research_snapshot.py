@@ -182,7 +182,10 @@ def test_wrong_typed_manifest_key_is_rejected(snapshot: Path) -> None:
 
 
 def test_unknown_contract_id_is_rejected(snapshot: Path) -> None:
-    edit(snapshot, lambda payload: payload["contract"].update(contract_id="btc-usdt-1h-gen2"))
+    # Not `btc-usdt-1h-gen2`, which the multi-clock generation committed: this
+    # test needs an id no contract file carries, or the rejection happens one
+    # check later, on the hash, and stops testing what it names.
+    edit(snapshot, lambda payload: payload["contract"].update(contract_id="btc-usdt-1h-gen9"))
     rejects(snapshot, "contract_id")
 
 

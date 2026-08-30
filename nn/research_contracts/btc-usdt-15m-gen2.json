@@ -1,0 +1,12 @@
+{
+  "contract_id": "btc-usdt-15m-gen2",
+  "research_generation": 2,
+  "domain": "directional-classification",
+  "scope": {
+    "exchange": "binance",
+    "pair": "BTC/USDT",
+    "timeframe": "15m"
+  },
+  "sealed_test_start": "2025-08-27T23:00:00+00:00",
+  "description": "Binance BTC/USDT research generation 2, 15m clock. Generation 2 changes one axis and one only: the clock. Same exchange, same pair, same sealed instant as btc-usdt-1h-gen1, and the same cost-aware label definition six *native* bars ahead. Each clock is a separate contract because a contract declares the timeframe it describes, and a specialist fitted on 15m samples may not be scored under a contract that speaks about some other bar. The sealed instant is unchanged and is not this generation's to move: a change of clock is not a reason to manufacture a new pristine holdout. Research under this contract is further bounded, before the seal, by the retired P4-HOLD region beginning 2025-05-19T08:00:00+00:00, which nn.multiclock enforces on every candle it cuts."
+}

@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup lint format test smoke sample backfill features \
 	verify-research-snapshot verify-research-state train research experiment walkforward \
+	multiclock-acquire verify-multiclock-snapshot \
 	wf-diagnostics benchmark benchmark-compare \
 	p2b-cell p2b-btc p2b-compare p2b-ablation p2b-regimes \
 	p2c-cell p2c-btc p2c-compare freeze-evidence \
@@ -25,6 +26,8 @@ MODELS   ?= artifacts/models
 # boundary: only ids under nn/research_contracts/ are accepted, and a new
 # research generation is a new contract file.
 CONTRACT ?= btc-usdt-1h-gen1
+# Where tools.acquire_multiclock_source caches the Binance monthly archives.
+MULTICLOCK_ARCHIVE_DIR ?= data/archives/binance_spot_btcusdt_1m
 EPOCHS   ?= 30
 # Run seed for the P2a benchmark; the checkpoint runs 42, 142, 242, 342, 442.
 SEED     ?= 42
@@ -64,6 +67,7 @@ smoke:  ## End-to-end smoke: data -> features -> training -> service -> risk
 check: ## Everything the Definition of Done requires
 	$(PYTHON) -m compileall -q .
 	$(PYTHON) -m tools.verify_research_snapshot
+	$(PYTHON) -m tools.verify_multiclock_snapshot
 	$(PYTHON) -m tools.verify_trade_snapshot
 	$(PYTHON) -m tools.verify_research_state
 	$(PYTHON) -m tools.futures_dry_run --verify $(FUTURES_DRY_RUN_DIR)
@@ -88,6 +92,12 @@ verify-research-snapshot:  ## Check the committed research snapshot: hashes, sea
 
 verify-research-state:  ## Check the front-door documents against the committed evidence
 	$(PYTHON) -m tools.verify_research_state
+
+multiclock-acquire:  ## Download and verify the Binance 1m source every clock is cut from
+	$(PYTHON) -m tools.acquire_multiclock_source --archive-dir $(MULTICLOCK_ARCHIVE_DIR)
+
+verify-multiclock-snapshot:  ## Re-cut all seven clocks from the committed 1m source and check them
+	$(PYTHON) -m tools.verify_multiclock_snapshot
 
 train:  ## Train a model. Args: DATASET EPOCHS SEQ_LEN CONTRACT
 	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \
