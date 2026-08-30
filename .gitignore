@@ -3,6 +3,13 @@
 user_data/*
 !user_data/.gitkeep
 
+# The futures dry-run protocol's scratch store. `tools.futures_dry_run` writes it
+# in the repository root and deletes it on the next run, so it is present only
+# while `make check` is mid-flight — long enough for `git add -A` to catch it,
+# which is how it once got committed. The evidence is
+# `artifacts/futures_dry_run_v1/`, not this.
+.futures_dry_run_state.json
+
 # Python artifacts
 __pycache__/
 *.py[cod]
