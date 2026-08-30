@@ -36,6 +36,7 @@ market data → validated dataset → features → leakage-safe training
 | `NNPredictorStrategy` | Working | Fails closed to HOLD on any inference problem |
 | `SwingSpot` | Working | Simple EMA/RSI, long-only spot |
 | Central risk engine + kill switch | Working | On the entry path via `confirm_trade_entry` |
+| Futures execution (`chimera.futures`) | Working, **dry-run only** | USD-M perpetuals, isolated 1x, LONG and SHORT. No live-order path exists and no credential is required |
 | Prometheus + Grafana | Working | Every panel queries a metric this code exports |
 | Telegram notifications | Working, optional | Absent credentials disable it silently |
 | MLflow tracking | Optional | `--mlflow`; artifacts do not depend on it |
@@ -277,15 +278,17 @@ fail until every front-door document is reconciled with it.
 | `P2c` | `btc_p2c_information_set_benchmark` | **answered** |
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
+| `P5` | `btc_p5_information_set_benchmark` | **answered** |
 
 <!-- research-state:end -->
 
-### 4b. Research: information sets (checkpoints P2b, P2c and P3)
+### 4b. Research: information sets (checkpoints P2b, P2c, P3, P4 and P5)
 
 P2a asked whether the *model family* changes what can be extracted from the
 frozen OHLCV14 feature set, and found that it barely does. That makes the next
 question an information question: is there measurable, causal structure the
-fourteen columns do not carry — in the price series, or in a different source?
+fourteen columns do not carry — in the price series, in a different source, or
+on a different clock?
 
 ```bash
 make p2b-btc && make p2b-compare      # market structure
@@ -326,9 +329,15 @@ The deciding XGBoost combined-vs-control comparison had three availability-quali
 
 There was no Stage 2 or re-fit. P4-HOLD was never opened, scored or evaluated and is now retired unread. Styx remains sealed. The nine primary Stage-1 cells are frozen under `artifacts/btc_p4_stage1_SHA256SUMS.txt`; the deciding screen is frozen under `artifacts/btc_p4_screen_SHA256SUMS.txt`. See [`docs/p4_preregistration.md`](docs/p4_preregistration.md) for the preregistered rules and [`docs/derivatives_v1.md`](docs/derivatives_v1.md) for the information set.
 
+The fifth checkpoint, **P5**, is also **negative**. It changed exactly one axis — the *clock*. Every family before it was computed on the 1h bar; `mtf_v1` is `chimera.features.compute_features`, the same fourteen columns with the same window lengths, evaluated over fully closed 4h and 1d bars and aligned to each 1h row by the last bar that had closed. No new source: the bars are cut from the OHLCV history the control already reads.
+
+The deciding `xgboost` comparison improved **1 of 4** temporal outer folds against a preregistered bar of 3 — fold deltas `+0.11508`, `-0.075359`, `-0.039844`, `-0.183647`, mean `-0.0459425`, worst `-0.183647`, the last two reported and decisive in neither direction. The availability gate passed with all four folds available, measured before any fit. This is evidence against *this* representation of higher-timeframe context at *this* horizon on *this* asset; it is not a proof that timeframe context is uninformative. The nine primary cells are frozen under `artifacts/btc_p5_SHA256SUMS.txt` and the decision record under `artifacts/btc_p5_decision_SHA256SUMS.txt`. See [`docs/p5_preregistration.md`](docs/p5_preregistration.md) and [`docs/mtf_v1.md`](docs/mtf_v1.md).
+
+Five families have now failed on this design — three transformations of the 1h bar, one new source, one new clock — and the roadmap's conclusion is that the next research move changes axis rather than adding a sixth.
+
 
 `--checkpoint` is a required input rather than something inferred from the arms,
-because `ohlcv14` is the control of all three and cannot say which question a
+because `ohlcv14` is the control of all five and cannot say which question a
 cell answers. Every artifact records the checkpoint and the question it belongs to,
 and `nn.p2b_compare` refuses to join cells that disagree about either.
 
@@ -475,8 +484,12 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/chart_structure_v1.md](docs/chart_structure_v1.md) | The causal classical-pattern information set: 30 exact definitions |
 | [docs/microstructure_v1.md](docs/microstructure_v1.md) | The causal trade-flow information set: 32 exact definitions (checkpoint P3) |
 | [docs/p2b_methodology.md](docs/p2b_methodology.md) | Checkpoints P2b, P2c and P3: does any of those families add information beyond OHLCV14? |
-| [docs/p4_preregistration.md](docs/p4_preregistration.md) | Checkpoint P4, preregistered before its data exists: derivatives positioning and carry |
+| [docs/p4_preregistration.md](docs/p4_preregistration.md) | Checkpoint P4, preregistered before its data existed and closed after Stage 1 screened out: derivatives positioning and carry |
 | [docs/derivatives_v1.md](docs/derivatives_v1.md) | P4's information set, as implemented: what §5 left open, and two consequences that tighten its gate |
+| [docs/p5_preregistration.md](docs/p5_preregistration.md) | Checkpoint P5, preregistered before any P5 model was fitted and closed as negative: strictly causal higher-timeframe OHLCV context |
+| [docs/mtf_v1.md](docs/mtf_v1.md) | P5's information set, as implemented: the OHLCV14 engine on a 4h and a daily clock, and why its join needed a different witness |
+| [docs/futures_execution_v1.md](docs/futures_execution_v1.md) | Futures Execution v1: dry-run-only USD-M perpetuals, LONG and SHORT, and the risk boundary that does not move |
+| [docs/futures_dry_run_validation.md](docs/futures_dry_run_validation.md) | The operational protocol Futures Execution v1 was validated against, frozen before it was evaluated |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
 | [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, and what is next |
 
@@ -485,6 +498,8 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 ```
 chimera/       Shared, dependency-light core: features, contracts, risk, safety,
                metrics, notifications, inference client. No torch, no freqtrade.
+chimera/futures/  Dry-run USD-M perpetual execution: positions, order state
+               machine, venue constraints, fees and funding, reconciliation.
 nn/            Data pipeline, model, training, evaluation, walk-forward,
                artifact registry, inference service.
 strategies/    Freqtrade strategies and the risk-aware base class.

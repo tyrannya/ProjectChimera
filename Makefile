@@ -6,6 +6,8 @@
 	p2c-cell p2c-btc p2c-compare freeze-evidence \
 	trade-plan trade-probe trade-snapshot verify-trade-snapshot \
 	p3-cell p3-btc p3-compare \
+	futures-dry-run futures-dry-run-verify \
+	p5-cell p5-btc p5-compare p5-decide \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -48,13 +50,13 @@ setup:  ## Install everything and the pre-commit hooks
 	pre-commit install
 
 lint:  ## Run all pre-commit hooks over the repository
-	pre-commit run --all-files
+	$(PYTHON) -m pre_commit run --all-files
 
 format:  ## Auto-format with black
 	black chimera nn strategies tools tests
 
 test:  ## Run the test suite
-	pytest
+	$(PYTHON) -m pytest
 
 smoke:  ## End-to-end smoke: data -> features -> training -> service -> risk
 	$(PYTHON) -m tools.smoke
@@ -64,8 +66,9 @@ check: ## Everything the Definition of Done requires
 	$(PYTHON) -m tools.verify_research_snapshot
 	$(PYTHON) -m tools.verify_trade_snapshot
 	$(PYTHON) -m tools.verify_research_state
-	pytest
-	pre-commit run --all-files
+	$(PYTHON) -m tools.futures_dry_run --verify $(FUTURES_DRY_RUN_DIR)
+	$(PYTHON) -m pytest
+	$(PYTHON) -m pre_commit run --all-files
 	docker compose config --quiet
 	@echo "All acceptance checks passed."
 
@@ -148,6 +151,12 @@ P3_RUNS    = $(foreach s,$(P3_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p3_
 # P4's three arms, in the order docs/p4_preregistration.md §2 reports them.
 P4_SETS    = ohlcv14 derivatives_v1 ohlcv14_plus_derivatives_v1
 P4_RUNS    = $(foreach s,$(P4_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p4_$(s)_$(m)))
+
+# P5's three arms, in the order docs/p5_preregistration.md §5 reports them.
+P5_SETS    = ohlcv14 mtf_v1 ohlcv14_plus_mtf_v1
+P5_RUNS    = $(foreach s,$(P5_SETS),$(foreach m,$(P2B_MODELS),$(P2B_DIR)/btc_p5_$(s)_$(m)))
+
+FUTURES_DRY_RUN_DIR ?= artifacts/futures_dry_run_v1
 # Where `trade-snapshot` stages one archive at a time. Point it at a large disk:
 # the archives are deleted as they are folded, but one of them has to fit.
 TRADE_WORKDIR ?= /tmp/chimera-trades
@@ -292,6 +301,52 @@ p4-cell:  ## One P4 cell. Args: SET=derivatives_v1 MODEL=xgboost
 p4-compare:  ## Join the P4 cells: parity proof, recomputation, deltas
 	$(PYTHON) -m nn.p2b_compare --runs $(P4_RUNS) \
 		--out $(P2B_DIR)/btc_p4_comparison
+
+# --- P5: higher-timeframe context -------------------------------------------
+# P5's family is a function of the same candles the control reads, so there is no
+# acquisition step and no second snapshot: `nn.mtf` cuts fully closed 4h and 1d
+# bars from the committed OHLCV history and runs the unchanged OHLCV14 engine
+# over them. What P5 *does* have is a restricted sample universe — neither higher
+# clock has a usable context until it has warmed up — computed once and applied to
+# every arm from the same array object.
+#
+# `p5-decide` is the deciding artifact and it is not optional prose: it recomputes
+# the sample universe, checks its digest against the one every cell recorded,
+# evaluates the availability gate, and applies the preregistered fold-count rule
+# to exactly one cell pair. P2b, P2c and P3 left their bar in a dictionary of
+# verdict strings that nothing enforced; this writes down what the checkpoint
+# answered.
+p5-btc: verify-research-snapshot  ## P5: all nine cells (higher-timeframe context vs OHLCV14)
+	@for s in $(P5_SETS); do for m in $(P2B_MODELS); do \
+		echo "--- $$s x $$m ---"; \
+		$(PYTHON) -m nn.p2b --checkpoint P5 --information-set $$s --model $$m \
+			--out $(P2B_DIR)/btc_p5_$${s}_$${m} || exit 1; \
+	done; done
+
+p5-cell:  ## One P5 cell. Args: SET=mtf_v1 MODEL=xgboost
+	$(PYTHON) -m nn.p2b --checkpoint P5 --information-set $(SET) --model $(MODEL) \
+		--out $(P2B_DIR)/btc_p5_$(SET)_$(MODEL)
+
+p5-compare:  ## Join the P5 cells: parity proof, recomputation, deltas
+	$(PYTHON) -m nn.p2b_compare --runs $(P5_RUNS) \
+		--out $(P2B_DIR)/btc_p5_comparison
+
+p5-decide:  ## Apply P5's preregistered rule to the frozen cells. Decides nothing new.
+	$(PYTHON) -m nn.p5_decision --runs $(P5_RUNS) \
+		--out $(P2B_DIR)/btc_p5_decision
+
+# --- Futures Execution v1 (engineering, not a research checkpoint) ----------
+# Dry-run only: no credential, no network, no live order. `futures-dry-run` runs
+# the frozen operational protocol in `tools/futures_dry_run.py` and writes the
+# evidence; `futures-dry-run-verify` rechecks a committed report against the
+# protocol hash in this build, which is what stops an invariant being weakened
+# after it failed. Neither target selects a model, a feature or a threshold, and
+# the simulated PnL in the report describes the fill model, not a market.
+futures-dry-run:  ## Run the frozen futures dry-run validation protocol
+	$(PYTHON) -m tools.futures_dry_run --out $(FUTURES_DRY_RUN_DIR)
+
+futures-dry-run-verify:  ## Recheck the committed futures dry-run report
+	$(PYTHON) -m tools.futures_dry_run --verify $(FUTURES_DRY_RUN_DIR)
 
 # Covers primary evidence only — cells and their per-sample predictions.
 # Comparisons and ablation tables are derived: `tools.freeze_evidence` refuses

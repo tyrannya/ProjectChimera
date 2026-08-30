@@ -1,0 +1,356 @@
+{
+  "availability": {
+    "blocks": [
+      {
+        "available": true,
+        "fold": 0,
+        "inner_validation": {
+          "eligible_fraction": 1.0,
+          "max_contiguous_ineligible_hours": 0,
+          "rows": 4821,
+          "rows_eligible": 4821
+        },
+        "outer_validation": {
+          "eligible_fraction": 1.0,
+          "max_contiguous_ineligible_hours": 0,
+          "rows": 4821,
+          "rows_eligible": 4821
+        },
+        "reasons": [],
+        "train": {
+          "eligible_fraction": 0.924828,
+          "gating": false,
+          "rows": 21697,
+          "rows_eligible": 20066
+        }
+      },
+      {
+        "available": true,
+        "fold": 1,
+        "inner_validation": {
+          "eligible_fraction": 1.0,
+          "max_contiguous_ineligible_hours": 0,
+          "rows": 4821,
+          "rows_eligible": 4821
+        },
+        "outer_validation": {
+          "eligible_fraction": 1.0,
+          "max_contiguous_ineligible_hours": 0,
+          "rows": 4821,
+          "rows_eligible": 4821
+        },
+        "reasons": [],
+        "train": {
+          "eligible_fraction": 0.938495,
+          "gating": false,
+          "rows": 26518,
+          "rows_eligible": 24887
+        }
+      },
+      {
+        "available": true,
+        "fold": 2,
+        "inner_validation": {
+          "eligible_fraction": 1.0,
+          "max_contiguous_ineligible_hours": 0,
+          "rows": 4821,
+          "rows_eligible": 4821
+        },
+        "outer_validation": {
+          "eligible_fraction": 1.0,
+          "max_contiguous_ineligible_hours": 0,
+          "rows": 4821,
+          "rows_eligible": 4821
+        },
+        "reasons": [],
+        "train": {
+          "eligible_fraction": 0.947956,
+          "gating": false,
+          "rows": 31339,
+          "rows_eligible": 29708
+        }
+      },
+      {
+        "available": true,
+        "fold": 3,
+        "inner_validation": {
+          "eligible_fraction": 1.0,
+          "max_contiguous_ineligible_hours": 0,
+          "rows": 4821,
+          "rows_eligible": 4821
+        },
+        "outer_validation": {
+          "eligible_fraction": 1.0,
+          "max_contiguous_ineligible_hours": 0,
+          "rows": 4821,
+          "rows_eligible": 4821
+        },
+        "reasons": [],
+        "train": {
+          "eligible_fraction": 0.954895,
+          "gating": false,
+          "rows": 36160,
+          "rows_eligible": 34529
+        }
+      }
+    ],
+    "eligible_fraction": 0.96439,
+    "folds_available": 4,
+    "gate": {
+      "folds_required": 4,
+      "of": 4,
+      "on_failure": "not_evaluable",
+      "on_failure_means": "P5 reports invalid/unanswered. It does NOT re-derive a bar over the surviving folds, and it does not drop a fold"
+    },
+    "gate_passed": true,
+    "rows": 45802,
+    "rows_eligible": 44171,
+    "rule": {
+      "applies_to": "each fold's inner-validation block and each fold's outer-validation block",
+      "max_contiguous_ineligible_hours": 48,
+      "measured_on": "rows surviving ELIGIBILITY_CONDITIONS, computed before any model is fitted and reported per block whatever the gate decides",
+      "min_eligible_row_fraction": 0.98,
+      "training_blocks": "reported, never gating. Training loss is identical across arms by construction, and requiring 98% of a training block that begins at the dataset's own start would disqualify every fold over a warm-up cost that is a property of the start date rather than of the fold"
+    },
+    "universe_sha256": "a855295acf1da84394025d3e400d221f66d0d01f5c1708be7982a6285e45cd3d"
+  },
+  "cells": [
+    "artifacts/benchmark/btc_p5_mtf_v1_lightgbm",
+    "artifacts/benchmark/btc_p5_mtf_v1_logistic_regression",
+    "artifacts/benchmark/btc_p5_mtf_v1_xgboost",
+    "artifacts/benchmark/btc_p5_ohlcv14_lightgbm",
+    "artifacts/benchmark/btc_p5_ohlcv14_logistic_regression",
+    "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_lightgbm",
+    "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_logistic_regression",
+    "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_xgboost",
+    "artifacts/benchmark/btc_p5_ohlcv14_xgboost"
+  ],
+  "checkpoint": "P5",
+  "context": [
+    {
+      "decides": false,
+      "deltas": [
+        0.010104,
+        -0.218057,
+        -0.172724,
+        -0.420662
+      ],
+      "improved_folds": 1,
+      "information_set": "mtf_v1",
+      "mean_delta": -0.20033475,
+      "model": "xgboost",
+      "role": "secondary (descriptive; cannot switch the deciding cell)",
+      "total_folds": 4
+    },
+    {
+      "decides": true,
+      "deltas": [
+        0.11508,
+        -0.075359,
+        -0.039844,
+        -0.183647
+      ],
+      "improved_folds": 1,
+      "information_set": "ohlcv14_plus_mtf_v1",
+      "mean_delta": -0.0459425,
+      "model": "xgboost",
+      "role": "primary",
+      "total_folds": 4
+    },
+    {
+      "decides": false,
+      "deltas": [
+        -0.01819,
+        -0.415199,
+        -0.395549,
+        -0.023701
+      ],
+      "improved_folds": 0,
+      "information_set": "mtf_v1",
+      "mean_delta": -0.21315975,
+      "model": "logistic_regression",
+      "role": "secondary (descriptive; cannot switch the deciding cell)",
+      "total_folds": 4
+    },
+    {
+      "decides": false,
+      "deltas": [
+        0.044792,
+        -0.185182,
+        -0.289749,
+        0.029309
+      ],
+      "improved_folds": 2,
+      "information_set": "ohlcv14_plus_mtf_v1",
+      "mean_delta": -0.1002075,
+      "model": "logistic_regression",
+      "role": "secondary (descriptive; cannot switch the deciding cell)",
+      "total_folds": 4
+    },
+    {
+      "decides": false,
+      "deltas": [
+        0.039942,
+        -0.187182,
+        0.209617,
+        -0.06664
+      ],
+      "improved_folds": 2,
+      "information_set": "mtf_v1",
+      "mean_delta": -0.00106575,
+      "model": "lightgbm",
+      "role": "secondary (descriptive; cannot switch the deciding cell)",
+      "total_folds": 4
+    },
+    {
+      "decides": false,
+      "deltas": [
+        -0.124697,
+        0.02957,
+        0.17878,
+        -0.125519
+      ],
+      "improved_folds": 2,
+      "information_set": "ohlcv14_plus_mtf_v1",
+      "mean_delta": -0.0104665,
+      "model": "lightgbm",
+      "role": "secondary (descriptive; cannot switch the deciding cell)",
+      "total_folds": 4
+    }
+  ],
+  "decision": {
+    "decided_by": {
+      "comparison": [
+        "ohlcv14_plus_mtf_v1",
+        "ohlcv14"
+      ],
+      "model": "xgboost"
+    },
+    "descriptive": {
+      "best_fold_delta": 0.11508,
+      "mean_delta": -0.0459425,
+      "note": "reported for completeness and decisive in neither direction: the mean may not rescue a fold-count failure and may not veto a fold-count pass",
+      "worst_fold_delta": -0.183647
+    },
+    "folds": [
+      {
+        "combined_net_return": -0.112678,
+        "combined_trades": 22,
+        "control_net_return": -0.227758,
+        "control_trades": 207,
+        "delta": 0.11508,
+        "fold": 0,
+        "improved": true,
+        "period_end": "2023-09-24 16:00:00+00:00",
+        "period_start": "2023-03-04 07:00:00+00:00",
+        "thin_trades_flag": false
+      },
+      {
+        "combined_net_return": -0.027115,
+        "combined_trades": 21,
+        "control_net_return": 0.048244,
+        "control_trades": 26,
+        "delta": -0.075359,
+        "fold": 1,
+        "improved": false,
+        "period_end": "2024-04-12 13:00:00+00:00",
+        "period_start": "2023-09-24 17:00:00+00:00",
+        "thin_trades_flag": false
+      },
+      {
+        "combined_net_return": 0.093658,
+        "combined_trades": 8,
+        "control_net_return": 0.133502,
+        "control_trades": 29,
+        "delta": -0.039844,
+        "fold": 2,
+        "improved": false,
+        "period_end": "2024-10-30 10:00:00+00:00",
+        "period_start": "2024-04-12 14:00:00+00:00",
+        "thin_trades_flag": true
+      },
+      {
+        "combined_net_return": 0.245659,
+        "combined_trades": 48,
+        "control_net_return": 0.429306,
+        "control_trades": 47,
+        "delta": -0.183647,
+        "fold": 3,
+        "improved": false,
+        "period_end": "2025-05-19 07:00:00+00:00",
+        "period_start": "2024-10-30 11:00:00+00:00",
+        "thin_trades_flag": false
+      }
+    ],
+    "improved_folds": 1,
+    "improved_rule": {
+      "delta": "ohlcv14_plus_mtf_v1 minus ohlcv14, per fold, same fold index",
+      "improved_when": "delta > 0",
+      "metric": "outer-validation cost-aware net return",
+      "zero_is_improved": false
+    },
+    "interpretation": "P5 is negative. Do not tune mtf_v1's constants \u2014 they were predeclared, and searching them against these four outer blocks would convert a negative result into a fitted one. Do not create mtf_v2. The next research move changes axis",
+    "outcome": "negative",
+    "passed": false,
+    "required_folds": 3,
+    "rule": {
+      "cost_multiplier": 1.0,
+      "decided_by": {
+        "comparison": [
+          "ohlcv14_plus_mtf_v1",
+          "ohlcv14"
+        ],
+        "model": "xgboost"
+      },
+      "false_positive_rate_under_coin_null": "5/16 = 0.3125",
+      "folds": 4,
+      "improved_folds_required": 3,
+      "mean_delta": "descriptive; may not rescue a fold-count failure and may not veto a pass",
+      "statistic": "number of outer folds in which the deciding delta is > 0",
+      "why_that_rate_is_stated": "P4's \u00a78.1 established it and it does not stop being true here. At n = 4 dependent folds no threshold has both a usable false-positive rate and usable power. P5 does not pretend otherwise; it reports an exploratory answer with its error rate written down, which is why a positive P5 is a lead and not a finding",
+      "worst_fold_delta": "descriptive; same"
+    },
+    "total_folds": 4,
+    "trade_count_diagnostic": {
+      "effect_on_the_decision": "none",
+      "effect_on_the_denominator": "none",
+      "flag_below_outer_trades": 10,
+      "folds_flagged": [
+        2
+      ],
+      "why": "excluding a fold changes the denominator, and a denominator that can move is a denominator someone can move after seeing the numbers. The count is reported and limits the interpretation; it does not change the arithmetic"
+    }
+  },
+  "evidence_class": "the preregistered decision, applied to frozen cells; the P5 outcome",
+  "identity": {
+    "code_revision": {
+      "dirty": false,
+      "excluded_environment_files": 0,
+      "missing_tracked_source_files": 0,
+      "note": "source_digest is a SHA-256 over the content of every Python file git tracks under ['chimera', 'nn', 'strategies', 'tools'], plus any untracked Python file among them. An installed environment \u2014 a virtualenv inside the checkout, site-packages, a model library imported lazily by one model family and not another \u2014 is not under those roots and cannot move it. An environment is recognised by its shape (a site-packages/dist-packages/node_modules directory, or one holding a pyvenv.cfg) and never by a directory's name, so a Python file sitting under a source root in a directory merely called build or dist is project source and is hashed. revision and dirty are recorded beside the digest because neither one alone says what source ran",
+      "revision": "03a9e9ccb53eabb5fd7d4d65a14d219a904efd38",
+      "roots": [
+        "chimera",
+        "nn",
+        "strategies",
+        "tools"
+      ],
+      "scheme": "git-tracked-source/1",
+      "source_digest": "9f1179dc1a5fa17f2f1766ae2bf808a8ace479d4dea3cc5c60e14380b154162c",
+      "source_files": 75,
+      "untracked_source_files": 0
+    },
+    "contract_hash": "dca6d0a891a257197a7c8aecec04fdba0a0b3009cfe93c5f3a397d458ab4a1de",
+    "folds": 4,
+    "mtf_spec_hash": "63d748a3321ef076b5011ab5b7adff6217b37d164f5960c1d2bb6d745d9b26c5",
+    "preregistration_hash": "sha256:dc4bd73a078a166e366381c2297bcdad0328c5e08da8def928e8e1f37f04ed8c",
+    "seed": 42,
+    "target": {
+      "cost_threshold": 0.002,
+      "fee_rate": 0.0005,
+      "horizon": 6,
+      "slippage_rate": 0.0005
+    },
+    "universe_sha256": "a855295acf1da84394025d3e400d221f66d0d01f5c1708be7982a6285e45cd3d"
+  }
+}

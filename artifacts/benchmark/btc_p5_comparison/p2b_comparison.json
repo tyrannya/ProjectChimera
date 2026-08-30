@@ -1,0 +1,5481 @@
+{
+  "checkpoint": "P5",
+  "question": "does causal mtf_v1, alone or combined with OHLCV14, add usable information beyond OHLCV14?",
+  "evidence_class": "derived",
+  "derived_from": [
+    "artifacts/benchmark/btc_p5_mtf_v1_lightgbm",
+    "artifacts/benchmark/btc_p5_mtf_v1_logistic_regression",
+    "artifacts/benchmark/btc_p5_mtf_v1_xgboost",
+    "artifacts/benchmark/btc_p5_ohlcv14_lightgbm",
+    "artifacts/benchmark/btc_p5_ohlcv14_logistic_regression",
+    "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_lightgbm",
+    "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_logistic_regression",
+    "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_xgboost",
+    "artifacts/benchmark/btc_p5_ohlcv14_xgboost"
+  ],
+  "control": "ohlcv14",
+  "contract": {
+    "contract_id": "btc-usdt-1h-gen1",
+    "contract_hash": "dca6d0a891a257197a7c8aecec04fdba0a0b3009cfe93c5f3a397d458ab4a1de",
+    "research_generation": 1,
+    "sealed_test_start": "2025-08-27T23:00:00+00:00"
+  },
+  "snapshot": {
+    "manifest": "data/research/btc_usdt_1h_gen1_snapshot_manifest.json",
+    "snapshot_schema": "chimera.research-snapshot/1",
+    "raw_semantic_hash": "c62de8d92a1eb80397d17ff89e480005d381525ec14c5f6519efddbc2cbe86ed",
+    "processed_semantic_prefix_hash": "d5738f0cc5c0927e91425dd9ab6ef1fa44bda45d07ca15a729167a7de45f7545",
+    "rows": 45802,
+    "contains_styx": false
+  },
+  "feature_spec": {
+    "ohlcv14_feature_spec": {
+      "ema_fast": 12,
+      "ema_slow": 26,
+      "rsi_period": 14,
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "atr_period": 14,
+      "vol_window": 24,
+      "volume_window": 24
+    },
+    "chart_spec_version": "chart_structure_v1",
+    "chart_spec": {
+      "atr_period": 14,
+      "win_short": 20,
+      "win_long": 60,
+      "touch_atr": 0.25,
+      "pivot_left": 3,
+      "pivot_right": 3
+    },
+    "chart_spec_hash": "0f62f35d87cd92abe439959976de288d72a8adbf98eab804b05e594c131e946b",
+    "chart_feature_families": {
+      "range": [
+        "chart_window_fill",
+        "chart_range_width_atr",
+        "chart_range_pos",
+        "chart_range_pos_fast",
+        "chart_touch_high_frac",
+        "chart_touch_low_frac"
+      ],
+      "compression": [
+        "chart_high_slope_atr",
+        "chart_low_slope_atr",
+        "chart_convergence_atr",
+        "chart_slope_asymmetry"
+      ],
+      "channel": [
+        "chart_trend_slope_atr",
+        "chart_trend_r2",
+        "chart_channel_disp_atr",
+        "chart_channel_pos"
+      ],
+      "volatility": [
+        "chart_range_ratio",
+        "chart_tr_ratio"
+      ],
+      "breakout": [
+        "chart_breakout_up_atr",
+        "chart_breakout_dn_atr",
+        "chart_failed_breakout_up_atr",
+        "chart_failed_breakout_dn_atr"
+      ],
+      "patterns": [
+        "chart_dt_valid",
+        "chart_dt_offset_atr",
+        "chart_dt_trough_atr",
+        "chart_dt_neckline_atr",
+        "chart_db_valid",
+        "chart_db_offset_atr",
+        "chart_db_peak_atr",
+        "chart_db_neckline_atr",
+        "chart_pole_atr",
+        "chart_impulse_atr"
+      ]
+    },
+    "smc_spec_version": "smc_v1",
+    "smc_spec": {
+      "atr_period": 14,
+      "pivot_left": 3,
+      "pivot_right": 3,
+      "break_atr": 0.1,
+      "sweep_atr": 0.05,
+      "equal_atr": 0.25,
+      "displacement_body_atr": 1.0,
+      "displacement_body_ratio": 0.6,
+      "fvg_min_atr": 0.05
+    },
+    "smc_spec_hash": "3421312fc8d8687e158b5dc269f65c76bfa6916ec4643f3063cf9473d8a36649",
+    "smc_feature_families": {
+      "structure": [
+        "smc_structure_valid",
+        "smc_dist_swing_high_atr",
+        "smc_dist_swing_low_atr",
+        "smc_age_swing_high",
+        "smc_age_swing_low",
+        "smc_structure_direction",
+        "smc_range_width_atr",
+        "smc_range_position"
+      ],
+      "liquidity": [
+        "smc_equal_high",
+        "smc_equal_low",
+        "smc_eqh_active",
+        "smc_eql_active",
+        "smc_eqh_dist_atr",
+        "smc_eql_dist_atr"
+      ],
+      "breaks": [
+        "smc_bos_bull",
+        "smc_bos_bear",
+        "smc_choch_bull",
+        "smc_choch_bear",
+        "smc_break_magnitude_atr",
+        "smc_bars_since_break"
+      ],
+      "sweeps": [
+        "smc_sweep_high",
+        "smc_sweep_low",
+        "smc_sweep_high_reclaim",
+        "smc_sweep_low_reclaim",
+        "smc_bars_since_sweep_high",
+        "smc_bars_since_sweep_low"
+      ],
+      "displacement": [
+        "smc_body_signed_atr",
+        "smc_body_abs_atr",
+        "smc_body_ratio",
+        "smc_displacement_bull",
+        "smc_displacement_bear"
+      ],
+      "fvg": [
+        "smc_fvg_bull",
+        "smc_fvg_bear",
+        "smc_fvg_bull_size_atr",
+        "smc_fvg_bear_size_atr",
+        "smc_bull_fvg_active",
+        "smc_bear_fvg_active",
+        "smc_bull_fvg_dist_atr",
+        "smc_bear_fvg_dist_atr"
+      ]
+    },
+    "combined_spec_hash": "2a33458e5d85caece7332c6b2598199d67b275c7828b1d7d3cac0421b5ba3939"
+  },
+  "sizes": {
+    "research_rows": 48217,
+    "min_train": 21697,
+    "inner_val_size": 4821,
+    "outer_val_size": 4821,
+    "step": 4821
+  },
+  "target": {
+    "horizon": 6,
+    "fee_rate": 0.0005,
+    "slippage_rate": 0.0005,
+    "cost_threshold": 0.002
+  },
+  "threshold_selection": {
+    "block": "inner_validation",
+    "objective": "maximise net return after round-trip costs on the inner-validation block, subject to at least min_trades realised trades; falls back to the most permissive grid point when no candidate clears the floor",
+    "grid": [
+      0.34,
+      0.36,
+      0.38,
+      0.4,
+      0.42,
+      0.44,
+      0.46,
+      0.48,
+      0.5,
+      0.52,
+      0.54,
+      0.56,
+      0.58,
+      0.6,
+      0.62,
+      0.64,
+      0.66,
+      0.68,
+      0.7,
+      0.72,
+      0.74,
+      0.76,
+      0.78,
+      0.8,
+      0.82,
+      0.84,
+      0.86,
+      0.88,
+      0.9
+    ],
+    "min_trades": 10,
+    "applied_to_outer_validation": "the already-selected value, unchanged"
+  },
+  "alignment": {
+    "information_sets": [
+      "ohlcv14",
+      "mtf_v1"
+    ],
+    "checked": [
+      "shared spine arrays by object identity",
+      "identical fold row ranges",
+      "identical label horizon",
+      "identical fee, slippage and cost threshold",
+      "identical sample-index arrays per fold and block",
+      "one sample universe, applied to every arm from the same array object"
+    ],
+    "checked_per_view": [
+      "every feature column equals the column it was assembled from",
+      "the join was re-derived independently \u2014 see join_evidence"
+    ],
+    "join_evidence": {
+      "recomputed": [
+        "smc_body_ratio from the raw candles",
+        "chart_pole_atr from the raw candles"
+      ],
+      "not_evidence": "an OHLCV14 column was previously compared against the spine column it was copied from, which could not fail; dropped rather than kept as decoration",
+      "rows": 45802,
+      "matches": true,
+      "matches_under_plus_one_shift": false,
+      "matches_under_minus_one_shift": false,
+      "chart_rows_compared": 45802,
+      "raw_rows_first": 78,
+      "raw_rows_last": 47135,
+      "raw_candles_seen_by_the_engine": 47136,
+      "microstructure": {
+        "trade_source": "absent; no P3 arm may be built"
+      },
+      "derivatives": {
+        "derivatives_source": "absent; no P4 arm may be built"
+      },
+      "mtf": {
+        "spec_hash": "63d748a3321ef076b5011ab5b7adff6217b37d164f5960c1d2bb6d745d9b26c5",
+        "preregistration_hash": "sha256:dc4bd73a078a166e366381c2297bcdad0328c5e08da8def928e8e1f37f04ed8c",
+        "rows": 47136,
+        "rows_eligible": 44829,
+        "eligible_fraction": 0.951057,
+        "per_timeframe": {
+          "4h": {
+            "recomputed": [
+              "mtf_4h_ret_1 from the complete-bar closes, positionally",
+              "mtf_4h_atr_norm from the complete bars, by close timestamp"
+            ],
+            "rows": 47136,
+            "rows_eligible_on_this_clock": 46747,
+            "rows_eligible_overall": 44829,
+            "boundary_rows_checked": 11212,
+            "matches": true,
+            "matches_under_plus_one_bar_shift": false,
+            "matches_under_minus_one_bar_shift": false,
+            "rows_reading_a_bar_that_had_not_closed": 0,
+            "max_staleness_hours": 3.0,
+            "staleness_bound_hours": 4,
+            "as_of_is_monotone": true,
+            "first_eligible_row": 1961,
+            "grid_bars": 11792,
+            "complete_bars": 11772,
+            "dropped_bars": 20
+          },
+          "1d": {
+            "recomputed": [
+              "mtf_1d_ret_1 from the complete-bar closes, positionally",
+              "mtf_1d_atr_norm from the complete bars, by close timestamp"
+            ],
+            "rows": 47136,
+            "rows_eligible_on_this_clock": 44887,
+            "rows_eligible_overall": 44829,
+            "boundary_rows_checked": 1871,
+            "matches": true,
+            "matches_under_plus_one_bar_shift": false,
+            "matches_under_minus_one_bar_shift": false,
+            "rows_reading_a_bar_that_had_not_closed": 0,
+            "max_staleness_hours": 23.0,
+            "staleness_bound_hours": 24,
+            "as_of_is_monotone": true,
+            "first_eligible_row": 1961,
+            "grid_bars": 1966,
+            "complete_bars": 1950,
+            "dropped_bars": 16
+          }
+        },
+        "universe": {
+          "rows": 45802,
+          "rows_eligible": 44171,
+          "eligible_fraction": 0.96439,
+          "universe_sha256": "a855295acf1da84394025d3e400d221f66d0d01f5c1708be7982a6285e45cd3d",
+          "first_eligible_row": 1631,
+          "spec_hash": "63d748a3321ef076b5011ab5b7adff6217b37d164f5960c1d2bb6d745d9b26c5"
+        },
+        "context": {
+          "spec_version": 1,
+          "spec_hash": "63d748a3321ef076b5011ab5b7adff6217b37d164f5960c1d2bb6d745d9b26c5",
+          "rows": 47136,
+          "rows_eligible": 44829,
+          "feature_names": [
+            "mtf_4h_ret_1",
+            "mtf_4h_log_ret_1",
+            "mtf_4h_ret_close_open",
+            "mtf_4h_hl_range",
+            "mtf_4h_ema_fast_ratio",
+            "mtf_4h_ema_slow_ratio",
+            "mtf_4h_ema_cross",
+            "mtf_4h_rsi_centered",
+            "mtf_4h_macd_norm",
+            "mtf_4h_macd_hist_norm",
+            "mtf_4h_atr_norm",
+            "mtf_4h_realized_vol",
+            "mtf_4h_volume_change",
+            "mtf_4h_volume_z",
+            "mtf_1d_ret_1",
+            "mtf_1d_log_ret_1",
+            "mtf_1d_ret_close_open",
+            "mtf_1d_hl_range",
+            "mtf_1d_ema_fast_ratio",
+            "mtf_1d_ema_slow_ratio",
+            "mtf_1d_ema_cross",
+            "mtf_1d_rsi_centered",
+            "mtf_1d_macd_norm",
+            "mtf_1d_macd_hist_norm",
+            "mtf_1d_atr_norm",
+            "mtf_1d_realized_vol",
+            "mtf_1d_volume_change",
+            "mtf_1d_volume_z"
+          ],
+          "timeframes": {
+            "4h": {
+              "hours": 4,
+              "grid_bars": 11792,
+              "complete_bars": 11772,
+              "dropped_bars": 20,
+              "first_usable_bar": 78,
+              "first_usable_close": "2020-01-14 04:00:00+00:00",
+              "rows_eligible": 46747,
+              "max_staleness_hours": 3.0
+            },
+            "1d": {
+              "hours": 24,
+              "grid_bars": 1966,
+              "complete_bars": 1950,
+              "dropped_bars": 16,
+              "first_usable_bar": 78,
+              "first_usable_close": "2020-03-23 00:00:00+00:00",
+              "rows_eligible": 44887,
+              "max_staleness_hours": 23.0
+            }
+          }
+        }
+      }
+    },
+    "horizon": 6,
+    "costs": {
+      "horizon": 6,
+      "fee_rate": 0.0005,
+      "slippage_rate": 0.0005,
+      "cost_threshold": 0.002
+    },
+    "seq_len": 64,
+    "rows": 45802,
+    "sample_universe": {
+      "rows_eligible": 44171,
+      "rows_total": 45802,
+      "universe_sha256": "a855295acf1da84394025d3e400d221f66d0d01f5c1708be7982a6285e45cd3d",
+      "applied_to": [
+        "ohlcv14",
+        "mtf_v1"
+      ]
+    },
+    "folds": [
+      {
+        "fold": 0,
+        "train": {
+          "row_range": [
+            0,
+            21697
+          ],
+          "samples": 19339,
+          "first_row": 1694,
+          "last_row": 21690,
+          "start": "2020-03-25 15:00:00+00:00",
+          "end": "2022-08-15 03:00:00+00:00",
+          "sample_index_sha256": "6ad826b9ae297401d474f0408e54540798c43776e0af6702306bdf03e01fa096"
+        },
+        "inner_validation": {
+          "row_range": [
+            21697,
+            26518
+          ],
+          "samples": 4752,
+          "first_row": 21760,
+          "last_row": 26511,
+          "start": "2022-08-18 01:00:00+00:00",
+          "end": "2023-03-04 00:00:00+00:00",
+          "sample_index_sha256": "02b3538fb68ba98f7c96ffd3ca31d42153c6a50beec085b4ccb936d21827e7eb"
+        },
+        "outer_validation": {
+          "row_range": [
+            26518,
+            31339
+          ],
+          "samples": 4683,
+          "first_row": 26581,
+          "last_row": 31332,
+          "start": "2023-03-06 22:00:00+00:00",
+          "end": "2023-09-24 10:00:00+00:00",
+          "sample_index_sha256": "80b8273bc6644bc5ef0b4751ec5b50838b5040a47498596f4b358b7a0d55bff4"
+        }
+      },
+      {
+        "fold": 1,
+        "train": {
+          "row_range": [
+            0,
+            26518
+          ],
+          "samples": 24160,
+          "first_row": 1694,
+          "last_row": 26511,
+          "start": "2020-03-25 15:00:00+00:00",
+          "end": "2023-03-04 00:00:00+00:00",
+          "sample_index_sha256": "391a9dde7370c2a6d06dbca54501e154fea5b932cff81b0e0a4103e9744ec2ce"
+        },
+        "inner_validation": {
+          "row_range": [
+            26518,
+            31339
+          ],
+          "samples": 4683,
+          "first_row": 26581,
+          "last_row": 31332,
+          "start": "2023-03-06 22:00:00+00:00",
+          "end": "2023-09-24 10:00:00+00:00",
+          "sample_index_sha256": "80b8273bc6644bc5ef0b4751ec5b50838b5040a47498596f4b358b7a0d55bff4"
+        },
+        "outer_validation": {
+          "row_range": [
+            31339,
+            36160
+          ],
+          "samples": 4752,
+          "first_row": 31402,
+          "last_row": 36153,
+          "start": "2023-09-27 08:00:00+00:00",
+          "end": "2024-04-12 07:00:00+00:00",
+          "sample_index_sha256": "b34d13c2360262fbc7798d308746564e00e0f53d35af99c84a2244a862fac15b"
+        }
+      },
+      {
+        "fold": 2,
+        "train": {
+          "row_range": [
+            0,
+            31339
+          ],
+          "samples": 28912,
+          "first_row": 1694,
+          "last_row": 31332,
+          "start": "2020-03-25 15:00:00+00:00",
+          "end": "2023-09-24 10:00:00+00:00",
+          "sample_index_sha256": "2a53ec2e10746c4b6b91795054c3c0413b28fe3985234bf8dba2f5acdd97521d"
+        },
+        "inner_validation": {
+          "row_range": [
+            31339,
+            36160
+          ],
+          "samples": 4752,
+          "first_row": 31402,
+          "last_row": 36153,
+          "start": "2023-09-27 08:00:00+00:00",
+          "end": "2024-04-12 07:00:00+00:00",
+          "sample_index_sha256": "b34d13c2360262fbc7798d308746564e00e0f53d35af99c84a2244a862fac15b"
+        },
+        "outer_validation": {
+          "row_range": [
+            36160,
+            40981
+          ],
+          "samples": 4752,
+          "first_row": 36223,
+          "last_row": 40974,
+          "start": "2024-04-15 05:00:00+00:00",
+          "end": "2024-10-30 04:00:00+00:00",
+          "sample_index_sha256": "b1c654111751057bf14a060931af7559cf9132ff94afd1201e621606becf48a9"
+        }
+      },
+      {
+        "fold": 3,
+        "train": {
+          "row_range": [
+            0,
+            36160
+          ],
+          "samples": 33733,
+          "first_row": 1694,
+          "last_row": 36153,
+          "start": "2020-03-25 15:00:00+00:00",
+          "end": "2024-04-12 07:00:00+00:00",
+          "sample_index_sha256": "266e86386d8a300cab6ab801a1fe89d1d7305d8b1bc74c29174aa300e0bd4cd1"
+        },
+        "inner_validation": {
+          "row_range": [
+            36160,
+            40981
+          ],
+          "samples": 4752,
+          "first_row": 36223,
+          "last_row": 40974,
+          "start": "2024-04-15 05:00:00+00:00",
+          "end": "2024-10-30 04:00:00+00:00",
+          "sample_index_sha256": "b1c654111751057bf14a060931af7559cf9132ff94afd1201e621606becf48a9"
+        },
+        "outer_validation": {
+          "row_range": [
+            40981,
+            45802
+          ],
+          "samples": 4752,
+          "first_row": 41044,
+          "last_row": 45795,
+          "start": "2024-11-02 02:00:00+00:00",
+          "end": "2025-05-19 01:00:00+00:00",
+          "sample_index_sha256": "0f8f73225b2466757fc263c84cc65463b9e3d965758bcd23afa7c5cfb8d37dd2"
+        }
+      }
+    ]
+  },
+  "sealed_test": false,
+  "statistical_unit": "one temporal outer period per fold, four in total; no seed replication, because these estimators are deterministic given their inputs",
+  "folds_are_not_independent": "the geometry is P2a's, and in it fold k's inner-validation block is exactly fold k-1's reported outer block, while folds 2 and 3 train on earlier folds' outer blocks. No fold touches its own outer rows before scoring them, so no fold's own number is contaminated \u2014 but a regime spanning a fold boundary can move one fold's result and the next fold's selected threshold together. 'Three of four' is therefore fewer than four independent draws, and the verdict rule should be read that way",
+  "adaptive_status": "P5 was designed after P4's outer results had been seen, and by the time it runs these four outer blocks will have been read by v4, P2a, P2b, the P2b ablation, the P2b regime description, P2c, P3 and P4. Its feature definition, arms, models, folds and decision rule were fixed before its own outer numbers existed, and the axis was chosen because four handcrafted families on one clock had failed \u2014 so this is exploratory adaptive evidence: it generates hypotheses and cannot confirm one",
+  "verdict_rule": {
+    "4": "consistent improvement across all four temporal folds \u2014 evidence worth continuing on",
+    "3": "improvement in three of four temporal folds \u2014 evidence worth continuing on",
+    "2": "improvement in two of four temporal folds \u2014 regime-dependent, inconclusive",
+    "1": "improvement in one of four temporal folds \u2014 weak evidence against",
+    "0": "no improvement in any temporal fold \u2014 negative evidence"
+  },
+  "parity": {
+    "cells": [
+      "mtf_v1 x lightgbm",
+      "mtf_v1 x logistic_regression",
+      "mtf_v1 x xgboost",
+      "ohlcv14 x lightgbm",
+      "ohlcv14 x logistic_regression",
+      "ohlcv14_plus_mtf_v1 x lightgbm",
+      "ohlcv14_plus_mtf_v1 x logistic_regression",
+      "ohlcv14_plus_mtf_v1 x xgboost",
+      "ohlcv14 x xgboost"
+    ],
+    "identical_across_cells": [
+      "research contract and its hash",
+      "snapshot identity and semantic hashes",
+      "trade-source identity, aggregation spec and microstructure spec, where a checkpoint has one",
+      "the same absence of a trade source, where it has none",
+      "derivatives-source identity, derivatives spec and the sample universe, where a checkpoint has one",
+      "the same absence of a derivatives source, where it has none",
+      "fold sizes and periods",
+      "the research checkpoint each cell says it answers",
+      "per-fold sample-index hashes from the alignment proof",
+      "label horizon and costs",
+      "threshold grid, objective and trade floor",
+      "combined feature-spec hash",
+      "majority and momentum baseline outer reports",
+      "CASH and buy-and-hold economic references",
+      "the numerical environment the cells were fitted under, where they record one"
+    ],
+    "code": {
+      "source_digest": "9f1179dc1a5fa17f2f1766ae2bf808a8ace479d4dea3cc5c60e14380b154162c",
+      "source_digests": [
+        "9f1179dc1a5fa17f2f1766ae2bf808a8ace479d4dea3cc5c60e14380b154162c"
+      ],
+      "revisions": [
+        "03a9e9ccb53eabb5fd7d4d65a14d219a904efd38"
+      ],
+      "schemes": [
+        "git-tracked-source/1"
+      ],
+      "note": "under 'git-tracked-source/1' the digest covers this repository's tracked Python source under chimera/, nn/, strategies/ and tools/, an installed environment cannot enter it, and every compared cell must carry the same one. Cells recorded under the earlier import-graph rule \u2014 whose digest could differ by model family because it swept in an in-repository virtualenv \u2014 may still join on a shared clean revision, which is what keeps their committed comparisons reproducible."
+    },
+    "numerics": {
+      "recorded": 9,
+      "environment": {
+        "python": "3.11.15",
+        "python_implementation": "CPython",
+        "libraries": {
+          "numpy": "2.4.6",
+          "scipy": "1.17.1",
+          "scikit-learn": "1.9.0",
+          "pandas": "3.0.5",
+          "lightgbm": "4.7.0",
+          "xgboost": "3.2.0"
+        },
+        "blas": [
+          {
+            "user_api": "blas",
+            "internal_api": "openblas",
+            "version": "0.3.31.188.0",
+            "filepath": "libscipy_openblas64_-32a4b2a6.so",
+            "threading_layer": "pthreads"
+          },
+          {
+            "user_api": "openmp",
+            "internal_api": "openmp",
+            "version": null,
+            "filepath": "libgomp.so.1",
+            "threading_layer": null
+          },
+          {
+            "user_api": "blas",
+            "internal_api": "openblas",
+            "version": "0.3.30",
+            "filepath": "libscipy_openblas-6cdc3b4a.so",
+            "threading_layer": "pthreads"
+          },
+          {
+            "user_api": "openmp",
+            "internal_api": "openmp",
+            "version": null,
+            "filepath": "libgomp-e985bcbb.so.1.0.0",
+            "threading_layer": null
+          }
+        ],
+        "platform": {
+          "system": "Linux",
+          "release": "6.18.44-fc-v22",
+          "machine": "x86_64",
+          "processor": "x86_64"
+        },
+        "note": "recorded to diagnose numerical drift, not to claim determinism. This repository has not demonstrated that a logistic_regression cell reproduces bit-for-bit across environments, and does not assert that it does; see docs/p2b_methodology.md section 8"
+      },
+      "note": "every compared cell was fitted under one numerical environment, or none of them records which environment it was fitted under. Sharing an environment is not a determinism claim; see docs/p2b_methodology.md section 8"
+    },
+    "conclusion": "every cell scored the same outer rows; a difference between two cells can only be the information set or the model"
+  },
+  "snapshot_anchoring": {
+    "cells_checked": 9,
+    "rows_checked": 170451,
+    "problems": 0,
+    "note": "every scored row's timestamp, label and realised return was compared against the committed snapshot at the row index the cell recorded \u2014 the one check made against data the run did not produce"
+  },
+  "planned_row_alignment": {
+    "cells_checked": 9,
+    "folds_checked": 36,
+    "rows_checked": 170451,
+    "missing_folds": 0,
+    "unplanned_folds": 0,
+    "non_integer_row_index": 0,
+    "duplicate_rows": 0,
+    "unsorted_rows": 0,
+    "count_mismatches": 0,
+    "sample_index_hash_mismatches": 0,
+    "first_last_mismatches": 0,
+    "cross_fold_rows": 0,
+    "snapshot_value_mismatches": 0,
+    "problems": 0,
+    "note": "the persisted row_index sequence was compared against the sample index the fold plan selected before anything was fitted, per fold: count, uniqueness, order, first and last row, and a SHA-256 over the exact int64 bytes"
+  },
+  "independent_recompute": {
+    "cells_checked": 9,
+    "folds_checked": 36,
+    "mismatches": 0,
+    "recomputed_keys": {
+      "trading": [
+        "n_trades",
+        "net_return",
+        "gross_return",
+        "total_costs",
+        "win_rate",
+        "profit_factor",
+        "exposure",
+        "turnover",
+        "max_drawdown",
+        "per_trade_sharpe",
+        "avg_trade",
+        "cost_per_trade"
+      ],
+      "classification": [
+        "macro_f1",
+        "accuracy",
+        "directional_accuracy",
+        "coverage",
+        "calibration_error",
+        "class_distribution",
+        "predicted_distribution",
+        "per_class",
+        "confusion_matrix",
+        "n_samples",
+        "threshold"
+      ]
+    },
+    "not_recomputed": [
+      "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+      "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+    ],
+    "per_cell": {
+      "mtf_v1::lightgbm": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ],
+      "mtf_v1::logistic_regression": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ],
+      "mtf_v1::xgboost": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ],
+      "ohlcv14::lightgbm": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ],
+      "ohlcv14::logistic_regression": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ],
+      "ohlcv14_plus_mtf_v1::lightgbm": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ],
+      "ohlcv14_plus_mtf_v1::logistic_regression": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ],
+      "ohlcv14_plus_mtf_v1::xgboost": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ],
+      "ohlcv14::xgboost": [
+        {
+          "fold": 0,
+          "samples": 4683,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 1,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 2,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        },
+        {
+          "fold": 3,
+          "samples": 4752,
+          "recomputed_from": "outer_predictions.parquet",
+          "recomputed_keys": {
+            "trading": [
+              "n_trades",
+              "net_return",
+              "gross_return",
+              "total_costs",
+              "win_rate",
+              "profit_factor",
+              "exposure",
+              "turnover",
+              "max_drawdown",
+              "per_trade_sharpe",
+              "avg_trade",
+              "cost_per_trade"
+            ],
+            "classification": [
+              "macro_f1",
+              "accuracy",
+              "directional_accuracy",
+              "coverage",
+              "calibration_error",
+              "class_distribution",
+              "predicted_distribution",
+              "per_class",
+              "confusion_matrix",
+              "n_samples",
+              "threshold"
+            ]
+          },
+          "not_recomputed": [
+            "trading.annualised_sharpe, trading.candle_max_drawdown and trading.elapsed_intervals need the candle price path, which the prediction file does not carry",
+            "trading.sharpe_basis, trading.per_trade_sharpe_reason and trading.annualised_sharpe_reason are prose, not measurements"
+          ],
+          "mismatches": []
+        }
+      ]
+    }
+  },
+  "economic_references": [
+    {
+      "fold": 0,
+      "period_start": "2023-03-04 07:00:00+00:00",
+      "period_end": "2023-09-24 16:00:00+00:00",
+      "cash_net_return": 0.0,
+      "buy_and_hold_net_return": 0.18252,
+      "buy_and_hold_max_drawdown": 0.208506,
+      "buy_and_hold_exposure": 1.0
+    },
+    {
+      "fold": 1,
+      "period_start": "2023-09-24 17:00:00+00:00",
+      "period_end": "2024-04-12 13:00:00+00:00",
+      "cash_net_return": 0.0,
+      "buy_and_hold_net_return": 1.659405,
+      "buy_and_hold_max_drawdown": 0.201946,
+      "buy_and_hold_exposure": 1.0
+    },
+    {
+      "fold": 2,
+      "period_start": "2024-04-12 14:00:00+00:00",
+      "period_end": "2024-10-30 10:00:00+00:00",
+      "cash_net_return": 0.0,
+      "buy_and_hold_net_return": 0.103569,
+      "buy_and_hold_max_drawdown": 0.305663,
+      "buy_and_hold_exposure": 1.0
+    },
+    {
+      "fold": 3,
+      "period_start": "2024-10-30 11:00:00+00:00",
+      "period_end": "2025-05-19 07:00:00+00:00",
+      "cash_net_return": 0.0,
+      "buy_and_hold_net_return": 0.479817,
+      "buy_and_hold_max_drawdown": 0.30956,
+      "buy_and_hold_exposure": 1.0
+    }
+  ],
+  "matrix": {
+    "lightgbm": {
+      "mtf_v1": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.74,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 5,
+              "HOLD": 4656,
+              "LONG": 22
+            },
+            "n_trades": 16,
+            "exposure": 0.0202,
+            "turnover": 32.0,
+            "gross_return": -0.044481,
+            "total_costs": 0.032,
+            "net_return": -0.074332,
+            "max_drawdown": 0.0743,
+            "annualised_sharpe": -2.37,
+            "per_trade_sharpe": -0.5512,
+            "win_rate": 0.3125,
+            "profit_factor": 0.153,
+            "macro_f1": 0.1708,
+            "directional_accuracy": 0.2593,
+            "accuracy": 0.3365,
+            "coverage": 0.0058
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 17,
+              "HOLD": 4598,
+              "LONG": 137
+            },
+            "n_trades": 67,
+            "exposure": 0.0846,
+            "turnover": 134.0,
+            "gross_return": -0.097397,
+            "total_costs": 0.134,
+            "net_return": -0.212689,
+            "max_drawdown": 0.2141,
+            "annualised_sharpe": -2.5745,
+            "per_trade_sharpe": -0.2327,
+            "win_rate": 0.3731,
+            "profit_factor": 0.5229,
+            "macro_f1": 0.1435,
+            "directional_accuracy": 0.3701,
+            "accuracy": 0.238,
+            "coverage": 0.0324
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.68,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 23,
+              "HOLD": 4720,
+              "LONG": 9
+            },
+            "n_trades": 16,
+            "exposure": 0.0202,
+            "turnover": 32.0,
+            "gross_return": 0.128803,
+            "total_costs": 0.032,
+            "net_return": 0.098904,
+            "max_drawdown": 0.0241,
+            "annualised_sharpe": 1.7135,
+            "per_trade_sharpe": 0.35,
+            "win_rate": 0.4375,
+            "profit_factor": 2.5364,
+            "macro_f1": 0.1202,
+            "directional_accuracy": 0.375,
+            "accuracy": 0.2121,
+            "coverage": 0.0067
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.66,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 13,
+              "HOLD": 4722,
+              "LONG": 17
+            },
+            "n_trades": 15,
+            "exposure": 0.0189,
+            "turnover": 30.0,
+            "gross_return": 0.046968,
+            "total_costs": 0.03,
+            "net_return": 0.013021,
+            "max_drawdown": 0.0846,
+            "annualised_sharpe": 0.2698,
+            "per_trade_sharpe": 0.0465,
+            "win_rate": 0.5333,
+            "profit_factor": 1.1674,
+            "macro_f1": 0.1131,
+            "directional_accuracy": 0.5333,
+            "accuracy": 0.1949,
+            "coverage": 0.0063
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 28.5,
+            "std": 25.670995,
+            "min": 15.0,
+            "median": 16.0,
+            "max": 67.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.035975,
+            "std": 0.032422,
+            "min": 0.0189,
+            "median": 0.0202,
+            "max": 0.0846,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 57.0,
+            "std": 51.341991,
+            "min": 30.0,
+            "median": 32.0,
+            "max": 134.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": 0.008473,
+            "std": 0.099956,
+            "min": -0.097397,
+            "median": 0.001244,
+            "max": 0.128803,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.057,
+            "std": 0.051342,
+            "min": 0.03,
+            "median": 0.032,
+            "max": 0.134,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": -0.043774,
+            "std": 0.132977,
+            "min": -0.212689,
+            "median": -0.030655,
+            "max": 0.098904,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.099275,
+            "std": 0.080984,
+            "min": 0.0241,
+            "median": 0.07945,
+            "max": 0.2141,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -0.7403,
+            "std": 2.086596,
+            "min": -2.5745,
+            "median": -1.0501,
+            "max": 1.7135,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": -0.09685,
+            "std": 0.38519,
+            "min": -0.5512,
+            "median": -0.0931,
+            "max": 0.35,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.4141,
+            "std": 0.094445,
+            "min": 0.3125,
+            "median": 0.4053,
+            "max": 0.5333,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 1.094925,
+            "std": 1.048418,
+            "min": 0.153,
+            "median": 0.84515,
+            "max": 2.5364,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.1369,
+            "std": 0.026065,
+            "min": 0.1131,
+            "median": 0.13185,
+            "max": 0.1708,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.384425,
+            "std": 0.112715,
+            "min": 0.2593,
+            "median": 0.37255,
+            "max": 0.5333,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.245375,
+            "std": 0.06328,
+            "min": 0.1949,
+            "median": 0.22505,
+            "max": 0.3365,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.0128,
+            "std": 0.013072,
+            "min": 0.0058,
+            "median": 0.0065,
+            "max": 0.0324,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 2,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.74,
+          0.64,
+          0.68,
+          0.66
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 83,
+            "hit_rate": 0.433735,
+            "mean_net_return": -0.00051376,
+            "median_net_return": -0.00149998,
+            "additive_trade_return_sum": -0.042642
+          },
+          "short": {
+            "trades": 31,
+            "hit_rate": 0.290323,
+            "mean_net_return": -0.00488596,
+            "median_net_return": -0.00532942,
+            "additive_trade_return_sum": -0.15146462
+          },
+          "hold_samples": 18696,
+          "long_coverage": 0.009768,
+          "short_coverage": 0.003062
+        }
+      },
+      "ohlcv14": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 16,
+              "HOLD": 4509,
+              "LONG": 158
+            },
+            "n_trades": 76,
+            "exposure": 0.096,
+            "turnover": 152.0,
+            "gross_return": 0.040503,
+            "total_costs": 0.152,
+            "net_return": -0.114274,
+            "max_drawdown": 0.1799,
+            "annualised_sharpe": -1.0692,
+            "per_trade_sharpe": -0.0912,
+            "win_rate": 0.4211,
+            "profit_factor": 0.739,
+            "macro_f1": 0.1941,
+            "directional_accuracy": 0.3851,
+            "accuracy": 0.3404,
+            "coverage": 0.0372
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 31,
+              "HOLD": 4641,
+              "LONG": 80
+            },
+            "n_trades": 50,
+            "exposure": 0.0631,
+            "turnover": 100.0,
+            "gross_return": 0.078005,
+            "total_costs": 0.1,
+            "net_return": -0.025507,
+            "max_drawdown": 0.0845,
+            "annualised_sharpe": -0.2425,
+            "per_trade_sharpe": -0.0351,
+            "win_rate": 0.48,
+            "profit_factor": 0.9059,
+            "macro_f1": 0.1449,
+            "directional_accuracy": 0.4865,
+            "accuracy": 0.2412,
+            "coverage": 0.0234
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.6,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 64,
+              "HOLD": 4616,
+              "LONG": 72
+            },
+            "n_trades": 72,
+            "exposure": 0.0909,
+            "turnover": 144.0,
+            "gross_return": 0.036667,
+            "total_costs": 0.144,
+            "net_return": -0.110713,
+            "max_drawdown": 0.1509,
+            "annualised_sharpe": -0.9608,
+            "per_trade_sharpe": -0.0892,
+            "win_rate": 0.5,
+            "profit_factor": 0.7784,
+            "macro_f1": 0.1377,
+            "directional_accuracy": 0.4412,
+            "accuracy": 0.2205,
+            "coverage": 0.0286
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.6,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 54,
+              "HOLD": 4588,
+              "LONG": 110
+            },
+            "n_trades": 78,
+            "exposure": 0.0985,
+            "turnover": 156.0,
+            "gross_return": 0.243106,
+            "total_costs": 0.156,
+            "net_return": 0.079661,
+            "max_drawdown": 0.1352,
+            "annualised_sharpe": 0.7256,
+            "per_trade_sharpe": 0.0677,
+            "win_rate": 0.5,
+            "profit_factor": 1.1935,
+            "macro_f1": 0.1368,
+            "directional_accuracy": 0.5305,
+            "accuracy": 0.2062,
+            "coverage": 0.0345
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 69.0,
+            "std": 12.909944,
+            "min": 50.0,
+            "median": 74.0,
+            "max": 78.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.087125,
+            "std": 0.016326,
+            "min": 0.0631,
+            "median": 0.09345,
+            "max": 0.0985,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 138.0,
+            "std": 25.819889,
+            "min": 100.0,
+            "median": 148.0,
+            "max": 156.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": 0.09957,
+            "std": 0.097491,
+            "min": 0.036667,
+            "median": 0.059254,
+            "max": 0.243106,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.138,
+            "std": 0.02582,
+            "min": 0.1,
+            "median": 0.148,
+            "max": 0.156,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": -0.042708,
+            "std": 0.091317,
+            "min": -0.114274,
+            "median": -0.06811,
+            "max": 0.079661,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.137625,
+            "std": 0.039965,
+            "min": 0.0845,
+            "median": 0.14305,
+            "max": 0.1799,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -0.386725,
+            "std": 0.827325,
+            "min": -1.0692,
+            "median": -0.60165,
+            "max": 0.7256,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": -0.03695,
+            "std": 0.074449,
+            "min": -0.0912,
+            "median": -0.06215,
+            "max": 0.0677,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.475275,
+            "std": 0.037327,
+            "min": 0.4211,
+            "median": 0.49,
+            "max": 0.5,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 0.9042,
+            "std": 0.2056,
+            "min": 0.739,
+            "median": 0.84215,
+            "max": 1.1935,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.153375,
+            "std": 0.027391,
+            "min": 0.1368,
+            "median": 0.1413,
+            "max": 0.1941,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.460825,
+            "std": 0.062272,
+            "min": 0.3851,
+            "median": 0.46385,
+            "max": 0.5305,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.252075,
+            "std": 0.060611,
+            "min": 0.2062,
+            "median": 0.23085,
+            "max": 0.3404,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.030925,
+            "std": 0.006169,
+            "min": 0.0234,
+            "median": 0.03155,
+            "max": 0.0372,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 1,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.64,
+          0.64,
+          0.6,
+          0.6
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 194,
+            "hit_rate": 0.463918,
+            "mean_net_return": -0.00102335,
+            "median_net_return": -0.00067614,
+            "additive_trade_return_sum": -0.19853024
+          },
+          "short": {
+            "trades": 82,
+            "hit_rate": 0.5,
+            "mean_net_return": 0.00054648,
+            "median_net_return": 0.00019557,
+            "additive_trade_return_sum": 0.04481099
+          },
+          "hold_samples": 18354,
+          "long_coverage": 0.022176,
+          "short_coverage": 0.008712
+        }
+      },
+      "ohlcv14_plus_mtf_v1": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.66,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 45,
+              "HOLD": 4273,
+              "LONG": 365
+            },
+            "n_trades": 135,
+            "exposure": 0.1705,
+            "turnover": 270.0,
+            "gross_return": 0.010354,
+            "total_costs": 0.27,
+            "net_return": -0.238971,
+            "max_drawdown": 0.3156,
+            "annualised_sharpe": -2.2943,
+            "per_trade_sharpe": -0.1362,
+            "win_rate": 0.3407,
+            "profit_factor": 0.6124,
+            "macro_f1": 0.216,
+            "directional_accuracy": 0.3415,
+            "accuracy": 0.3393,
+            "coverage": 0.0876
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.76,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 2,
+              "HOLD": 4728,
+              "LONG": 22
+            },
+            "n_trades": 12,
+            "exposure": 0.0152,
+            "turnover": 24.0,
+            "gross_return": 0.02861,
+            "total_costs": 0.024,
+            "net_return": 0.004063,
+            "max_drawdown": 0.0301,
+            "annualised_sharpe": 0.1443,
+            "per_trade_sharpe": 0.0383,
+            "win_rate": 0.5833,
+            "profit_factor": 1.1039,
+            "macro_f1": 0.1305,
+            "directional_accuracy": 0.5417,
+            "accuracy": 0.2355,
+            "coverage": 0.0051
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.74,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 5,
+              "HOLD": 4739,
+              "LONG": 8
+            },
+            "n_trades": 7,
+            "exposure": 0.0088,
+            "turnover": 14.0,
+            "gross_return": 0.081022,
+            "total_costs": 0.014,
+            "net_return": 0.068067,
+            "max_drawdown": 0.0075,
+            "annualised_sharpe": 1.9719,
+            "per_trade_sharpe": 0.5596,
+            "win_rate": 0.7143,
+            "profit_factor": 8.6988,
+            "macro_f1": 0.1196,
+            "directional_accuracy": 0.7692,
+            "accuracy": 0.2125,
+            "coverage": 0.0027
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.7,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 15,
+              "HOLD": 4700,
+              "LONG": 37
+            },
+            "n_trades": 27,
+            "exposure": 0.0341,
+            "turnover": 54.0,
+            "gross_return": 0.009469,
+            "total_costs": 0.054,
+            "net_return": -0.045858,
+            "max_drawdown": 0.0994,
+            "annualised_sharpe": -0.5411,
+            "per_trade_sharpe": -0.1225,
+            "win_rate": 0.4815,
+            "profit_factor": 0.7214,
+            "macro_f1": 0.1177,
+            "directional_accuracy": 0.5769,
+            "accuracy": 0.197,
+            "coverage": 0.0109
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 45.25,
+            "std": 60.433848,
+            "min": 7.0,
+            "median": 19.5,
+            "max": 135.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.05715,
+            "std": 0.076326,
+            "min": 0.0088,
+            "median": 0.02465,
+            "max": 0.1705,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 90.5,
+            "std": 120.867696,
+            "min": 14.0,
+            "median": 39.0,
+            "max": 270.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": 0.032364,
+            "std": 0.033617,
+            "min": 0.009469,
+            "median": 0.019482,
+            "max": 0.081022,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.0905,
+            "std": 0.120868,
+            "min": 0.014,
+            "median": 0.039,
+            "max": 0.27,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": -0.053175,
+            "std": 0.13235,
+            "min": -0.238971,
+            "median": -0.020898,
+            "max": 0.068067,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.11315,
+            "std": 0.140516,
+            "min": 0.0075,
+            "median": 0.06475,
+            "max": 0.3156,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -0.1798,
+            "std": 1.764134,
+            "min": -2.2943,
+            "median": -0.1984,
+            "max": 1.9719,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": 0.0848,
+            "std": 0.326298,
+            "min": -0.1362,
+            "median": -0.0421,
+            "max": 0.5596,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.52995,
+            "std": 0.158108,
+            "min": 0.3407,
+            "median": 0.5324,
+            "max": 0.7143,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 2.784125,
+            "std": 3.948745,
+            "min": 0.6124,
+            "median": 0.91265,
+            "max": 8.6988,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.14595,
+            "std": 0.047039,
+            "min": 0.1177,
+            "median": 0.12505,
+            "max": 0.216,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.557325,
+            "std": 0.175213,
+            "min": 0.3415,
+            "median": 0.5593,
+            "max": 0.7692,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.246075,
+            "std": 0.064131,
+            "min": 0.197,
+            "median": 0.224,
+            "max": 0.3393,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.026575,
+            "std": 0.040829,
+            "min": 0.0027,
+            "median": 0.008,
+            "max": 0.0876,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 2,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.66,
+          0.76,
+          0.74,
+          0.7
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 147,
+            "hit_rate": 0.380952,
+            "mean_net_return": -0.0011084,
+            "median_net_return": -0.00162806,
+            "additive_trade_return_sum": -0.16293491
+          },
+          "short": {
+            "trades": 34,
+            "hit_rate": 0.441176,
+            "mean_net_return": -0.00204737,
+            "median_net_return": -0.00122597,
+            "additive_trade_return_sum": -0.06961056
+          },
+          "hold_samples": 18440,
+          "long_coverage": 0.02281,
+          "short_coverage": 0.003538
+        }
+      }
+    },
+    "logistic_regression": {
+      "mtf_v1": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.82,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 5,
+              "HOLD": 4674,
+              "LONG": 4
+            },
+            "n_trades": 7,
+            "exposure": 0.0088,
+            "turnover": 14.0,
+            "gross_return": 0.005018,
+            "total_costs": 0.014,
+            "net_return": -0.00923,
+            "max_drawdown": 0.0183,
+            "annualised_sharpe": -0.3384,
+            "per_trade_sharpe": -0.1317,
+            "win_rate": 0.2857,
+            "profit_factor": 0.6511,
+            "macro_f1": 0.1686,
+            "directional_accuracy": 0.2222,
+            "accuracy": 0.3363,
+            "coverage": 0.0019
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 81,
+              "HOLD": 4481,
+              "LONG": 190
+            },
+            "n_trades": 119,
+            "exposure": 0.1503,
+            "turnover": 238.0,
+            "gross_return": -0.158416,
+            "total_costs": 0.238,
+            "net_return": -0.337711,
+            "max_drawdown": 0.3556,
+            "annualised_sharpe": -3.234,
+            "per_trade_sharpe": -0.2118,
+            "win_rate": 0.3697,
+            "profit_factor": 0.5309,
+            "macro_f1": 0.1654,
+            "directional_accuracy": 0.4354,
+            "accuracy": 0.2498,
+            "coverage": 0.057
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.76,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 20,
+              "HOLD": 4724,
+              "LONG": 8
+            },
+            "n_trades": 16,
+            "exposure": 0.0202,
+            "turnover": 32.0,
+            "gross_return": -0.176954,
+            "total_costs": 0.032,
+            "net_return": -0.192572,
+            "max_drawdown": 0.2091,
+            "annualised_sharpe": -3.0734,
+            "per_trade_sharpe": -0.6122,
+            "win_rate": 0.3125,
+            "profit_factor": 0.101,
+            "macro_f1": 0.1201,
+            "directional_accuracy": 0.3929,
+            "accuracy": 0.2121,
+            "coverage": 0.0059
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.74,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 8,
+              "HOLD": 4735,
+              "LONG": 9
+            },
+            "n_trades": 11,
+            "exposure": 0.0139,
+            "turnover": 22.0,
+            "gross_return": -0.04495,
+            "total_costs": 0.022,
+            "net_return": -0.067798,
+            "max_drawdown": 0.0835,
+            "annualised_sharpe": -1.4347,
+            "per_trade_sharpe": -0.2465,
+            "win_rate": 0.3636,
+            "profit_factor": 0.4663,
+            "macro_f1": 0.1094,
+            "directional_accuracy": 0.4118,
+            "accuracy": 0.1923,
+            "coverage": 0.0036
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 38.25,
+            "std": 53.959089,
+            "min": 7.0,
+            "median": 13.5,
+            "max": 119.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.0483,
+            "std": 0.06816,
+            "min": 0.0088,
+            "median": 0.01705,
+            "max": 0.1503,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 76.5,
+            "std": 107.918179,
+            "min": 14.0,
+            "median": 27.0,
+            "max": 238.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": -0.093826,
+            "std": 0.088017,
+            "min": -0.176954,
+            "median": -0.101683,
+            "max": 0.005018,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.0765,
+            "std": 0.107918,
+            "min": 0.014,
+            "median": 0.027,
+            "max": 0.238,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": -0.151828,
+            "std": 0.145611,
+            "min": -0.337711,
+            "median": -0.130185,
+            "max": -0.00923,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.166625,
+            "std": 0.148802,
+            "min": 0.0183,
+            "median": 0.1463,
+            "max": 0.3556,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -2.020125,
+            "std": 1.384895,
+            "min": -3.234,
+            "median": -2.25405,
+            "max": -0.3384,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": -0.30055,
+            "std": 0.213256,
+            "min": -0.6122,
+            "median": -0.22915,
+            "max": -0.1317,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.332875,
+            "std": 0.040582,
+            "min": 0.2857,
+            "median": 0.33805,
+            "max": 0.3697,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 0.437325,
+            "std": 0.236932,
+            "min": 0.101,
+            "median": 0.4986,
+            "max": 0.6511,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.140875,
+            "std": 0.030509,
+            "min": 0.1094,
+            "median": 0.14275,
+            "max": 0.1686,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.365575,
+            "std": 0.097152,
+            "min": 0.2222,
+            "median": 0.40235,
+            "max": 0.4354,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.247625,
+            "std": 0.063747,
+            "min": 0.1923,
+            "median": 0.23095,
+            "max": 0.3363,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.0171,
+            "std": 0.02665,
+            "min": 0.0019,
+            "median": 0.00475,
+            "max": 0.057,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 0,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.82,
+          0.64,
+          0.76,
+          0.74
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 95,
+            "hit_rate": 0.410526,
+            "mean_net_return": -0.00214537,
+            "median_net_return": -0.00217182,
+            "additive_trade_return_sum": -0.20381062
+          },
+          "short": {
+            "trades": 58,
+            "hit_rate": 0.275862,
+            "mean_net_return": -0.00823261,
+            "median_net_return": -0.00546179,
+            "additive_trade_return_sum": -0.47749152
+          },
+          "hold_samples": 18614,
+          "long_coverage": 0.011141,
+          "short_coverage": 0.006019
+        }
+      },
+      "ohlcv14": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.74,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 2,
+              "HOLD": 4681,
+              "LONG": 0
+            },
+            "n_trades": 2,
+            "exposure": 0.0025,
+            "turnover": 4.0,
+            "gross_return": 0.012984,
+            "total_costs": 0.004,
+            "net_return": 0.00896,
+            "max_drawdown": 0.0022,
+            "annualised_sharpe": 0.9446,
+            "per_trade_sharpe": 0.4777,
+            "win_rate": 0.5,
+            "profit_factor": 5.1658,
+            "macro_f1": 0.1683,
+            "directional_accuracy": 0.5,
+            "accuracy": 0.3367,
+            "coverage": 0.0004
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.62,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 12,
+              "HOLD": 4685,
+              "LONG": 55
+            },
+            "n_trades": 41,
+            "exposure": 0.0518,
+            "turnover": 82.0,
+            "gross_return": 0.161179,
+            "total_costs": 0.082,
+            "net_return": 0.077488,
+            "max_drawdown": 0.0645,
+            "annualised_sharpe": 0.9531,
+            "per_trade_sharpe": 0.1285,
+            "win_rate": 0.5366,
+            "profit_factor": 1.4372,
+            "macro_f1": 0.1393,
+            "directional_accuracy": 0.5672,
+            "accuracy": 0.2395,
+            "coverage": 0.0141
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.56,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 78,
+              "HOLD": 4586,
+              "LONG": 88
+            },
+            "n_trades": 89,
+            "exposure": 0.1124,
+            "turnover": 178.0,
+            "gross_return": 0.377883,
+            "total_costs": 0.178,
+            "net_return": 0.202977,
+            "max_drawdown": 0.1154,
+            "annualised_sharpe": 1.4746,
+            "per_trade_sharpe": 0.1214,
+            "win_rate": 0.4607,
+            "profit_factor": 1.4322,
+            "macro_f1": 0.1452,
+            "directional_accuracy": 0.512,
+            "accuracy": 0.2233,
+            "coverage": 0.0349
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.56,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 60,
+              "HOLD": 4529,
+              "LONG": 163
+            },
+            "n_trades": 116,
+            "exposure": 0.1465,
+            "turnover": 232.0,
+            "gross_return": 0.206449,
+            "total_costs": 0.232,
+            "net_return": -0.044097,
+            "max_drawdown": 0.277,
+            "annualised_sharpe": -0.1481,
+            "per_trade_sharpe": -0.012,
+            "win_rate": 0.5345,
+            "profit_factor": 0.9687,
+            "macro_f1": 0.1471,
+            "directional_accuracy": 0.5336,
+            "accuracy": 0.2128,
+            "coverage": 0.0469
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 62.0,
+            "std": 50.616203,
+            "min": 2.0,
+            "median": 65.0,
+            "max": 116.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.0783,
+            "std": 0.063932,
+            "min": 0.0025,
+            "median": 0.0821,
+            "max": 0.1465,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 124.0,
+            "std": 101.232406,
+            "min": 4.0,
+            "median": 130.0,
+            "max": 232.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": 0.189624,
+            "std": 0.150261,
+            "min": 0.012984,
+            "median": 0.183814,
+            "max": 0.377883,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.124,
+            "std": 0.101232,
+            "min": 0.004,
+            "median": 0.13,
+            "max": 0.232,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": 0.061332,
+            "std": 0.106743,
+            "min": -0.044097,
+            "median": 0.043224,
+            "max": 0.202977,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.114775,
+            "std": 0.117641,
+            "min": 0.0022,
+            "median": 0.08995,
+            "max": 0.277,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": 0.80605,
+            "std": 0.682686,
+            "min": -0.1481,
+            "median": 0.94885,
+            "max": 1.4746,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": 0.1789,
+            "std": 0.20942,
+            "min": -0.012,
+            "median": 0.12495,
+            "max": 0.4777,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.50795,
+            "std": 0.035691,
+            "min": 0.4607,
+            "median": 0.51725,
+            "max": 0.5366,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 2.250975,
+            "std": 1.955595,
+            "min": 0.9687,
+            "median": 1.4347,
+            "max": 5.1658,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.149975,
+            "std": 0.01266,
+            "min": 0.1393,
+            "median": 0.14615,
+            "max": 0.1683,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.5282,
+            "std": 0.029484,
+            "min": 0.5,
+            "median": 0.5228,
+            "max": 0.5672,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.253075,
+            "std": 0.056821,
+            "min": 0.2128,
+            "median": 0.2314,
+            "max": 0.3367,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.024075,
+            "std": 0.020802,
+            "min": 0.0004,
+            "median": 0.0245,
+            "max": 0.0469,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 3,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.74,
+          0.62,
+          0.56,
+          0.56
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 159,
+            "hit_rate": 0.509434,
+            "mean_net_return": 0.00127043,
+            "median_net_return": 0.00057355,
+            "additive_trade_return_sum": 0.20199762
+          },
+          "short": {
+            "trades": 89,
+            "hit_rate": 0.505618,
+            "mean_net_return": 0.00067974,
+            "median_net_return": 0.00070244,
+            "additive_trade_return_sum": 0.06049724
+          },
+          "hold_samples": 18481,
+          "long_coverage": 0.016157,
+          "short_coverage": 0.008026
+        }
+      },
+      "ohlcv14_plus_mtf_v1": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.8,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 23,
+              "HOLD": 4633,
+              "LONG": 27
+            },
+            "n_trades": 31,
+            "exposure": 0.0391,
+            "turnover": 62.0,
+            "gross_return": 0.120071,
+            "total_costs": 0.062,
+            "net_return": 0.053752,
+            "max_drawdown": 0.0623,
+            "annualised_sharpe": 0.9449,
+            "per_trade_sharpe": 0.0946,
+            "win_rate": 0.3548,
+            "profit_factor": 1.4496,
+            "macro_f1": 0.1761,
+            "directional_accuracy": 0.4,
+            "accuracy": 0.3376,
+            "coverage": 0.0107
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.78,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 21,
+              "HOLD": 4686,
+              "LONG": 45
+            },
+            "n_trades": 41,
+            "exposure": 0.0518,
+            "turnover": 82.0,
+            "gross_return": -0.027343,
+            "total_costs": 0.082,
+            "net_return": -0.107694,
+            "max_drawdown": 0.1104,
+            "annualised_sharpe": -1.4956,
+            "per_trade_sharpe": -0.18,
+            "win_rate": 0.3902,
+            "profit_factor": 0.601,
+            "macro_f1": 0.1349,
+            "directional_accuracy": 0.3939,
+            "accuracy": 0.2361,
+            "coverage": 0.0139
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.82,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 14,
+              "HOLD": 4733,
+              "LONG": 5
+            },
+            "n_trades": 13,
+            "exposure": 0.0164,
+            "turnover": 26.0,
+            "gross_return": -0.061929,
+            "total_costs": 0.026,
+            "net_return": -0.086772,
+            "max_drawdown": 0.0964,
+            "annualised_sharpe": -1.4504,
+            "per_trade_sharpe": -0.3308,
+            "win_rate": 0.3077,
+            "profit_factor": 0.369,
+            "macro_f1": 0.1188,
+            "directional_accuracy": 0.4211,
+            "accuracy": 0.2115,
+            "coverage": 0.004
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.8,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 6,
+              "HOLD": 4742,
+              "LONG": 4
+            },
+            "n_trades": 9,
+            "exposure": 0.0114,
+            "turnover": 18.0,
+            "gross_return": 0.005041,
+            "total_costs": 0.018,
+            "net_return": -0.014788,
+            "max_drawdown": 0.0592,
+            "annualised_sharpe": -0.2978,
+            "per_trade_sharpe": -0.0651,
+            "win_rate": 0.4444,
+            "profit_factor": 0.8177,
+            "macro_f1": 0.1088,
+            "directional_accuracy": 0.4,
+            "accuracy": 0.1926,
+            "coverage": 0.0021
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 23.5,
+            "std": 15.088627,
+            "min": 9.0,
+            "median": 22.0,
+            "max": 41.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.029675,
+            "std": 0.019049,
+            "min": 0.0114,
+            "median": 0.02775,
+            "max": 0.0518,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 47.0,
+            "std": 30.177254,
+            "min": 18.0,
+            "median": 44.0,
+            "max": 82.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": 0.00896,
+            "std": 0.07896,
+            "min": -0.061929,
+            "median": -0.011151,
+            "max": 0.120071,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.047,
+            "std": 0.030177,
+            "min": 0.018,
+            "median": 0.044,
+            "max": 0.082,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": -0.038876,
+            "std": 0.073462,
+            "min": -0.107694,
+            "median": -0.05078,
+            "max": 0.053752,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.082075,
+            "std": 0.02531,
+            "min": 0.0592,
+            "median": 0.07935,
+            "max": 0.1104,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -0.574725,
+            "std": 1.154811,
+            "min": -1.4956,
+            "median": -0.8741,
+            "max": 0.9449,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": -0.120325,
+            "std": 0.179911,
+            "min": -0.3308,
+            "median": -0.12255,
+            "max": 0.0946,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.374275,
+            "std": 0.057685,
+            "min": 0.3077,
+            "median": 0.3725,
+            "max": 0.4444,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 0.809325,
+            "std": 0.46451,
+            "min": 0.369,
+            "median": 0.70935,
+            "max": 1.4496,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.13465,
+            "std": 0.029651,
+            "min": 0.1088,
+            "median": 0.12685,
+            "max": 0.1761,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.40375,
+            "std": 0.011919,
+            "min": 0.3939,
+            "median": 0.4,
+            "max": 0.4211,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.24445,
+            "std": 0.064603,
+            "min": 0.1926,
+            "median": 0.2238,
+            "max": 0.3376,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.007675,
+            "std": 0.005552,
+            "min": 0.0021,
+            "median": 0.00735,
+            "max": 0.0139,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 1,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.8,
+          0.78,
+          0.82,
+          0.8
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 53,
+            "hit_rate": 0.433962,
+            "mean_net_return": -0.00017538,
+            "median_net_return": -0.00135224,
+            "additive_trade_return_sum": -0.00929505
+          },
+          "short": {
+            "trades": 41,
+            "hit_rate": 0.292683,
+            "mean_net_return": -0.00348451,
+            "median_net_return": -0.0029106,
+            "additive_trade_return_sum": -0.14286473
+          },
+          "hold_samples": 18794,
+          "long_coverage": 0.004277,
+          "short_coverage": 0.003379
+        }
+      }
+    },
+    "xgboost": {
+      "mtf_v1": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 45,
+              "HOLD": 4439,
+              "LONG": 199
+            },
+            "n_trades": 89,
+            "exposure": 0.1124,
+            "turnover": 178.0,
+            "gross_return": -0.062956,
+            "total_costs": 0.178,
+            "net_return": -0.217654,
+            "max_drawdown": 0.2331,
+            "annualised_sharpe": -3.3841,
+            "per_trade_sharpe": -0.2792,
+            "win_rate": 0.3146,
+            "profit_factor": 0.4436,
+            "macro_f1": 0.1989,
+            "directional_accuracy": 0.332,
+            "accuracy": 0.3393,
+            "coverage": 0.0521
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.6,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 44,
+              "HOLD": 4428,
+              "LONG": 280
+            },
+            "n_trades": 112,
+            "exposure": 0.1414,
+            "turnover": 224.0,
+            "gross_return": 0.04707,
+            "total_costs": 0.224,
+            "net_return": -0.169813,
+            "max_drawdown": 0.2286,
+            "annualised_sharpe": -1.4995,
+            "per_trade_sharpe": -0.1239,
+            "win_rate": 0.4107,
+            "profit_factor": 0.702,
+            "macro_f1": 0.1675,
+            "directional_accuracy": 0.4228,
+            "accuracy": 0.2498,
+            "coverage": 0.0682
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 36,
+              "HOLD": 4677,
+              "LONG": 39
+            },
+            "n_trades": 35,
+            "exposure": 0.0442,
+            "turnover": 70.0,
+            "gross_return": 0.03317,
+            "total_costs": 0.07,
+            "net_return": -0.039222,
+            "max_drawdown": 0.0761,
+            "annualised_sharpe": -0.5224,
+            "per_trade_sharpe": -0.0773,
+            "win_rate": 0.4571,
+            "profit_factor": 0.8191,
+            "macro_f1": 0.1312,
+            "directional_accuracy": 0.56,
+            "accuracy": 0.218,
+            "coverage": 0.0158
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.6,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 44,
+              "HOLD": 4647,
+              "LONG": 61
+            },
+            "n_trades": 51,
+            "exposure": 0.0644,
+            "turnover": 102.0,
+            "gross_return": 0.117905,
+            "total_costs": 0.102,
+            "net_return": 0.008644,
+            "max_drawdown": 0.1247,
+            "annualised_sharpe": 0.1775,
+            "per_trade_sharpe": 0.0182,
+            "win_rate": 0.3725,
+            "profit_factor": 1.0497,
+            "macro_f1": 0.1225,
+            "directional_accuracy": 0.419,
+            "accuracy": 0.1982,
+            "coverage": 0.0221
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 71.75,
+            "std": 35.112913,
+            "min": 35.0,
+            "median": 70.0,
+            "max": 112.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.0906,
+            "std": 0.044329,
+            "min": 0.0442,
+            "median": 0.0884,
+            "max": 0.1414,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 143.5,
+            "std": 70.225826,
+            "min": 70.0,
+            "median": 140.0,
+            "max": 224.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": 0.033797,
+            "std": 0.074413,
+            "min": -0.062956,
+            "median": 0.04012,
+            "max": 0.117905,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.1435,
+            "std": 0.070226,
+            "min": 0.07,
+            "median": 0.14,
+            "max": 0.224,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": -0.104511,
+            "std": 0.106665,
+            "min": -0.217654,
+            "median": -0.104517,
+            "max": 0.008644,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.165625,
+            "std": 0.077907,
+            "min": 0.0761,
+            "median": 0.17665,
+            "max": 0.2331,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -1.307125,
+            "std": 1.546042,
+            "min": -3.3841,
+            "median": -1.01095,
+            "max": 0.1775,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": -0.11555,
+            "std": 0.124101,
+            "min": -0.2792,
+            "median": -0.1006,
+            "max": 0.0182,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.388725,
+            "std": 0.060321,
+            "min": 0.3146,
+            "median": 0.3916,
+            "max": 0.4571,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 0.7536,
+            "std": 0.252143,
+            "min": 0.4436,
+            "median": 0.76055,
+            "max": 1.0497,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.155025,
+            "std": 0.035148,
+            "min": 0.1225,
+            "median": 0.14935,
+            "max": 0.1989,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.43345,
+            "std": 0.094215,
+            "min": 0.332,
+            "median": 0.4209,
+            "max": 0.56,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.251325,
+            "std": 0.062383,
+            "min": 0.1982,
+            "median": 0.2339,
+            "max": 0.3393,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.03955,
+            "std": 0.024812,
+            "min": 0.0158,
+            "median": 0.0371,
+            "max": 0.0682,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 1,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.64,
+          0.6,
+          0.64,
+          0.6
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 201,
+            "hit_rate": 0.393035,
+            "mean_net_return": -0.00100114,
+            "median_net_return": -0.00172373,
+            "additive_trade_return_sum": -0.20122932
+          },
+          "short": {
+            "trades": 86,
+            "hit_rate": 0.348837,
+            "mean_net_return": -0.00276258,
+            "median_net_return": -0.00328969,
+            "additive_trade_return_sum": -0.23758221
+          },
+          "hold_samples": 18191,
+          "long_coverage": 0.030572,
+          "short_coverage": 0.008923
+        }
+      },
+      "ohlcv14_plus_mtf_v1": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.74,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 8,
+              "HOLD": 4643,
+              "LONG": 32
+            },
+            "n_trades": 22,
+            "exposure": 0.0278,
+            "turnover": 44.0,
+            "gross_return": -0.073002,
+            "total_costs": 0.044,
+            "net_return": -0.112678,
+            "max_drawdown": 0.1162,
+            "annualised_sharpe": -2.3906,
+            "per_trade_sharpe": -0.3703,
+            "win_rate": 0.4091,
+            "profit_factor": 0.2564,
+            "macro_f1": 0.175,
+            "directional_accuracy": 0.4,
+            "accuracy": 0.3385,
+            "coverage": 0.0085
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.72,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 9,
+              "HOLD": 4703,
+              "LONG": 40
+            },
+            "n_trades": 21,
+            "exposure": 0.0265,
+            "turnover": 42.0,
+            "gross_return": 0.017742,
+            "total_costs": 0.042,
+            "net_return": -0.027115,
+            "max_drawdown": 0.0633,
+            "annualised_sharpe": -0.3859,
+            "per_trade_sharpe": -0.0641,
+            "win_rate": 0.4762,
+            "profit_factor": 0.821,
+            "macro_f1": 0.1334,
+            "directional_accuracy": 0.4082,
+            "accuracy": 0.237,
+            "coverage": 0.0103
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.74,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 4,
+              "HOLD": 4741,
+              "LONG": 7
+            },
+            "n_trades": 8,
+            "exposure": 0.0101,
+            "turnover": 16.0,
+            "gross_return": 0.107951,
+            "total_costs": 0.016,
+            "net_return": 0.093658,
+            "max_drawdown": 0.0182,
+            "annualised_sharpe": 1.8746,
+            "per_trade_sharpe": 0.485,
+            "win_rate": 0.75,
+            "profit_factor": 6.052,
+            "macro_f1": 0.1189,
+            "directional_accuracy": 0.7273,
+            "accuracy": 0.2121,
+            "coverage": 0.0023
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.66,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 20,
+              "HOLD": 4662,
+              "LONG": 70
+            },
+            "n_trades": 48,
+            "exposure": 0.0606,
+            "turnover": 96.0,
+            "gross_return": 0.331609,
+            "total_costs": 0.096,
+            "net_return": 0.245659,
+            "max_drawdown": 0.1405,
+            "annualised_sharpe": 1.9886,
+            "per_trade_sharpe": 0.1914,
+            "win_rate": 0.6458,
+            "profit_factor": 1.7584,
+            "macro_f1": 0.1268,
+            "directional_accuracy": 0.6333,
+            "accuracy": 0.2022,
+            "coverage": 0.0189
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 24.75,
+            "std": 16.760569,
+            "min": 8.0,
+            "median": 21.5,
+            "max": 48.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.03125,
+            "std": 0.02116,
+            "min": 0.0101,
+            "median": 0.02715,
+            "max": 0.0606,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 49.5,
+            "std": 33.521138,
+            "min": 16.0,
+            "median": 43.0,
+            "max": 96.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": 0.096075,
+            "std": 0.173532,
+            "min": -0.073002,
+            "median": 0.062846,
+            "max": 0.331609,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.0495,
+            "std": 0.033521,
+            "min": 0.016,
+            "median": 0.043,
+            "max": 0.096,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": 0.049881,
+            "std": 0.155563,
+            "min": -0.112678,
+            "median": 0.033272,
+            "max": 0.245659,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.08455,
+            "std": 0.05473,
+            "min": 0.0182,
+            "median": 0.08975,
+            "max": 0.1405,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": 0.271675,
+            "std": 2.084651,
+            "min": -2.3906,
+            "median": 0.74435,
+            "max": 1.9886,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": 0.0605,
+            "std": 0.36444,
+            "min": -0.3703,
+            "median": 0.06365,
+            "max": 0.485,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.570275,
+            "std": 0.155812,
+            "min": 0.4091,
+            "median": 0.561,
+            "max": 0.75,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 2.22195,
+            "std": 2.627433,
+            "min": 0.2564,
+            "median": 1.2897,
+            "max": 6.052,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.138525,
+            "std": 0.025029,
+            "min": 0.1189,
+            "median": 0.1301,
+            "max": 0.175,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.5422,
+            "std": 0.164051,
+            "min": 0.4,
+            "median": 0.52075,
+            "max": 0.7273,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.24745,
+            "std": 0.062441,
+            "min": 0.2022,
+            "median": 0.22455,
+            "max": 0.3385,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.01,
+            "std": 0.006852,
+            "min": 0.0023,
+            "median": 0.0094,
+            "max": 0.0189,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 2,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.74,
+          0.72,
+          0.74,
+          0.66
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 73,
+            "hit_rate": 0.561644,
+            "mean_net_return": 0.00317653,
+            "median_net_return": 0.00096475,
+            "additive_trade_return_sum": 0.23188635
+          },
+          "short": {
+            "trades": 26,
+            "hit_rate": 0.576923,
+            "mean_net_return": -0.00175332,
+            "median_net_return": 0.00119783,
+            "additive_trade_return_sum": -0.04558643
+          },
+          "hold_samples": 18749,
+          "long_coverage": 0.007867,
+          "short_coverage": 0.002165
+        }
+      },
+      "ohlcv14": {
+        "folds": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "samples": 4683,
+            "threshold": 0.56,
+            "class_distribution": {
+              "SHORT": 1587,
+              "HOLD": 1577,
+              "LONG": 1519
+            },
+            "predicted_distribution": {
+              "SHORT": 103,
+              "HOLD": 4130,
+              "LONG": 450
+            },
+            "n_trades": 207,
+            "exposure": 0.2614,
+            "turnover": 414.0,
+            "gross_return": 0.179737,
+            "total_costs": 0.414,
+            "net_return": -0.227758,
+            "max_drawdown": 0.248,
+            "annualised_sharpe": -1.7224,
+            "per_trade_sharpe": -0.0742,
+            "win_rate": 0.4058,
+            "profit_factor": 0.763,
+            "macro_f1": 0.2409,
+            "directional_accuracy": 0.3996,
+            "accuracy": 0.3457,
+            "coverage": 0.1181
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.68,
+            "class_distribution": {
+              "SHORT": 1613,
+              "HOLD": 1110,
+              "LONG": 2029
+            },
+            "predicted_distribution": {
+              "SHORT": 10,
+              "HOLD": 4701,
+              "LONG": 41
+            },
+            "n_trades": 26,
+            "exposure": 0.0328,
+            "turnover": 52.0,
+            "gross_return": 0.102474,
+            "total_costs": 0.052,
+            "net_return": 0.048244,
+            "max_drawdown": 0.0713,
+            "annualised_sharpe": 0.7076,
+            "per_trade_sharpe": 0.1185,
+            "win_rate": 0.5385,
+            "profit_factor": 1.3863,
+            "macro_f1": 0.1354,
+            "directional_accuracy": 0.4902,
+            "accuracy": 0.238,
+            "coverage": 0.0107
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 1804,
+              "HOLD": 1002,
+              "LONG": 1946
+            },
+            "predicted_distribution": {
+              "SHORT": 31,
+              "HOLD": 4698,
+              "LONG": 23
+            },
+            "n_trades": 29,
+            "exposure": 0.0366,
+            "turnover": 58.0,
+            "gross_return": 0.186747,
+            "total_costs": 0.058,
+            "net_return": 0.133502,
+            "max_drawdown": 0.0224,
+            "annualised_sharpe": 1.8538,
+            "per_trade_sharpe": 0.2916,
+            "win_rate": 0.6207,
+            "profit_factor": 2.6792,
+            "macro_f1": 0.1263,
+            "directional_accuracy": 0.537,
+            "accuracy": 0.2151,
+            "coverage": 0.0114
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "samples": 4752,
+            "threshold": 0.62,
+            "class_distribution": {
+              "SHORT": 1820,
+              "HOLD": 911,
+              "LONG": 2021
+            },
+            "predicted_distribution": {
+              "SHORT": 35,
+              "HOLD": 4648,
+              "LONG": 69
+            },
+            "n_trades": 47,
+            "exposure": 0.0593,
+            "turnover": 94.0,
+            "gross_return": 0.458247,
+            "total_costs": 0.094,
+            "net_return": 0.429306,
+            "max_drawdown": 0.0304,
+            "annualised_sharpe": 3.6617,
+            "per_trade_sharpe": 0.4869,
+            "win_rate": 0.7234,
+            "profit_factor": 4.5918,
+            "macro_f1": 0.132,
+            "directional_accuracy": 0.6827,
+            "accuracy": 0.205,
+            "coverage": 0.0219
+          }
+        ],
+        "aggregate": {
+          "n_trades": {
+            "mean": 77.25,
+            "std": 86.99569,
+            "min": 26.0,
+            "median": 38.0,
+            "max": 207.0,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": 0.097525,
+            "std": 0.109875,
+            "min": 0.0328,
+            "median": 0.04795,
+            "max": 0.2614,
+            "defined_folds": 4
+          },
+          "turnover": {
+            "mean": 154.5,
+            "std": 173.991379,
+            "min": 52.0,
+            "median": 76.0,
+            "max": 414.0,
+            "defined_folds": 4
+          },
+          "gross_return": {
+            "mean": 0.231801,
+            "std": 0.155717,
+            "min": 0.102474,
+            "median": 0.183242,
+            "max": 0.458247,
+            "defined_folds": 4
+          },
+          "total_costs": {
+            "mean": 0.1545,
+            "std": 0.173991,
+            "min": 0.052,
+            "median": 0.076,
+            "max": 0.414,
+            "defined_folds": 4
+          },
+          "net_return": {
+            "mean": 0.095824,
+            "std": 0.270554,
+            "min": -0.227758,
+            "median": 0.090873,
+            "max": 0.429306,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.093025,
+            "std": 0.105513,
+            "min": 0.0224,
+            "median": 0.05085,
+            "max": 0.248,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": 1.125175,
+            "std": 2.25447,
+            "min": -1.7224,
+            "median": 1.2807,
+            "max": 3.6617,
+            "defined_folds": 4
+          },
+          "per_trade_sharpe": {
+            "mean": 0.2057,
+            "std": 0.239722,
+            "min": -0.0742,
+            "median": 0.20505,
+            "max": 0.4869,
+            "defined_folds": 4
+          },
+          "win_rate": {
+            "mean": 0.5721,
+            "std": 0.134212,
+            "min": 0.4058,
+            "median": 0.5796,
+            "max": 0.7234,
+            "defined_folds": 4
+          },
+          "profit_factor": {
+            "mean": 2.355075,
+            "std": 1.691274,
+            "min": 0.763,
+            "median": 2.03275,
+            "max": 4.5918,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": 0.15865,
+            "std": 0.054962,
+            "min": 0.1263,
+            "median": 0.1337,
+            "max": 0.2409,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.527375,
+            "std": 0.118219,
+            "min": 0.3996,
+            "median": 0.5136,
+            "max": 0.6827,
+            "defined_folds": 4
+          },
+          "accuracy": {
+            "mean": 0.25095,
+            "std": 0.064658,
+            "min": 0.205,
+            "median": 0.22655,
+            "max": 0.3457,
+            "defined_folds": 4
+          },
+          "coverage": {
+            "mean": 0.040525,
+            "std": 0.05197,
+            "min": 0.0107,
+            "median": 0.01665,
+            "max": 0.1181,
+            "defined_folds": 4
+          },
+          "positive_net_return_folds": 3,
+          "total_folds": 4
+        },
+        "thresholds": [
+          0.56,
+          0.68,
+          0.64,
+          0.62
+        ],
+        "long_short_attribution": {
+          "samples": 18939,
+          "long": {
+            "trades": 220,
+            "hit_rate": 0.477273,
+            "mean_net_return": 0.00129151,
+            "median_net_return": -0.00029635,
+            "additive_trade_return_sum": 0.28413296
+          },
+          "short": {
+            "trades": 89,
+            "hit_rate": 0.505618,
+            "mean_net_return": 0.00028171,
+            "median_net_return": 2.947e-05,
+            "additive_trade_return_sum": 0.02507176
+          },
+          "hold_samples": 18177,
+          "long_coverage": 0.030783,
+          "short_coverage": 0.009451
+        }
+      }
+    }
+  },
+  "deltas": {
+    "lightgbm": {
+      "mtf_v1": {
+        "vs": "ohlcv14",
+        "per_fold": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "net_return": 0.039942,
+            "annualised_sharpe": -1.3008,
+            "max_drawdown": -0.1056,
+            "exposure": -0.0758,
+            "n_trades": -60.0,
+            "macro_f1": -0.0233,
+            "directional_accuracy": -0.1258
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "net_return": -0.187182,
+            "annualised_sharpe": -2.332,
+            "max_drawdown": 0.1296,
+            "exposure": 0.0215,
+            "n_trades": 17.0,
+            "macro_f1": -0.0014,
+            "directional_accuracy": -0.1164
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "net_return": 0.209617,
+            "annualised_sharpe": 2.6743,
+            "max_drawdown": -0.1268,
+            "exposure": -0.0707,
+            "n_trades": -56.0,
+            "macro_f1": -0.0175,
+            "directional_accuracy": -0.0662
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "net_return": -0.06664,
+            "annualised_sharpe": -0.4558,
+            "max_drawdown": -0.0506,
+            "exposure": -0.0796,
+            "n_trades": -63.0,
+            "macro_f1": -0.0237,
+            "directional_accuracy": 0.0028
+          }
+        ],
+        "aggregate": {
+          "net_return": {
+            "mean": -0.001066,
+            "std": 0.168333,
+            "min": -0.187182,
+            "median": -0.013349,
+            "max": 0.209617,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -0.353575,
+            "std": 2.159466,
+            "min": -2.332,
+            "median": -0.8783,
+            "max": 2.6743,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": -0.03835,
+            "std": 0.116481,
+            "min": -0.1268,
+            "median": -0.0781,
+            "max": 0.1296,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": -0.05115,
+            "std": 0.04857,
+            "min": -0.0796,
+            "median": -0.07325,
+            "max": 0.0215,
+            "defined_folds": 4
+          },
+          "n_trades": {
+            "mean": -40.5,
+            "std": 38.44043,
+            "min": -63.0,
+            "median": -58.0,
+            "max": 17.0,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": -0.016475,
+            "std": 0.010442,
+            "min": -0.0237,
+            "median": -0.0204,
+            "max": -0.0014,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": -0.0764,
+            "std": 0.058927,
+            "min": -0.1258,
+            "median": -0.0913,
+            "max": 0.0028,
+            "defined_folds": 4
+          }
+        },
+        "net_return_improved_folds": 2,
+        "total_folds": 4,
+        "verdict": "improvement in two of four temporal folds \u2014 regime-dependent, inconclusive"
+      },
+      "ohlcv14_plus_mtf_v1": {
+        "vs": "ohlcv14",
+        "per_fold": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "net_return": -0.124697,
+            "annualised_sharpe": -1.2251,
+            "max_drawdown": 0.1357,
+            "exposure": 0.0745,
+            "n_trades": 59.0,
+            "macro_f1": 0.0219,
+            "directional_accuracy": -0.0436
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "net_return": 0.02957,
+            "annualised_sharpe": 0.3868,
+            "max_drawdown": -0.0544,
+            "exposure": -0.0479,
+            "n_trades": -38.0,
+            "macro_f1": -0.0144,
+            "directional_accuracy": 0.0552
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "net_return": 0.17878,
+            "annualised_sharpe": 2.9327,
+            "max_drawdown": -0.1434,
+            "exposure": -0.0821,
+            "n_trades": -65.0,
+            "macro_f1": -0.0181,
+            "directional_accuracy": 0.328
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "net_return": -0.125519,
+            "annualised_sharpe": -1.2667,
+            "max_drawdown": -0.0358,
+            "exposure": -0.0644,
+            "n_trades": -51.0,
+            "macro_f1": -0.0191,
+            "directional_accuracy": 0.0464
+          }
+        ],
+        "aggregate": {
+          "net_return": {
+            "mean": -0.010467,
+            "std": 0.14572,
+            "min": -0.125519,
+            "median": -0.047564,
+            "max": 0.17878,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": 0.206925,
+            "std": 1.973531,
+            "min": -1.2667,
+            "median": -0.41915,
+            "max": 2.9327,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": -0.024475,
+            "std": 0.116652,
+            "min": -0.1434,
+            "median": -0.0451,
+            "max": 0.1357,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": -0.029975,
+            "std": 0.071036,
+            "min": -0.0821,
+            "median": -0.05615,
+            "max": 0.0745,
+            "defined_folds": 4
+          },
+          "n_trades": {
+            "mean": -23.75,
+            "std": 56.257592,
+            "min": -65.0,
+            "median": -44.5,
+            "max": 59.0,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": -0.007425,
+            "std": 0.019654,
+            "min": -0.0191,
+            "median": -0.01625,
+            "max": 0.0219,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.0965,
+            "std": 0.160661,
+            "min": -0.0436,
+            "median": 0.0508,
+            "max": 0.328,
+            "defined_folds": 4
+          }
+        },
+        "net_return_improved_folds": 2,
+        "total_folds": 4,
+        "verdict": "improvement in two of four temporal folds \u2014 regime-dependent, inconclusive"
+      }
+    },
+    "logistic_regression": {
+      "mtf_v1": {
+        "vs": "ohlcv14",
+        "per_fold": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "net_return": -0.01819,
+            "annualised_sharpe": -1.283,
+            "max_drawdown": 0.0161,
+            "exposure": 0.0063,
+            "n_trades": 5.0,
+            "macro_f1": 0.0003,
+            "directional_accuracy": -0.2778
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "net_return": -0.415199,
+            "annualised_sharpe": -4.1871,
+            "max_drawdown": 0.2911,
+            "exposure": 0.0985,
+            "n_trades": 78.0,
+            "macro_f1": 0.0261,
+            "directional_accuracy": -0.1318
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "net_return": -0.395549,
+            "annualised_sharpe": -4.548,
+            "max_drawdown": 0.0937,
+            "exposure": -0.0922,
+            "n_trades": -73.0,
+            "macro_f1": -0.0251,
+            "directional_accuracy": -0.1191
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "net_return": -0.023701,
+            "annualised_sharpe": -1.2866,
+            "max_drawdown": -0.1935,
+            "exposure": -0.1326,
+            "n_trades": -105.0,
+            "macro_f1": -0.0377,
+            "directional_accuracy": -0.1218
+          }
+        ],
+        "aggregate": {
+          "net_return": {
+            "mean": -0.21316,
+            "std": 0.222106,
+            "min": -0.415199,
+            "median": -0.209625,
+            "max": -0.01819,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -2.826175,
+            "std": 1.785915,
+            "min": -4.548,
+            "median": -2.73685,
+            "max": -1.283,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.05185,
+            "std": 0.200389,
+            "min": -0.1935,
+            "median": 0.0549,
+            "max": 0.2911,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": -0.03,
+            "std": 0.103643,
+            "min": -0.1326,
+            "median": -0.04295,
+            "max": 0.0985,
+            "defined_folds": 4
+          },
+          "n_trades": {
+            "mean": -23.75,
+            "std": 82.0706,
+            "min": -105.0,
+            "median": -34.0,
+            "max": 78.0,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": -0.0091,
+            "std": 0.028292,
+            "min": -0.0377,
+            "median": -0.0124,
+            "max": 0.0261,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": -0.162625,
+            "std": 0.076977,
+            "min": -0.2778,
+            "median": -0.1268,
+            "max": -0.1191,
+            "defined_folds": 4
+          }
+        },
+        "net_return_improved_folds": 0,
+        "total_folds": 4,
+        "verdict": "no improvement in any temporal fold \u2014 negative evidence"
+      },
+      "ohlcv14_plus_mtf_v1": {
+        "vs": "ohlcv14",
+        "per_fold": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "net_return": 0.044792,
+            "annualised_sharpe": 0.0003,
+            "max_drawdown": 0.0601,
+            "exposure": 0.0366,
+            "n_trades": 29.0,
+            "macro_f1": 0.0078,
+            "directional_accuracy": -0.1
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "net_return": -0.185182,
+            "annualised_sharpe": -2.4487,
+            "max_drawdown": 0.0459,
+            "exposure": 0.0,
+            "n_trades": 0.0,
+            "macro_f1": -0.0044,
+            "directional_accuracy": -0.1733
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "net_return": -0.289749,
+            "annualised_sharpe": -2.925,
+            "max_drawdown": -0.019,
+            "exposure": -0.096,
+            "n_trades": -76.0,
+            "macro_f1": -0.0264,
+            "directional_accuracy": -0.0909
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "net_return": 0.029309,
+            "annualised_sharpe": -0.1497,
+            "max_drawdown": -0.2178,
+            "exposure": -0.1351,
+            "n_trades": -107.0,
+            "macro_f1": -0.0383,
+            "directional_accuracy": -0.1336
+          }
+        ],
+        "aggregate": {
+          "net_return": {
+            "mean": -0.100208,
+            "std": 0.164262,
+            "min": -0.289749,
+            "median": -0.077937,
+            "max": 0.044792,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -1.380775,
+            "std": 1.521842,
+            "min": -2.925,
+            "median": -1.2992,
+            "max": 0.0003,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": -0.0327,
+            "std": 0.128114,
+            "min": -0.2178,
+            "median": 0.01345,
+            "max": 0.0601,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": -0.048625,
+            "std": 0.080312,
+            "min": -0.1351,
+            "median": -0.048,
+            "max": 0.0366,
+            "defined_folds": 4
+          },
+          "n_trades": {
+            "mean": -38.5,
+            "std": 63.605555,
+            "min": -107.0,
+            "median": -38.0,
+            "max": 29.0,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": -0.015325,
+            "std": 0.020854,
+            "min": -0.0383,
+            "median": -0.0154,
+            "max": 0.0078,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": -0.12445,
+            "std": 0.037387,
+            "min": -0.1733,
+            "median": -0.1168,
+            "max": -0.0909,
+            "defined_folds": 4
+          }
+        },
+        "net_return_improved_folds": 2,
+        "total_folds": 4,
+        "verdict": "improvement in two of four temporal folds \u2014 regime-dependent, inconclusive"
+      }
+    },
+    "xgboost": {
+      "mtf_v1": {
+        "vs": "ohlcv14",
+        "per_fold": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "net_return": 0.010104,
+            "annualised_sharpe": -1.6617,
+            "max_drawdown": -0.0149,
+            "exposure": -0.149,
+            "n_trades": -118.0,
+            "macro_f1": -0.042,
+            "directional_accuracy": -0.0676
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "net_return": -0.218057,
+            "annualised_sharpe": -2.2071,
+            "max_drawdown": 0.1573,
+            "exposure": 0.1086,
+            "n_trades": 86.0,
+            "macro_f1": 0.0321,
+            "directional_accuracy": -0.0674
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "net_return": -0.172724,
+            "annualised_sharpe": -2.3762,
+            "max_drawdown": 0.0537,
+            "exposure": 0.0076,
+            "n_trades": 6.0,
+            "macro_f1": 0.0049,
+            "directional_accuracy": 0.023
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "net_return": -0.420662,
+            "annualised_sharpe": -3.4842,
+            "max_drawdown": 0.0943,
+            "exposure": 0.0051,
+            "n_trades": 4.0,
+            "macro_f1": -0.0095,
+            "directional_accuracy": -0.2637
+          }
+        ],
+        "aggregate": {
+          "net_return": {
+            "mean": -0.200335,
+            "std": 0.176923,
+            "min": -0.420662,
+            "median": -0.19539,
+            "max": 0.010104,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -2.4323,
+            "std": 0.764674,
+            "min": -3.4842,
+            "median": -2.29165,
+            "max": -1.6617,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": 0.0726,
+            "std": 0.072246,
+            "min": -0.0149,
+            "median": 0.074,
+            "max": 0.1573,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": -0.006925,
+            "std": 0.106281,
+            "min": -0.149,
+            "median": 0.00635,
+            "max": 0.1086,
+            "defined_folds": 4
+          },
+          "n_trades": {
+            "mean": -5.5,
+            "std": 84.164521,
+            "min": -118.0,
+            "median": 5.0,
+            "max": 86.0,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": -0.003625,
+            "std": 0.030855,
+            "min": -0.042,
+            "median": -0.0023,
+            "max": 0.0321,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": -0.093925,
+            "std": 0.120957,
+            "min": -0.2637,
+            "median": -0.0675,
+            "max": 0.023,
+            "defined_folds": 4
+          }
+        },
+        "net_return_improved_folds": 1,
+        "total_folds": 4,
+        "verdict": "improvement in one of four temporal folds \u2014 weak evidence against"
+      },
+      "ohlcv14_plus_mtf_v1": {
+        "vs": "ohlcv14",
+        "per_fold": [
+          {
+            "fold": 0,
+            "period_start": "2023-03-04 07:00:00+00:00",
+            "period_end": "2023-09-24 16:00:00+00:00",
+            "net_return": 0.11508,
+            "annualised_sharpe": -0.6682,
+            "max_drawdown": -0.1318,
+            "exposure": -0.2336,
+            "n_trades": -185.0,
+            "macro_f1": -0.0659,
+            "directional_accuracy": 0.0004
+          },
+          {
+            "fold": 1,
+            "period_start": "2023-09-24 17:00:00+00:00",
+            "period_end": "2024-04-12 13:00:00+00:00",
+            "net_return": -0.075359,
+            "annualised_sharpe": -1.0935,
+            "max_drawdown": -0.008,
+            "exposure": -0.0063,
+            "n_trades": -5.0,
+            "macro_f1": -0.002,
+            "directional_accuracy": -0.082
+          },
+          {
+            "fold": 2,
+            "period_start": "2024-04-12 14:00:00+00:00",
+            "period_end": "2024-10-30 10:00:00+00:00",
+            "net_return": -0.039844,
+            "annualised_sharpe": 0.0208,
+            "max_drawdown": -0.0042,
+            "exposure": -0.0265,
+            "n_trades": -21.0,
+            "macro_f1": -0.0074,
+            "directional_accuracy": 0.1903
+          },
+          {
+            "fold": 3,
+            "period_start": "2024-10-30 11:00:00+00:00",
+            "period_end": "2025-05-19 07:00:00+00:00",
+            "net_return": -0.183647,
+            "annualised_sharpe": -1.6731,
+            "max_drawdown": 0.1101,
+            "exposure": 0.0013,
+            "n_trades": 1.0,
+            "macro_f1": -0.0052,
+            "directional_accuracy": -0.0494
+          }
+        ],
+        "aggregate": {
+          "net_return": {
+            "mean": -0.045942,
+            "std": 0.123549,
+            "min": -0.183647,
+            "median": -0.057601,
+            "max": 0.11508,
+            "defined_folds": 4
+          },
+          "annualised_sharpe": {
+            "mean": -0.8535,
+            "std": 0.713695,
+            "min": -1.6731,
+            "median": -0.88085,
+            "max": 0.0208,
+            "defined_folds": 4
+          },
+          "max_drawdown": {
+            "mean": -0.008475,
+            "std": 0.098806,
+            "min": -0.1318,
+            "median": -0.0061,
+            "max": 0.1101,
+            "defined_folds": 4
+          },
+          "exposure": {
+            "mean": -0.066275,
+            "std": 0.112165,
+            "min": -0.2336,
+            "median": -0.0164,
+            "max": 0.0013,
+            "defined_folds": 4
+          },
+          "n_trades": {
+            "mean": -52.5,
+            "std": 88.820043,
+            "min": -185.0,
+            "median": -13.0,
+            "max": 1.0,
+            "defined_folds": 4
+          },
+          "macro_f1": {
+            "mean": -0.020125,
+            "std": 0.030597,
+            "min": -0.0659,
+            "median": -0.0063,
+            "max": -0.002,
+            "defined_folds": 4
+          },
+          "directional_accuracy": {
+            "mean": 0.014825,
+            "std": 0.121791,
+            "min": -0.082,
+            "median": -0.0245,
+            "max": 0.1903,
+            "defined_folds": 4
+          }
+        },
+        "net_return_improved_folds": 1,
+        "total_folds": 4,
+        "verdict": "improvement in one of four temporal folds \u2014 weak evidence against"
+      }
+    }
+  },
+  "cells": [
+    {
+      "information_set": "mtf_v1",
+      "model": "lightgbm",
+      "dir": "artifacts/benchmark/btc_p5_mtf_v1_lightgbm",
+      "flattened_input_dim": 1792,
+      "n_features": 28
+    },
+    {
+      "information_set": "mtf_v1",
+      "model": "logistic_regression",
+      "dir": "artifacts/benchmark/btc_p5_mtf_v1_logistic_regression",
+      "flattened_input_dim": 1792,
+      "n_features": 28
+    },
+    {
+      "information_set": "mtf_v1",
+      "model": "xgboost",
+      "dir": "artifacts/benchmark/btc_p5_mtf_v1_xgboost",
+      "flattened_input_dim": 1792,
+      "n_features": 28
+    },
+    {
+      "information_set": "ohlcv14",
+      "model": "lightgbm",
+      "dir": "artifacts/benchmark/btc_p5_ohlcv14_lightgbm",
+      "flattened_input_dim": 896,
+      "n_features": 14
+    },
+    {
+      "information_set": "ohlcv14",
+      "model": "logistic_regression",
+      "dir": "artifacts/benchmark/btc_p5_ohlcv14_logistic_regression",
+      "flattened_input_dim": 896,
+      "n_features": 14
+    },
+    {
+      "information_set": "ohlcv14_plus_mtf_v1",
+      "model": "lightgbm",
+      "dir": "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_lightgbm",
+      "flattened_input_dim": 2688,
+      "n_features": 42
+    },
+    {
+      "information_set": "ohlcv14_plus_mtf_v1",
+      "model": "logistic_regression",
+      "dir": "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_logistic_regression",
+      "flattened_input_dim": 2688,
+      "n_features": 42
+    },
+    {
+      "information_set": "ohlcv14_plus_mtf_v1",
+      "model": "xgboost",
+      "dir": "artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_xgboost",
+      "flattened_input_dim": 2688,
+      "n_features": 42
+    },
+    {
+      "information_set": "ohlcv14",
+      "model": "xgboost",
+      "dir": "artifacts/benchmark/btc_p5_ohlcv14_xgboost",
+      "flattened_input_dim": 896,
+      "n_features": 14
+    }
+  ]
+}

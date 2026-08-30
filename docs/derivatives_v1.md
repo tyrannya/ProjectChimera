@@ -288,7 +288,11 @@ their properties asserted in their own suites instead —
 
 ---
 
-## 9. What must still happen before P4 runs
+## 9. Readiness checklist — all of it done, and what it cost
+
+**P4 has run.** Stage 1 screened out; §1 above carries the outcome. This section
+is kept because it is the record of what had to exist first, with every box now
+in the state the evidence puts it in.
 
 - [x] acquisition tool with `--plan` and `--probe`, no network in `--plan`
 - [x] the eight columns implemented against §5, with a spec hash
@@ -298,28 +302,29 @@ their properties asserted in their own suites instead —
 - [x] a value-level cross-source check with justified explicit tolerances
 - [x] `P4` registered in `nn.information_sets.CHECKPOINTS` with its three arms
 - [x] every stage-1 row set, snapshot and fold plan passed through `nn.p4_holdout`
-- [ ] **the source acquired** — blocked: the egress policy denies both
-      `data.binance.vision` and `fapi.binance.com`
-- [ ] the availability window established from metadata, and the §3.6/§8.0 gate applied
-- [ ] the funding CSV layout matched against §3.0b's allow-list, or refused
-- [ ] P4-HOLD's own archive-day coverage established
-- [ ] the P4-HOLD snapshot exported, verified, and left uninspected
+- [x] **the source acquired** — 1852 archives, 47,912 hourly observations,
+      `2019-12-01T00:00` to `2025-05-19T07:00`, semantic hash
+      `a4da01a556e8f2252a0d0b59759e274a649c502786b023f9cd4c8651058acf51`
+- [x] the availability window established from metadata, and the §3.6/§8.0 gate
+      applied — outer block 0 failed it (0.9502 surviving against 0.98 required,
+      and a 240h contiguous outage against 48h permitted) and was excluded from
+      the screen entirely rather than included at a discount
+- [x] the funding CSV layout matched against §3.0b's allow-list — one layout
+      seen, `calc_time/funding_interval_hours/last_funding_rate`
+- [x] P4-HOLD's own archive-day coverage established, from HEAD requests alone
+- [x] the P4-HOLD snapshot: **never exported, because Stage 1 did not continue.**
+      The region was retired unread, and §9's own rule is that a failed screen
+      does not open the holdout
 
-The four unchecked items above the last are all downstream of one thing: a
-network path to the public archive. Nothing about them is a research decision,
-and none of them may be worked around by reading a different source.
-
-**Two housekeeping steps belong to the session that acquires the source**, and
-they are recorded here so that they are not discovered as failures. `data/` is
-ignored except by explicit allow-list, so
-`btc_usdt_1h_gen1_derivatives_hourly_pre_p4hold.parquet` and
-`btc_usdt_1h_gen1_derivatives_snapshot_manifest.json` each need a `!` line in
-`.gitignore`; and the hourly table is larger than the 512 KiB
-`check-added-large-files` limit, so it needs the same pre-commit exclusion the
-P3 trade aggregate has. Both are deliberate decisions about how this repository
-stores a research source, which is why neither is made in advance.
-
-`tests/test_p4_preregistration.py::test_no_p4_market_data_has_been_acquired`
-asserts that `data/research/` holds exactly two P4 files — the ledger and the
-interlock — and is a tripwire on purpose: "P4 has data now" should be a diff
-somebody wrote, not a directory listing that quietly changed.
+**What is committed, and what is not.** The nine primary cells, the deciding
+screen and both checksum manifests are in the tree. The hourly derivatives table
+and its manifest are **not**: `data/research/` still holds only the OHLCV
+snapshot, the P3 trade snapshot, the P4-HOLD ledger and the Stage-1 interlock, and
+`tests/test_p4_preregistration.py::test_no_p4_market_data_has_been_acquired` still
+asserts exactly that. The consequence is worth stating plainly rather than
+discovering: **P4's numbers are reproducible from the frozen artifacts, not by
+re-running the pipeline from a fresh clone.** Re-acquiring the source would
+require the two housekeeping steps this section always named — a `!` line in
+`.gitignore` for each file, and the same `check-added-large-files` exclusion the
+P3 trade aggregate has — and it would not change a single P4 number, because the
+screen is frozen and the holdout is retired.

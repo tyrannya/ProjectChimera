@@ -84,6 +84,7 @@ from nn.benchmark import (
     threshold_grid,
 )
 from nn.data_pipeline import load_dataset
+from nn.mtf import MtfSpec, mtf_spec_identity
 from nn.information_sets import (
     CHECKPOINTS,
     Checkpoint,
@@ -92,6 +93,7 @@ from nn.information_sets import (
     P2C_INFORMATION_SETS,
     P3_INFORMATION_SETS,
     P4_INFORMATION_SETS,
+    P5_INFORMATION_SETS,
     ablation_set_names,
     AlignedResearchSamples,
     build_information_set_views,
@@ -1070,6 +1072,7 @@ def build_argparser() -> argparse.ArgumentParser:
             | set(P2C_INFORMATION_SETS)
             | set(P3_INFORMATION_SETS)
             | set(P4_INFORMATION_SETS)
+            | set(P5_INFORMATION_SETS)
             | set(ablation_set_names())
         ),
         required=True,
@@ -1241,6 +1244,7 @@ def main(argv: list[str] | None = None) -> int:
         names=names,
         trade_aggregates=trade_aggregates,
         derivatives=universe,
+        mtf_spec=MtfSpec() if checkpoint.mtf_source else None,
     )
     alignment = aligned.prove_alignment(folds, args.seq_len)
     if universe is not None:
@@ -1318,6 +1322,21 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             }
             if checkpoint.trade_source and aligned.micro_spec is not None
+            else {}
+        ),
+        # Present only for a checkpoint whose arms are functions of a clock wider
+        # than the base one. A cell that recorded `null` here would be claiming a
+        # relationship to a family it never computed, and would not be
+        # byte-comparable with the cells the earlier checkpoints already froze.
+        **(
+            {
+                "mtf_spec": mtf_spec_identity(
+                    aligned.mtf_spec,
+                    aligned.join_evidence.get("mtf", {}).get("universe", {}),
+                ),
+                "sample_universe": aligned.join_evidence.get("mtf", {}).get("universe"),
+            }
+            if checkpoint.mtf_source and aligned.mtf_spec is not None
             else {}
         ),
         # Present only for a checkpoint whose evidence is defined against the

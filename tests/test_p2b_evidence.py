@@ -60,6 +60,7 @@ DERIVED_DIRS = (
     BENCHMARK / "btc_p2b_regimes",
     BENCHMARK / "btc_p3_comparison",
     BENCHMARK / "btc_p4_comparison",
+    BENCHMARK / "btc_p5_comparison",
 )
 
 
@@ -486,6 +487,7 @@ FEATURE_SPECS = (
     ("chart_structure_v1.md", "P2c", "chart_structure_v1"),
     ("microstructure_v1.md", "P3", "microstructure_v1"),
     ("derivatives_v1.md", "P4", "derivatives_v1"),
+    ("mtf_v1.md", "P5", "mtf_v1"),
 )
 
 
@@ -563,6 +565,8 @@ def test_the_repository_has_the_manifests_these_tests_think_it_has():
         "btc_p3_SHA256SUMS.txt",
         "btc_p4_screen_SHA256SUMS.txt",
         "btc_p4_stage1_SHA256SUMS.txt",
+        "btc_p5_SHA256SUMS.txt",
+        "btc_p5_decision_SHA256SUMS.txt",
         "btc_v4_SHA256SUMS.txt",
     )
 
@@ -816,6 +820,7 @@ CELL_MANIFEST = {
     "P2c": "btc_p2c_SHA256SUMS.txt",
     "P3": "btc_p3_SHA256SUMS.txt",
     "P4": "btc_p4_stage1_SHA256SUMS.txt",
+    "P5": "btc_p5_SHA256SUMS.txt",
 }
 ABLATION_MANIFEST = "btc_p2b_ablation_SHA256SUMS.txt"
 
@@ -1003,13 +1008,13 @@ def test_a_cell_covered_by_the_wrong_manifest_is_reported():
 def test_the_inventory_grows_with_the_checkpoint_definitions():
     """It is derived from `nn.information_sets`, not from a directory listing.
 
-    Nine cells per checkpoint, four checkpoints, plus six ablation arms and
+    Nine cells per checkpoint, five checkpoints, plus six ablation arms and
     the determinism re-run. If a checkpoint gained an arm this would require
     a cell for it, which is the point of deriving it from the declaration
     rather than from what exists.
     """
     expected = expected_primary()
-    assert len(expected) == 9 + 9 + 9 + 9 + 6 + 1
+    assert len(expected) == 9 * 5 + 6 + 1
     assert sum(1 for m in expected.values() if m == "btc_p2b_SHA256SUMS.txt") == 9
     assert sum(1 for m in expected.values() if m == "btc_p2c_SHA256SUMS.txt") == 9
     assert sum(1 for m in expected.values() if m == "btc_p3_SHA256SUMS.txt") == 9
