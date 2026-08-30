@@ -231,15 +231,48 @@ OUTCOMES = {True: "supportive_adaptive", False: "negative"}
 
 
 def test_secondary_families_decide_nothing(decision):
-    """A clock's verdict is XGBoost's even where another family would pass."""
+    """A clock's verdict is XGBoost's even where another family would pass.
+
+    The second assertion is what makes the rest worth making: there has to be at
+    least one clock where a secondary family cleared the gate and XGBoost did
+    not. Without it a ``decide()`` that shopped families could satisfy this test
+    by never having been offered the opportunity.
+
+    Where the opportunity exists, the published row must be XGBoost's arithmetic
+    and not the passing family's — the observed condition values are checked
+    against the published fold list, which
+    :func:`test_every_deciding_verdict_recomputes_from_the_predictions` ties back
+    to the XGBoost cell's own per-sample predictions.
+    """
     rows = decision["secondary_context"]
     assert {row["model"] for row in rows} == set(MODELS) - {PRIMARY_MODEL}
     assert {row["clock"] for row in rows} == set(CLOCKS)
-    for row in rows:
-        published = next(item for item in decision["clocks"] if item["clock"] == row["clock"])
-        if row["would_have_passed"] and not published["viable"]:
-            # Exactly the case the design forbids acting on. Recorded, not acted on.
-            assert published["verdict"] == VERDICT_NOT_VIABLE
+    assert decision["decided_by"] == PRIMARY_MODEL
+    assert {row["model"] for row in decision["clocks"]} == {PRIMARY_MODEL}
+
+    published = {row["clock"]: row for row in decision["clocks"]}
+    shopped = [
+        row
+        for row in rows
+        if row["would_have_passed"] and not published[row["clock"]]["viable"]
+    ]
+    assert shopped, "no secondary family passed where XGBoost failed; this test proves nothing"
+
+    for row in shopped:
+        verdict = published[row["clock"]]
+        # Exactly the case the design forbids acting on. Recorded, not acted on.
+        assert verdict["verdict"] == VERDICT_NOT_VIABLE
+        folds = [float(fold["net_return"]) for fold in verdict["folds"]]
+        conditions = verdict["conditions"]
+        assert conditions["positive_folds"]["observed"] == sum(1 for value in folds if value > 0.0)
+        assert conditions["mean_outer_net_return"]["observed"] == pytest.approx(
+            float(np.mean(folds)), abs=1e-9
+        )
+        # ... and that arithmetic is not the passing family's, so a substitution
+        # would have been visible here rather than silent.
+        assert (conditions["positive_folds"]["observed"], conditions["mean_outer_net_return"][
+            "observed"
+        ]) != (row["positive_folds"], row["mean_outer_net_return"])
 
 
 # --------------------------------------------------------------------------- #

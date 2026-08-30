@@ -132,18 +132,29 @@ def _fetch(url: str, timeout: int) -> bytes:
         return response.read()
 
 
-def download_month(month: str, archive_dir: Path, *, base_url: str, timeout: int) -> Path:
-    """Fetch one month and hold it to the digest Binance publishes for it."""
+def download_month(
+    month: str, archive_dir: Path, *, base_url: str, timeout: int, offline: bool = False
+) -> Path:
+    """Fetch one month and hold it to the digest Binance publishes for it.
+
+    Each of the two objects is fetched only if it is itself absent: a cached
+    archive that has already been verified is never re-downloaded because its
+    companion ``.CHECKSUM`` went missing. Under ``offline`` nothing is fetched at
+    all — an absent object is an error, not a reason to reach the network.
+    """
     archive_dir.mkdir(parents=True, exist_ok=True)
     name = f"{SYMBOL}-1m-{month}.zip"
     target = archive_dir / name
     checksum_target = archive_dir / f"{name}.CHECKSUM"
+    url = f"{base_url}/{object_path(month)}"
 
-    if not target.is_file() or not checksum_target.is_file():
-        url = f"{base_url}/{object_path(month)}"
-        logger.info("downloading %s", name)
-        target.write_bytes(_fetch(url, timeout))
-        checksum_target.write_bytes(_fetch(f"{url}.CHECKSUM", timeout))
+    for path, source in ((target, url), (checksum_target, f"{url}.CHECKSUM")):
+        if path.is_file():
+            continue
+        if offline:
+            raise AcquisitionError(f"--offline was given and {path} is absent")
+        logger.info("downloading %s", path.name)
+        path.write_bytes(_fetch(source, timeout))
 
     published = checksum_target.read_text().split()[0].strip().lower()
     actual = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -326,10 +337,13 @@ def main(argv: list[str] | None = None) -> int:
     months = months_to_acquire()
     logger.info("acquiring %d months of %s 1m klines", len(months), SYMBOL)
     for month in months:
-        path = args.archive_dir / f"{SYMBOL}-1m-{month}.zip"
-        if args.offline and not path.is_file():
-            raise AcquisitionError(f"--offline was given and {path} is absent")
-        download_month(month, args.archive_dir, base_url=args.base_url, timeout=args.timeout)
+        download_month(
+            month,
+            args.archive_dir,
+            base_url=args.base_url,
+            timeout=args.timeout,
+            offline=args.offline,
+        )
 
     minutes, provenance = build_minutes(args.archive_dir, months)
     logger.info("%d research-visible minutes", len(minutes))

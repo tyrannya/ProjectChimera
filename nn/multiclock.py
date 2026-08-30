@@ -124,8 +124,23 @@ def assert_minute_grid(frame: pd.DataFrame, *, what: str = "the 1m source") -> p
         raise MulticlockError(f"{what} is empty")
 
     dates = pd.to_datetime(frame["date"], utc=True)
-    if dates.dt.second.ne(0).any() or dates.dt.microsecond.ne(0).any():
+    # Whole minutes to the nanosecond. `second`/`microsecond` alone leave a
+    # sub-microsecond offset undetected, and a timestamp 1 ns off its minute
+    # floors into the right bucket while making the grid a lie — so the check is
+    # against the epoch remainder, which has no such blind spot.
+    minute = pd.Timedelta(minutes=1).value
+    if (dates.astype("int64") % minute).ne(0).any():
         raise MulticlockError(f"{what} carries timestamps that are not whole minutes")
+    # A NaN price is not a candle. Counting one as a constituent would let an
+    # incomplete bar reach the full-constituent rule and be emitted as complete,
+    # with `first` and `last` silently taken from whichever minute did have data.
+    values = frame.loc[:, list(OHLCV_COLUMNS)]
+    unusable = int((~np.isfinite(values.to_numpy(dtype=np.float64))).sum())
+    if unusable:
+        raise MulticlockError(
+            f"{what} carries {unusable} non-finite OHLCV value(s); a NaN is not a price "
+            "and must not be counted as a constituent"
+        )
     duplicates = int(dates.duplicated().sum())
     if duplicates:
         raise MulticlockError(f"{what} carries {duplicates} duplicate timestamp(s)")
@@ -352,6 +367,10 @@ def parity_against(
         a = both[f"{column}_derived"].to_numpy(dtype=np.float64)
         b = both[f"{column}_reference"].to_numpy(dtype=np.float64)
         relative = np.abs(a - b) / np.maximum(np.abs(b), 1.0)
+        # A non-finite difference is a disagreement, not an absence of one:
+        # `nan > tolerance` is False, so a NaN on either side would otherwise
+        # read as agreement and be written into the manifest as one.
+        relative = np.where(np.isfinite(relative), relative, np.inf)
         worst[column] = float(relative.max()) if len(relative) else 0.0
         if worst[column] == 0.0:
             exact.append(column)

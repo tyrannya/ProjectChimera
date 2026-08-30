@@ -309,6 +309,15 @@ aligned to itself as the identity, over 1,161,875 rows for scalping and 232,285
 for day trading, and reproduced its frozen P6 cell exactly. The deltas that
 follow are therefore comparisons within one accounting.
 
+Those two totals are the sum of the four folds' `decision_rows`, because the
+gate is applied **per fold** and raises on the first row that differs — a mode
+artifact exists only if all four folds passed. The `validity_gate.identity_rows`
+field in each artifact records the *last* fold's count (`289,248` and `57,840`),
+not the total, and it understates the coverage of a check that in fact ran on
+every decision row. The field is a reporting defect, and correcting it would
+mean rewriting a frozen artifact, which is not something a closed checkpoint
+does; the fold-level numbers below are the auditable record.
+
 | mode | decision clock | improved folds | mean fold delta | verdict |
 | --- | --- | --- | --- | --- |
 | `SCALPING` | `1m` | **1 of 4** | `-0.0265515` | **negative** |

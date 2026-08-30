@@ -303,6 +303,15 @@ def split_record(record: dict[str, Any], model: str) -> dict[str, Any]:
     }
 
 
+def manifest_label(path: Path) -> str:
+    """How a cell names the manifest it was actually produced from."""
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(resolved)
+
+
 def cell_payload(
     clock: str,
     model: str,
@@ -311,6 +320,7 @@ def cell_payload(
     *,
     manifest: dict[str, Any],
     registered: Registration,
+    manifest_path: Path = DEFAULT_MANIFEST,
 ) -> dict[str, Any]:
     """Everything a P6 cell records about how it was produced."""
     contract = load_contract(contract_id(clock))
@@ -330,7 +340,7 @@ def cell_payload(
         "horizon_bars": HORIZON_BARS,
         "horizon": registered.horizons[clock],
         "source": {
-            "manifest": str(DEFAULT_MANIFEST.relative_to(REPO_ROOT)),
+            "manifest": manifest_label(manifest_path),
             "minutes_digest": manifest["minutes"]["digest"],
             "clock_digest": manifest["clocks"][clock]["digest"],
             "clock_rows": manifest["clocks"][clock]["rows"],
@@ -458,6 +468,7 @@ def run_clock(
     out_root: Path,
     models: tuple[str, ...] = MODELS,
     registered: Registration | None = None,
+    manifest_path: Path = DEFAULT_MANIFEST,
 ) -> dict[str, Path]:
     """Every model on one clock, fitted once against the same arrays."""
     registered = registered or registration("p6")
@@ -505,6 +516,7 @@ def run_clock(
             [split_record(record, spec.name) for record in records],
             manifest=manifest,
             registered=registered,
+            manifest_path=manifest_path,
         )
         payload["numerics"]["threadpools"] = threads
         (out_dir / ARTIFACT_NAME).write_text(json.dumps(payload, indent=2) + "\n")
@@ -559,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
             minutes,
             clock,
             manifest=manifest,
+            manifest_path=args.manifest,
             out_root=args.out_root,
             models=tuple(args.models),
             registered=registered,

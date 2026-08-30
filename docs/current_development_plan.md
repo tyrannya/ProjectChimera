@@ -165,6 +165,20 @@ for any mode, does not select a mode by recent profit, and marks a mode
 `NOT_ELIGIBLE` when the specialists it needs do not exist or are not valid.
 Design: `docs/trading_modes_v1.md`.
 
+### Futures paper operation — engineering, not evidence
+
+`tools/paper_run.py` runs the whole chain end to end — replayed bars, specialist
+votes, the consensus rule, the mode controller, Aegis and Hermes into the
+dry-run USD-M venue — so that "the path is wired" is a thing that executes rather
+than a claim. It carries the committed evidence with it: with no clock viable
+every bar decides `FLAT` for `specialist_not_viable`, and the committed smoke run
+in `artifacts/paper_smoke/` places zero orders for exactly that reason.
+
+**A smoke is not paper validation.** The report says so in fields rather than
+only in prose — `claims.sustained_paper_validation`, `claims.live`,
+`claims.real_money` and `claims.alpha` are all `false` — and the live source
+refuses rather than pretending. Runbook: `docs/paper_operation_runbook.md`.
+
 ### P8 — automatic trading-mode router
 
 Can a causal router choose among eligible modes with robust cost-aware

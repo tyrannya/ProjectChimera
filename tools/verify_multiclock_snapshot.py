@@ -37,8 +37,10 @@ from nn.multiclock import (
     STYX_START,
     assert_manifest_clock,
     assert_minute_grid,
+    bar_availability,
     candle_digest,
     minute_gaps,
+    parity_against,
     resample_from_minutes,
 )
 from tools.acquire_multiclock_source import MANIFEST_NAME, SNAPSHOT_SCHEMA
@@ -71,10 +73,29 @@ REQUIRED_KEYS: tuple[tuple[str, type], ...] = (
     ("minutes.sha256", str),
     ("minutes.digest", str),
     ("clocks", dict),
+    ("minutes.gaps", list),
     ("parity_1h", dict),
+    ("parity_1h.reference", str),
+    ("parity_1h.tolerance", float),
     ("parity_1h.overlapping_bars", int),
     ("parity_1h.mismatching_bars", int),
+    ("parity_1h.only_in_left", int),
+    ("parity_1h.only_in_right", int),
     ("parity_1h.mismatching_timestamps", list),
+)
+
+#: What every entry of ``source.months`` must carry. The per-object digests are
+#: the whole provenance claim — that each archive is the object Binance
+#: published — so a manifest that omitted one would be asserting provenance it
+#: does not record.
+REQUIRED_MONTH_KEYS: tuple[str, ...] = (
+    "month",
+    "object",
+    "zip_sha256",
+    "member",
+    "member_sha256",
+    "rows",
+    "open_time_unit",
 )
 
 
@@ -98,6 +119,28 @@ def check_shape(manifest: dict[str, Any]) -> None:
             raise SnapshotError(
                 f"the manifest's {path!r} is {type(value).__name__}, expected {kind.__name__}"
             )
+    months = manifest["source"]["months"]
+    if not months:
+        raise SnapshotError("the manifest records no source objects at all")
+    for position, record in enumerate(months):
+        missing = [key for key in REQUIRED_MONTH_KEYS if key not in record]
+        if missing:
+            raise SnapshotError(f"source.months[{position}] is missing {missing}")
+        if record["open_time_unit"] not in {"ms", "us"}:
+            raise SnapshotError(
+                f"source.months[{position}] declares open_time_unit "
+                f"{record['open_time_unit']!r}; Binance publishes ms or us"
+            )
+        for key in ("zip_sha256", "member_sha256"):
+            digest = record[key]
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise SnapshotError(f"source.months[{position}].{key} is not a SHA-256")
+    declared_rows = sum(int(record["rows"]) for record in months)
+    if declared_rows < manifest["minutes"]["rows"]:
+        raise SnapshotError(
+            f"the source objects declare {declared_rows} rows and the committed 1m file "
+            f"holds {manifest['minutes']['rows']}; the file cannot hold more than its sources"
+        )
     if manifest["snapshot_schema"] != SNAPSHOT_SCHEMA:
         raise SnapshotError(
             f"the manifest declares schema {manifest['snapshot_schema']!r}; this tool "
@@ -185,17 +228,37 @@ def check_clocks(manifest: dict[str, Any], minutes: pd.DataFrame) -> dict[str, A
     for timeframe in ALL_CLOCKS:
         frame = resample_from_minutes(minutes, timeframe)
         assert_manifest_clock(frame, declared[timeframe])
+        # Availability is recomputed too. It is what says how many bars the
+        # completeness rule dropped, and a manifest that merely *stated* it could
+        # under-report an outage without any digest moving.
+        availability = bar_availability(minutes, timeframe)
+        for key in ("buckets_touched", "complete_bars", "incomplete_bars_dropped"):
+            if key in declared[timeframe] and declared[timeframe][key] != availability[key]:
+                raise SnapshotError(
+                    f"the {timeframe} clock recomputes {key}={availability[key]} and the "
+                    f"manifest says {declared[timeframe][key]}"
+                )
+        if availability["complete_bars"] != len(frame):
+            raise SnapshotError(
+                f"the {timeframe} clock has {len(frame)} bars and its availability record "
+                f"counts {availability['complete_bars']} complete ones"
+            )
         summary[timeframe] = int(len(frame))
     return summary
 
 
-def check_parity(manifest: dict[str, Any]) -> dict[str, Any]:
-    """The 1h parity claim, held to internal consistency.
+def check_parity(manifest: dict[str, Any], minutes: pd.DataFrame) -> dict[str, Any]:
+    """The 1h parity claim, **recomputed** rather than read.
 
-    The comparison itself was made at acquisition time against the committed 1h
-    history, which this tool re-reads only to confirm the arithmetic — the
-    disagreeing hours are enumerated in the manifest and their count must match
-    the enumeration, so a manifest cannot claim agreement it did not measure.
+    The claim that licenses fitting on this source is that the derived 1h clock
+    agrees with the committed 1h history. A verifier that only checked the
+    manifest against itself would accept any parity result a manifest cared to
+    state, which is precisely the class of assertion this tool exists to replace.
+
+    So the comparison is run again here, from the committed 1m file and the
+    committed 1h history, and the manifest is held to every figure it reports —
+    including the enumerated timestamps, which must be the same hours and not
+    merely the same count.
     """
     parity = manifest["parity_1h"]
     listed = len(parity["mismatching_timestamps"])
@@ -204,6 +267,35 @@ def check_parity(manifest: dict[str, Any]) -> dict[str, Any]:
             f"the manifest says {parity['mismatching_bars']} hour(s) disagree and "
             f"enumerates {listed}"
         )
+
+    reference_path = REPO_ROOT / str(parity["reference"])
+    if not reference_path.is_file():
+        raise SnapshotError(f"the 1h reference {reference_path} the manifest names is absent")
+    reference = pd.read_parquet(reference_path)
+    reference = reference.loc[reference["date"] < RESEARCH_VISIBLE_END].reset_index(drop=True)
+    recomputed = parity_against(
+        resample_from_minutes(minutes, "1h"),
+        reference,
+        timeframe="1h",
+        tolerance=float(parity["tolerance"]),
+    )
+    for key, actual in (
+        ("overlapping_bars", recomputed.overlapping_bars),
+        ("mismatching_bars", recomputed.mismatching_bars),
+        ("only_in_left", recomputed.only_in_left),
+        ("only_in_right", recomputed.only_in_right),
+    ):
+        if actual != parity[key]:
+            raise SnapshotError(
+                f"the 1h parity recomputes {key}={actual} and the manifest says "
+                f"{parity[key]}; the manifest describes a comparison that is not this one"
+            )
+    if list(recomputed.mismatching_timestamps) != list(parity["mismatching_timestamps"]):
+        raise SnapshotError(
+            "the 1h parity disagrees with the manifest about *which* hours differ, not "
+            "only how many"
+        )
+
     stamps = [pd.Timestamp(value) for value in parity["mismatching_timestamps"]]
     late = [value for value in stamps if value >= RESEARCH_VISIBLE_END]
     if late:
@@ -211,8 +303,9 @@ def check_parity(manifest: dict[str, Any]) -> dict[str, Any]:
             f"{len(late)} disagreeing hour(s) lie at or after the research boundary"
         )
     return {
-        "overlapping_bars": parity["overlapping_bars"],
-        "mismatching_bars": parity["mismatching_bars"],
+        "overlapping_bars": recomputed.overlapping_bars,
+        "mismatching_bars": recomputed.mismatching_bars,
+        "recomputed": True,
         "agreement_fraction": parity.get("agreement_fraction"),
     }
 
@@ -233,7 +326,7 @@ def verify(manifest_path: Path) -> dict[str, Any]:
         "boundaries": check_boundaries(manifest, minutes),
         "minutes": check_minutes(manifest, minutes_path, minutes),
         "clocks": check_clocks(manifest, minutes),
-        "parity_1h": check_parity(manifest),
+        "parity_1h": check_parity(manifest, minutes),
     }
     return report
 

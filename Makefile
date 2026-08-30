@@ -9,7 +9,7 @@
 	p3-cell p3-btc p3-compare \
 	futures-dry-run futures-dry-run-verify \
 	p5-cell p5-btc p5-compare p5-decide \
-	p6-clock p6-btc p6-decide \
+	p6-clock p6-btc p6-decide p6ext-btc p6ext-decide \
 	p7-mode p7-btc p7-decide \
 	paper-smoke \
 	derivatives-plan derivatives-probe derivatives-snapshot \
@@ -107,6 +107,14 @@ p6-decide:  ## P6: apply the frozen viability gate to the fifteen cells
 		artifacts/benchmark/btc_p6_5m_* artifacts/benchmark/btc_p6_15m_* \
 		artifacts/benchmark/btc_p6_30m_* artifacts/benchmark/btc_p6_1h_* \
 		--out artifacts/benchmark/btc_p6_decision
+
+p6ext-btc:  ## P6-EXT: the same design on the two swing clocks, 4h and 1d
+	$(PYTHON) -m nn.p6 --registration p6ext --all --out-root artifacts/benchmark
+
+p6ext-decide:  ## P6-EXT: apply the frozen viability gate to the six cells
+	$(PYTHON) -m nn.p6_decision --registration p6ext \
+		--runs artifacts/benchmark/btc_p6ext_4h_* artifacts/benchmark/btc_p6ext_1d_* \
+		--out artifacts/benchmark/btc_p6ext_decision
 
 p7-mode:  ## P7: one trading mode's consensus and its components. Args: MODE
 	$(PYTHON) -m nn.p7 --mode $(MODE) --out-root artifacts/benchmark
