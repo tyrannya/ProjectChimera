@@ -10,6 +10,7 @@
 	futures-dry-run futures-dry-run-verify \
 	p5-cell p5-btc p5-compare p5-decide \
 	p6-clock p6-btc p6-decide \
+	p7-mode p7-btc p7-decide \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -105,6 +106,16 @@ p6-decide:  ## P6: apply the frozen viability gate to the fifteen cells
 		artifacts/benchmark/btc_p6_5m_* artifacts/benchmark/btc_p6_15m_* \
 		artifacts/benchmark/btc_p6_30m_* artifacts/benchmark/btc_p6_1h_* \
 		--out artifacts/benchmark/btc_p6_decision
+
+p7-mode:  ## P7: one trading mode's consensus and its components. Args: MODE
+	$(PYTHON) -m nn.p7 --mode $(MODE) --out-root artifacts/benchmark
+
+p7-btc:  ## P7: both trading modes over the frozen P6 specialists
+	$(PYTHON) -m nn.p7 --all --out-root artifacts/benchmark
+
+p7-decide:  ## P7: apply the frozen decision rule to both modes
+	$(PYTHON) -m nn.p7_decision --runs artifacts/benchmark/btc_p7_scalping \
+		artifacts/benchmark/btc_p7_day_trading --out artifacts/benchmark/btc_p7_decision
 
 multiclock-acquire:  ## Download and verify the Binance 1m source every clock is cut from
 	$(PYTHON) -m tools.acquire_multiclock_source --archive-dir $(MULTICLOCK_ARCHIVE_DIR)

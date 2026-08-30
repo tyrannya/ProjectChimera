@@ -127,6 +127,16 @@ ray_results/
 !artifacts/benchmark/btc_p6_1h_xgboost/*
 !artifacts/benchmark/btc_p6_decision/*
 
+# Frozen P7 primary evidence and its decision record. Two modes, each holding
+# its consensus and every constituent replayed on that mode's own decision
+# clock, plus the decision that applies the frozen rule to both. Both modes are
+# named: P7 publishes two verdicts and neither is collapsed into the other.
+!artifacts/btc_p7_SHA256SUMS.txt
+!artifacts/btc_p7_decision_SHA256SUMS.txt
+!artifacts/benchmark/btc_p7_scalping/*
+!artifacts/benchmark/btc_p7_day_trading/*
+!artifacts/benchmark/btc_p7_decision/*
+
 # Futures Execution v1 operational evidence. Not research evidence: it is the
 # report of a frozen engineering protocol (`tools/futures_dry_run.py`), and
 # `make check` re-verifies it against the protocol hash in the build reading it.
