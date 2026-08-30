@@ -173,6 +173,12 @@ class Quote:
     mark: Decimal | None = None
     spot_open: Decimal | None = None
     perp_open: Decimal | None = None
+    #: The hourly HIGH of the mark series, used ONLY as the conservative
+    #: intra-bar liquidation touch — never as a fill and never as a mark. An
+    #: hourly grid cannot resolve within-bar price action, so testing
+    #: liquidation against the close alone would miss a touch the position
+    #: genuinely took. Absent, the close is used and the artifact records which.
+    mark_high: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.spot <= ZERO or self.perp <= ZERO:
@@ -181,10 +187,28 @@ class Quote:
             )
         if self.mark is not None and self.mark <= ZERO:
             raise CarryError(f"non-positive mark at {self.instant_ns}: {self.mark}")
-        for name in ("spot_open", "perp_open"):
+        for name in ("spot_open", "perp_open", "mark_high"):
             value = getattr(self, name)
             if value is not None and value <= ZERO:
                 raise CarryError(f"non-positive {name} at {self.instant_ns}: {value}")
+
+    @property
+    def liquidation_touch(self) -> Decimal:
+        """The most adverse mark this bar can be shown to have reached.
+
+        Adverse for a SHORT means HIGH, so the conservative test uses the mark
+        high where the source provides it and falls back to the mark close, then
+        the spot close. The fallback is recorded rather than assumed, so the
+        check is never quietly weaker than it claims to be.
+        """
+        if self.mark_high is not None:
+            return self.mark_high
+        return self.mark if self.mark is not None else self.spot
+
+    @property
+    def liquidation_touch_is_high(self) -> bool:
+        """Whether the conservative intra-bar touch was actually available."""
+        return self.mark_high is not None
 
     @property
     def spot_fill(self) -> Decimal:
@@ -370,16 +394,17 @@ def is_liquidated(position: CarryPosition, quote: Quote, venue: Venue, isolated:
     losses and costs can, and the test is total equity against the maintenance
     requirement.
     """
-    mark = quote.mark if quote.mark is not None else quote.spot
+    mark = quote.liquidation_touch
     if isolated:
         # Strict: the walled-off balance carries its own funding and gets no
         # rescue from free cash. Routing funding to the portfolio instead would
         # make the "unforgiving" bound systematically lenient — a short paying
         # funding for months would never feel it in the balance meant to be
         # isolated.
-        balance = (
-            position.perp_margin + position.unrealised_perp(quote.perp) + position.perp_funding
-        )
+        # Marked at the adverse touch, not the close: the balance was at its
+        # worst when the mark was, and a bar that touched the threshold
+        # liquidated the position whatever it closed at.
+        balance = position.perp_margin + position.unrealised_perp(mark) + position.perp_funding
         if balance <= position.quantity * mark * venue.maintenance_margin_rate:
             return True
         threshold = liquidation_price(
@@ -388,7 +413,7 @@ def is_liquidated(position: CarryPosition, quote: Quote, venue: Venue, isolated:
             position.leverage,
             venue.maintenance_margin_rate,
         )
-        return quote.perp >= threshold
+        return mark >= threshold
     # Portfolio: the real spot price, not an assumption that spot tracked perp.
     maintenance = position.quantity * mark * venue.maintenance_margin_rate
     return position.equity(quote) < maintenance

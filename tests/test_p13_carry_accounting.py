@@ -554,3 +554,20 @@ def test_a_refusal_record_says_what_was_not_done():
     assert "not a negative economic result" in record["what_this_does_not_mean"]
     assert any("different venue" in item for item in record["what_was_not_done"])
     assert any("Styx" in item for item in record["what_was_not_done"])
+
+
+def test_liquidation_is_tested_against_the_intra_bar_high_when_available():
+    """An hourly grid cannot resolve within-bar action, so testing the close
+    alone would miss a touch the position genuinely took."""
+    position = open_carry(quote(0, "100", "100"), CAPITAL, FREE, VENUE)
+    # Closes well below the isolated threshold, but the bar's mark high reaches it.
+    bar = Quote(instant_ns=1, spot=D("120"), perp=D("120"), mark=D("120"), mark_high=D("205"))
+    assert bar.liquidation_touch == D("205")
+    assert bar.liquidation_touch_is_high
+    assert is_liquidated(position, bar, VENUE, isolated=True)
+
+    # Without the high, the check falls back to the close and records that.
+    closes_only = Quote(instant_ns=1, spot=D("120"), perp=D("120"), mark=D("120"))
+    assert closes_only.liquidation_touch == D("120")
+    assert not closes_only.liquidation_touch_is_high
+    assert not is_liquidated(position, closes_only, VENUE, isolated=True)
