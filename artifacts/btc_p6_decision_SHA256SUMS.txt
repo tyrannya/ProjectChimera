@@ -1,0 +1,2 @@
+11948e7155d84a79676cc0f11ebf0f042313db556f3a8427d31022e389581adf  artifacts/benchmark/btc_p6_decision/STATUS.md
+0c4d348ff8fc6421addab62a4b8645eab36408820e0ab47d7814189a2ff5bfb7  artifacts/benchmark/btc_p6_decision/decision.json

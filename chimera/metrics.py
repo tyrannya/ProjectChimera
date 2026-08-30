@@ -202,6 +202,99 @@ FUT_EXECUTION_LATENCY = Histogram(
 )
 
 
+# --- trading modes ------------------------------------------------------
+#
+# Every label here is a bounded enum from `chimera.modes`: a TradingMode value
+# or a ReasonCode value. Neither grows with traffic, and neither carries a
+# free-text reason, an order id, a price or a quantity — the same rule the
+# futures block above states. The one thing deliberately *absent* is any
+# per-mode return: a mode metric that reported how well a mode had been doing
+# would be the profit-based selection input the scaffold exists to not have.
+# Exposure, turnover, fees, funding and drawdown are already published by the
+# futures family, unlabelled, and stay that way for exactly one active mode.
+MODE_SELECTED = Gauge(
+    f"{_PREFIX}_mode_selected",
+    "1 for the currently active trading mode, 0 for every other",
+    ["mode"],
+)
+MODE_ELIGIBLE = Gauge(
+    f"{_PREFIX}_mode_eligible",
+    "1 when a mode's specialists are all screened and viable, 0 otherwise",
+    ["mode"],
+)
+MODE_DECISIONS = Counter(
+    f"{_PREFIX}_mode_decisions_total",
+    "Mode decisions taken, by resulting mode and reason",
+    ["mode", "reason"],
+)
+MODE_TRANSITIONS = Counter(
+    f"{_PREFIX}_mode_transitions_total",
+    "Mode changes, by origin and destination",
+    ["from_mode", "to_mode"],
+)
+MODE_TRANSITION_FLATTENS = Counter(
+    f"{_PREFIX}_mode_transition_flattens_total",
+    "Mode changes that required flattening an inherited position first",
+    ["from_mode", "to_mode"],
+)
+MODE_CONSENSUS_STATE = Counter(
+    f"{_PREFIX}_mode_consensus_state_total",
+    "Consensus outcomes inside an eligible mode, by mode and reason",
+    ["mode", "reason"],
+)
+MODE_RISK_VETOES = Counter(
+    f"{_PREFIX}_mode_risk_vetoes_total",
+    "Aegis vetoes attributed to the mode that was active",
+    ["mode", "reason"],
+)
+
+
+def mark_mode_decision(decision: Any) -> None:
+    """Record one mode decision across the mode family.
+
+    Takes a `chimera.modes.ModeDecision`. Typed loosely on purpose: this module
+    is imported by `chimera.risk` and by the futures package, and importing
+    `chimera.modes` here to name the type would make the metrics module depend
+    on the layer that reports to it.
+    """
+    mode = decision.mode.value
+    reason = decision.reason.value
+    MODE_DECISIONS.labels(mode=mode, reason=reason).inc()
+    MODE_CONSENSUS_STATE.labels(mode=mode, reason=reason).inc()
+
+    # Both gauges are set across *every* mode, not only the ones that qualify.
+    # A gauge that is only ever set to 1 never comes back down: the mode that was
+    # eligible an hour ago would still read eligible, and two modes would read
+    # selected at once. The label set is the TradingMode enum, so writing all of
+    # them costs nothing and bounds nothing differently.
+    eligible = {candidate.value for candidate in decision.eligible_modes}
+    for candidate in type(decision.mode):
+        MODE_ELIGIBLE.labels(mode=candidate.value).set(1 if candidate.value in eligible else 0)
+        MODE_SELECTED.labels(mode=candidate.value).set(1 if candidate.value == mode else 0)
+
+
+def mark_mode_transition(plan: Any) -> None:
+    """Record one mode change, and whether it had to unwind a position."""
+    labels = {"from_mode": plan.from_mode.value, "to_mode": plan.to_mode.value}
+    if plan.from_mode is plan.to_mode:
+        return
+    MODE_TRANSITIONS.labels(**labels).inc()
+    if plan.must_flatten:
+        MODE_TRANSITION_FLATTENS.labels(**labels).inc()
+
+
+def mark_mode_veto(mode: str, reason: str) -> None:
+    """One Aegis veto, attributed to the mode that was active when it fired.
+
+    `chimera_futures_risk_vetoes_total` already counts vetoes by reason; this is
+    the same event split by mode, which is what says whether one mode is being
+    refused far more often than the others. Both labels are bounded enums —
+    a TradingMode value and a RiskEngine reason — and neither carries an order,
+    a price or a free-text string.
+    """
+    MODE_RISK_VETOES.labels(mode=mode, reason=reason).inc()
+
+
 # --- system -------------------------------------------------------------
 SERVICE_UP = Gauge(f"{_PREFIX}_service_up", "1 when the component is ready", ["component"])
 API_FAILURES = Counter(

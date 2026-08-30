@@ -1,0 +1,208 @@
+{
+  "checkpoint": "P7",
+  "question": "Does causal agreement between independently trained temporal specialists add robust cost-aware value beyond the corresponding individual specialists?",
+  "evidence_class": "the preregistered decision, applied to frozen mode evidence; the P7 outcome",
+  "evidence_ceiling": "Exploratory, adaptive, and a rung lower than P6's. These are the same four real-world windows v4, P2a, P2b, P2c, P3, P4, P5 and P6 have read \u2014 the ninth reading \u2014 and P7 is designed with P6's results already known. No P7 result is confirmatory. A positive P7 would need confirmation these blocks cannot supply; a negative one needs no discounting.",
+  "preregistration_hash": "sha256:b79365ce0c6a8d1464b2420e589fd502cf3520daba775c2da5430497be12cb50",
+  "rule": {
+    "conditions": [
+      "the consensus beats the fold-wise best constituent in at least 3 of the 4 outer folds",
+      "the mean fold delta across the 4 folds is > 0"
+    ],
+    "conjunction": "both",
+    "improved_folds_required": 3,
+    "total_folds": 4,
+    "per_mode": true,
+    "no_further_criterion": "these two, and nothing else. A criterion added after the deltas are visible is not a criterion, it is a description of the result."
+  },
+  "modes": [
+    {
+      "mode": "SCALPING",
+      "decision_clock": "1m",
+      "specialists": [
+        "1m",
+        "5m",
+        "15m"
+      ],
+      "agreement_required": 2,
+      "veto_specialist": "15m",
+      "folds": [
+        {
+          "fold": 0,
+          "period_start": "2023-03-04T07:00:00+00:00",
+          "period_end": "2023-09-24T16:53:00+00:00",
+          "consensus_net_return": -0.031842,
+          "best_constituent": "5m",
+          "best_constituent_net_return": -0.012302,
+          "delta": -0.01954,
+          "improved": false,
+          "consensus_trades": 18,
+          "consensus_turnover": 36.0,
+          "consensus_hold_rows": 294059,
+          "decision_rows": 294119
+        },
+        {
+          "fold": 1,
+          "period_start": "2023-09-24T17:00:00+00:00",
+          "period_end": "2024-04-12T13:53:00+00:00",
+          "consensus_net_return": 0.031669,
+          "best_constituent": "1m",
+          "best_constituent_net_return": 0.080876,
+          "delta": -0.049207,
+          "improved": false,
+          "consensus_trades": 9,
+          "consensus_turnover": 18.0,
+          "consensus_hold_rows": 289225,
+          "decision_rows": 289254
+        },
+        {
+          "fold": 2,
+          "period_start": "2024-04-12T14:00:00+00:00",
+          "period_end": "2024-10-30T10:53:00+00:00",
+          "consensus_net_return": -0.063037,
+          "best_constituent": "1m",
+          "best_constituent_net_return": -0.016257,
+          "delta": -0.04678,
+          "improved": false,
+          "consensus_trades": 31,
+          "consensus_turnover": 62.0,
+          "consensus_hold_rows": 289107,
+          "decision_rows": 289254
+        },
+        {
+          "fold": 3,
+          "period_start": "2024-10-30T11:00:00+00:00",
+          "period_end": "2025-05-19T07:47:00+00:00",
+          "consensus_net_return": 0.113459,
+          "best_constituent": "1m",
+          "best_constituent_net_return": 0.104138,
+          "delta": 0.009321,
+          "improved": true,
+          "consensus_trades": 11,
+          "consensus_turnover": 22.0,
+          "consensus_hold_rows": 289228,
+          "decision_rows": 289248
+        }
+      ],
+      "conditions": {
+        "improved_folds": {
+          "required": 3,
+          "observed": 1,
+          "passed": false
+        },
+        "mean_fold_delta": {
+          "required": "> 0",
+          "observed": -0.0265515,
+          "passed": false
+        }
+      },
+      "verdict": "negative",
+      "descriptive": {
+        "worst_fold_delta": -0.049207,
+        "best_fold_delta": 0.009321,
+        "note": "worst and best folds are reported for completeness and decide nothing"
+      }
+    },
+    {
+      "mode": "DAY_TRADING",
+      "decision_clock": "5m",
+      "specialists": [
+        "5m",
+        "15m",
+        "30m",
+        "1h"
+      ],
+      "agreement_required": 3,
+      "veto_specialist": "1h",
+      "folds": [
+        {
+          "fold": 0,
+          "period_start": "2023-03-04T07:00:00+00:00",
+          "period_end": "2023-09-24T16:25:00+00:00",
+          "consensus_net_return": 0.044898,
+          "best_constituent": "5m",
+          "best_constituent_net_return": -0.007995,
+          "delta": 0.052893,
+          "improved": true,
+          "consensus_trades": 6,
+          "consensus_turnover": 12.0,
+          "consensus_hold_rows": 58735,
+          "decision_rows": 58753
+        },
+        {
+          "fold": 1,
+          "period_start": "2023-09-24T17:00:00+00:00",
+          "period_end": "2024-04-12T13:25:00+00:00",
+          "consensus_net_return": -0.001485,
+          "best_constituent": "5m",
+          "best_constituent_net_return": 0.073974,
+          "delta": -0.075459,
+          "improved": false,
+          "consensus_trades": 1,
+          "consensus_turnover": 2.0,
+          "consensus_hold_rows": 57845,
+          "decision_rows": 57846
+        },
+        {
+          "fold": 2,
+          "period_start": "2024-04-12T14:00:00+00:00",
+          "period_end": "2024-10-30T10:25:00+00:00",
+          "consensus_net_return": 0.005206,
+          "best_constituent": "15m",
+          "best_constituent_net_return": 0.061887,
+          "delta": -0.056681,
+          "improved": false,
+          "consensus_trades": 6,
+          "consensus_turnover": 12.0,
+          "consensus_hold_rows": 57822,
+          "decision_rows": 57846
+        },
+        {
+          "fold": 3,
+          "period_start": "2024-10-30T11:00:00+00:00",
+          "period_end": "2025-05-19T06:55:00+00:00",
+          "consensus_net_return": 0.0,
+          "best_constituent": "5m",
+          "best_constituent_net_return": 0.058097,
+          "delta": -0.058097,
+          "improved": false,
+          "consensus_trades": 0,
+          "consensus_turnover": 0.0,
+          "consensus_hold_rows": 57840,
+          "decision_rows": 57840
+        }
+      ],
+      "conditions": {
+        "improved_folds": {
+          "required": 3,
+          "observed": 1,
+          "passed": false
+        },
+        "mean_fold_delta": {
+          "required": "> 0",
+          "observed": -0.034336,
+          "passed": false
+        }
+      },
+      "verdict": "negative",
+      "descriptive": {
+        "worst_fold_delta": -0.075459,
+        "best_fold_delta": 0.052893,
+        "note": "worst and best folds are reported for completeness and decide nothing"
+      }
+    }
+  ],
+  "supportive_modes": [],
+  "outcome": "neither supportive",
+  "outcome_independence": "The two modes are reported separately and neither is collapsed into the other. 'Scalping supportive, day trading not' is a result, not a reason to report scalping as P7's answer.",
+  "interpretation": "a mode whose consensus did not beat its own components is recorded as negative. The trading-mode scaffold may still describe it, and must not claim alpha for it.",
+  "identity": {
+    "preregistration_hash": "sha256:b79365ce0c6a8d1464b2420e589fd502cf3520daba775c2da5430497be12cb50",
+    "p6_preregistration_hash": "sha256:2785b1a7b19ecceca58cd0e936d14a5cbbbe6eb10f7ddf2796800409a0eaaaf2",
+    "validity_gate": "the mode's own decision-clock specialist, replayed by P7, reproduces the frozen P6 cell's four outer net returns exactly",
+    "modes": [
+      "DAY_TRADING",
+      "SCALPING"
+    ]
+  }
+}

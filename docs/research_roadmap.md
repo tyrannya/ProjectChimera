@@ -43,6 +43,10 @@ committed and its evidence is not.
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
+| `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -379,7 +383,157 @@ searching them against these four outer blocks would convert a negative result
 into a fitted one. `docs/mtf_v1.md` §8 records five defects and open questions —
 written before the result existed — and none of them is a threshold to search.
 
-### What five negative answers together do and do not license
+---
+
+### P6 — do independent native-timeframe specialists extract signal at scales the 1h programme never tested?
+
+**No. Not one of the five clocks is viable.** Five families had failed and every
+one of them was measured on one clock; P6 varied the bar and held the columns.
+Same fourteen causal OHLCV columns, same cost-aware label six *native* bars
+ahead, same 20 bps round trip, same three untuned families, same four real-world
+temporal periods, mapped by timestamp onto a causal 1m Binance spot source
+([`multiclock_v1.md`](multiclock_v1.md)). Preregistered in full at
+[`p6_preregistration.md`](p6_preregistration.md) before any P6 model was fitted.
+
+Unlike P2b through P5 this is a **screen, not a comparison**: a 1m specialist has
+no 1m predecessor, so there is no control to be incrementally better than, and an
+absolute gate was written before the first fit. A clock is viable only if its
+XGBoost cell is positive in at least 3 of 4 folds **and** has a positive mean
+**and** beats its own native-timeframe momentum baseline in at least 3 of 4.
+
+| clock | horizon | positive folds | mean net return | beats momentum | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `1m` | 6 minutes | **2 of 4** | `+0.030087` | 4 of 4 | **not viable** |
+| `5m` | 30 minutes | **2 of 4** | `+0.011442` | 4 of 4 | **not viable** |
+| `15m` | 90 minutes | **2 of 4** | `+0.009264` | 4 of 4 | **not viable** |
+| `30m` | 3 hours | **2 of 4** | `-0.009106` | 4 of 4 | **not viable** |
+| `1h` | 6 hours | **2 of 4** | `-0.026770` | 4 of 4 | **not viable** |
+
+Every clock failed condition 1, and every clock failed it at exactly the same
+count. Evidence:
+[`artifacts/benchmark/btc_p6_decision/`](../artifacts/benchmark/btc_p6_decision/),
+over fifteen primary cells frozen under
+[`artifacts/btc_p6_SHA256SUMS.txt`](../artifacts/btc_p6_SHA256SUMS.txt).
+
+Five things about this matter more than the numbers:
+
+- **The mean would have lied again.** `1m`, `5m` and `15m` all have a *positive*
+  mean while improving two of four folds. The count-the-folds rule was
+  predeclared in P2b for exactly this and has now fired at four temporal scales.
+- **Beating momentum was nearly free, and the closure says so.** On the fast
+  clocks the native momentum baseline returns about `-1.000`: it takes a position
+  on the sign of `ema_cross` at every bar and pays 20 bps around a hundred times
+  per fold. "Beats momentum" there means "does not trade itself to death". It is
+  a real floor and a very low one, and condition 1 is what bound.
+- **Two secondary families would have passed and were declined.** Logistic
+  regression cleared all three conditions on `1m`, `5m` and `15m`, LightGBM on
+  `1m` and `5m`. XGBoost was named the deciding family before any P6 fit existed.
+  The winner-shopping was available and the design refused it.
+- **The trades are thin.** The `1m` specialist scored 1.16 million outer rows and
+  took 101 trades — the frozen threshold selector and an 80.5% HOLD class balance
+  behaving exactly as a fixed cost threshold at a six-minute horizon implies.
+- **Buy-and-hold beat the deciding specialist in 19 of the 20 clock-folds**, at
+  full exposure. The exception is `15m` fold 2 — `+0.094854` against `+0.035290`
+  — one fold, on a clock the gate still found not viable. A reference, not a
+  competitor, as since P2a; the closure of
+  [`p6_preregistration.md`](p6_preregistration.md) has the full comparison.
+
+**Do not respond to this by tuning anything.** The clock set, the horizon rule,
+`seq_len`, the cost model, the class definition and the gate were predeclared;
+searching any of them against these four blocks would convert a negative result
+into a fitted one.
+
+---
+
+### P7 — does causal agreement between temporal specialists add value over the specialists?
+
+**No, in neither trading mode.** P6 screened five specialists individually; P7
+asks whether *agreement between* them is worth more than any of them alone.
+Preregistered in full at [`p7_preregistration.md`](p7_preregistration.md) **after
+P6 closed** and before any consensus was computed.
+
+P7 fits nothing: it replays the frozen P6 XGBoost cells' committed per-sample
+predictions, reading each specialist's own `selected_action` and never its
+probabilities. Alignment is causal and referenced to the decision bar's close —
+the instant the trade is entered — so no row reads a specialist bar that had not
+printed, and a specialist with nothing closed yet makes the whole consensus HOLD
+rather than allowing a partial vote.
+
+| mode | decision clock | rule | improved folds | mean fold delta | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `SCALPING` | `1m` | 2 of {`1m`,`5m`,`15m`}, `15m` vetoes | **1 of 4** | `-0.0265515` | **negative** |
+| `DAY_TRADING` | `5m` | 3 of {`5m`,`15m`,`30m`,`1h`}, `1h` vetoes | **1 of 4** | `-0.034336` | **negative** |
+
+Each consensus is compared against the **fold-wise best of its own
+constituents**, every one of them replayed on that mode's decision clock through
+the same alignment and the same cost model — because a consensus taken every
+minute cannot be compared against a 15m specialist's native P6 return, which was
+measured under a different execution cadence. Evidence:
+[`artifacts/benchmark/btc_p7_decision/`](../artifacts/benchmark/btc_p7_decision/),
+over two mode artifacts frozen under
+[`artifacts/btc_p7_SHA256SUMS.txt`](../artifacts/btc_p7_SHA256SUMS.txt).
+
+Four things about this matter more than the numbers:
+
+- **A validity gate ran before any delta was read.** Each mode's own
+  decision-clock specialist aligns to itself as the identity, so replaying it
+  must reproduce its frozen P6 cell exactly. Both did, over 1,161,875 and
+  232,285 rows. A replay that could not would have made P7 invalid rather than
+  negative.
+- **Agreement mostly removed trades.** The scalping consensus took 9-31 trades
+  per fold where its own `1m` constituent took 16-46; on these folds the trades
+  the filter removed were, on balance, the ones worth keeping.
+- **Day-trading fold 3 took no trade at all** over 57,840 decision rows: three of
+  four specialists never agreed with `1h` not opposing. A flat quarter is a real
+  outcome of the rule, reported as `0.000000`, and no condition was relaxed for it.
+- **The benchmark was deliberately the hardest fair one.** Against the fold-wise
+  best constituent rather than the average or a fixed member — predeclared in
+  §5.1 precisely so "beats one of its members" could not be reported as "adds
+  value", and not relaxed now that it bound.
+
+This is agreement among components P6 had already found individually non-viable,
+which is exactly the experiment preregistered and exactly the limit on what it
+concludes. It is not evidence that a different agreement count, veto, specialist
+set or cadence would fail the same way.
+
+**Do not respond to this by writing `consensus_v2`.** Every rule was predeclared.
+
+---
+
+### P6-EXT — do the two slow clocks a SWING mode needs carry signal?
+
+**No. Neither is viable, so `SWING` is not eligible.** P6's design, imported
+rather than restated, on the two clocks it did not cover. Preregistered in
+[`p6_extension_preregistration.md`](p6_extension_preregistration.md) after P6
+closed and before any 4h or 1d specialist was fitted. **It is not P5**: P5 read 4h
+and 1d bars as context columns on a 1h row, and this fits a model on 4h samples
+and a model on 1d samples.
+
+| clock | horizon | positive folds | mean net return | beats momentum | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `4h` | 1 day | **0 of 4** | `-0.201455` | **2 of 4** | **not viable** |
+| `1d` | 6 days | **1 of 4** | `-0.192055` | **2 of 4** | **not viable** |
+
+Evidence:
+[`artifacts/benchmark/btc_p6ext_decision/`](../artifacts/benchmark/btc_p6ext_decision/),
+over six primary cells frozen under
+[`artifacts/btc_p6ext_SHA256SUMS.txt`](../artifacts/btc_p6ext_SHA256SUMS.txt).
+
+The informative part is the contrast with P6: **these two failed the momentum
+condition and the five short clocks did not.** On a fast clock a momentum rule
+that takes a position every bar trades itself to death against a 20 bps round
+trip, so "beats momentum" was nearly free there. At 4h and 1d it pays that cost
+tens of times rather than thousands and becomes a real competitor — and both slow
+specialists lost to it in half the folds. That is a caution about how much
+condition 3 was worth on the fast clocks, not a rescue for anything.
+
+`SWING` names `30m`, `1h` and `4h` as primary clocks with `1d` as slow context,
+and none of those four has a viable specialist. It is recorded `NOT_ELIGIBLE` in
+[`trading_modes_v1.md`](trading_modes_v1.md) — because the specialists it is
+defined in terms of did not clear a bar set before anyone looked, which is what
+an eligibility rule is for.
+
+### What the five information-set answers together do and do not license
 
 Five information families have now failed to improve on OHLCV14 in this setup:
 three transformations of the 1h bar, one new source at the 1h clock, and one
@@ -441,25 +595,71 @@ zero without reversing, and the authenticated order route stays unreachable.
 Its metrics are descriptive. **Nothing in it may select a model, a feature, a
 threshold, a horizon or a target**, and simulated PnL is not evidence of alpha.
 
+### The axis the next checkpoints change: the clock
+
+Five information families failed on **one clock**. That is the thing every
+negative result so far has in common, and it is the thing none of them varied.
+`P5` came closest and did not vary it: `mtf_v1` read 4h and 1d bars as *context
+columns on a 1h row*, so the decision was still taken hourly by a model fitted on
+hourly samples. No checkpoint has ever fitted a model on 1m, 5m, 15m or 30m
+samples, and no checkpoint has ever asked whether separately trained specialists
+agree.
+
+That is also the architecture this system was designed around and never tested.
+The forward plan is set out in
+[`current_development_plan.md`](current_development_plan.md); the two checkpoints
+it opens are:
+
+- **P6 — multi-clock timeframe specialists.** Independent native-timeframe
+  specialists on 1m, 5m, 15m, 30m and 1h, each predicting six of *its own* bars
+  ahead, under the same fourteen features, the same cost model, the same three
+  untuned model families and the same four real-world temporal periods. Five
+  separate verdicts, all reported. Preregistered before its first fit in
+  [`p6_preregistration.md`](p6_preregistration.md). **Answered above: negative,
+  no clock viable.**
+- **P7 — Pythia cross-timeframe consensus.** Whether causal agreement between the
+  frozen P6 specialists adds cost-aware value over the corresponding individual
+  specialists, in two separately reported trading modes. Preregistered after P6
+  closed, in [`p7_preregistration.md`](p7_preregistration.md). That P6 was negative does not cancel
+  it: agreement among individually unprofitable specialists is a different
+  question, and §9.4 of P6's preregistration predeclared that P7 must not depend
+  on which specialists cleared an absolute floor.
+
+**The old `P6`–`P9` labels moved, and nothing that had evidence was renamed.**
+This file previously sketched four future axes under those numbers. None had been
+designed, preregistered, implemented or run; they were notes about what was left.
+Unspent labels are free to be reassigned, and the axes themselves survive below
+with later numbers and their content unchanged.
+
 ### Future axes, documented and not started
 
-None of the following has been designed, preregistered, implemented or run.
-They are recorded so that "what is left" is a list rather than a memory, and so
-that the next checkpoint is chosen deliberately rather than by whichever idea is
-nearest to hand.
+None of the following has been implemented or run, and none of them has a
+number. **P8 is the one exception to "not designed": its design is committed and
+hashed, and it is still not opened** — preregistering a rule before anything can
+be fitted to it is the cheapest moment to fix it, and doing so is not running it.
+The rest have not been designed either. They are recorded so that "what is left"
+is a list rather than a memory, and so that the next checkpoint is chosen
+deliberately rather than by whichever idea is nearest to hand.
 
-- **P6 — horizon.** Five checkpoints have measured one label at one horizon. The
-  6-candle horizon is the one thing every negative result so far shares, and
-  `p4_preregistration.md` §7.1 already named moving it as the first thing a later
-  checkpoint would change. It needs its own control, because the existing one
-  exists at 1h/6h and nowhere else.
-- **P7 — cross-asset and market context.** Everything so far reads one symbol on
+- **P8 — automatic trading-mode router.** Whether a causal router can choose among
+  eligible trading modes with incremental cost-aware value over fixed-mode
+  operation. Its design is committed at `docs/p8_preregistration.md` and P8 is
+  **not opened**: no P8 fit has been made and no P8 number exists.
+- **P9 — alternative target and horizon families.** Five checkpoints measured one
+  label at one horizon, and `P6` deliberately keeps six bars while changing what a
+  bar is, so the horizon question is untouched. `p4_preregistration.md` §7.1
+  already named moving it as the first thing a later checkpoint would change. It
+  needs its own control, because the existing one exists at 1h/6h and nowhere
+  else.
+- **P10 — cross-asset and market context.** Everything so far reads one symbol on
   one exchange. Whether the rest of the market carries information about BTC is
   untested and would need a new source.
-- **P8 — predefined regime-conditioned modelling.** `btc_p2b_regimes` described
-  the four outer blocks as choppy uptrends; nothing has yet asked whether a model
-  conditioned on a regime declared *in advance* behaves differently.
-- **P9 — representation and model architecture.** v4 tested one architecture and
+- **P11 — causal market-regime conditioning.** `btc_p2b_regimes` described the
+  four outer blocks as choppy uptrends; nothing has yet asked whether a model
+  conditioned on a regime declared *in advance* behaves differently. This is a
+  different axis from the P8 router, which selects a trading *style* from causal
+  state and is forbidden from selecting on realised profit.
+- **P12 — representation and model architecture.** v4 tested one architecture and
   P2a three untuned families. Whether a learned representation extracts more from
   OHLCV14 than a gradient-boosted tree does is a question about the model rather
   than about the information.

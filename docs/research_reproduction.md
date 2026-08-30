@@ -35,6 +35,10 @@ definitions: [`smc_v1.md`](smc_v1.md),
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
+| `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -473,6 +477,108 @@ same rows: its per-fold outer `sample_index_sha256` values are identical to
 P2b's. What differs is the training block it was fitted on. Its numbers are
 therefore its own, and the only control a P5 arm may be compared against is the
 one under `btc_p5_ohlcv14_<model>/`.
+
+### P6, P6-EXT and P7 — the multi-clock generation
+
+These three checkpoints do not read the 1h snapshot §2 verifies. They read a
+**second** committed source — one Binance spot `BTCUSDT` 1m archive and the
+seven clocks cut from it — with its own manifest and its own verifier:
+
+```bash
+make verify-multiclock-snapshot        # python -m tools.verify_multiclock_snapshot
+```
+
+Expected tail:
+
+```
+multi-clock source verified.
+```
+
+Like §2's verifier it recomputes rather than reads: the file digests, the
+research-input digest, the whole-minute grid, the per-clock bar availability, and
+the 1h parity comparison — recomputed from the committed 1m file and the
+committed 1h reference, and held to the exact overlap, mismatch count, agreement
+fraction and timestamp list the manifest publishes. It takes about fifteen
+seconds and touches no network.
+
+The per-month provenance records are the one part it cannot recompute, and it
+only checks their shape rather than pretending otherwise: the monthly `.zip`
+objects are not committed, so their published SHA-256s are checked for being
+SHA-256s, their declared `open_time_unit` for being one Binance actually
+publishes, and their declared row total for being at least the committed file's.
+Recomputing those digests means re-downloading the archives, which is
+`make multiclock-acquire` and needs a network.
+The 29 mismatching hours it confirms are an inconsistency inside Binance's own
+archive. They run from `2020-04-09T08:00Z` to `2022-05-01T08:00Z` and every one
+of them falls in a **training** window: none is inside any inner or outer block
+of any fold, which
+`tests/test_p6_preregistration.py::test_the_upstream_parity_disagreements_reach_no_scored_block`
+asserts against the frozen periods.
+[`multiclock_v1.md`](multiclock_v1.md) §6 has the three-way comparison that
+established the cause.
+
+**Re-acquiring the source needs a network and is not needed to reproduce
+anything.** `make multiclock-acquire` downloads each monthly object and holds it
+to the SHA-256 Binance publishes beside it; the committed Parquet is what the
+checkpoints read.
+
+```bash
+make p6-btc     && make p6-decide      # five clocks × three families -> one verdict per clock
+make p6ext-btc  && make p6ext-decide   # the same design on 4h and 1d
+make p7-btc     && make p7-decide      # consensus in two trading modes
+```
+
+**P6's runner verifies the multi-clock manifest before it fits anything**, the
+same way `nn.p2b` verifies the 1h snapshot, so a source whose manifest has
+stopped describing it produces a named rejection and zero fits.
+
+**P7 fits nothing.** It reads the frozen P6 XGBoost cells' committed per-sample
+predictions, aligns each specialist onto the decision clock by the last bar that
+had closed, applies the strict-majority rule, and scores the result through the
+same cost model. It is minutes, not hours, and re-running it cannot produce a
+different answer unless a P6 cell changed.
+
+Verification without re-fitting:
+
+```bash
+python -m tools.freeze_evidence --verify artifacts/btc_p6_SHA256SUMS.txt
+python -m tools.freeze_evidence --verify artifacts/btc_p6_decision_SHA256SUMS.txt
+python -m tools.freeze_evidence --verify artifacts/btc_p6ext_SHA256SUMS.txt
+python -m tools.freeze_evidence --verify artifacts/btc_p6ext_decision_SHA256SUMS.txt
+python -m tools.freeze_evidence --verify artifacts/btc_p7_SHA256SUMS.txt
+python -m tools.freeze_evidence --verify artifacts/btc_p7_decision_SHA256SUMS.txt
+python -m pytest tests/test_multiclock_data.py tests/test_p6_evidence.py \
+    tests/test_p6_preregistration.py tests/test_p6_extension.py \
+    tests/test_p6_units.py tests/test_p7_consensus.py \
+    tests/test_p7_evidence.py tests/test_p7_preregistration.py -q
+```
+
+`tests/test_p6_evidence.py` is the one that matters if you are auditing rather
+than running: it replays each XGBoost cell's per-sample `outer_predictions.parquet`
+through `nn.evaluate.realised_trades`, applies the three preregistered conditions
+itself, and asserts the published verdict follows — along a path that shares no
+code with the one that produced it beyond the cost model both are obliged to use.
+`tests/test_p7_evidence.py` does the same for the consensus.
+
+**How long, and how much memory.** The row counts are the plan:
+
+| clock | dataset rows | note |
+| --- | ---: | --- |
+| `1m` | 2,826,221 | the long pole; hours of XGBoost time by itself |
+| `5m` | 564,186 | |
+| `15m` | 187,170 | |
+| `30m` | 92,912 | |
+| `1h` | 45,783 | comparable to a P2b `ohlcv14` cell |
+| `4h` | 10,569 | P6-EXT |
+| `1d` | 1,253 | P6-EXT; small enough that the fold geometry, not the fit, is the constraint |
+
+`seq_len = 1` — one native bar of the fourteen columns — which is why 2.8 million
+1m samples fit at all; [`p6_preregistration.md`](p6_preregistration.md) §5
+records that choice and the measurement behind it. Expect the five-clock sweep to
+take a few hours in sequence on four cores, almost all of it on `1m`, and budget
+several GB of RAM for the `1m` cells. Running two clocks concurrently is the
+easiest saving; running two *1m families* concurrently is the easiest way to run
+out of memory.
 
 ### Optional, post-hoc
 

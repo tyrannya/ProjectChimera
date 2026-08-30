@@ -1,0 +1,956 @@
+{
+  "snapshot_schema": "chimera.multiclock-snapshot/1",
+  "symbol": "BTCUSDT",
+  "market": "spot",
+  "instrument": "binance spot BTCUSDT",
+  "research_generation": 2,
+  "source": {
+    "canonical_base_url": "https://data.binance.vision",
+    "retrieved_from": "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision",
+    "layout": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-YYYY-MM.zip",
+    "digest_source": "the .zip.CHECKSUM object Binance publishes beside each archive",
+    "months": [
+      {
+        "month": "2020-01",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-01.zip",
+        "zip_sha256": "02df6da44ed8145fbb9ed819858185d9e2f15eb025c5bec8a4ea2d8738cd0d19",
+        "member": "BTCUSDT-1m-2020-01.csv",
+        "member_sha256": "e0dd165b294294cfa3e2a27afb31817048c654a1d1893ab3acdc810ab0dfe3bd",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2020-01-01T00:00:00+00:00",
+        "last_open": "2020-01-31T23:59:00+00:00"
+      },
+      {
+        "month": "2020-02",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-02.zip",
+        "zip_sha256": "05aedf91c80f579da396951b1d9e84587d02c9684352e1ff17d4468f556c674e",
+        "member": "BTCUSDT-1m-2020-02.csv",
+        "member_sha256": "9729203de674120dfb1eed340059421998e07acd262fffa365b8d182461d959d",
+        "rows": 41346,
+        "open_time_unit": "ms",
+        "first_open": "2020-02-01T00:00:00+00:00",
+        "last_open": "2020-02-29T23:59:00+00:00"
+      },
+      {
+        "month": "2020-03",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-03.zip",
+        "zip_sha256": "ee5d21ec0f3c5bdef1da330d8b74d8571779fe757bb7e9f272847d36b95a71a2",
+        "member": "BTCUSDT-1m-2020-03.csv",
+        "member_sha256": "70e637f0175093e9030baa6a80ea587d3ca93aecface3dd676c124b9725e0c5b",
+        "rows": 44512,
+        "open_time_unit": "ms",
+        "first_open": "2020-03-01T00:00:00+00:00",
+        "last_open": "2020-03-31T23:59:00+00:00"
+      },
+      {
+        "month": "2020-04",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-04.zip",
+        "zip_sha256": "83e052ee74ede21aa617830c121ce052e5f29b735710fe65159fc594b2028301",
+        "member": "BTCUSDT-1m-2020-04.csv",
+        "member_sha256": "2e82ac13132a3bb248f5e0ee1c19f56e4dc022688d720a7b9452a568130ad07c",
+        "rows": 43050,
+        "open_time_unit": "ms",
+        "first_open": "2020-04-01T00:00:00+00:00",
+        "last_open": "2020-04-30T23:59:00+00:00"
+      },
+      {
+        "month": "2020-05",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-05.zip",
+        "zip_sha256": "3a38ca9123ab0c44063561faed5e90c3e716c93ea42c3e67a968be505b677ba0",
+        "member": "BTCUSDT-1m-2020-05.csv",
+        "member_sha256": "a8d92e5398fb57db0e4d2ab040daca4d53c3695683d45edc0f43634e65d3ab86",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2020-05-01T00:00:00+00:00",
+        "last_open": "2020-05-31T23:59:00+00:00"
+      },
+      {
+        "month": "2020-06",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-06.zip",
+        "zip_sha256": "4f7a6721f2b9f0a74d66ce7818c73dad002a454e11a5280485e3c123d27f7698",
+        "member": "BTCUSDT-1m-2020-06.csv",
+        "member_sha256": "5b20216e4447e173996f674bf0367c2bcb3ffa22274108d0c62b3145179be40e",
+        "rows": 42990,
+        "open_time_unit": "ms",
+        "first_open": "2020-06-01T00:00:00+00:00",
+        "last_open": "2020-06-30T23:59:00+00:00"
+      },
+      {
+        "month": "2020-07",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-07.zip",
+        "zip_sha256": "003bcab2ea8d5d0268f7f627a117022d4fa4826aa85bdb82bcae98dd4f24f2a2",
+        "member": "BTCUSDT-1m-2020-07.csv",
+        "member_sha256": "41219f5f437ef14b7c5d371785ed1422783575700f8edb158d88031080f9c9d0",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2020-07-01T00:00:00+00:00",
+        "last_open": "2020-07-31T23:59:00+00:00"
+      },
+      {
+        "month": "2020-08",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-08.zip",
+        "zip_sha256": "661b02c77ad1baac0d649e658dc5fb8434b6acc15560b767301e7981bdbe0c66",
+        "member": "BTCUSDT-1m-2020-08.csv",
+        "member_sha256": "b272068594a2dffcf500529550747e401f3c360dd44e439e29b897f1f26589ee",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2020-08-01T00:00:00+00:00",
+        "last_open": "2020-08-31T23:59:00+00:00"
+      },
+      {
+        "month": "2020-09",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-09.zip",
+        "zip_sha256": "a60c06861b59893bb2f06813b7f181cba970b5dac9d38fcf5db8e2c13fbd27f7",
+        "member": "BTCUSDT-1m-2020-09.csv",
+        "member_sha256": "59ea113e2cabc293f290f7b425015092696807ea2797b4198d59231188cfdd19",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2020-09-01T00:00:00+00:00",
+        "last_open": "2020-09-30T23:59:00+00:00"
+      },
+      {
+        "month": "2020-10",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-10.zip",
+        "zip_sha256": "d7b0fc63c86b2d54f4391fd4ed69e0fd12497108061ca4006d9f709e653cfe40",
+        "member": "BTCUSDT-1m-2020-10.csv",
+        "member_sha256": "021205340b5d866fb373b7b4a4b72cacb6d0a9f9d7b434c2b6385bbc3e6e005f",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2020-10-01T00:00:00+00:00",
+        "last_open": "2020-10-31T23:59:00+00:00"
+      },
+      {
+        "month": "2020-11",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-11.zip",
+        "zip_sha256": "07ff8e3aa21d340a9e25c32644a4cd6c15e4280879d39815159eb5c858895488",
+        "member": "BTCUSDT-1m-2020-11.csv",
+        "member_sha256": "6d27e11092b4c749a0bbc2432c76bc6d8719139add2487f7314f10bb1a9ef7f1",
+        "rows": 43140,
+        "open_time_unit": "ms",
+        "first_open": "2020-11-01T00:00:00+00:00",
+        "last_open": "2020-11-30T23:59:00+00:00"
+      },
+      {
+        "month": "2020-12",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2020-12.zip",
+        "zip_sha256": "a53a9352fd808d10981f68191138b39ef142e15ca88e03a061309f1699419749",
+        "member": "BTCUSDT-1m-2020-12.csv",
+        "member_sha256": "89450bc26c774d5d8fdb3f8d86cd9c76a3f6ead364a89c66d37b3fe9c3714c56",
+        "rows": 44350,
+        "open_time_unit": "ms",
+        "first_open": "2020-12-01T00:00:00+00:00",
+        "last_open": "2020-12-31T23:59:00+00:00"
+      },
+      {
+        "month": "2021-01",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-01.zip",
+        "zip_sha256": "9364a063efa0604d5b9d2536fb68f922da5afa3d8f94a26a527471a1e2f87801",
+        "member": "BTCUSDT-1m-2021-01.csv",
+        "member_sha256": "3858592fb2311d653b46b42cb3e949cba766ea45b9dbab6df41553613e91db6d",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2021-01-01T00:00:00+00:00",
+        "last_open": "2021-01-31T23:59:00+00:00"
+      },
+      {
+        "month": "2021-02",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-02.zip",
+        "zip_sha256": "21723e4951ba30037cb8417278b7cf4a38d47c625b1cb5ac97864d539ae6d407",
+        "member": "BTCUSDT-1m-2021-02.csv",
+        "member_sha256": "9dd677da0c6aa74bbcfe6a0be5ed165ac349b206ab84a9534a1d8a6fdac0a923",
+        "rows": 40241,
+        "open_time_unit": "ms",
+        "first_open": "2021-02-01T00:00:00+00:00",
+        "last_open": "2021-02-28T23:59:00+00:00"
+      },
+      {
+        "month": "2021-03",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-03.zip",
+        "zip_sha256": "54387ec23e27440b220c693b94e97c21dbb3a82d3b7606fd8cfe9f40a69cc85b",
+        "member": "BTCUSDT-1m-2021-03.csv",
+        "member_sha256": "15cd5b44721f826d04b67f474bc5e45f4155be7d7193e234218a9edda827d0af",
+        "rows": 44550,
+        "open_time_unit": "ms",
+        "first_open": "2021-03-01T00:00:00+00:00",
+        "last_open": "2021-03-31T23:59:00+00:00"
+      },
+      {
+        "month": "2021-04",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-04.zip",
+        "zip_sha256": "016ea34ee7e52c4783c1e03ec65c710361c1ccf228d3a4c0b44a4d0baa859641",
+        "member": "BTCUSDT-1m-2021-04.csv",
+        "member_sha256": "f84d3e4945e67d2d86d23fbb001b0d0f6e2dc2126b7b0aa485134dfd835977df",
+        "rows": 42766,
+        "open_time_unit": "ms",
+        "first_open": "2021-04-01T00:00:00+00:00",
+        "last_open": "2021-04-30T23:59:00+00:00"
+      },
+      {
+        "month": "2021-05",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-05.zip",
+        "zip_sha256": "afed5ec95ede42509edb5ffce2d64c4af0916cac9878df99b8bb15c8e7d1488a",
+        "member": "BTCUSDT-1m-2021-05.csv",
+        "member_sha256": "5a76e77ff0837dbdf0b87f310159ab657f213f9458cb15d62440dcbf19c4e7e6",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2021-05-01T00:00:00+00:00",
+        "last_open": "2021-05-31T23:59:00+00:00"
+      },
+      {
+        "month": "2021-06",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-06.zip",
+        "zip_sha256": "29ff5a78be8701d67376d480041f93957f5d26b3435c9feb48001a77ac973c62",
+        "member": "BTCUSDT-1m-2021-06.csv",
+        "member_sha256": "fc0aa4fa2dce7763b1957ea61da49f0371900bae37b937aac0518e7ef74f3b7b",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2021-06-01T00:00:00+00:00",
+        "last_open": "2021-06-30T23:59:00+00:00"
+      },
+      {
+        "month": "2021-07",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-07.zip",
+        "zip_sha256": "b7befce6203924e3c782ad19859bbe7d4fe38a2bd2d525101235cc6fc6fc10a8",
+        "member": "BTCUSDT-1m-2021-07.csv",
+        "member_sha256": "a25f7d5789c3836749e9f831db72d59aa3991f5778742e0d4842b4bdece49512",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2021-07-01T00:00:00+00:00",
+        "last_open": "2021-07-31T23:59:00+00:00"
+      },
+      {
+        "month": "2021-08",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-08.zip",
+        "zip_sha256": "8e886c3aeb7eb625493e875bfaf181eeb5a316dad424c86d042ad2c73cad563b",
+        "member": "BTCUSDT-1m-2021-08.csv",
+        "member_sha256": "4e043c2461d2b29ab057df951bd15ef5ee25d6a9a4a9e08b2730bce09fb21898",
+        "rows": 44370,
+        "open_time_unit": "ms",
+        "first_open": "2021-08-01T00:00:00+00:00",
+        "last_open": "2021-08-31T23:59:00+00:00"
+      },
+      {
+        "month": "2021-09",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-09.zip",
+        "zip_sha256": "27edb4a4623701ba3c5b3f6d4de1848964abb31188036236827fd28cf9bdb853",
+        "member": "BTCUSDT-1m-2021-09.csv",
+        "member_sha256": "961507e83652a0d7fc47b91ab6dc824bd81e9827943ae28b659ae4ac7225676f",
+        "rows": 43080,
+        "open_time_unit": "ms",
+        "first_open": "2021-09-01T00:00:00+00:00",
+        "last_open": "2021-09-30T23:59:00+00:00"
+      },
+      {
+        "month": "2021-10",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-10.zip",
+        "zip_sha256": "aad7e2fa6d48c33098b61ac5f7dbbbb4d4234222b5a5ebb4e9b1bbced7670f3f",
+        "member": "BTCUSDT-1m-2021-10.csv",
+        "member_sha256": "d989cb376e851d27d35f2de3787a743fbe87f6028b92c25e610bfd85021198df",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2021-10-01T00:00:00+00:00",
+        "last_open": "2021-10-31T23:59:00+00:00"
+      },
+      {
+        "month": "2021-11",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-11.zip",
+        "zip_sha256": "cb4cf36e1590663a803b28261189a719fd00bc1d8eef672378df02a934862df2",
+        "member": "BTCUSDT-1m-2021-11.csv",
+        "member_sha256": "e481dd8e2ed98546206afb9327da3f79ea82bca6918880da88a7f15bf9ae5427",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2021-11-01T00:00:00+00:00",
+        "last_open": "2021-11-30T23:59:00+00:00"
+      },
+      {
+        "month": "2021-12",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2021-12.zip",
+        "zip_sha256": "2b6c79547da2d87e6735d29fcb2d75f0e15c9cbfcec6396c8d8f20b3632d8e0b",
+        "member": "BTCUSDT-1m-2021-12.csv",
+        "member_sha256": "8575a1d362d4c15cf277244a8680b4bfd48907c45cb18b5d1836dd5fdbd87bf6",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2021-12-01T00:00:00+00:00",
+        "last_open": "2021-12-31T23:59:00+00:00"
+      },
+      {
+        "month": "2022-01",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-01.zip",
+        "zip_sha256": "ce0e16e834331e70b3041677c7f409818d5904bb59cb7b880695e4cacd34fc09",
+        "member": "BTCUSDT-1m-2022-01.csv",
+        "member_sha256": "af2944215faffad7df1e0fe29cd54131cfc97d11ca7651a2fb4300cbe70db75e",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2022-01-01T00:00:00+00:00",
+        "last_open": "2022-01-31T23:59:00+00:00"
+      },
+      {
+        "month": "2022-02",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-02.zip",
+        "zip_sha256": "748844587c78902e4c35886620197053ee39f3e7104fbdcbfde00fe829bbfd1a",
+        "member": "BTCUSDT-1m-2022-02.csv",
+        "member_sha256": "eddc214347dff86dce718b2b665134c051868b871a8a3d7708eaed511458f8ab",
+        "rows": 40320,
+        "open_time_unit": "ms",
+        "first_open": "2022-02-01T00:00:00+00:00",
+        "last_open": "2022-02-28T23:59:00+00:00"
+      },
+      {
+        "month": "2022-03",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-03.zip",
+        "zip_sha256": "f8a05f6657cb7f8ac41c047bae65bff74703f058f56517dca28a817d390b82d3",
+        "member": "BTCUSDT-1m-2022-03.csv",
+        "member_sha256": "c9c7a4c176443c0b644294bc393bb2a17e2bba567ffd73939e07aa394eac7455",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2022-03-01T00:00:00+00:00",
+        "last_open": "2022-03-31T23:59:00+00:00"
+      },
+      {
+        "month": "2022-04",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-04.zip",
+        "zip_sha256": "6e840c81076ac25e6acdbfe4aaeb7aa8b1895a70d8111a3c2908c5134072f097",
+        "member": "BTCUSDT-1m-2022-04.csv",
+        "member_sha256": "7583d2b18ac90cddce8047e577b6e2f7363fffa35d9e779e9a91a737688f22a3",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2022-04-01T00:00:00+00:00",
+        "last_open": "2022-04-30T23:59:00+00:00"
+      },
+      {
+        "month": "2022-05",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-05.zip",
+        "zip_sha256": "154311f08aa264e233b0c7b472aa490c8cfd1b6083ba86cf6c18134e50536b89",
+        "member": "BTCUSDT-1m-2022-05.csv",
+        "member_sha256": "70f08f4bce3f8c54bb83de450affc16b03e773146f0509a36c07cd3223747d9e",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2022-05-01T00:00:00+00:00",
+        "last_open": "2022-05-31T23:59:00+00:00"
+      },
+      {
+        "month": "2022-06",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-06.zip",
+        "zip_sha256": "0ced8899e9c3b2c098e1c5fc4993250bac22d8684d2d38404310351f35e32c0c",
+        "member": "BTCUSDT-1m-2022-06.csv",
+        "member_sha256": "c7fc93851aa95f0297e2bb2910cdbd3253b6ab154190054c510a1318f5eb04e7",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2022-06-01T00:00:00+00:00",
+        "last_open": "2022-06-30T23:59:00+00:00"
+      },
+      {
+        "month": "2022-07",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-07.zip",
+        "zip_sha256": "b7b9100066d75037063d0798b91fab91d62c348a21888ace2363a75a6089e7cc",
+        "member": "BTCUSDT-1m-2022-07.csv",
+        "member_sha256": "0de63f8c025ea362b753d577981d4164fac16a3b86e66bf7d61885dafd106aa0",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2022-07-01T00:00:00+00:00",
+        "last_open": "2022-07-31T23:59:00+00:00"
+      },
+      {
+        "month": "2022-08",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-08.zip",
+        "zip_sha256": "7517a604803c40cd38b29fb490d7bce83d01e1e4ac9e9ae2bcd52adaea55a291",
+        "member": "BTCUSDT-1m-2022-08.csv",
+        "member_sha256": "02d157f1cd054772b0d5445c20a36a8844cd77878e261363abb76dd109a9b19f",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2022-08-01T00:00:00+00:00",
+        "last_open": "2022-08-31T23:59:00+00:00"
+      },
+      {
+        "month": "2022-09",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-09.zip",
+        "zip_sha256": "72b22ae8bbb91342c672c2915680729ce2e7223d21386de08d4af906e6bb0713",
+        "member": "BTCUSDT-1m-2022-09.csv",
+        "member_sha256": "ad6d900d7cb478b5c1e0665d0c56454c77cf378153ef79bd31824b185d6fd27b",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2022-09-01T00:00:00+00:00",
+        "last_open": "2022-09-30T23:59:00+00:00"
+      },
+      {
+        "month": "2022-10",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-10.zip",
+        "zip_sha256": "5c9497d81e565c88256b1b17e86bc7257fc1f4a133ec50109c6a5a9bbd180f3f",
+        "member": "BTCUSDT-1m-2022-10.csv",
+        "member_sha256": "cb5d93440d4f7a6341411863e61150428a981b9bbae0a910f6953bc7a4f2e31e",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2022-10-01T00:00:00+00:00",
+        "last_open": "2022-10-31T23:59:00+00:00"
+      },
+      {
+        "month": "2022-11",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-11.zip",
+        "zip_sha256": "7b7463638505f303ea91ababadff27bbb46c6d448428f99288f5faf790250a71",
+        "member": "BTCUSDT-1m-2022-11.csv",
+        "member_sha256": "73d837188052b2f39e2e71d2c2928b7d7771a27bd766aa7d6de2393f1742545c",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2022-11-01T00:00:00+00:00",
+        "last_open": "2022-11-30T23:59:00+00:00"
+      },
+      {
+        "month": "2022-12",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2022-12.zip",
+        "zip_sha256": "38f93ad56a5f13491094b0ef965f03cea2d6097cc72b7179489b7d60d5fd446b",
+        "member": "BTCUSDT-1m-2022-12.csv",
+        "member_sha256": "32f9928b0a76ddf8bb697f5d681832b4dbd771e95462d89a9201640a3ec78bb6",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2022-12-01T00:00:00+00:00",
+        "last_open": "2022-12-31T23:59:00+00:00"
+      },
+      {
+        "month": "2023-01",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-01.zip",
+        "zip_sha256": "664116c2f33465d191684887f0d4834c02eb0a2635ada43eca855a99e6b6b0c5",
+        "member": "BTCUSDT-1m-2023-01.csv",
+        "member_sha256": "387d1622412ca6198eb223c70ff51b443ab765dacfcc7dd17b16619dd6953972",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2023-01-01T00:00:00+00:00",
+        "last_open": "2023-01-31T23:59:00+00:00"
+      },
+      {
+        "month": "2023-02",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-02.zip",
+        "zip_sha256": "bff03104aa247f791a12a122336cb8c928e19fea5b74276d83a248878b9a619a",
+        "member": "BTCUSDT-1m-2023-02.csv",
+        "member_sha256": "f80ab0eded0bb69d61f8f1ac5bf4799f2dfa688e82f499ca84e8bd8e7f1b3289",
+        "rows": 40320,
+        "open_time_unit": "ms",
+        "first_open": "2023-02-01T00:00:00+00:00",
+        "last_open": "2023-02-28T23:59:00+00:00"
+      },
+      {
+        "month": "2023-03",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-03.zip",
+        "zip_sha256": "5591171a15f210af647a2fb68ab8cbad45a3a595cfe9a0eec9d06e5e84928bec",
+        "member": "BTCUSDT-1m-2023-03.csv",
+        "member_sha256": "dcf26a051aceaadb529cd14607cecc5c87db59313a8c623eb2cf7be0415825c3",
+        "rows": 44560,
+        "open_time_unit": "ms",
+        "first_open": "2023-03-01T00:00:00+00:00",
+        "last_open": "2023-03-31T23:59:00+00:00"
+      },
+      {
+        "month": "2023-04",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-04.zip",
+        "zip_sha256": "c71baedea84f9fc1a0ad297b383505b1cb84c0a7fc111caa149aa6fb2defa5da",
+        "member": "BTCUSDT-1m-2023-04.csv",
+        "member_sha256": "d272e062e46d2df48471c128bc408138e07a7ad6b90e54b8ac348478f65413bd",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2023-04-01T00:00:00+00:00",
+        "last_open": "2023-04-30T23:59:00+00:00"
+      },
+      {
+        "month": "2023-05",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-05.zip",
+        "zip_sha256": "c83bd079dc67b9e542d07fe9491f8b1bf513185d6d7cc4ce17710f21c8d0037b",
+        "member": "BTCUSDT-1m-2023-05.csv",
+        "member_sha256": "a141cd194a164a029a7d0e5f83ce7026f831b1afc49e6d05f08bd626f03da4ec",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2023-05-01T00:00:00+00:00",
+        "last_open": "2023-05-31T23:59:00+00:00"
+      },
+      {
+        "month": "2023-06",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-06.zip",
+        "zip_sha256": "d8cf5d1817fa1d8cba8eaf4d189614cf05b15d7233e9e29a0156d2dee2cfaad1",
+        "member": "BTCUSDT-1m-2023-06.csv",
+        "member_sha256": "59f8fcfd7aa7eee777df5e86003094d7a4f7e384744e84b3126691d84184cb61",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2023-06-01T00:00:00+00:00",
+        "last_open": "2023-06-30T23:59:00+00:00"
+      },
+      {
+        "month": "2023-07",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-07.zip",
+        "zip_sha256": "8f32a4ef47bd758b33bfaf680a71792f8d97ca4d89ae55ff3d2272cc3974560c",
+        "member": "BTCUSDT-1m-2023-07.csv",
+        "member_sha256": "1f4e58b3d039d68f8583df0d1f905a2ab538ba618a41a50d75489c9388e4cd45",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2023-07-01T00:00:00+00:00",
+        "last_open": "2023-07-31T23:59:00+00:00"
+      },
+      {
+        "month": "2023-08",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-08.zip",
+        "zip_sha256": "b4d775d24d905660d8ad00bfa1fc0157ec83c4b4f0c4aacca8818dad5d17c6c6",
+        "member": "BTCUSDT-1m-2023-08.csv",
+        "member_sha256": "ee6a9a57719aedcb5d1b52971f18a6f592f5b7e272c39bdf38164b99a8077c76",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2023-08-01T00:00:00+00:00",
+        "last_open": "2023-08-31T23:59:00+00:00"
+      },
+      {
+        "month": "2023-09",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-09.zip",
+        "zip_sha256": "22333eaa3f971ad0686c02532b7b23d02e5e32c298d9bf4fa55894fbb755da99",
+        "member": "BTCUSDT-1m-2023-09.csv",
+        "member_sha256": "1c41d68df56c40c8e433c1614a76cabc0fe37b1c56dc095fa9f2bac761168bdd",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2023-09-01T00:00:00+00:00",
+        "last_open": "2023-09-30T23:59:00+00:00"
+      },
+      {
+        "month": "2023-10",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-10.zip",
+        "zip_sha256": "9e854972545806398d124571916348238ce39961072730c200cca3c2e0bd50a3",
+        "member": "BTCUSDT-1m-2023-10.csv",
+        "member_sha256": "8e7790e77f5a91b45581919ad90335782a02841794256390b49dcd22fd612572",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2023-10-01T00:00:00+00:00",
+        "last_open": "2023-10-31T23:59:00+00:00"
+      },
+      {
+        "month": "2023-11",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-11.zip",
+        "zip_sha256": "4b1462878f31fd736385b761f6bb0a3f525936a6ae9f5f52c3e3b95ee2df35b4",
+        "member": "BTCUSDT-1m-2023-11.csv",
+        "member_sha256": "110fae0141310c9d27d233dd857a978aad8844c8e8af2ebd6a6c8c59d1f4a9c9",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2023-11-01T00:00:00+00:00",
+        "last_open": "2023-11-30T23:59:00+00:00"
+      },
+      {
+        "month": "2023-12",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2023-12.zip",
+        "zip_sha256": "c8b684a66b5ddbb58bf116251359c2dd83a07ce46791f4caa16dd4301eb17636",
+        "member": "BTCUSDT-1m-2023-12.csv",
+        "member_sha256": "4e6a01814f41ab0bc7e5c4254a592fe15239d726f15daa8240f64b78ac550f60",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2023-12-01T00:00:00+00:00",
+        "last_open": "2023-12-31T23:59:00+00:00"
+      },
+      {
+        "month": "2024-01",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01.zip",
+        "zip_sha256": "40b78258091a468f8756843f207f5913eafc1d6e756c40a78711320d93fa5e75",
+        "member": "BTCUSDT-1m-2024-01.csv",
+        "member_sha256": "acdcd5dee054732c93d60094c4be319447661dd5cc341fd206a6d9f87eb48c21",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2024-01-01T00:00:00+00:00",
+        "last_open": "2024-01-31T23:59:00+00:00"
+      },
+      {
+        "month": "2024-02",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-02.zip",
+        "zip_sha256": "431132e0db8b9fe6e5c93c8e9ba3ae37dbcfa0edcdd57618b1b78ac18d14be79",
+        "member": "BTCUSDT-1m-2024-02.csv",
+        "member_sha256": "43e53e6c4b632524ca58c4762097b46a584cdb106b91a29463309bcd57c21f9c",
+        "rows": 41760,
+        "open_time_unit": "ms",
+        "first_open": "2024-02-01T00:00:00+00:00",
+        "last_open": "2024-02-29T23:59:00+00:00"
+      },
+      {
+        "month": "2024-03",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-03.zip",
+        "zip_sha256": "a9af86295eae839f1d072643c67eed7fcc47bb1d82c12ef312d041eec9511e7b",
+        "member": "BTCUSDT-1m-2024-03.csv",
+        "member_sha256": "3db655c5337a15bed8c96389b3f89e2d18284806b872f565c7a4dd823fab2395",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2024-03-01T00:00:00+00:00",
+        "last_open": "2024-03-31T23:59:00+00:00"
+      },
+      {
+        "month": "2024-04",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-04.zip",
+        "zip_sha256": "753040cbfaa72bf9b1fdc6253a3b521a9a174a664dfd0929a556be327b016bc6",
+        "member": "BTCUSDT-1m-2024-04.csv",
+        "member_sha256": "a7d38019223084def84df790044d76e0edb6620003f5c0c709e0a62d72177467",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2024-04-01T00:00:00+00:00",
+        "last_open": "2024-04-30T23:59:00+00:00"
+      },
+      {
+        "month": "2024-05",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-05.zip",
+        "zip_sha256": "0f709143f66a09acc430d24a5f27f9accd52689c23ce10f2c0b6ea26997bfa8a",
+        "member": "BTCUSDT-1m-2024-05.csv",
+        "member_sha256": "bbfa586a2c8e1573e3a922f8c35c042c4fde0886b7c7c4cb528be2f8e15bb181",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2024-05-01T00:00:00+00:00",
+        "last_open": "2024-05-31T23:59:00+00:00"
+      },
+      {
+        "month": "2024-06",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-06.zip",
+        "zip_sha256": "90f4fc3f55918787848c71f4cd0f2f1a5851bbffaf6392e76e9ab555b7479d2b",
+        "member": "BTCUSDT-1m-2024-06.csv",
+        "member_sha256": "bcf78ccd1fc41efa33abe66a78c4ab80257e063ac67fc5219f43c9d09e4c5521",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2024-06-01T00:00:00+00:00",
+        "last_open": "2024-06-30T23:59:00+00:00"
+      },
+      {
+        "month": "2024-07",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-07.zip",
+        "zip_sha256": "9cfd749fd2027a0c6f261bed607b49dd1256369fb41b784934544a3676f8162e",
+        "member": "BTCUSDT-1m-2024-07.csv",
+        "member_sha256": "040652cbc3172a2621f64988fd2d0c42ccb8d9b33c2806a563fa2ba91955ff07",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2024-07-01T00:00:00+00:00",
+        "last_open": "2024-07-31T23:59:00+00:00"
+      },
+      {
+        "month": "2024-08",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-08.zip",
+        "zip_sha256": "6a1cac2a5482132dc5a030534aa028e2becc560877f2b93b7add90194f576c42",
+        "member": "BTCUSDT-1m-2024-08.csv",
+        "member_sha256": "02a108cbb50da7bbc359afa7001f9e10f38bbe6bc651ac0b4029238020990b63",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2024-08-01T00:00:00+00:00",
+        "last_open": "2024-08-31T23:59:00+00:00"
+      },
+      {
+        "month": "2024-09",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-09.zip",
+        "zip_sha256": "1e30f6091b05eeb7b0449735d749354b81ab429ab1449bae82a21e316db8eac3",
+        "member": "BTCUSDT-1m-2024-09.csv",
+        "member_sha256": "8f0334ec45246079b3352e743f6c2ef9fd17cb796ac37aae5876889d811a9317",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2024-09-01T00:00:00+00:00",
+        "last_open": "2024-09-30T23:59:00+00:00"
+      },
+      {
+        "month": "2024-10",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-10.zip",
+        "zip_sha256": "13f7f9f9bed652fd152422246cfbcaefa6223692c5c37fb3ca4e72f45501e607",
+        "member": "BTCUSDT-1m-2024-10.csv",
+        "member_sha256": "e013ea559c03b4079545c8fc842256d91fe9f16c530d41241ebfed01bc20050c",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2024-10-01T00:00:00+00:00",
+        "last_open": "2024-10-31T23:59:00+00:00"
+      },
+      {
+        "month": "2024-11",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-11.zip",
+        "zip_sha256": "c30a63bd0e8a77f2d18a2a019272b907f29a84fd5378796cf9333b041edcb12b",
+        "member": "BTCUSDT-1m-2024-11.csv",
+        "member_sha256": "46f6b1b621e5ed46672db6ccd12f36060adb7ebc0a7278fba3a7428fbe6c2b97",
+        "rows": 43200,
+        "open_time_unit": "ms",
+        "first_open": "2024-11-01T00:00:00+00:00",
+        "last_open": "2024-11-30T23:59:00+00:00"
+      },
+      {
+        "month": "2024-12",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-12.zip",
+        "zip_sha256": "58fef0b7c7abce7a0201efd04ed3732f236f607f3fcecf228fb8384cad1ae2c1",
+        "member": "BTCUSDT-1m-2024-12.csv",
+        "member_sha256": "7cf556546979e804f56f875768903ac32db2f9d2ece06551578d9e34ef3b5a03",
+        "rows": 44640,
+        "open_time_unit": "ms",
+        "first_open": "2024-12-01T00:00:00+00:00",
+        "last_open": "2024-12-31T23:59:00+00:00"
+      },
+      {
+        "month": "2025-01",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-01.zip",
+        "zip_sha256": "8d028b2f91aad57d6b693d44449c93f9c4b7044f55f298c8a3ac40ab676dafac",
+        "member": "BTCUSDT-1m-2025-01.csv",
+        "member_sha256": "591e74443aed0082ecd473dd10239ecbc2c671ae19a5227712f4f50aa58632ba",
+        "rows": 44640,
+        "open_time_unit": "us",
+        "first_open": "2025-01-01T00:00:00+00:00",
+        "last_open": "2025-01-31T23:59:00+00:00"
+      },
+      {
+        "month": "2025-02",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-02.zip",
+        "zip_sha256": "26b3795072983a66bdbe8327e0d5e71069bdd5ca831d4da3850ba68ef7a991ef",
+        "member": "BTCUSDT-1m-2025-02.csv",
+        "member_sha256": "d3abe94ec3a74b90eb7e213170991c56051651eca7a25cf1429bdd06e8d78083",
+        "rows": 40320,
+        "open_time_unit": "us",
+        "first_open": "2025-02-01T00:00:00+00:00",
+        "last_open": "2025-02-28T23:59:00+00:00"
+      },
+      {
+        "month": "2025-03",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-03.zip",
+        "zip_sha256": "e333601b6c721434f3cdd6670ffde2371bef7946572864c49ba6431a690ab1ca",
+        "member": "BTCUSDT-1m-2025-03.csv",
+        "member_sha256": "0a89efd39f42d3037040231663d4547250879a1d03a735ee0c9ce29dc85aaf89",
+        "rows": 44640,
+        "open_time_unit": "us",
+        "first_open": "2025-03-01T00:00:00+00:00",
+        "last_open": "2025-03-31T23:59:00+00:00"
+      },
+      {
+        "month": "2025-04",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-04.zip",
+        "zip_sha256": "4103d48887f9f5ec04144b190314ec31db9e3094674e5d53a3436b338854848f",
+        "member": "BTCUSDT-1m-2025-04.csv",
+        "member_sha256": "26a6535344615f22b31af5b5976540774a32857180acbca599686e10ccb78695",
+        "rows": 43200,
+        "open_time_unit": "us",
+        "first_open": "2025-04-01T00:00:00+00:00",
+        "last_open": "2025-04-30T23:59:00+00:00"
+      },
+      {
+        "month": "2025-05",
+        "object": "data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-05.zip",
+        "zip_sha256": "7f95bf97e3ccfbb55cd002f124a54dc1726ced7cfd54e6fd200e59845ca95d5c",
+        "member": "BTCUSDT-1m-2025-05.csv",
+        "member_sha256": "634e722b6aa0eb43b72de1f5dac00d299cc16f146e2d032fd4350b15d16b9c5b",
+        "rows": 44640,
+        "open_time_unit": "us",
+        "first_open": "2025-05-01T00:00:00+00:00",
+        "last_open": "2025-05-31T23:59:00+00:00"
+      }
+    ],
+    "month_count": 65
+  },
+  "boundaries": {
+    "research_visible_end": "2025-05-19T08:00:00+00:00",
+    "research_visible_end_is": "the first instant of the retired P4-HOLD region",
+    "styx_start": "2025-08-27T23:00:00+00:00",
+    "p4_hold_opened": false,
+    "styx_opened": false
+  },
+  "minutes": {
+    "path": "data/research/btc_usdt_multiclock_gen2_1m_pre_boundary.parquet",
+    "rows": 2827755,
+    "start": "2020-01-01T00:00:00+00:00",
+    "end": "2025-05-19T07:59:00+00:00",
+    "sha256": "d3e5204905328b80537677e0f5e9cd561de63a576a4665baa227cf1babb03018",
+    "digest": "6da803a79797430097945aaf183c1430300ebad05f3302c059062dfeb2443987",
+    "gaps": [
+      {
+        "after": "2020-02-09T01:59:00+00:00",
+        "before": "2020-02-09T03:00:00+00:00",
+        "missing_minutes": 60
+      },
+      {
+        "after": "2020-02-19T11:35:00+00:00",
+        "before": "2020-02-19T17:30:00+00:00",
+        "missing_minutes": 354
+      },
+      {
+        "after": "2020-03-04T09:21:00+00:00",
+        "before": "2020-03-04T11:30:00+00:00",
+        "missing_minutes": 128
+      },
+      {
+        "after": "2020-04-25T01:59:00+00:00",
+        "before": "2020-04-25T04:30:00+00:00",
+        "missing_minutes": 150
+      },
+      {
+        "after": "2020-06-28T01:59:00+00:00",
+        "before": "2020-06-28T05:30:00+00:00",
+        "missing_minutes": 210
+      },
+      {
+        "after": "2020-11-30T05:59:00+00:00",
+        "before": "2020-11-30T07:00:00+00:00",
+        "missing_minutes": 60
+      },
+      {
+        "after": "2020-12-21T14:09:00+00:00",
+        "before": "2020-12-21T18:00:00+00:00",
+        "missing_minutes": 230
+      },
+      {
+        "after": "2020-12-25T01:59:00+00:00",
+        "before": "2020-12-25T03:00:00+00:00",
+        "missing_minutes": 60
+      },
+      {
+        "after": "2021-02-11T03:40:00+00:00",
+        "before": "2021-02-11T05:00:00+00:00",
+        "missing_minutes": 79
+      },
+      {
+        "after": "2021-03-06T01:59:00+00:00",
+        "before": "2021-03-06T03:30:00+00:00",
+        "missing_minutes": 90
+      },
+      {
+        "after": "2021-04-20T01:59:00+00:00",
+        "before": "2021-04-20T04:30:00+00:00",
+        "missing_minutes": 150
+      },
+      {
+        "after": "2021-04-25T04:00:00+00:00",
+        "before": "2021-04-25T08:45:00+00:00",
+        "missing_minutes": 284
+      },
+      {
+        "after": "2021-08-13T01:59:00+00:00",
+        "before": "2021-08-13T06:30:00+00:00",
+        "missing_minutes": 270
+      },
+      {
+        "after": "2021-09-29T06:59:00+00:00",
+        "before": "2021-09-29T09:00:00+00:00",
+        "missing_minutes": 120
+      },
+      {
+        "after": "2023-03-24T12:39:00+00:00",
+        "before": "2023-03-24T14:00:00+00:00",
+        "missing_minutes": 80
+      }
+    ]
+  },
+  "clocks": {
+    "1m": {
+      "timeframe": "1m",
+      "constituent_minutes": 1,
+      "rows": 2827755,
+      "start": "2020-01-01T00:00:00+00:00",
+      "end": "2025-05-19T07:59:00+00:00",
+      "digest": "6da803a79797430097945aaf183c1430300ebad05f3302c059062dfeb2443987",
+      "buckets_touched": 2827755,
+      "complete_bars": 2827755,
+      "incomplete_bars_dropped": 0
+    },
+    "5m": {
+      "timeframe": "5m",
+      "constituent_minutes": 5,
+      "rows": 565550,
+      "start": "2020-01-01T00:00:00+00:00",
+      "end": "2025-05-19T07:55:00+00:00",
+      "digest": "053788d8febee25c17b04ae9a52998727e4a58df3af1523fa6f57a6f7832f9c8",
+      "buckets_touched": 565554,
+      "complete_bars": 565550,
+      "incomplete_bars_dropped": 4
+    },
+    "15m": {
+      "timeframe": "15m",
+      "constituent_minutes": 15,
+      "rows": 188514,
+      "start": "2020-01-01T00:00:00+00:00",
+      "end": "2025-05-19T07:45:00+00:00",
+      "digest": "f4ea496ae265af5c844eb34c21ec33747a87566d3ff1419572b89d9b4af4ea9b",
+      "buckets_touched": 188520,
+      "complete_bars": 188514,
+      "incomplete_bars_dropped": 6
+    },
+    "30m": {
+      "timeframe": "30m",
+      "constituent_minutes": 30,
+      "rows": 94256,
+      "start": "2020-01-01T00:00:00+00:00",
+      "end": "2025-05-19T07:30:00+00:00",
+      "digest": "c20955ef9ad79783b699a71f594e97bd1265d639f4b7f15af9dfa1bbae8b1abc",
+      "buckets_touched": 94263,
+      "complete_bars": 94256,
+      "incomplete_bars_dropped": 7
+    },
+    "1h": {
+      "timeframe": "1h",
+      "constituent_minutes": 60,
+      "rows": 47123,
+      "start": "2020-01-01T00:00:00+00:00",
+      "end": "2025-05-19T07:00:00+00:00",
+      "digest": "108930f3c9db44b5ebf24de564690bf169407c6791f4e3e3fcd445a2b03e3e3c",
+      "buckets_touched": 47137,
+      "complete_bars": 47123,
+      "incomplete_bars_dropped": 14
+    },
+    "4h": {
+      "timeframe": "4h",
+      "constituent_minutes": 240,
+      "rows": 11767,
+      "start": "2020-01-01T00:00:00+00:00",
+      "end": "2025-05-19T04:00:00+00:00",
+      "digest": "a2afe6a17c038e35112f4a7ce63c7c97b7db0b46a0377e329553136efdb6e6c2",
+      "buckets_touched": 11791,
+      "complete_bars": 11767,
+      "incomplete_bars_dropped": 24
+    },
+    "1d": {
+      "timeframe": "1d",
+      "constituent_minutes": 1440,
+      "rows": 1950,
+      "start": "2020-01-01T00:00:00+00:00",
+      "end": "2025-05-18T00:00:00+00:00",
+      "digest": "00dd2dea49950308c89f0b370fec06a5ee98fd72cb67bb8f42cf270acd6e006b",
+      "buckets_touched": 1966,
+      "complete_bars": 1950,
+      "incomplete_bars_dropped": 16
+    }
+  },
+  "parity_1h": {
+    "timeframe": "1h",
+    "tolerance": 1e-09,
+    "overlapping_bars": 47123,
+    "only_in_left": 0,
+    "only_in_right": 13,
+    "mismatching_bars": 29,
+    "max_relative_difference": {
+      "open": 0.0,
+      "high": 0.004770791253183518,
+      "low": 0.004339754159774094,
+      "close": 0.0015338613449305805,
+      "volume": 0.23940025407806476
+    },
+    "exact_columns": [
+      "open"
+    ],
+    "mismatching_timestamps": [
+      "2020-04-09T08:00:00+00:00",
+      "2020-06-14T01:00:00+00:00",
+      "2020-06-24T01:00:00+00:00",
+      "2020-10-27T06:00:00+00:00",
+      "2020-12-21T13:00:00+00:00",
+      "2021-01-11T08:00:00+00:00",
+      "2021-02-04T09:00:00+00:00",
+      "2021-02-08T14:00:00+00:00",
+      "2021-02-08T15:00:00+00:00",
+      "2021-04-01T10:00:00+00:00",
+      "2021-04-22T02:00:00+00:00",
+      "2021-04-23T01:00:00+00:00",
+      "2021-04-23T02:00:00+00:00",
+      "2021-08-19T06:00:00+00:00",
+      "2021-09-21T13:00:00+00:00",
+      "2021-09-23T01:00:00+00:00",
+      "2021-10-23T05:00:00+00:00",
+      "2021-10-30T07:00:00+00:00",
+      "2021-12-24T03:00:00+00:00",
+      "2021-12-24T04:00:00+00:00",
+      "2021-12-27T07:00:00+00:00",
+      "2021-12-31T00:00:00+00:00",
+      "2022-02-05T06:00:00+00:00",
+      "2022-02-23T06:00:00+00:00",
+      "2022-04-13T05:00:00+00:00",
+      "2022-04-13T06:00:00+00:00",
+      "2022-04-25T09:00:00+00:00",
+      "2022-04-28T01:00:00+00:00",
+      "2022-05-01T08:00:00+00:00"
+    ],
+    "reference": "data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet",
+    "reference_rows": 47136,
+    "agreeing_bars": 47094,
+    "agreement_fraction": 0.999384589,
+    "note": "The 13 hours present only in the committed history are hours in which the 1m archive is short of 60 minutes; the strict full-constituent rule makes them unavailable rather than partial. The disagreeing hours are an upstream inconsistency between two series Binance publishes itself and are enumerated above, not absorbed by a loosened tolerance."
+  }
+}

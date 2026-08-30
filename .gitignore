@@ -3,6 +3,13 @@
 user_data/*
 !user_data/.gitkeep
 
+# The futures dry-run protocol's scratch store. `tools.futures_dry_run` writes it
+# in the repository root and deletes it on the next run, so it is present only
+# while `make check` is mid-flight — long enough for `git add -A` to catch it,
+# which is how it once got committed. The evidence is
+# `artifacts/futures_dry_run_v1/`, not this.
+.futures_dry_run_state.json
+
 # Python artifacts
 __pycache__/
 *.py[cod]
@@ -36,6 +43,13 @@ data/research/*
 !data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet
 !data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet.meta.json
 !data/research/btc_usdt_1h_gen1_snapshot_manifest.json
+
+# Research generation 2: the causal multi-clock source. One canonical 1m file
+# and one manifest; 5m/15m/30m/1h/4h/1d are cut from the 1m file deterministically
+# by nn.multiclock rather than committed, so there is one source of truth for
+# every clock and no derived file that can drift away from it.
+!data/research/btc_usdt_multiclock_gen2_1m_pre_boundary.parquet
+!data/research/btc_usdt_multiclock_gen2_manifest.json
 # The P4-HOLD ledger: which checkpoint, if any, has spent the one pre-Styx
 # region nothing has scored. It is a state file rather than data, and the
 # guard in nn/p4_holdout.py has nothing to read without it.
@@ -94,6 +108,63 @@ ray_results/
 !artifacts/benchmark/btc_p5_ohlcv14_plus_mtf_v1_xgboost/*
 !artifacts/benchmark/btc_p5_comparison/*
 !artifacts/benchmark/btc_p5_decision/*
+
+# Frozen P6 primary evidence and its decision record. Fifteen cells — five
+# clocks times three model families — plus the decision that applies the frozen
+# viability gate to the five deciding XGBoost cells. Every clock is named
+# individually and none is omitted: P6 publishes all five verdicts, and a
+# .gitignore that quietly dropped a directory would be the winner-shopping the
+# preregistration forbids, implemented in a config file.
+!artifacts/btc_p6_SHA256SUMS.txt
+!artifacts/btc_p6_decision_SHA256SUMS.txt
+!artifacts/benchmark/btc_p6_1m_lightgbm/*
+!artifacts/benchmark/btc_p6_1m_logistic_regression/*
+!artifacts/benchmark/btc_p6_1m_xgboost/*
+!artifacts/benchmark/btc_p6_5m_lightgbm/*
+!artifacts/benchmark/btc_p6_5m_logistic_regression/*
+!artifacts/benchmark/btc_p6_5m_xgboost/*
+!artifacts/benchmark/btc_p6_15m_lightgbm/*
+!artifacts/benchmark/btc_p6_15m_logistic_regression/*
+!artifacts/benchmark/btc_p6_15m_xgboost/*
+!artifacts/benchmark/btc_p6_30m_lightgbm/*
+!artifacts/benchmark/btc_p6_30m_logistic_regression/*
+!artifacts/benchmark/btc_p6_30m_xgboost/*
+!artifacts/benchmark/btc_p6_1h_lightgbm/*
+!artifacts/benchmark/btc_p6_1h_logistic_regression/*
+!artifacts/benchmark/btc_p6_1h_xgboost/*
+!artifacts/benchmark/btc_p6_decision/*
+
+# Frozen P7 primary evidence and its decision record. Two modes, each holding
+# its consensus and every constituent replayed on that mode's own decision
+# clock, plus the decision that applies the frozen rule to both. Both modes are
+# named: P7 publishes two verdicts and neither is collapsed into the other.
+!artifacts/btc_p7_SHA256SUMS.txt
+!artifacts/btc_p7_decision_SHA256SUMS.txt
+!artifacts/benchmark/btc_p7_scalping/*
+!artifacts/benchmark/btc_p7_day_trading/*
+!artifacts/benchmark/btc_p7_decision/*
+
+# Frozen P6-EXT primary evidence and its decision record: the same screen on the
+# two slow clocks a SWING mode names, under its own preregistration.
+!artifacts/btc_p6ext_SHA256SUMS.txt
+!artifacts/btc_p6ext_decision_SHA256SUMS.txt
+!artifacts/benchmark/btc_p6ext_4h_lightgbm/*
+!artifacts/benchmark/btc_p6ext_4h_logistic_regression/*
+!artifacts/benchmark/btc_p6ext_4h_xgboost/*
+!artifacts/benchmark/btc_p6ext_1d_lightgbm/*
+!artifacts/benchmark/btc_p6ext_1d_logistic_regression/*
+!artifacts/benchmark/btc_p6ext_1d_xgboost/*
+!artifacts/benchmark/btc_p6ext_decision/*
+
+# The paper-path engineering smoke. Committed because the point of it is that a
+# reader can check what it claims — and what it does not: the report carries
+# claims.sustained_paper_validation=false, claims.live=false and
+# claims.alpha=false, and a test asserts all three. The futures state file is
+# runtime state and stays ignored.
+!artifacts/paper_smoke/
+artifacts/paper_smoke/*
+!artifacts/paper_smoke/paper_run.json
+!artifacts/paper_smoke/STATUS.md
 
 # Futures Execution v1 operational evidence. Not research evidence: it is the
 # report of a frozen engineering protocol (`tools/futures_dry_run.py`), and

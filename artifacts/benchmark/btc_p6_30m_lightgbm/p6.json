@@ -1,0 +1,2055 @@
+{
+  "checkpoint": "P6",
+  "question": "Can independent native-timeframe specialists extract robust cost-aware predictive signal at temporal scales the previous 1h/6h programme did not test?",
+  "evidence_class": "one native-timeframe specialist, fitted once; P6 primary evidence",
+  "preregistration_hash": "sha256:2785b1a7b19ecceca58cd0e936d14a5cbbbe6eb10f7ddf2796800409a0eaaaf2",
+  "evidence_ceiling": "Exploratory, adaptive. The four temporal periods are the same real-world windows v4, P2a, P2b, P2c, P3, P4 and P5 have already read, mapped onto faster clocks. Faster clocks multiply rows, not independent temporal periods: 2.8 million minutes of one asset over four windows is four observations of a market regime, not 2.8 million. No P6 result is confirmatory, and a positive P6 needs confirmation these blocks cannot supply.",
+  "clock": "30m",
+  "model": "lightgbm",
+  "horizon_bars": 6,
+  "horizon": "3 hours",
+  "source": {
+    "manifest": "data/research/btc_usdt_multiclock_gen2_manifest.json",
+    "minutes_digest": "6da803a79797430097945aaf183c1430300ebad05f3302c059062dfeb2443987",
+    "clock_digest": "c20955ef9ad79783b699a71f594e97bd1265d639f4b7f15af9dfa1bbae8b1abc",
+    "clock_rows": 94256
+  },
+  "contract": {
+    "contract_id": "btc-usdt-30m-gen2",
+    "contract_hash": "2d529b47fe8849df9552654836c4b1d7d4995bd1ede7a18ddb957f44bca588b2",
+    "research_generation": 2,
+    "sealed_test_start": "2025-08-27T23:00:00+00:00"
+  },
+  "dataset": {
+    "rows": 92912,
+    "start": "2020-01-02T15:00:00+00:00",
+    "end": "2025-05-19T04:30:00+00:00",
+    "segments": 16,
+    "feature_names": [
+      "ret_1",
+      "log_ret_1",
+      "ret_close_open",
+      "hl_range",
+      "ema_fast_ratio",
+      "ema_slow_ratio",
+      "ema_cross",
+      "rsi_centered",
+      "macd_norm",
+      "macd_hist_norm",
+      "atr_norm",
+      "realized_vol",
+      "volume_change",
+      "volume_z"
+    ],
+    "feature_spec": {
+      "ema_fast": 12,
+      "ema_slow": 26,
+      "rsi_period": 14,
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "atr_period": 14,
+      "vol_window": 24,
+      "volume_window": 24
+    },
+    "class_balance": {
+      "SHORT": 32437,
+      "HOLD": 25814,
+      "LONG": 34661
+    },
+    "candles_per_year": 17520.0
+  },
+  "region": {
+    "start": "2020-01-04T06:00:00+00:00",
+    "end_exclusive": "2025-05-19T08:00:00+00:00",
+    "start_is": "the first row of the committed 1h outer coverage",
+    "end_is": "the first instant of the retired P4-HOLD region"
+  },
+  "target": {
+    "horizon": 6,
+    "fee_rate": 0.0005,
+    "slippage_rate": 0.0005,
+    "cost_threshold": 0.002,
+    "horizon_unit": "30m bars"
+  },
+  "sample_universe": {
+    "digest": "720bf6912ffb66e4e4a6c8c11d3c665e658370738eb73883362711536a07863b",
+    "note": "the identity of every value research read on this clock"
+  },
+  "config": {
+    "seed": 42,
+    "seq_len": 1,
+    "min_trades": 10
+  },
+  "threshold_selection": {
+    "block": "inner_validation",
+    "objective": "maximise net return after round-trip costs on the inner-validation block, subject to at least min_trades realised trades; falls back to the most permissive grid point when no candidate clears the floor",
+    "grid": [
+      0.34,
+      0.36,
+      0.38,
+      0.4,
+      0.42,
+      0.44,
+      0.46,
+      0.48,
+      0.5,
+      0.52,
+      0.54,
+      0.56,
+      0.58,
+      0.6,
+      0.62,
+      0.64,
+      0.66,
+      0.68,
+      0.7,
+      0.72,
+      0.74,
+      0.76,
+      0.78,
+      0.8,
+      0.82,
+      0.84,
+      0.86,
+      0.88,
+      0.9
+    ],
+    "min_trades": 10
+  },
+  "tuning": "none: predeclared fixed configurations, no hyperparameter search",
+  "adaptive_status": "Exploratory, adaptive. The four temporal periods are the same real-world windows v4, P2a, P2b, P2c, P3, P4 and P5 have already read, mapped onto faster clocks. Faster clocks multiply rows, not independent temporal periods: 2.8 million minutes of one asset over four windows is four observations of a market regime, not 2.8 million. No P6 result is confirmatory, and a positive P6 needs confirmation these blocks cannot supply.",
+  "sealed_test": {
+    "styx_start": "2025-08-27T23:00:00+00:00",
+    "research_visible_end": "2025-05-19T08:00:00+00:00",
+    "rows_at_or_after_research_visible_end": 0
+  },
+  "code": {
+    "scheme": "git-tracked-source/1",
+    "roots": [
+      "chimera",
+      "nn",
+      "strategies",
+      "tools"
+    ],
+    "revision": "a56df4641d0b3b1f9ea2554373ce23e4f6dfdef2",
+    "dirty": true,
+    "source_digest": "3c13472ab7b4fd9924dae1862cae3ca648afea821efc9f3f5a088031cf34673a",
+    "source_files": 81,
+    "untracked_source_files": 2,
+    "missing_tracked_source_files": 0,
+    "excluded_environment_files": 0,
+    "note": "source_digest is a SHA-256 over the content of every Python file git tracks under ['chimera', 'nn', 'strategies', 'tools'], plus any untracked Python file among them. An installed environment \u2014 a virtualenv inside the checkout, site-packages, a model library imported lazily by one model family and not another \u2014 is not under those roots and cannot move it. An environment is recognised by its shape (a site-packages/dist-packages/node_modules directory, or one holding a pyvenv.cfg) and never by a directory's name, so a Python file sitting under a source root in a directory merely called build or dist is project source and is hashed. revision and dirty are recorded beside the digest because neither one alone says what source ran"
+  },
+  "numerics": {
+    "python": "3.11.15",
+    "python_implementation": "CPython",
+    "libraries": {
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "scikit-learn": "1.9.0",
+      "pandas": "2.3.3",
+      "lightgbm": "4.7.0",
+      "xgboost": "3.2.0"
+    },
+    "blas": [
+      {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "version": "0.3.31.188.0",
+        "filepath": "libscipy_openblas64_-32a4b2a6.so",
+        "threading_layer": "pthreads"
+      },
+      {
+        "user_api": "openmp",
+        "internal_api": "openmp",
+        "version": null,
+        "filepath": "libgomp.so.1",
+        "threading_layer": null
+      },
+      {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "version": "0.3.30",
+        "filepath": "libscipy_openblas-6cdc3b4a.so",
+        "threading_layer": "pthreads"
+      },
+      {
+        "user_api": "openmp",
+        "internal_api": "openmp",
+        "version": null,
+        "filepath": "libgomp-e985bcbb.so.1.0.0",
+        "threading_layer": null
+      }
+    ],
+    "platform": {
+      "system": "Linux",
+      "release": "6.18.44-fc-v22",
+      "machine": "x86_64",
+      "processor": "x86_64"
+    },
+    "note": "recorded to diagnose numerical drift, not to claim determinism. This repository has not demonstrated that a logistic_regression cell reproduces bit-for-bit across environments, and does not assert that it does; see docs/p2b_methodology.md section 8",
+    "threadpools": {
+      "limit_applied": 1,
+      "reason": "BLAS reductions are order-dependent, so a multi-threaded lbfgs fit is not reproducible across machines with different core counts",
+      "pools": [
+        {
+          "user_api": "blas",
+          "internal_api": "openblas",
+          "num_threads": 1,
+          "version": "0.3.31.188.0"
+        },
+        {
+          "user_api": "openmp",
+          "internal_api": "openmp",
+          "num_threads": 1,
+          "version": null
+        },
+        {
+          "user_api": "blas",
+          "internal_api": "openblas",
+          "num_threads": 1,
+          "version": "0.3.30"
+        },
+        {
+          "user_api": "openmp",
+          "internal_api": "openmp",
+          "num_threads": 1,
+          "version": null
+        }
+      ]
+    }
+  },
+  "outer_predictions": "outer_predictions.parquet",
+  "folds": [
+    {
+      "fold": 0,
+      "run_seed": 42,
+      "fold_seed": 42,
+      "samples": {
+        "train": 44457,
+        "inner_validation": 9636,
+        "outer_validation": 9713
+      },
+      "periods": {
+        "train": {
+          "start": "2020-01-04 06:00:00+00:00",
+          "end": "2022-08-15 09:30:00+00:00",
+          "rows": 44547,
+          "row_range": [
+            78,
+            44625
+          ]
+        },
+        "inner_validation": {
+          "start": "2022-08-15 10:00:00+00:00",
+          "end": "2023-03-04 06:30:00+00:00",
+          "rows": 9642,
+          "row_range": [
+            44625,
+            54267
+          ]
+        },
+        "outer_validation": {
+          "start": "2023-03-04 07:00:00+00:00",
+          "end": "2023-09-24 16:30:00+00:00",
+          "rows": 9725,
+          "row_range": [
+            54267,
+            63992
+          ]
+        }
+      },
+      "model": {
+        "provenance": {
+          "model": "lightgbm",
+          "library": "lightgbm",
+          "library_version": "4.7.0",
+          "estimator": "lightgbm.LGBMClassifier",
+          "config": {
+            "objective": "multiclass",
+            "n_estimators": 200,
+            "learning_rate": 0.05,
+            "num_leaves": 31,
+            "max_depth": -1,
+            "min_child_samples": 20,
+            "subsample": 1.0,
+            "colsample_bytree": 1.0,
+            "reg_alpha": 0.0,
+            "reg_lambda": 0.0,
+            "n_jobs": 1,
+            "deterministic": true,
+            "force_row_wise": true,
+            "verbose": -1,
+            "random_state": 42
+          },
+          "seed": 42,
+          "seed_parameter": "random_state",
+          "flattened_input_dim": 14,
+          "train_class_counts": {
+            "SHORT": 16908,
+            "HOLD": 9634,
+            "LONG": 17915
+          },
+          "compatibility_notes": [
+            "deterministic=True requires an explicit histogram mode, so force_row_wise=True is set alongside it; n_jobs=1 for reproducible CPU behaviour"
+          ],
+          "early_stopping": false,
+          "hyperparameter_search": "none (predeclared fixed configuration)"
+        },
+        "selection": {
+          "block": "inner_validation",
+          "threshold": 0.66,
+          "objective": "maximise net return after round-trip costs on the inner-validation block, subject to at least min_trades realised trades; falls back to the most permissive grid point when no candidate clears the floor",
+          "threshold_grid": [
+            0.34,
+            0.36,
+            0.38,
+            0.4,
+            0.42,
+            0.44,
+            0.46,
+            0.48,
+            0.5,
+            0.52,
+            0.54,
+            0.56,
+            0.58,
+            0.6,
+            0.62,
+            0.64,
+            0.66,
+            0.68,
+            0.7,
+            0.72,
+            0.74,
+            0.76,
+            0.78,
+            0.8,
+            0.82,
+            0.84,
+            0.86,
+            0.88,
+            0.9
+          ],
+          "min_trades": 10,
+          "inner_validation_trading": {
+            "n_trades": 15,
+            "net_return": 0.047906,
+            "gross_return": 0.080474,
+            "total_costs": 0.03,
+            "avg_trade": 0.003365,
+            "win_rate": 0.5333,
+            "profit_factor": 1.5583,
+            "max_drawdown": 0.0399,
+            "exposure": 0.0093,
+            "turnover": 30.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": 0.1475,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "unavailable: no market context (close/date series) supplied",
+            "sharpe_basis": "unavailable: no market context (close/date series) supplied",
+            "candle_max_drawdown": null,
+            "elapsed_intervals": null
+          }
+        }
+      },
+      "outer_validation": {
+        "lightgbm": {
+          "classification": {
+            "n_samples": 9713,
+            "threshold": 0.66,
+            "class_distribution": {
+              "SHORT": 2763,
+              "HOLD": 4137,
+              "LONG": 2813
+            },
+            "predicted_distribution": {
+              "SHORT": 11,
+              "HOLD": 9691,
+              "LONG": 11
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.3636,
+                "recall": 0.0014,
+                "f1": 0.0029,
+                "support": 2763,
+                "predicted": 11
+              },
+              "HOLD": {
+                "precision": 0.4266,
+                "recall": 0.9993,
+                "f1": 0.5979,
+                "support": 4137,
+                "predicted": 9691
+              },
+              "LONG": {
+                "precision": 0.4545,
+                "recall": 0.0018,
+                "f1": 0.0035,
+                "support": 2813,
+                "predicted": 11
+              }
+            },
+            "macro_f1": 0.2014,
+            "accuracy": 0.4265,
+            "directional_accuracy": 0.4091,
+            "coverage": 0.0023,
+            "calibration_error": 0.0146,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  4,
+                  2754,
+                  5
+                ],
+                [
+                  2,
+                  4134,
+                  1
+                ],
+                [
+                  5,
+                  2803,
+                  5
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 9,
+            "net_return": -0.010518,
+            "gross_return": 0.007643,
+            "total_costs": 0.018,
+            "avg_trade": -0.001151,
+            "win_rate": 0.4444,
+            "profit_factor": 0.6687,
+            "max_drawdown": 0.02,
+            "exposure": 0.0056,
+            "turnover": 18.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.1586,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -0.3989,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.023457,
+            "elapsed_intervals": 9811
+          }
+        },
+        "majority_baseline": {
+          "classification": {
+            "n_samples": 9713,
+            "threshold": 0.5,
+            "class_distribution": {
+              "SHORT": 2763,
+              "HOLD": 4137,
+              "LONG": 2813
+            },
+            "predicted_distribution": {
+              "SHORT": 0,
+              "HOLD": 0,
+              "LONG": 9713
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 2763,
+                "predicted": 0
+              },
+              "HOLD": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 4137,
+                "predicted": 0
+              },
+              "LONG": {
+                "precision": 0.2896,
+                "recall": 1.0,
+                "f1": 0.4491,
+                "support": 2813,
+                "predicted": 9713
+              }
+            },
+            "macro_f1": 0.1497,
+            "accuracy": 0.2896,
+            "directional_accuracy": 0.2896,
+            "coverage": 1.0,
+            "calibration_error": 0.7104,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  0,
+                  2763
+                ],
+                [
+                  0,
+                  0,
+                  4137
+                ],
+                [
+                  0,
+                  0,
+                  2813
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 1619,
+            "net_return": -0.952282,
+            "gross_return": 0.245908,
+            "total_costs": 3.238,
+            "avg_trade": -0.001848,
+            "win_rate": 0.2773,
+            "profit_factor": 0.4476,
+            "max_drawdown": 0.9523,
+            "exposure": 0.9995,
+            "turnover": 3238.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.2414,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -12.6684,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.952282,
+            "elapsed_intervals": 9811
+          }
+        },
+        "momentum_baseline": {
+          "classification": {
+            "n_samples": 9713,
+            "threshold": 0.5,
+            "class_distribution": {
+              "SHORT": 2763,
+              "HOLD": 4137,
+              "LONG": 2813
+            },
+            "predicted_distribution": {
+              "SHORT": 5290,
+              "HOLD": 39,
+              "LONG": 4384
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.2476,
+                "recall": 0.4741,
+                "f1": 0.3253,
+                "support": 2763,
+                "predicted": 5290
+              },
+              "HOLD": {
+                "precision": 0.6667,
+                "recall": 0.0063,
+                "f1": 0.0125,
+                "support": 4137,
+                "predicted": 39
+              },
+              "LONG": {
+                "precision": 0.2872,
+                "recall": 0.4476,
+                "f1": 0.3499,
+                "support": 2813,
+                "predicted": 4384
+              }
+            },
+            "macro_f1": 0.2292,
+            "accuracy": 0.2672,
+            "directional_accuracy": 0.2656,
+            "coverage": 0.996,
+            "calibration_error": 0.7328,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  1310,
+                  8,
+                  1445
+                ],
+                [
+                  2431,
+                  26,
+                  1680
+                ],
+                [
+                  1549,
+                  5,
+                  1259
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 1619,
+            "net_return": -0.966209,
+            "gross_return": -0.094339,
+            "total_costs": 3.238,
+            "avg_trade": -0.002058,
+            "win_rate": 0.2625,
+            "profit_factor": 0.4221,
+            "max_drawdown": 0.9704,
+            "exposure": 0.9995,
+            "turnover": 3238.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.2579,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -14.1383,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.970616,
+            "elapsed_intervals": 9811
+          }
+        },
+        "economic_references": {
+          "note": "Economic reference policies, not models and not statistical baselines. A strategy that beats majority-class and momentum but loses to CASH lost money.",
+          "cash": {
+            "policy": "cash",
+            "description": "no position at any time; no trades, no fees, no slippage",
+            "n_trades": 0,
+            "gross_return": 0.0,
+            "total_costs": 0.0,
+            "net_return": 0.0,
+            "max_drawdown": 0.0,
+            "candle_max_drawdown": 0.0,
+            "exposure": 0.0,
+            "per_trade_sharpe": null,
+            "per_trade_sharpe_reason": "undefined: no trades, so the portfolio never moved",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "undefined: the return series has no variance",
+            "sharpe_basis": "undefined: the return series has no variance",
+            "cost_model_applied": false,
+            "cost_per_trade": 0.002
+          },
+          "buy_and_hold": {
+            "policy": "buy_and_hold",
+            "available": true,
+            "description": "buy at the close of the first scored candle, hold, sell at the close of the candle that closes the last scored sample's label horizon",
+            "window": "continuous market span (not the scored-sample set)",
+            "entry_row": 54267,
+            "exit_row": 63991,
+            "entry_timestamp": "2023-03-04 07:00:00+00:00",
+            "exit_timestamp": "2023-09-24 16:30:00+00:00",
+            "entry_price": 22371.95,
+            "exit_price": 26573.1,
+            "candles_held": 9724,
+            "elapsed_intervals": 9811,
+            "missing_candles": 87,
+            "spans_market_data_gap": true,
+            "n_trades": 1,
+            "gross_return": 0.187786,
+            "total_costs": 0.002,
+            "net_return": 0.185786,
+            "cost_model": "one round trip charged once over the whole hold",
+            "candle_max_drawdown": 0.210105,
+            "drawdown_is_lower_bound": true,
+            "exposure": 1.0,
+            "per_trade_sharpe": null,
+            "per_trade_sharpe_reason": "undefined: a single trade has no dispersion to measure",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "unavailable: the hold spans 87 calendar interval(s) absent from the processed dataset. What price did in between is not recorded there, so a candle-level series comparable to the strategy's cannot be built without inventing a path",
+            "sharpe_basis": "unavailable: the hold spans 87 calendar interval(s) absent from the processed dataset. What price did in between is not recorded there, so a candle-level series comparable to the strategy's cannot be built without inventing a path"
+          }
+        }
+      }
+    },
+    {
+      "fold": 1,
+      "run_seed": 42,
+      "fold_seed": 43,
+      "samples": {
+        "train": 54099,
+        "inner_validation": 9713,
+        "outer_validation": 9636
+      },
+      "periods": {
+        "train": {
+          "start": "2020-01-04 06:00:00+00:00",
+          "end": "2023-03-04 06:30:00+00:00",
+          "rows": 54189,
+          "row_range": [
+            78,
+            54267
+          ]
+        },
+        "inner_validation": {
+          "start": "2023-03-04 07:00:00+00:00",
+          "end": "2023-09-24 16:30:00+00:00",
+          "rows": 9725,
+          "row_range": [
+            54267,
+            63992
+          ]
+        },
+        "outer_validation": {
+          "start": "2023-09-24 17:00:00+00:00",
+          "end": "2024-04-12 13:30:00+00:00",
+          "rows": 9642,
+          "row_range": [
+            63992,
+            73634
+          ]
+        }
+      },
+      "model": {
+        "provenance": {
+          "model": "lightgbm",
+          "library": "lightgbm",
+          "library_version": "4.7.0",
+          "estimator": "lightgbm.LGBMClassifier",
+          "config": {
+            "objective": "multiclass",
+            "n_estimators": 200,
+            "learning_rate": 0.05,
+            "num_leaves": 31,
+            "max_depth": -1,
+            "min_child_samples": 20,
+            "subsample": 1.0,
+            "colsample_bytree": 1.0,
+            "reg_alpha": 0.0,
+            "reg_lambda": 0.0,
+            "n_jobs": 1,
+            "deterministic": true,
+            "force_row_wise": true,
+            "verbose": -1,
+            "random_state": 43
+          },
+          "seed": 43,
+          "seed_parameter": "random_state",
+          "flattened_input_dim": 14,
+          "train_class_counts": {
+            "SHORT": 19936,
+            "HOLD": 13173,
+            "LONG": 20990
+          },
+          "compatibility_notes": [
+            "deterministic=True requires an explicit histogram mode, so force_row_wise=True is set alongside it; n_jobs=1 for reproducible CPU behaviour"
+          ],
+          "early_stopping": false,
+          "hyperparameter_search": "none (predeclared fixed configuration)"
+        },
+        "selection": {
+          "block": "inner_validation",
+          "threshold": 0.64,
+          "objective": "maximise net return after round-trip costs on the inner-validation block, subject to at least min_trades realised trades; falls back to the most permissive grid point when no candidate clears the floor",
+          "threshold_grid": [
+            0.34,
+            0.36,
+            0.38,
+            0.4,
+            0.42,
+            0.44,
+            0.46,
+            0.48,
+            0.5,
+            0.52,
+            0.54,
+            0.56,
+            0.58,
+            0.6,
+            0.62,
+            0.64,
+            0.66,
+            0.68,
+            0.7,
+            0.72,
+            0.74,
+            0.76,
+            0.78,
+            0.8,
+            0.82,
+            0.84,
+            0.86,
+            0.88,
+            0.9
+          ],
+          "min_trades": 10,
+          "inner_validation_trading": {
+            "n_trades": 13,
+            "net_return": -0.023797,
+            "gross_return": 0.002445,
+            "total_costs": 0.026,
+            "avg_trade": -0.001812,
+            "win_rate": 0.5385,
+            "profit_factor": 0.5876,
+            "max_drawdown": 0.0286,
+            "exposure": 0.008,
+            "turnover": 26.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.1976,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "unavailable: no market context (close/date series) supplied",
+            "sharpe_basis": "unavailable: no market context (close/date series) supplied",
+            "candle_max_drawdown": null,
+            "elapsed_intervals": null
+          }
+        }
+      },
+      "outer_validation": {
+        "lightgbm": {
+          "classification": {
+            "n_samples": 9636,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 3052,
+              "HOLD": 2945,
+              "LONG": 3639
+            },
+            "predicted_distribution": {
+              "SHORT": 3,
+              "HOLD": 9618,
+              "LONG": 15
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 3052,
+                "predicted": 3
+              },
+              "HOLD": {
+                "precision": 0.3061,
+                "recall": 0.9997,
+                "f1": 0.4687,
+                "support": 2945,
+                "predicted": 9618
+              },
+              "LONG": {
+                "precision": 0.5333,
+                "recall": 0.0022,
+                "f1": 0.0044,
+                "support": 3639,
+                "predicted": 15
+              }
+            },
+            "macro_f1": 0.1577,
+            "accuracy": 0.3064,
+            "directional_accuracy": 0.4444,
+            "coverage": 0.0019,
+            "calibration_error": 0.0327,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  3046,
+                  6
+                ],
+                [
+                  0,
+                  2944,
+                  1
+                ],
+                [
+                  3,
+                  3628,
+                  8
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 11,
+            "net_return": -0.015111,
+            "gross_return": 0.007755,
+            "total_costs": 0.022,
+            "avg_trade": -0.001295,
+            "win_rate": 0.3636,
+            "profit_factor": 0.7718,
+            "max_drawdown": 0.0377,
+            "exposure": 0.0068,
+            "turnover": 22.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.0927,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -0.2807,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.046347,
+            "elapsed_intervals": 9641
+          }
+        },
+        "majority_baseline": {
+          "classification": {
+            "n_samples": 9636,
+            "threshold": 0.5,
+            "class_distribution": {
+              "SHORT": 3052,
+              "HOLD": 2945,
+              "LONG": 3639
+            },
+            "predicted_distribution": {
+              "SHORT": 0,
+              "HOLD": 0,
+              "LONG": 9636
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 3052,
+                "predicted": 0
+              },
+              "HOLD": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 2945,
+                "predicted": 0
+              },
+              "LONG": {
+                "precision": 0.3776,
+                "recall": 1.0,
+                "f1": 0.5482,
+                "support": 3639,
+                "predicted": 9636
+              }
+            },
+            "macro_f1": 0.1827,
+            "accuracy": 0.3776,
+            "directional_accuracy": 0.3776,
+            "coverage": 1.0,
+            "calibration_error": 0.6224,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  0,
+                  3052
+                ],
+                [
+                  0,
+                  0,
+                  2945
+                ],
+                [
+                  0,
+                  0,
+                  3639
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 1606,
+            "net_return": -0.892899,
+            "gross_return": 1.044702,
+            "total_costs": 3.212,
+            "avg_trade": -0.00135,
+            "win_rate": 0.3792,
+            "profit_factor": 0.6326,
+            "max_drawdown": 0.8933,
+            "exposure": 1.0,
+            "turnover": 3212.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.1499,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -7.8427,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.894602,
+            "elapsed_intervals": 9641
+          }
+        },
+        "momentum_baseline": {
+          "classification": {
+            "n_samples": 9636,
+            "threshold": 0.5,
+            "class_distribution": {
+              "SHORT": 3052,
+              "HOLD": 2945,
+              "LONG": 3639
+            },
+            "predicted_distribution": {
+              "SHORT": 4177,
+              "HOLD": 25,
+              "LONG": 5434
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.3019,
+                "recall": 0.4132,
+                "f1": 0.3489,
+                "support": 3052,
+                "predicted": 4177
+              },
+              "HOLD": {
+                "precision": 0.36,
+                "recall": 0.0031,
+                "f1": 0.0061,
+                "support": 2945,
+                "predicted": 25
+              },
+              "LONG": {
+                "precision": 0.352,
+                "recall": 0.5257,
+                "f1": 0.4217,
+                "support": 3639,
+                "predicted": 5434
+              }
+            },
+            "macro_f1": 0.2589,
+            "accuracy": 0.3303,
+            "directional_accuracy": 0.3302,
+            "coverage": 0.9974,
+            "calibration_error": 0.6697,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  1261,
+                  7,
+                  1784
+                ],
+                [
+                  1199,
+                  9,
+                  1737
+                ],
+                [
+                  1717,
+                  9,
+                  1913
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 1605,
+            "net_return": -0.952943,
+            "gross_return": 0.221059,
+            "total_costs": 3.21,
+            "avg_trade": -0.001862,
+            "win_rate": 0.3377,
+            "profit_factor": 0.5396,
+            "max_drawdown": 0.9534,
+            "exposure": 0.9994,
+            "turnover": 3210.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.2076,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -10.841,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.953534,
+            "elapsed_intervals": 9641
+          }
+        },
+        "economic_references": {
+          "note": "Economic reference policies, not models and not statistical baselines. A strategy that beats majority-class and momentum but loses to CASH lost money.",
+          "cash": {
+            "policy": "cash",
+            "description": "no position at any time; no trades, no fees, no slippage",
+            "n_trades": 0,
+            "gross_return": 0.0,
+            "total_costs": 0.0,
+            "net_return": 0.0,
+            "max_drawdown": 0.0,
+            "candle_max_drawdown": 0.0,
+            "exposure": 0.0,
+            "per_trade_sharpe": null,
+            "per_trade_sharpe_reason": "undefined: no trades, so the portfolio never moved",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "undefined: the return series has no variance",
+            "sharpe_basis": "undefined: the return series has no variance",
+            "cost_model_applied": false,
+            "cost_per_trade": 0.002
+          },
+          "buy_and_hold": {
+            "policy": "buy_and_hold",
+            "available": true,
+            "description": "buy at the close of the first scored candle, hold, sell at the close of the candle that closes the last scored sample's label horizon",
+            "window": "continuous market span (not the scored-sample set)",
+            "entry_row": 63992,
+            "exit_row": 73633,
+            "entry_timestamp": "2023-09-24 17:00:00+00:00",
+            "exit_timestamp": "2024-04-12 13:30:00+00:00",
+            "entry_price": 26584.82,
+            "exit_price": 69888.0,
+            "candles_held": 9641,
+            "elapsed_intervals": 9641,
+            "missing_candles": 0,
+            "spans_market_data_gap": false,
+            "n_trades": 1,
+            "gross_return": 1.628869,
+            "total_costs": 0.002,
+            "net_return": 1.626869,
+            "cost_model": "one round trip charged once over the whole hold",
+            "candle_max_drawdown": 0.201948,
+            "drawdown_is_lower_bound": false,
+            "exposure": 1.0,
+            "per_trade_sharpe": null,
+            "per_trade_sharpe_reason": "undefined: a single trade has no dispersion to measure",
+            "annualised_sharpe": 3.7741,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset"
+          }
+        }
+      }
+    },
+    {
+      "fold": 2,
+      "run_seed": 42,
+      "fold_seed": 44,
+      "samples": {
+        "train": 63818,
+        "inner_validation": 9636,
+        "outer_validation": 9636
+      },
+      "periods": {
+        "train": {
+          "start": "2020-01-04 06:00:00+00:00",
+          "end": "2023-09-24 16:30:00+00:00",
+          "rows": 63914,
+          "row_range": [
+            78,
+            63992
+          ]
+        },
+        "inner_validation": {
+          "start": "2023-09-24 17:00:00+00:00",
+          "end": "2024-04-12 13:30:00+00:00",
+          "rows": 9642,
+          "row_range": [
+            63992,
+            73634
+          ]
+        },
+        "outer_validation": {
+          "start": "2024-04-12 14:00:00+00:00",
+          "end": "2024-10-30 10:30:00+00:00",
+          "rows": 9642,
+          "row_range": [
+            73634,
+            83276
+          ]
+        }
+      },
+      "model": {
+        "provenance": {
+          "model": "lightgbm",
+          "library": "lightgbm",
+          "library_version": "4.7.0",
+          "estimator": "lightgbm.LGBMClassifier",
+          "config": {
+            "objective": "multiclass",
+            "n_estimators": 200,
+            "learning_rate": 0.05,
+            "num_leaves": 31,
+            "max_depth": -1,
+            "min_child_samples": 20,
+            "subsample": 1.0,
+            "colsample_bytree": 1.0,
+            "reg_alpha": 0.0,
+            "reg_lambda": 0.0,
+            "n_jobs": 1,
+            "deterministic": true,
+            "force_row_wise": true,
+            "verbose": -1,
+            "random_state": 44
+          },
+          "seed": 44,
+          "seed_parameter": "random_state",
+          "flattened_input_dim": 14,
+          "train_class_counts": {
+            "SHORT": 22699,
+            "HOLD": 17316,
+            "LONG": 23803
+          },
+          "compatibility_notes": [
+            "deterministic=True requires an explicit histogram mode, so force_row_wise=True is set alongside it; n_jobs=1 for reproducible CPU behaviour"
+          ],
+          "early_stopping": false,
+          "hyperparameter_search": "none (predeclared fixed configuration)"
+        },
+        "selection": {
+          "block": "inner_validation",
+          "threshold": 0.62,
+          "objective": "maximise net return after round-trip costs on the inner-validation block, subject to at least min_trades realised trades; falls back to the most permissive grid point when no candidate clears the floor",
+          "threshold_grid": [
+            0.34,
+            0.36,
+            0.38,
+            0.4,
+            0.42,
+            0.44,
+            0.46,
+            0.48,
+            0.5,
+            0.52,
+            0.54,
+            0.56,
+            0.58,
+            0.6,
+            0.62,
+            0.64,
+            0.66,
+            0.68,
+            0.7,
+            0.72,
+            0.74,
+            0.76,
+            0.78,
+            0.8,
+            0.82,
+            0.84,
+            0.86,
+            0.88,
+            0.9
+          ],
+          "min_trades": 10,
+          "inner_validation_trading": {
+            "n_trades": 18,
+            "net_return": -0.007568,
+            "gross_return": 0.029654,
+            "total_costs": 0.036,
+            "avg_trade": -0.000353,
+            "win_rate": 0.5556,
+            "profit_factor": 0.9256,
+            "max_drawdown": 0.0252,
+            "exposure": 0.0112,
+            "turnover": 36.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.029,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "unavailable: no market context (close/date series) supplied",
+            "sharpe_basis": "unavailable: no market context (close/date series) supplied",
+            "candle_max_drawdown": null,
+            "elapsed_intervals": null
+          }
+        }
+      },
+      "outer_validation": {
+        "lightgbm": {
+          "classification": {
+            "n_samples": 9636,
+            "threshold": 0.62,
+            "class_distribution": {
+              "SHORT": 3250,
+              "HOLD": 2906,
+              "LONG": 3480
+            },
+            "predicted_distribution": {
+              "SHORT": 9,
+              "HOLD": 9609,
+              "LONG": 18
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.6667,
+                "recall": 0.0018,
+                "f1": 0.0037,
+                "support": 3250,
+                "predicted": 9
+              },
+              "HOLD": {
+                "precision": 0.302,
+                "recall": 0.9986,
+                "f1": 0.4638,
+                "support": 2906,
+                "predicted": 9609
+              },
+              "LONG": {
+                "precision": 0.5,
+                "recall": 0.0026,
+                "f1": 0.0051,
+                "support": 3480,
+                "predicted": 18
+              }
+            },
+            "macro_f1": 0.1575,
+            "accuracy": 0.3027,
+            "directional_accuracy": 0.5556,
+            "coverage": 0.0028,
+            "calibration_error": 0.0471,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  6,
+                  3237,
+                  7
+                ],
+                [
+                  2,
+                  2902,
+                  2
+                ],
+                [
+                  1,
+                  3470,
+                  9
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 17,
+            "net_return": 0.076855,
+            "gross_return": 0.110023,
+            "total_costs": 0.034,
+            "avg_trade": 0.004472,
+            "win_rate": 0.5882,
+            "profit_factor": 2.4052,
+            "max_drawdown": 0.0362,
+            "exposure": 0.0106,
+            "turnover": 34.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": 0.295,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": 1.0979,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.087598,
+            "elapsed_intervals": 9641
+          }
+        },
+        "majority_baseline": {
+          "classification": {
+            "n_samples": 9636,
+            "threshold": 0.5,
+            "class_distribution": {
+              "SHORT": 3250,
+              "HOLD": 2906,
+              "LONG": 3480
+            },
+            "predicted_distribution": {
+              "SHORT": 0,
+              "HOLD": 0,
+              "LONG": 9636
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 3250,
+                "predicted": 0
+              },
+              "HOLD": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 2906,
+                "predicted": 0
+              },
+              "LONG": {
+                "precision": 0.3611,
+                "recall": 1.0,
+                "f1": 0.5306,
+                "support": 3480,
+                "predicted": 9636
+              }
+            },
+            "macro_f1": 0.1769,
+            "accuracy": 0.3611,
+            "directional_accuracy": 0.3611,
+            "coverage": 1.0,
+            "calibration_error": 0.6389,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  0,
+                  3250
+                ],
+                [
+                  0,
+                  0,
+                  2906
+                ],
+                [
+                  0,
+                  0,
+                  3480
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 1606,
+            "net_return": -0.958271,
+            "gross_return": 0.107032,
+            "total_costs": 3.212,
+            "avg_trade": -0.001933,
+            "win_rate": 0.3611,
+            "profit_factor": 0.5288,
+            "max_drawdown": 0.9597,
+            "exposure": 1.0,
+            "turnover": 3212.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.21,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -10.9503,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.959682,
+            "elapsed_intervals": 9641
+          }
+        },
+        "momentum_baseline": {
+          "classification": {
+            "n_samples": 9636,
+            "threshold": 0.5,
+            "class_distribution": {
+              "SHORT": 3250,
+              "HOLD": 2906,
+              "LONG": 3480
+            },
+            "predicted_distribution": {
+              "SHORT": 4711,
+              "HOLD": 21,
+              "LONG": 4904
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.3269,
+                "recall": 0.4738,
+                "f1": 0.3869,
+                "support": 3250,
+                "predicted": 4711
+              },
+              "HOLD": {
+                "precision": 0.4762,
+                "recall": 0.0034,
+                "f1": 0.0068,
+                "support": 2906,
+                "predicted": 21
+              },
+              "LONG": {
+                "precision": 0.3473,
+                "recall": 0.4894,
+                "f1": 0.4062,
+                "support": 3480,
+                "predicted": 4904
+              }
+            },
+            "macro_f1": 0.2667,
+            "accuracy": 0.3376,
+            "directional_accuracy": 0.3373,
+            "coverage": 0.9978,
+            "calibration_error": 0.6624,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  1540,
+                  5,
+                  1705
+                ],
+                [
+                  1400,
+                  10,
+                  1496
+                ],
+                [
+                  1771,
+                  6,
+                  1703
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 1606,
+            "net_return": -0.950614,
+            "gross_return": 0.276052,
+            "total_costs": 3.212,
+            "avg_trade": -0.001828,
+            "win_rate": 0.3418,
+            "profit_factor": 0.5599,
+            "max_drawdown": 0.9551,
+            "exposure": 1.0,
+            "turnover": 3212.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.1966,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -10.3642,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.955364,
+            "elapsed_intervals": 9641
+          }
+        },
+        "economic_references": {
+          "note": "Economic reference policies, not models and not statistical baselines. A strategy that beats majority-class and momentum but loses to CASH lost money.",
+          "cash": {
+            "policy": "cash",
+            "description": "no position at any time; no trades, no fees, no slippage",
+            "n_trades": 0,
+            "gross_return": 0.0,
+            "total_costs": 0.0,
+            "net_return": 0.0,
+            "max_drawdown": 0.0,
+            "candle_max_drawdown": 0.0,
+            "exposure": 0.0,
+            "per_trade_sharpe": null,
+            "per_trade_sharpe_reason": "undefined: no trades, so the portfolio never moved",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "undefined: the return series has no variance",
+            "sharpe_basis": "undefined: the return series has no variance",
+            "cost_model_applied": false,
+            "cost_per_trade": 0.002
+          },
+          "buy_and_hold": {
+            "policy": "buy_and_hold",
+            "available": true,
+            "description": "buy at the close of the first scored candle, hold, sell at the close of the candle that closes the last scored sample's label horizon",
+            "window": "continuous market span (not the scored-sample set)",
+            "entry_row": 73634,
+            "exit_row": 83275,
+            "entry_timestamp": "2024-04-12 14:00:00+00:00",
+            "exit_timestamp": "2024-10-30 10:30:00+00:00",
+            "entry_price": 69737.71,
+            "exit_price": 72378.02,
+            "candles_held": 9641,
+            "elapsed_intervals": 9641,
+            "missing_candles": 0,
+            "spans_market_data_gap": false,
+            "n_trades": 1,
+            "gross_return": 0.037861,
+            "total_costs": 0.002,
+            "net_return": 0.035861,
+            "cost_model": "one round trip charged once over the whole hold",
+            "candle_max_drawdown": 0.308928,
+            "drawdown_is_lower_bound": false,
+            "exposure": 1.0,
+            "per_trade_sharpe": null,
+            "per_trade_sharpe_reason": "undefined: a single trade has no dispersion to measure",
+            "annualised_sharpe": 0.381,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset"
+          }
+        }
+      }
+    },
+    {
+      "fold": 3,
+      "run_seed": 42,
+      "fold_seed": 45,
+      "samples": {
+        "train": 73460,
+        "inner_validation": 9636,
+        "outer_validation": 9630
+      },
+      "periods": {
+        "train": {
+          "start": "2020-01-04 06:00:00+00:00",
+          "end": "2024-04-12 13:30:00+00:00",
+          "rows": 73556,
+          "row_range": [
+            78,
+            73634
+          ]
+        },
+        "inner_validation": {
+          "start": "2024-04-12 14:00:00+00:00",
+          "end": "2024-10-30 10:30:00+00:00",
+          "rows": 9642,
+          "row_range": [
+            73634,
+            83276
+          ]
+        },
+        "outer_validation": {
+          "start": "2024-10-30 11:00:00+00:00",
+          "end": "2025-05-19 04:30:00+00:00",
+          "rows": 9636,
+          "row_range": [
+            83276,
+            92912
+          ]
+        }
+      },
+      "model": {
+        "provenance": {
+          "model": "lightgbm",
+          "library": "lightgbm",
+          "library_version": "4.7.0",
+          "estimator": "lightgbm.LGBMClassifier",
+          "config": {
+            "objective": "multiclass",
+            "n_estimators": 200,
+            "learning_rate": 0.05,
+            "num_leaves": 31,
+            "max_depth": -1,
+            "min_child_samples": 20,
+            "subsample": 1.0,
+            "colsample_bytree": 1.0,
+            "reg_alpha": 0.0,
+            "reg_lambda": 0.0,
+            "n_jobs": 1,
+            "deterministic": true,
+            "force_row_wise": true,
+            "verbose": -1,
+            "random_state": 45
+          },
+          "seed": 45,
+          "seed_parameter": "random_state",
+          "flattened_input_dim": 14,
+          "train_class_counts": {
+            "SHORT": 25753,
+            "HOLD": 20264,
+            "LONG": 27443
+          },
+          "compatibility_notes": [
+            "deterministic=True requires an explicit histogram mode, so force_row_wise=True is set alongside it; n_jobs=1 for reproducible CPU behaviour"
+          ],
+          "early_stopping": false,
+          "hyperparameter_search": "none (predeclared fixed configuration)"
+        },
+        "selection": {
+          "block": "inner_validation",
+          "threshold": 0.64,
+          "objective": "maximise net return after round-trip costs on the inner-validation block, subject to at least min_trades realised trades; falls back to the most permissive grid point when no candidate clears the floor",
+          "threshold_grid": [
+            0.34,
+            0.36,
+            0.38,
+            0.4,
+            0.42,
+            0.44,
+            0.46,
+            0.48,
+            0.5,
+            0.52,
+            0.54,
+            0.56,
+            0.58,
+            0.6,
+            0.62,
+            0.64,
+            0.66,
+            0.68,
+            0.7,
+            0.72,
+            0.74,
+            0.76,
+            0.78,
+            0.8,
+            0.82,
+            0.84,
+            0.86,
+            0.88,
+            0.9
+          ],
+          "min_trades": 10,
+          "inner_validation_trading": {
+            "n_trades": 11,
+            "net_return": 0.243677,
+            "gross_return": 0.246579,
+            "total_costs": 0.022,
+            "avg_trade": 0.020416,
+            "win_rate": 0.8182,
+            "profit_factor": 18.7274,
+            "max_drawdown": 0.0084,
+            "exposure": 0.0068,
+            "turnover": 22.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": 0.6796,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "unavailable: no market context (close/date series) supplied",
+            "sharpe_basis": "unavailable: no market context (close/date series) supplied",
+            "candle_max_drawdown": null,
+            "elapsed_intervals": null
+          }
+        }
+      },
+      "outer_validation": {
+        "lightgbm": {
+          "classification": {
+            "n_samples": 9630,
+            "threshold": 0.64,
+            "class_distribution": {
+              "SHORT": 3354,
+              "HOLD": 2610,
+              "LONG": 3666
+            },
+            "predicted_distribution": {
+              "SHORT": 2,
+              "HOLD": 9618,
+              "LONG": 10
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 3354,
+                "predicted": 2
+              },
+              "HOLD": {
+                "precision": 0.2711,
+                "recall": 0.9989,
+                "f1": 0.4264,
+                "support": 2610,
+                "predicted": 9618
+              },
+              "LONG": {
+                "precision": 0.4,
+                "recall": 0.0011,
+                "f1": 0.0022,
+                "support": 3666,
+                "predicted": 10
+              }
+            },
+            "macro_f1": 0.1429,
+            "accuracy": 0.2711,
+            "directional_accuracy": 0.3333,
+            "coverage": 0.0012,
+            "calibration_error": 0.0396,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  3350,
+                  4
+                ],
+                [
+                  1,
+                  2607,
+                  2
+                ],
+                [
+                  1,
+                  3661,
+                  4
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 11,
+            "net_return": -0.045123,
+            "gross_return": -0.022752,
+            "total_costs": 0.022,
+            "avg_trade": -0.004068,
+            "win_rate": 0.2727,
+            "profit_factor": 0.4811,
+            "max_drawdown": 0.0492,
+            "exposure": 0.0069,
+            "turnover": 22.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.2485,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -1.2516,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.05762,
+            "elapsed_intervals": 9635
+          }
+        },
+        "majority_baseline": {
+          "classification": {
+            "n_samples": 9630,
+            "threshold": 0.5,
+            "class_distribution": {
+              "SHORT": 3354,
+              "HOLD": 2610,
+              "LONG": 3666
+            },
+            "predicted_distribution": {
+              "SHORT": 0,
+              "HOLD": 0,
+              "LONG": 9630
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 3354,
+                "predicted": 0
+              },
+              "HOLD": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "support": 2610,
+                "predicted": 0
+              },
+              "LONG": {
+                "precision": 0.3807,
+                "recall": 1.0,
+                "f1": 0.5514,
+                "support": 3666,
+                "predicted": 9630
+              }
+            },
+            "macro_f1": 0.1838,
+            "accuracy": 0.3807,
+            "directional_accuracy": 0.3807,
+            "coverage": 1.0,
+            "calibration_error": 0.6193,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  0,
+                  0,
+                  3354
+                ],
+                [
+                  0,
+                  0,
+                  2610
+                ],
+                [
+                  0,
+                  0,
+                  3666
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 1605,
+            "net_return": -0.941482,
+            "gross_return": 0.451118,
+            "total_costs": 3.21,
+            "avg_trade": -0.001719,
+            "win_rate": 0.3875,
+            "profit_factor": 0.5914,
+            "max_drawdown": 0.9428,
+            "exposure": 1.0,
+            "turnover": 3210.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.1754,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -9.3644,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.943272,
+            "elapsed_intervals": 9635
+          }
+        },
+        "momentum_baseline": {
+          "classification": {
+            "n_samples": 9630,
+            "threshold": 0.5,
+            "class_distribution": {
+              "SHORT": 3354,
+              "HOLD": 2610,
+              "LONG": 3666
+            },
+            "predicted_distribution": {
+              "SHORT": 4642,
+              "HOLD": 10,
+              "LONG": 4978
+            },
+            "per_class": {
+              "SHORT": {
+                "precision": 0.3335,
+                "recall": 0.4615,
+                "f1": 0.3872,
+                "support": 3354,
+                "predicted": 4642
+              },
+              "HOLD": {
+                "precision": 0.4,
+                "recall": 0.0015,
+                "f1": 0.0031,
+                "support": 2610,
+                "predicted": 10
+              },
+              "LONG": {
+                "precision": 0.361,
+                "recall": 0.4902,
+                "f1": 0.4158,
+                "support": 3666,
+                "predicted": 4978
+              }
+            },
+            "macro_f1": 0.2687,
+            "accuracy": 0.3478,
+            "directional_accuracy": 0.3477,
+            "coverage": 0.999,
+            "calibration_error": 0.6522,
+            "confusion_matrix": {
+              "order": [
+                "SHORT",
+                "HOLD",
+                "LONG"
+              ],
+              "rows_are_true": true,
+              "matrix": [
+                [
+                  1548,
+                  1,
+                  1805
+                ],
+                [
+                  1230,
+                  4,
+                  1376
+                ],
+                [
+                  1864,
+                  5,
+                  1797
+                ]
+              ]
+            }
+          },
+          "trading": {
+            "n_trades": 1605,
+            "net_return": -0.968773,
+            "gross_return": -0.175346,
+            "total_costs": 3.21,
+            "avg_trade": -0.002109,
+            "win_rate": 0.3514,
+            "profit_factor": 0.53,
+            "max_drawdown": 0.969,
+            "exposure": 1.0,
+            "turnover": 3210.0,
+            "cost_per_trade": 0.002,
+            "per_trade_sharpe": -0.2152,
+            "per_trade_sharpe_reason": "",
+            "annualised_sharpe": -11.4655,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset",
+            "candle_max_drawdown": 0.968953,
+            "elapsed_intervals": 9635
+          }
+        },
+        "economic_references": {
+          "note": "Economic reference policies, not models and not statistical baselines. A strategy that beats majority-class and momentum but loses to CASH lost money.",
+          "cash": {
+            "policy": "cash",
+            "description": "no position at any time; no trades, no fees, no slippage",
+            "n_trades": 0,
+            "gross_return": 0.0,
+            "total_costs": 0.0,
+            "net_return": 0.0,
+            "max_drawdown": 0.0,
+            "candle_max_drawdown": 0.0,
+            "exposure": 0.0,
+            "per_trade_sharpe": null,
+            "per_trade_sharpe_reason": "undefined: no trades, so the portfolio never moved",
+            "annualised_sharpe": null,
+            "annualised_sharpe_reason": "undefined: the return series has no variance",
+            "sharpe_basis": "undefined: the return series has no variance",
+            "cost_model_applied": false,
+            "cost_per_trade": 0.002
+          },
+          "buy_and_hold": {
+            "policy": "buy_and_hold",
+            "available": true,
+            "description": "buy at the close of the first scored candle, hold, sell at the close of the candle that closes the last scored sample's label horizon",
+            "window": "continuous market span (not the scored-sample set)",
+            "entry_row": 83276,
+            "exit_row": 92911,
+            "entry_timestamp": "2024-10-30 11:00:00+00:00",
+            "exit_timestamp": "2025-05-19 04:30:00+00:00",
+            "entry_price": 72149.99,
+            "exit_price": 103002.07,
+            "candles_held": 9635,
+            "elapsed_intervals": 9635,
+            "missing_candles": 0,
+            "spans_market_data_gap": false,
+            "n_trades": 1,
+            "gross_return": 0.42761,
+            "total_costs": 0.002,
+            "net_return": 0.42561,
+            "cost_model": "one round trip charged once over the whole hold",
+            "candle_max_drawdown": 0.313121,
+            "drawdown_is_lower_bound": false,
+            "exposure": 1.0,
+            "per_trade_sharpe": null,
+            "per_trade_sharpe_reason": "undefined: a single trade has no dispersion to measure",
+            "annualised_sharpe": 1.4764,
+            "annualised_sharpe_reason": "",
+            "sharpe_basis": "candle-level portfolio returns (equity unchanged while flat, marked to market while a position is open, both cost sides charged when they are paid), annualised by sqrt(candles_per_year) over elapsed wall-clock time, with a zero return for each calendar interval absent from the processed dataset"
+          }
+        }
+      }
+    }
+  ],
+  "summary": {
+    "outer_net_returns": [
+      -0.010518,
+      -0.015111,
+      0.076855,
+      -0.045123
+    ],
+    "mean_outer_net_return": 0.00152575,
+    "positive_folds": 1,
+    "outer_trades": [
+      9,
+      11,
+      17,
+      11
+    ],
+    "total_outer_trades": 48
+  }
+}

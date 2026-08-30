@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup lint format test smoke sample backfill features \
 	verify-research-snapshot verify-research-state train research experiment walkforward \
+	multiclock-acquire verify-multiclock-snapshot \
 	wf-diagnostics benchmark benchmark-compare \
 	p2b-cell p2b-btc p2b-compare p2b-ablation p2b-regimes \
 	p2c-cell p2c-btc p2c-compare freeze-evidence \
@@ -8,6 +9,9 @@
 	p3-cell p3-btc p3-compare \
 	futures-dry-run futures-dry-run-verify \
 	p5-cell p5-btc p5-compare p5-decide \
+	p6-clock p6-btc p6-decide p6ext-btc p6ext-decide \
+	p7-mode p7-btc p7-decide \
+	paper-smoke \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -25,6 +29,8 @@ MODELS   ?= artifacts/models
 # boundary: only ids under nn/research_contracts/ are accepted, and a new
 # research generation is a new contract file.
 CONTRACT ?= btc-usdt-1h-gen1
+# Where tools.acquire_multiclock_source caches the Binance monthly archives.
+MULTICLOCK_ARCHIVE_DIR ?= data/archives/binance_spot_btcusdt_1m
 EPOCHS   ?= 30
 # Run seed for the P2a benchmark; the checkpoint runs 42, 142, 242, 342, 442.
 SEED     ?= 42
@@ -64,6 +70,7 @@ smoke:  ## End-to-end smoke: data -> features -> training -> service -> risk
 check: ## Everything the Definition of Done requires
 	$(PYTHON) -m compileall -q .
 	$(PYTHON) -m tools.verify_research_snapshot
+	$(PYTHON) -m tools.verify_multiclock_snapshot
 	$(PYTHON) -m tools.verify_trade_snapshot
 	$(PYTHON) -m tools.verify_research_state
 	$(PYTHON) -m tools.futures_dry_run --verify $(FUTURES_DRY_RUN_DIR)
@@ -88,6 +95,45 @@ verify-research-snapshot:  ## Check the committed research snapshot: hashes, sea
 
 verify-research-state:  ## Check the front-door documents against the committed evidence
 	$(PYTHON) -m tools.verify_research_state
+
+p6-clock:  ## P6: one clock's three specialists. Args: CLOCK
+	$(PYTHON) -m nn.p6 --clock $(CLOCK) --out-root artifacts/benchmark
+
+p6-btc:  ## P6: every clock, five specialists times three families
+	$(PYTHON) -m nn.p6 --all --out-root artifacts/benchmark
+
+p6-decide:  ## P6: apply the frozen viability gate to the fifteen cells
+	$(PYTHON) -m nn.p6_decision --runs artifacts/benchmark/btc_p6_1m_* \
+		artifacts/benchmark/btc_p6_5m_* artifacts/benchmark/btc_p6_15m_* \
+		artifacts/benchmark/btc_p6_30m_* artifacts/benchmark/btc_p6_1h_* \
+		--out artifacts/benchmark/btc_p6_decision
+
+p6ext-btc:  ## P6-EXT: the same design on the two swing clocks, 4h and 1d
+	$(PYTHON) -m nn.p6 --registration p6ext --all --out-root artifacts/benchmark
+
+p6ext-decide:  ## P6-EXT: apply the frozen viability gate to the six cells
+	$(PYTHON) -m nn.p6_decision --registration p6ext \
+		--runs artifacts/benchmark/btc_p6ext_4h_* artifacts/benchmark/btc_p6ext_1d_* \
+		--out artifacts/benchmark/btc_p6ext_decision
+
+p7-mode:  ## P7: one trading mode's consensus and its components. Args: MODE
+	$(PYTHON) -m nn.p7 --mode $(MODE) --out-root artifacts/benchmark
+
+p7-btc:  ## P7: both trading modes over the frozen P6 specialists
+	$(PYTHON) -m nn.p7 --all --out-root artifacts/benchmark
+
+p7-decide:  ## P7: apply the frozen decision rule to both modes
+	$(PYTHON) -m nn.p7_decision --runs artifacts/benchmark/btc_p7_scalping \
+		artifacts/benchmark/btc_p7_day_trading --out artifacts/benchmark/btc_p7_decision
+
+paper-smoke:  ## Engineering smoke of Pythia -> mode -> Aegis -> Hermes -> dry-run venue
+	$(PYTHON) -m tools.paper_run --smoke --bars 2000 --out artifacts/paper_smoke
+
+multiclock-acquire:  ## Download and verify the Binance 1m source every clock is cut from
+	$(PYTHON) -m tools.acquire_multiclock_source --archive-dir $(MULTICLOCK_ARCHIVE_DIR)
+
+verify-multiclock-snapshot:  ## Re-cut all seven clocks from the committed 1m source and check them
+	$(PYTHON) -m tools.verify_multiclock_snapshot
 
 train:  ## Train a model. Args: DATASET EPOCHS SEQ_LEN CONTRACT
 	$(PYTHON) -m nn.train --dataset $(DATASET) --models-dir $(MODELS) \

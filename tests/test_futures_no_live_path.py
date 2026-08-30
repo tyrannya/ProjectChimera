@@ -67,7 +67,10 @@ from chimera.safety import (
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = Path(futures.__file__).resolve().parent
-SOURCES = sorted(PACKAGE.glob("*.py"))
+# `rglob`, not `glob`. A non-recursive scan means a `chimera/futures/live/`
+# subpackage — the natural place somebody would put a real venue — is outside
+# every barrier in this file while still being importable as `chimera.futures`.
+SOURCES = sorted(path for path in PACKAGE.rglob("*.py") if "__pycache__" not in path.parts)
 SOURCE_TEXT = {path: path.read_text(encoding="utf-8") for path in SOURCES}
 
 #: Modules that would give the package a way to reach an exchange, sign a
@@ -291,13 +294,28 @@ def test_no_module_in_the_package_reads_an_environment_variable(source):
     A package that reads no environment variable cannot be configured into a
     live one, and cannot pick up a credential that happens to be exported.
     """
-    text = SOURCE_TEXT[source]
-    for token in ("os.environ", "getenv"):
-        assert token not in text, (
-            f"{source} contains {token!r}. chimera.futures reads no environment: "
-            "every input it has is passed to it, so there is no variable an "
-            "operator could set that changes what it does."
-        )
+    tree = ast.parse(SOURCE_TEXT[source])
+    # Parsed, not grepped. A substring scan reads `os.environ` inside a comment
+    # or a docstring as a violation and misses `from os import environ as e`
+    # followed by `e["BINANCE_KEY"]`, which is the spelling somebody adding a
+    # credential would actually reach for.
+    readers = {"getenv", "environ", "environb"}
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in readers:
+            offenders.append(f"{ast.unparse(node)} (line {node.lineno})")
+        elif isinstance(node, ast.Name) and node.id in readers:
+            offenders.append(f"{node.id} (line {node.lineno})")
+        elif isinstance(node, ast.ImportFrom) and node.module in {"os", "posix", "nt"}:
+            named = [alias.name for alias in node.names if alias.name in readers]
+            if named:
+                offenders.append(f"from {node.module} import {named} (line {node.lineno})")
+
+    assert offenders == [], (
+        f"{source} reads the environment: {offenders}. chimera.futures reads no "
+        "environment: every input it has is passed to it, so there is no variable "
+        "an operator could set that changes what it does."
+    )
 
 
 @pytest.mark.parametrize("source", SOURCES, ids=lambda p: p.name)

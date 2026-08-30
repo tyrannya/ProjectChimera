@@ -1,0 +1,544 @@
+{
+  "checkpoint": "P6",
+  "question": "Can independent native-timeframe specialists extract robust cost-aware predictive signal at temporal scales the previous 1h/6h programme did not test?",
+  "evidence_class": "the preregistered gate, applied to frozen cells; the P6 outcome",
+  "evidence_ceiling": "Exploratory, adaptive. The four temporal periods are the same real-world windows v4, P2a, P2b, P2c, P3, P4 and P5 have already read, mapped onto faster clocks. Faster clocks multiply rows, not independent temporal periods: 2.8 million minutes of one asset over four windows is four observations of a market regime, not 2.8 million. No P6 result is confirmatory, and a positive P6 needs confirmation these blocks cannot supply.",
+  "preregistration_hash": "sha256:2785b1a7b19ecceca58cd0e936d14a5cbbbe6eb10f7ddf2796800409a0eaaaf2",
+  "decided_by": "xgboost",
+  "gate": {
+    "conditions": [
+      "cost-aware outer net return > 0 in at least 3 of the 4 folds",
+      "mean outer cost-aware net return across the 4 folds > 0",
+      "beats the matching native-timeframe momentum baseline's outer net return in at least 3 of the 4 folds"
+    ],
+    "conjunction": "all three",
+    "positive_folds_required": 3,
+    "beats_momentum_folds_required": 3,
+    "total_folds": 4,
+    "decided_by": "xgboost",
+    "per_clock": true,
+    "buy_and_hold": "a reference, not a required competitor",
+    "why_a_new_gate": "every existing gate in this repository compares an arm against a control, and P6 has no control. A screen for absolute viability needs an absolute floor."
+  },
+  "clocks": [
+    {
+      "clock": "1m",
+      "model": "xgboost",
+      "horizon": "6 minutes",
+      "folds": [
+        {
+          "fold": 0,
+          "period_start": "2023-03-04 07:00:00+00:00",
+          "period_end": "2023-09-24 16:59:00+00:00",
+          "net_return": -0.048409,
+          "momentum_net_return": -1.0,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 46,
+          "turnover": 92.0,
+          "threshold": 0.5,
+          "buy_and_hold": 0.186
+        },
+        {
+          "fold": 1,
+          "period_start": "2023-09-24 17:00:00+00:00",
+          "period_end": "2024-04-12 13:59:00+00:00",
+          "net_return": 0.080876,
+          "momentum_net_return": -1.0,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 16,
+          "turnover": 32.0,
+          "threshold": 0.56,
+          "buy_and_hold": 1.628029
+        },
+        {
+          "fold": 2,
+          "period_start": "2024-04-12 14:00:00+00:00",
+          "period_end": "2024-10-30 10:59:00+00:00",
+          "net_return": -0.016257,
+          "momentum_net_return": -1.0,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 19,
+          "turnover": 38.0,
+          "threshold": 0.54,
+          "buy_and_hold": 0.03351
+        },
+        {
+          "fold": 3,
+          "period_start": "2024-10-30 11:00:00+00:00",
+          "period_end": "2025-05-19 07:53:00+00:00",
+          "net_return": 0.104138,
+          "momentum_net_return": -1.0,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 20,
+          "turnover": 40.0,
+          "threshold": 0.54,
+          "buy_and_hold": 0.425323
+        }
+      ],
+      "conditions": {
+        "positive_folds": {
+          "required": 3,
+          "observed": 2,
+          "passed": false
+        },
+        "mean_outer_net_return": {
+          "required": "> 0",
+          "observed": 0.030087,
+          "passed": true
+        },
+        "beats_native_momentum_folds": {
+          "required": 3,
+          "observed": 4,
+          "passed": true
+        }
+      },
+      "viable": false,
+      "verdict": "not_viable",
+      "descriptive": {
+        "worst_fold": -0.048409,
+        "best_fold": 0.104138,
+        "total_outer_trades": 101,
+        "note": "worst and best folds are reported for completeness and decide nothing; the mean is one of the three gate conditions and does decide"
+      }
+    },
+    {
+      "clock": "5m",
+      "model": "xgboost",
+      "horizon": "30 minutes",
+      "folds": [
+        {
+          "fold": 0,
+          "period_start": "2023-03-04 07:00:00+00:00",
+          "period_end": "2023-09-24 16:55:00+00:00",
+          "net_return": -0.007995,
+          "momentum_net_return": -1.0,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 8,
+          "turnover": 16.0,
+          "threshold": 0.6,
+          "buy_and_hold": 0.186313
+        },
+        {
+          "fold": 1,
+          "period_start": "2023-09-24 17:00:00+00:00",
+          "period_end": "2024-04-12 13:55:00+00:00",
+          "net_return": 0.073974,
+          "momentum_net_return": -1.0,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 18,
+          "turnover": 36.0,
+          "threshold": 0.58,
+          "buy_and_hold": 1.628029
+        },
+        {
+          "fold": 2,
+          "period_start": "2024-04-12 14:00:00+00:00",
+          "period_end": "2024-10-30 10:55:00+00:00",
+          "net_return": -0.07831,
+          "momentum_net_return": -1.0,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 40,
+          "turnover": 80.0,
+          "threshold": 0.54,
+          "buy_and_hold": 0.030897
+        },
+        {
+          "fold": 3,
+          "period_start": "2024-10-30 11:00:00+00:00",
+          "period_end": "2025-05-19 07:25:00+00:00",
+          "net_return": 0.058097,
+          "momentum_net_return": -1.0,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 43,
+          "turnover": 86.0,
+          "threshold": 0.54,
+          "buy_and_hold": 0.419894
+        }
+      ],
+      "conditions": {
+        "positive_folds": {
+          "required": 3,
+          "observed": 2,
+          "passed": false
+        },
+        "mean_outer_net_return": {
+          "required": "> 0",
+          "observed": 0.0114415,
+          "passed": true
+        },
+        "beats_native_momentum_folds": {
+          "required": 3,
+          "observed": 4,
+          "passed": true
+        }
+      },
+      "viable": false,
+      "verdict": "not_viable",
+      "descriptive": {
+        "worst_fold": -0.07831,
+        "best_fold": 0.073974,
+        "total_outer_trades": 109,
+        "note": "worst and best folds are reported for completeness and decide nothing; the mean is one of the three gate conditions and does decide"
+      }
+    },
+    {
+      "clock": "15m",
+      "model": "xgboost",
+      "horizon": "90 minutes",
+      "folds": [
+        {
+          "fold": 0,
+          "period_start": "2023-03-04 07:00:00+00:00",
+          "period_end": "2023-09-24 16:45:00+00:00",
+          "net_return": -0.116113,
+          "momentum_net_return": -0.998522,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 70,
+          "turnover": 140.0,
+          "threshold": 0.54,
+          "buy_and_hold": 0.186275
+        },
+        {
+          "fold": 1,
+          "period_start": "2023-09-24 17:00:00+00:00",
+          "period_end": "2024-04-12 13:45:00+00:00",
+          "net_return": -0.017404,
+          "momentum_net_return": -0.998757,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 25,
+          "turnover": 50.0,
+          "threshold": 0.62,
+          "buy_and_hold": 1.62782
+        },
+        {
+          "fold": 2,
+          "period_start": "2024-04-12 14:00:00+00:00",
+          "period_end": "2024-10-30 10:45:00+00:00",
+          "net_return": 0.094854,
+          "momentum_net_return": -0.997804,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 14,
+          "turnover": 28.0,
+          "threshold": 0.62,
+          "buy_and_hold": 0.03529
+        },
+        {
+          "fold": 3,
+          "period_start": "2024-10-30 11:00:00+00:00",
+          "period_end": "2025-05-19 06:15:00+00:00",
+          "net_return": 0.075718,
+          "momentum_net_return": -0.997805,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 12,
+          "turnover": 24.0,
+          "threshold": 0.62,
+          "buy_and_hold": 0.418939
+        }
+      ],
+      "conditions": {
+        "positive_folds": {
+          "required": 3,
+          "observed": 2,
+          "passed": false
+        },
+        "mean_outer_net_return": {
+          "required": "> 0",
+          "observed": 0.00926375,
+          "passed": true
+        },
+        "beats_native_momentum_folds": {
+          "required": 3,
+          "observed": 4,
+          "passed": true
+        }
+      },
+      "viable": false,
+      "verdict": "not_viable",
+      "descriptive": {
+        "worst_fold": -0.116113,
+        "best_fold": 0.094854,
+        "total_outer_trades": 121,
+        "note": "worst and best folds are reported for completeness and decide nothing; the mean is one of the three gate conditions and does decide"
+      }
+    },
+    {
+      "clock": "30m",
+      "model": "xgboost",
+      "horizon": "3 hours",
+      "folds": [
+        {
+          "fold": 0,
+          "period_start": "2023-03-04 07:00:00+00:00",
+          "period_end": "2023-09-24 16:30:00+00:00",
+          "net_return": -0.092631,
+          "momentum_net_return": -0.966209,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 102,
+          "turnover": 204.0,
+          "threshold": 0.56,
+          "buy_and_hold": 0.185786
+        },
+        {
+          "fold": 1,
+          "period_start": "2023-09-24 17:00:00+00:00",
+          "period_end": "2024-04-12 13:30:00+00:00",
+          "net_return": -0.022409,
+          "momentum_net_return": -0.952943,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 52,
+          "turnover": 104.0,
+          "threshold": 0.58,
+          "buy_and_hold": 1.626869
+        },
+        {
+          "fold": 2,
+          "period_start": "2024-04-12 14:00:00+00:00",
+          "period_end": "2024-10-30 10:30:00+00:00",
+          "net_return": 0.030002,
+          "momentum_net_return": -0.950614,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 12,
+          "turnover": 24.0,
+          "threshold": 0.62,
+          "buy_and_hold": 0.035861
+        },
+        {
+          "fold": 3,
+          "period_start": "2024-10-30 11:00:00+00:00",
+          "period_end": "2025-05-19 04:30:00+00:00",
+          "net_return": 0.048616,
+          "momentum_net_return": -0.968773,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 14,
+          "turnover": 28.0,
+          "threshold": 0.62,
+          "buy_and_hold": 0.42561
+        }
+      ],
+      "conditions": {
+        "positive_folds": {
+          "required": 3,
+          "observed": 2,
+          "passed": false
+        },
+        "mean_outer_net_return": {
+          "required": "> 0",
+          "observed": -0.0091055,
+          "passed": false
+        },
+        "beats_native_momentum_folds": {
+          "required": 3,
+          "observed": 4,
+          "passed": true
+        }
+      },
+      "viable": false,
+      "verdict": "not_viable",
+      "descriptive": {
+        "worst_fold": -0.092631,
+        "best_fold": 0.048616,
+        "total_outer_trades": 180,
+        "note": "worst and best folds are reported for completeness and decide nothing; the mean is one of the three gate conditions and does decide"
+      }
+    },
+    {
+      "clock": "1h",
+      "model": "xgboost",
+      "horizon": "6 hours",
+      "folds": [
+        {
+          "fold": 0,
+          "period_start": "2023-03-04 07:00:00+00:00",
+          "period_end": "2023-09-24 16:00:00+00:00",
+          "net_return": 0.043269,
+          "momentum_net_return": -0.817843,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 50,
+          "turnover": 100.0,
+          "threshold": 0.68,
+          "buy_and_hold": 0.18647
+        },
+        {
+          "fold": 1,
+          "period_start": "2023-09-24 17:00:00+00:00",
+          "period_end": "2024-04-12 13:00:00+00:00",
+          "net_return": 0.027405,
+          "momentum_net_return": -0.776659,
+          "beats_momentum": true,
+          "positive": true,
+          "n_trades": 21,
+          "turnover": 42.0,
+          "threshold": 0.66,
+          "buy_and_hold": 1.618171
+        },
+        {
+          "fold": 2,
+          "period_start": "2024-04-12 14:00:00+00:00",
+          "period_end": "2024-10-30 10:00:00+00:00",
+          "net_return": -0.077402,
+          "momentum_net_return": -0.75639,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 40,
+          "turnover": 80.0,
+          "threshold": 0.6,
+          "buy_and_hold": 0.042868
+        },
+        {
+          "fold": 3,
+          "period_start": "2024-10-30 11:00:00+00:00",
+          "period_end": "2025-05-19 01:00:00+00:00",
+          "net_return": -0.100354,
+          "momentum_net_return": -0.82844,
+          "beats_momentum": true,
+          "positive": false,
+          "n_trades": 25,
+          "turnover": 50.0,
+          "threshold": 0.62,
+          "buy_and_hold": 0.457491
+        }
+      ],
+      "conditions": {
+        "positive_folds": {
+          "required": 3,
+          "observed": 2,
+          "passed": false
+        },
+        "mean_outer_net_return": {
+          "required": "> 0",
+          "observed": -0.0267705,
+          "passed": false
+        },
+        "beats_native_momentum_folds": {
+          "required": 3,
+          "observed": 4,
+          "passed": true
+        }
+      },
+      "viable": false,
+      "verdict": "not_viable",
+      "descriptive": {
+        "worst_fold": -0.100354,
+        "best_fold": 0.043269,
+        "total_outer_trades": 136,
+        "note": "worst and best folds are reported for completeness and decide nothing; the mean is one of the three gate conditions and does decide"
+      }
+    }
+  ],
+  "viable_clocks": [],
+  "outcome": "negative",
+  "answer_is": "the five per-clock verdicts above. `outcome` says only whether any clock cleared the absolute gate; it is not a checkpoint-level score and there is deliberately no best-clock row.",
+  "secondary_context": [
+    {
+      "clock": "1m",
+      "model": "logistic_regression",
+      "would_have_passed": true,
+      "positive_folds": 3,
+      "mean_outer_net_return": 0.0485065,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "1m",
+      "model": "lightgbm",
+      "would_have_passed": true,
+      "positive_folds": 3,
+      "mean_outer_net_return": 0.02795525,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "5m",
+      "model": "logistic_regression",
+      "would_have_passed": true,
+      "positive_folds": 3,
+      "mean_outer_net_return": 0.0524155,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "5m",
+      "model": "lightgbm",
+      "would_have_passed": true,
+      "positive_folds": 3,
+      "mean_outer_net_return": 0.019016,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "15m",
+      "model": "logistic_regression",
+      "would_have_passed": true,
+      "positive_folds": 3,
+      "mean_outer_net_return": 0.08174075,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "15m",
+      "model": "lightgbm",
+      "would_have_passed": false,
+      "positive_folds": 1,
+      "mean_outer_net_return": -0.0114765,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "30m",
+      "model": "logistic_regression",
+      "would_have_passed": false,
+      "positive_folds": 0,
+      "mean_outer_net_return": -0.07185275,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "30m",
+      "model": "lightgbm",
+      "would_have_passed": false,
+      "positive_folds": 1,
+      "mean_outer_net_return": 0.00152575,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "1h",
+      "model": "logistic_regression",
+      "would_have_passed": false,
+      "positive_folds": 2,
+      "mean_outer_net_return": 0.02402875,
+      "beats_momentum_folds": 4
+    },
+    {
+      "clock": "1h",
+      "model": "lightgbm",
+      "would_have_passed": false,
+      "positive_folds": 2,
+      "mean_outer_net_return": -0.05876,
+      "beats_momentum_folds": 4
+    }
+  ],
+  "secondary_context_note": "reported for every clock and decisive for none. A clock whose verdict is not viable stays not viable if another family would have passed.",
+  "interpretation": "If no clock passes, P6 is negative: changing the clock, on this asset, over these four periods, under this information set and these costs, did not produce robust cost-aware signal. P7 may still run, because consensus among unprofitable specialists is a separate question, and a negative P7 on top is a cleaner answer than not asking.",
+  "identity": {
+    "preregistration_hash": "sha256:2785b1a7b19ecceca58cd0e936d14a5cbbbe6eb10f7ddf2796800409a0eaaaf2",
+    "minutes_digest": "6da803a79797430097945aaf183c1430300ebad05f3302c059062dfeb2443987",
+    "cells": 15,
+    "clock_digests": {
+      "1m": "6da803a79797430097945aaf183c1430300ebad05f3302c059062dfeb2443987",
+      "5m": "053788d8febee25c17b04ae9a52998727e4a58df3af1523fa6f57a6f7832f9c8",
+      "15m": "f4ea496ae265af5c844eb34c21ec33747a87566d3ff1419572b89d9b4af4ea9b",
+      "30m": "c20955ef9ad79783b699a71f594e97bd1265d639f4b7f15af9dfa1bbae8b1abc",
+      "1h": "108930f3c9db44b5ebf24de564690bf169407c6791f4e3e3fcd445a2b03e3e3c"
+    }
+  }
+}

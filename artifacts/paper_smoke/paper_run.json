@@ -1,0 +1,79 @@
+{
+  "run_class": "an engineering smoke of the Pythia -> mode -> Aegis -> Hermes -> dry-run venue -> Argus path. NOT sustained paper validation, NOT live, and NOT evidence about alpha.",
+  "claims": {
+    "sustained_paper_validation": false,
+    "live": false,
+    "real_money": false,
+    "alpha": false
+  },
+  "declared_mode": "SCALPING",
+  "decision_clock": "1m",
+  "source": "ReplaySource",
+  "eligibility": {
+    "SCALPING": {
+      "mode": "SCALPING",
+      "eligible": false,
+      "reason": "specialist_not_viable",
+      "unscreened": [],
+      "not_viable": [
+        "1m",
+        "5m",
+        "15m"
+      ]
+    },
+    "DAY_TRADING": {
+      "mode": "DAY_TRADING",
+      "eligible": false,
+      "reason": "specialist_not_viable",
+      "unscreened": [],
+      "not_viable": [
+        "5m",
+        "15m",
+        "30m",
+        "1h"
+      ]
+    },
+    "SWING": {
+      "mode": "SWING",
+      "eligible": false,
+      "reason": "specialist_not_viable",
+      "unscreened": [],
+      "not_viable": [
+        "30m",
+        "1h",
+        "4h",
+        "1d"
+      ]
+    }
+  },
+  "execution": {
+    "venue": "DryRunFuturesVenue",
+    "dry_run": true,
+    "leverage": "1",
+    "margin_mode": "ISOLATED"
+  },
+  "totals": {
+    "bars": 2000,
+    "signals": {
+      "HOLD": 2000
+    },
+    "modes": {
+      "FLAT": 2000
+    },
+    "reasons": {
+      "specialist_not_viable": 2000
+    },
+    "orders_planned": 0,
+    "orders_filled": 0,
+    "risk_vetoes": 0,
+    "mode_transitions": 0,
+    "transition_flattens": 0,
+    "flat_fraction": 1.0
+  },
+  "ledger": {
+    "realised_pnl": "0",
+    "trading_fees": "0",
+    "turnover": "0",
+    "note": "simulated, from a constant reference price, and not evidence about alpha"
+  }
+}

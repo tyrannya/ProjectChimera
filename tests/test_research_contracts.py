@@ -142,8 +142,11 @@ def test_only_committed_contracts_are_selectable():
         path.stem for path in CONTRACTS_DIR.glob("*.json")
     )
     assert DEFAULT_CONTRACT_ID in available_contract_ids()
+    # Not `btc-usdt-1h-gen2`, which the multi-clock generation committed: the
+    # example has to be an id no contract file carries, and the point of the
+    # test is that selectability follows the tree rather than a hardcoded list.
     with pytest.raises(ResearchContractError, match="unknown research contract"):
-        load_contract("btc-usdt-1h-gen2")
+        load_contract("btc-usdt-1h-gen9")
 
 
 # --- B. semantic identity: stable under formatting, not under meaning ---------

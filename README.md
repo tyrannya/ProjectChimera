@@ -38,6 +38,8 @@ market data → validated dataset → features → leakage-safe training
 | Central risk engine + kill switch | Working | On the entry path via `confirm_trade_entry` |
 | Futures execution (`chimera.futures`) | Working, **dry-run only** | USD-M perpetuals, isolated 1x, LONG and SHORT. No live-order path exists and no credential is required |
 | Prometheus + Grafana | Working | Every panel queries a metric this code exports |
+| Trading-mode controller (`chimera.modes`) | Working, **selects nothing today** | SCALPING / DAY_TRADING / SWING / FLAT as states. Every mode is `NOT_ELIGIBLE` under the committed evidence, so it decides `FLAT` on every bar |
+| Paper chain (`tools.paper_run`) | Working, **dry-run replay only** | Runs specialists → consensus → mode → Aegis → Hermes into the dry-run venue. A smoke, not sustained paper validation, and its report says so in fields |
 | Telegram notifications | Working, optional | Absent credentials disable it silently |
 | MLflow tracking | Optional | `--mlflow`; artifacts do not depend on it |
 | Ray Tune | Optional | `--tune-trials N`; default 0 runs a single pass |
@@ -279,6 +281,10 @@ fail until every front-door document is reconciled with it.
 | `P3` | `btc_p3_information_set_benchmark` | **answered** |
 | `P4` | `btc_p4_derivatives_positioning_benchmark` | **answered** |
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
+| `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
+| `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -333,7 +339,7 @@ The fifth checkpoint, **P5**, is also **negative**. It changed exactly one axis 
 
 The deciding `xgboost` comparison improved **1 of 4** temporal outer folds against a preregistered bar of 3 — fold deltas `+0.11508`, `-0.075359`, `-0.039844`, `-0.183647`, mean `-0.0459425`, worst `-0.183647`, the last two reported and decisive in neither direction. The availability gate passed with all four folds available, measured before any fit. This is evidence against *this* representation of higher-timeframe context at *this* horizon on *this* asset; it is not a proof that timeframe context is uninformative. The nine primary cells are frozen under `artifacts/btc_p5_SHA256SUMS.txt` and the decision record under `artifacts/btc_p5_decision_SHA256SUMS.txt`. See [`docs/p5_preregistration.md`](docs/p5_preregistration.md) and [`docs/mtf_v1.md`](docs/mtf_v1.md).
 
-Five families have now failed on this design — three transformations of the 1h bar, one new source, one new clock — and the roadmap's conclusion is that the next research move changes axis rather than adding a sixth.
+Five families have now failed on this design — three transformations of the 1h bar, one new source, one new clock — and the roadmap's conclusion is that the next research move changes axis rather than adding a sixth. That move is §4c: the clock itself, tested natively rather than supplied as context.
 
 
 `--checkpoint` is a required input rather than something inferred from the arms,
@@ -372,6 +378,91 @@ from either.
 See [`docs/p2b_methodology.md`](docs/p2b_methodology.md) for the full design and
 [`docs/research_reproduction.md`](docs/research_reproduction.md) for the exact
 command sequence from a fresh clone.
+
+### 4c. Research: the multi-clock architecture (checkpoints P6, P6-EXT and P7)
+
+The five checkpoints above all varied the *columns* attached to one 1h bar. This
+one varies the **clock**, which is the architecture the system was designed
+around and which nothing before it had tested: independent native-timeframe
+specialists, and a cross-timeframe consensus over them.
+
+```bash
+make verify-multiclock-snapshot       # the source, offline, before anything is fitted
+make p6-btc && make p6-decide         # five specialists, one verdict per clock
+make p7-btc && make p7-decide         # consensus in two trading modes
+```
+
+The data foundation is one canonical source — Binance's published spot
+`BTCUSDT` 1m archive, every monthly object held to the SHA-256 Binance publishes
+beside it — from which the 5m, 15m, 30m, 1h, 4h and 1d bars are cut on the fixed
+UTC grid. A bar exists only if **every** constituent minute closed; incomplete
+bars are dropped rather than forward-completed, and no bar may draw a minute from
+after its own close. The source stops before `2025-05-19T08:00:00+00:00`, the
+first instant of the retired `P4-HOLD` region, so no multi-clock row reaches it.
+Design, derivation rules, gap table and the 1h parity investigation are in
+[`docs/multiclock_v1.md`](docs/multiclock_v1.md).
+
+**P6 is negative on all five clocks.** Same fourteen features, same cost model,
+same four real-world periods, same three untuned families as P2a — only the bar
+changes, and the label is six of *that clock's own* bars. Every clock cleared
+exactly two of the four folds a gate fixed at three required, and `30m` and `1h`
+additionally had a negative mean:
+
+| clock | horizon | positive folds | mean outer net return | beats native momentum |
+| --- | --- | ---: | ---: | ---: |
+| `1m` | 6 minutes | 2 / 4 | `+0.030087` | 4 / 4 |
+| `5m` | 30 minutes | 2 / 4 | `+0.0114415` | 4 / 4 |
+| `15m` | 90 minutes | 2 / 4 | `+0.00926375` | 4 / 4 |
+| `30m` | 3 hours | 2 / 4 | `-0.0091055` | 4 / 4 |
+| `1h` | 6 hours | 2 / 4 | `-0.0267705` | 4 / 4 |
+
+The momentum column is a floor, not a compliment. `MomentumBaseline` takes a
+position on every bar it is allowed to, so at six native bars and a 20 bps round
+trip it pays the cost model roughly a hundred times per fold and returns about
+`-1.0`. "Beats native momentum 4 / 4" means "did not trade itself to death", and
+both deciding documents say so; the gate's first condition is what bound.
+
+Three clocks have a positive mean while improving two of four folds — the
+count-the-folds rule, predeclared in P2b, firing for the third time. Two
+secondary families would have passed on the fast clocks; the design named
+XGBoost the deciding family before any fit existed, and the secondary results are
+reported in full and decide nothing. **P6-EXT** applied the same design to the
+two slow clocks a `SWING` mode needs and found neither `4h` nor `1d` viable —
+both, unlike every fast clock, also lost to their own native momentum baseline in
+half the folds.
+
+**P7 is negative in both measured modes.** It fits nothing: it replays the frozen
+P6 XGBoost cells' committed per-sample predictions, aligns each specialist to the
+decision clock by the last bar that had closed, and requires a strict majority. A
+specialist with no closed bar yet is unavailable, and unavailable is not a
+`HOLD` — the whole consensus holds. Scalping (1m decision clock) improved on the
+fold-wise best of its own constituents in 1 of 4 folds with mean delta
+`-0.0265515`; day trading (5m) in 1 of 4 with mean delta `-0.034336`. Both
+validity gates passed: each mode's own decision-clock specialist reproduced its
+frozen P6 cell exactly, over the 1,161,875 and 232,285 decision rows of the four
+folds. Read the trade counts before the deltas: the day-trading consensus took
+6, 1, 6 and **0** trades across its four folds, so that mode's `-0.034336` rests
+on thirteen realised trades. The preregistration's own low-trade flag, and where
+it fires, are in the closure of
+[`docs/p7_preregistration.md`](docs/p7_preregistration.md).
+
+Each checkpoint's design was committed and pushed before its first fit, and each
+document carries the SHA-256 of the machine-readable design it was run under:
+[`docs/p6_preregistration.md`](docs/p6_preregistration.md),
+[`docs/p6_extension_preregistration.md`](docs/p6_extension_preregistration.md),
+[`docs/p7_preregistration.md`](docs/p7_preregistration.md). The closures are in
+those same documents, below the design they close.
+
+**What this licenses operationally: nothing new.** No clock is viable, so no
+trading mode is eligible, so the mode controller
+([`docs/trading_modes_v1.md`](docs/trading_modes_v1.md)) reports `FLAT` for
+`specialist_not_viable` on every bar, and the committed paper smoke in
+`artifacts/paper_smoke/` places zero orders for that reason. `make paper-smoke`
+runs the whole chain into the dry-run venue; it is a smoke, and its report denies
+being sustained paper validation, live, real money, or evidence about alpha in
+fields rather than only in prose. **P8**, the automatic mode router, is
+preregistered at [`docs/p8_preregistration.md`](docs/p8_preregistration.md) and
+is **not opened**: its precondition is two eligible modes, and there are none.
 
 ### 5. Serve the model
 
@@ -488,6 +579,14 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/derivatives_v1.md](docs/derivatives_v1.md) | P4's information set, as implemented: what §5 left open, and two consequences that tighten its gate |
 | [docs/p5_preregistration.md](docs/p5_preregistration.md) | Checkpoint P5, preregistered before any P5 model was fitted and closed as negative: strictly causal higher-timeframe OHLCV context |
 | [docs/mtf_v1.md](docs/mtf_v1.md) | P5's information set, as implemented: the OHLCV14 engine on a 4h and a daily clock, and why its join needed a different witness |
+| [docs/multiclock_v1.md](docs/multiclock_v1.md) | The causal multi-clock source: one 1m archive, seven clocks, and what makes a bar exist |
+| [docs/p6_preregistration.md](docs/p6_preregistration.md) | Checkpoint P6, preregistered before its first fit and closed as negative: independent native-timeframe specialists on five clocks |
+| [docs/p6_extension_preregistration.md](docs/p6_extension_preregistration.md) | Checkpoint P6-EXT, P6's design on the 4h and 1d clocks a SWING mode needs; closed as negative |
+| [docs/p7_preregistration.md](docs/p7_preregistration.md) | Checkpoint P7, preregistered after P6 closed and closed as negative: cross-timeframe consensus over the frozen specialists |
+| [docs/trading_modes_v1.md](docs/trading_modes_v1.md) | SCALPING, DAY_TRADING, SWING and FLAT as operating states, their eligibility rule, and what may never select a mode |
+| [docs/p8_preregistration.md](docs/p8_preregistration.md) | Checkpoint P8's committed design. P8 is **not opened**: no router exists and no P8 number exists |
+| [docs/paper_operation_runbook.md](docs/paper_operation_runbook.md) | Running the dry-run paper chain, and the difference between a smoke and sustained paper validation |
+| [docs/current_development_plan.md](docs/current_development_plan.md) | What the programme is building next, and what each step may claim when it finishes |
 | [docs/futures_execution_v1.md](docs/futures_execution_v1.md) | Futures Execution v1: dry-run-only USD-M perpetuals, LONG and SHORT, and the risk boundary that does not move |
 | [docs/futures_dry_run_validation.md](docs/futures_dry_run_validation.md) | The operational protocol Futures Execution v1 was validated against, frozen before it was evaluated |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
