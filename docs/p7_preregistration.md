@@ -372,6 +372,64 @@ reported as "adds value", and it is not being relaxed now that it bound.
 day trading's fold 0 is `+0.052893`. Two positive folds across eight is what the
 3-of-4 condition exists to refuse, and it refused them.
 
+### A third thing, which the design did not think of
+
+**The alignment has no staleness bound, and on these folds a vote can be almost
+four days old.** §4 makes a specialist available when its own bar has closed at
+or before the decision instant, and §4's `UNAVAILABILITY_RULE` covers only the
+case where *no* bar has closed yet. Neither says how old the last closed bar may
+be. It matters because the P6 prediction series have gaps: the shared warm-up and
+label embargo are applied per contiguous segment, so an exchange outage removes a
+run of bars from a specialist's series, and on a slow clock that run is long.
+
+Measured on the committed artifacts, over every decision row of all four folds:
+
+| mode | specialist | rows voting on a bar older than one of its own | worst age |
+| --- | --- | ---: | ---: |
+| scalping | `5m` | 429 of 1,161,859 (0.037%) | 9h 29m |
+| scalping | `15m` | 1,564 of 1,161,819 (0.135%) | 1d 0h 14m |
+| day trading | `15m` | 222 of 232,277 (0.096%) | 1d 0h 10m |
+| day trading | `30m` | 570 of 232,265 (0.245%) | 1d 22h 55m |
+| day trading | `1h` | 1,272 of 232,241 (0.548%) | **3d 20h 55m** |
+
+The worst case is the `1h` specialist in day trading, which is also that mode's
+**veto**. On a decision clock's own clock the age is always zero, which is the
+identity §6 checks.
+
+**This is not fixed here.** A staleness bound is a change to the alignment rule,
+and adding one after the deltas are visible is exactly what §9 forbids — it would
+turn a measured result into a chosen one. It is recorded as a limitation of P7 v1
+and as the first thing a P7 v2 would specify **before** looking at anything, and
+it does not rescue either verdict: both modes failed, and a rule that voted on
+fresher information might have failed differently but was not the rule that ran.
+`tests/test_p7_consensus.py::test_the_measured_staleness_is_the_one_this_document_publishes`
+recomputes the table.
+
+### The two diagnostics this document promised and the artifacts do not carry
+
+§8's `trade_count` diagnostic says trade counts are "flagged below 10 outer
+trades, changes no denominator". The counts are reported per fold in both mode
+artifacts, but **no flag field was ever emitted**, so the flag is recorded here
+instead: it fires on **scalping fold 1** (9 trades) and on **all four
+day-trading folds** (6, 1, 6, 0). Five of the eight folds carrying these two
+verdicts are below the threshold the design set for taking a fold seriously.
+That does not move a condition — the rule counts folds, and it was applied — but
+a reader who takes P7B's `-0.034336` as a measurement of anything should know it
+rests on thirteen realised trades.
+
+§6's validity gate is the second. It asks that the mode's own decision-clock
+specialist "reproduce the frozen P6 cell's four outer net returns exactly", and
+`nn.p7.validity_gate` instead asserts the alignment is the identity — the action
+array P7 replays is the action array P6 selected, row for row. That implies the
+promised equality only if P7's accounting is P6's, which the proxy does not
+establish. The promised comparison is therefore made directly against the
+committed artifacts, in
+`tests/test_p7_evidence.py::test_the_preregistered_validity_gate_holds_on_the_frozen_evidence`,
+and **it holds on both modes**: `[-0.048409, +0.080876, -0.016257, +0.104138]`
+for scalping's `1m` and `[-0.007995, +0.073974, -0.078310, +0.058097]` for day
+trading's `5m`, equal to their frozen P6 cells to the last digit. P7 is valid as
+preregistered; what was missing was the check, not the property.
+
 ### What this licenses, and what it does not
 
 > Under this design — the frozen P6 XGBoost specialists, `consensus_v1`'s

@@ -255,8 +255,19 @@ def run_mode(design: Mapping[str, Any]) -> dict[str, Any]:
     """One mode: the consensus, every constituent, and the per-fold deltas."""
     rule = rule_for(design)
     decision_clock = rule.decision_clock
+    # The mode's own declared horizon, held to P6's. Both modes declare six
+    # native bars because P7 replays P6's cells and a replay scored at a
+    # different horizon would not be one; reading `HORIZON_BARS` and ignoring the
+    # field the design carries would let a future mode declare twelve and be
+    # scored at six without anything saying so.
+    horizon = int(design["horizon_bars"])
+    if horizon != HORIZON_BARS:
+        raise P7Error(
+            f"{design['mode']} declares a {horizon}-bar horizon and the frozen P6 "
+            f"specialists were fitted at {HORIZON_BARS}. A replay is not a refit."
+        )
     spec = TargetSpec(
-        horizon=HORIZON_BARS,
+        horizon=horizon,
         fee_rate=COSTS["fee_rate"],
         slippage_rate=COSTS["slippage_rate"],
     )

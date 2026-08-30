@@ -33,6 +33,7 @@ import pandas as pd
 
 from nn.multiclock import (
     ALL_CLOCKS,
+    PARITY_TOLERANCE,
     RESEARCH_VISIBLE_END,
     STYX_START,
     assert_manifest_clock,
@@ -233,7 +234,11 @@ def check_clocks(manifest: dict[str, Any], minutes: pd.DataFrame) -> dict[str, A
         # under-report an outage without any digest moving.
         availability = bar_availability(minutes, timeframe)
         for key in ("buckets_touched", "complete_bars", "incomplete_bars_dropped"):
-            if key in declared[timeframe] and declared[timeframe][key] != availability[key]:
+            # Required, not optional. Skipping a key the manifest omits means a
+            # manifest can pass this check by saying less.
+            if key not in declared[timeframe]:
+                raise SnapshotError(f"the {timeframe} clock record declares no {key!r}")
+            if declared[timeframe][key] != availability[key]:
                 raise SnapshotError(
                     f"the {timeframe} clock recomputes {key}={availability[key]} and the "
                     f"manifest says {declared[timeframe][key]}"
@@ -273,11 +278,21 @@ def check_parity(manifest: dict[str, Any], minutes: pd.DataFrame) -> dict[str, A
         raise SnapshotError(f"the 1h reference {reference_path} the manifest names is absent")
     reference = pd.read_parquet(reference_path)
     reference = reference.loc[reference["date"] < RESEARCH_VISIBLE_END].reset_index(drop=True)
+    # This repository's tolerance, not the manifest's. Taking it from the artifact
+    # under test lets a manifest declare a loose one and be verified against it,
+    # which is the verifier agreeing with whatever it was handed.
+    declared_tolerance = float(parity["tolerance"])
+    if declared_tolerance != PARITY_TOLERANCE:
+        raise SnapshotError(
+            f"the manifest declares a parity tolerance of {declared_tolerance} and this "
+            f"repository's is {PARITY_TOLERANCE}; the comparison it describes is not "
+            "the one this tool performs"
+        )
     recomputed = parity_against(
         resample_from_minutes(minutes, "1h"),
         reference,
         timeframe="1h",
-        tolerance=float(parity["tolerance"]),
+        tolerance=PARITY_TOLERANCE,
     )
     for key, actual in (
         ("overlapping_bars", recomputed.overlapping_bars),
@@ -302,11 +317,25 @@ def check_parity(manifest: dict[str, Any], minutes: pd.DataFrame) -> dict[str, A
         raise SnapshotError(
             f"{len(late)} disagreeing hour(s) lie at or after the research boundary"
         )
+
+    # Recomputed like everything else in this block. Reading it from the manifest
+    # and reporting it under `"recomputed": True` would be the one number in the
+    # report that the report had not checked.
+    agreement = 0.0
+    if recomputed.overlapping_bars:
+        agreeing = recomputed.overlapping_bars - recomputed.mismatching_bars
+        agreement = round(agreeing / recomputed.overlapping_bars, 9)
+    declared = parity.get("agreement_fraction")
+    if declared is not None and abs(float(declared) - agreement) > 1e-9:
+        raise SnapshotError(
+            f"the 1h parity recomputes an agreement fraction of {agreement} and the "
+            f"manifest says {declared}"
+        )
     return {
         "overlapping_bars": recomputed.overlapping_bars,
         "mismatching_bars": recomputed.mismatching_bars,
         "recomputed": True,
-        "agreement_fraction": parity.get("agreement_fraction"),
+        "agreement_fraction": agreement,
     }
 
 

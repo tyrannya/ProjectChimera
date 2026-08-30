@@ -257,3 +257,17 @@ def test_the_committed_smoke_report_if_present_denies_the_same_claims():
     assert payload["claims"]["alpha"] is False
     assert payload["execution"]["dry_run"] is True
     assert payload["totals"]["orders_filled"] == 0
+
+
+def test_zero_bars_means_the_whole_fold_not_an_empty_run():
+    """The runbook's long-soak command passes `--bars 0`."""
+    from tools.paper_run import bar_limit, build_argparser
+
+    assert bar_limit(0) is None
+    assert bar_limit(-1) is None
+    assert bar_limit(500) == 500
+    assert build_argparser().parse_args(["--smoke", "--bars", "0"]).bars == 0
+
+    unbounded = ReplaySource("1m", ("1m", "5m", "15m"), limit=bar_limit(0), fold=0)
+    bounded = ReplaySource("1m", ("1m", "5m", "15m"), limit=bar_limit(20), fold=0)
+    assert sum(1 for _ in unbounded.bars()) > sum(1 for _ in bounded.bars()) == 20

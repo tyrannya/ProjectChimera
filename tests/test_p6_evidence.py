@@ -307,3 +307,39 @@ def test_the_manifest_covers_every_primary_file():
         directory = cell_dir(clock, model).relative_to(REPO)
         for name in (ARTIFACT_NAME, PREDICTIONS_NAME):
             assert f"{directory}/{name}" in covered
+
+
+def test_the_thin_folds_are_the_ones_this_document_names(cells):
+    """The `trade_count` diagnostic §8 promised, recomputed from the frozen cells.
+
+    No cell carries a flag field — the diagnostic was preregistered and never
+    emitted — so the closure section of `docs/p6_preregistration.md` publishes the
+    flagged folds as a table instead. This recomputes that table and holds the
+    document to it, which is what keeps a disclosure from drifting away from the
+    evidence it discloses.
+    """
+    flagged = sorted(
+        (clock, model, int(record["fold"]))
+        for (clock, model), cell in cells.items()
+        for record in cell["folds"]
+        if int(record["outer_validation"][model]["trading"]["n_trades"]) < 10
+    )
+    assert flagged == [
+        ("15m", "logistic_regression", 0),
+        ("1h", "logistic_regression", 0),
+        ("1m", "lightgbm", 3),
+        ("30m", "lightgbm", 0),
+        ("5m", "lightgbm", 0),
+        ("5m", "lightgbm", 3),
+        ("5m", "logistic_regression", 0),
+        ("5m", "xgboost", 0),
+    ]
+    # Exactly one of them decides anything.
+    assert [row for row in flagged if row[1] == PRIMARY_MODEL] == [("5m", "xgboost", 0)]
+
+    document = (REPO / "docs" / "p6_preregistration.md").read_text()
+    section = document.split("`trade_count` diagnostic")[1]
+    assert "eight" in section.split("cell-folds")[0]
+    for clock, model, fold in flagged:
+        row = f"| `{clock}` | `{model}` | {fold} |"
+        assert row in section, f"the document does not list the flagged fold {row}"

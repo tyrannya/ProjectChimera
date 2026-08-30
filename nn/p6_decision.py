@@ -39,7 +39,6 @@ from nn.p6_preregistration import (
     FOLD_PERIODS,
     MODELS,
     PRIMARY_MODEL,
-    STOPPING_RULE,
     VIABILITY_GATE,
 )
 
@@ -300,18 +299,16 @@ def decide(
         "clocks": verdicts,
         "viable_clocks": viable,
         "outcome": outcome,
-        "answer_is": (
-            "the per-clock verdicts above, one for every clock the checkpoint registered. "
-            "`outcome` says only whether any clock "
-            "cleared the absolute gate; it is not a checkpoint-level score and there is "
-            "deliberately no best-clock row."
-        ),
+        # Both of these are the *registration's*, not P6's. Reading them from
+        # nn.p6_preregistration is how P6's stopping rule, which names P7, came
+        # to be published in P6-EXT's decision record.
+        "answer_is": registered.answer_is,
         "secondary_context": secondary_context(cells, registered),
         "secondary_context_note": (
             "reported for every clock and decisive for none. A clock whose verdict is "
             "not viable stays not viable if another family would have passed."
         ),
-        "interpretation": STOPPING_RULE[
+        "interpretation": registered.stopping_rule[
             (
                 "on_pass"
                 if len(viable) == len(verdicts)

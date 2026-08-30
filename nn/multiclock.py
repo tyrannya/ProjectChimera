@@ -141,6 +141,31 @@ def assert_minute_grid(frame: pd.DataFrame, *, what: str = "the 1m source") -> p
             f"{what} carries {unusable} non-finite OHLCV value(s); a NaN is not a price "
             "and must not be counted as a constituent"
         )
+    # A candle whose high is below its own open, or whose price is not positive,
+    # is not a candle either. `high` and `low` become the max and min of a
+    # resampled bar, so one broken row silently widens the bar it lands in and
+    # nothing downstream can tell that from a real wick.
+    prices = values.loc[:, ["open", "high", "low", "close"]].to_numpy(dtype=np.float64)
+    nonpositive = int((prices <= 0.0).sum())
+    if nonpositive:
+        raise MulticlockError(
+            f"{what} carries {nonpositive} non-positive price(s); a candle at or below "
+            "zero is not a BTCUSDT candle"
+        )
+    body_high = np.maximum(values["open"].to_numpy(float), values["close"].to_numpy(float))
+    body_low = np.minimum(values["open"].to_numpy(float), values["close"].to_numpy(float))
+    broken = int(
+        (values["high"].to_numpy(float) < body_high).sum()
+        + (values["low"].to_numpy(float) > body_low).sum()
+    )
+    if broken:
+        raise MulticlockError(
+            f"{what} carries {broken} candle(s) whose high or low does not contain its "
+            "own open and close"
+        )
+    if (values["volume"].to_numpy(float) < 0.0).any():
+        raise MulticlockError(f"{what} carries negative volume")
+
     duplicates = int(dates.duplicated().sum())
     if duplicates:
         raise MulticlockError(f"{what} carries {duplicates} duplicate timestamp(s)")

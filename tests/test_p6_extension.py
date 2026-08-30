@@ -180,3 +180,53 @@ def test_the_extension_evidence_is_frozen_and_still_hashes():
     from tools.freeze_evidence import check
 
     assert check(MANIFEST) == []
+
+
+# --------------------------------------------------------------------------- #
+# D. what a re-run reproduces, and the one field it does not
+# --------------------------------------------------------------------------- #
+
+
+def test_the_decision_regenerates_from_the_frozen_cells_except_one_prose_field():
+    """The disclosed divergence, pinned so it cannot quietly widen.
+
+    P6-EXT's decision record was produced while `nn.p6_decision` read the
+    stopping rule from `nn.p6_preregistration` for every registration, so the
+    committed `interpretation` is **P6's** `on_all_fail` — which names P7, and
+    was written into a record closed after P7 had already closed. The module now
+    reads the registration's own stopping rule.
+
+    A closed checkpoint does not rewrite its evidence to make a sentence right,
+    so the committed record keeps the wrong sentence and this test states exactly
+    what differs: one prose field, no number, no condition, no verdict, no
+    outcome. `docs/p6_extension_preregistration.md`'s closure says the same in
+    prose.
+    """
+    from nn.p6_decision import build
+
+    committed = json.loads(DECISION.read_text())
+    regenerated = build(
+        sorted((BENCHMARK.glob("btc_p6ext_4h_*"))) + sorted(BENCHMARK.glob("btc_p6ext_1d_*")),
+        registration("p6ext"),
+    )
+
+    differing = [key for key in committed if committed[key] != regenerated.get(key)]
+    assert differing == ["interpretation"], differing
+    assert set(regenerated) == set(committed)
+
+    assert committed["interpretation"] == p6.STOPPING_RULE["on_all_fail"]
+    assert regenerated["interpretation"] == ext.STOPPING_RULE["on_fail"]
+    assert "P7" not in regenerated["interpretation"]
+
+
+def test_p6s_own_decision_still_regenerates_byte_for_byte():
+    """The same edit must not have moved P6, which is closed and reproduced."""
+    from nn.p6_decision import build
+
+    committed = json.loads((BENCHMARK / "btc_p6_decision" / "decision.json").read_text())
+    runs = [
+        directory
+        for clock in p6.CLOCKS
+        for directory in sorted(BENCHMARK.glob(f"btc_p6_{clock}_*"))
+    ]
+    assert build(runs, registration("p6")) == committed

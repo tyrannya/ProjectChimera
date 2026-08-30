@@ -384,10 +384,60 @@ these clocks "beats momentum" therefore means "does not trade itself to death",
 which is a real floor and a very low one. It should not be read as evidence of
 skill, and the gate did not let it be: condition 1 is what bound.
 
-**Buy-and-hold beat every specialist on every fold**, at full exposure — `+0.186`,
-`+1.628`, `+0.034` and `+0.425` across the four periods. It is a reference and
-not a competitor, exactly as it has been since P2a, and it is not a reason to
+**Buy-and-hold beat the deciding specialist in 19 of the 20 clock-folds**, at
+full exposure. On the `1m` clock it returned `+0.186`, `+1.628`, `+0.034` and
+`+0.425` across the four periods; the other clocks see the same four windows to
+within one bar and differ only in the last decimals. The exception is `15m` fold
+2, where the XGBoost specialist returned `+0.094854` against buy-and-hold's
+`+0.035290` — one fold, in the flattest of the four periods, on a clock the gate
+still found not viable. Two more of the sixty cell-folds across all three
+families beat it: `30m` LightGBM fold 2, and `1d` logistic regression fold 3 in
+P6-EXT.
+
+Buy-and-hold is a reference and not a competitor, exactly as it has been since
+P2a, and neither beating it once nor losing to it nineteen times is a reason to
 select anything.
+
+*(This paragraph replaced an earlier sentence claiming buy-and-hold beat every
+specialist on every fold, which was wrong: it was written from the `1m` and `5m`
+clocks and not checked against the other three. The correction changes no gate
+condition, no verdict and no number in any artifact — buy-and-hold is not a gate
+condition — and the frozen cells carried the true figures all along.)*
+
+**P6's frozen `STATUS.md` was rewritten after P6 closed, and the manifest line
+for it re-hashed.** It happened in `9a0bd05`, the commit that closed P7: the
+artifact index requires every committed artifact directory's `STATUS.md` to open
+with its status word, and P6's opened with `# P6 — decision`, so `# CURRENT` was
+put above it and `nn.p6_decision.to_markdown` changed to emit it. The two bytes
+of evidence that decide anything — `decision.json`, and the fifteen cells under
+`artifacts/btc_p6_SHA256SUMS.txt` — were not touched, and `decision.json`'s
+digest in `artifacts/btc_p6_decision_SHA256SUMS.txt` is the same before and
+after. It is recorded here because "a frozen artifact was edited after closure"
+is exactly the sentence a reader should be able to find, rather than reconstruct
+from a diff.
+
+**The `trade_count` diagnostic §8 promised was never emitted, so it is recorded
+here.** §8 says trade counts are "flagged below 10 outer trades; changes no
+denominator". The counts are in every cell (`summary.outer_trades`) and in the
+decision record (`n_trades` per fold), but no flag field was written. Across the
+fifteen cells the flag fires on **eight** cell-folds:
+
+| clock | model | fold | outer trades |
+| --- | --- | ---: | ---: |
+| `5m` | `logistic_regression` | 0 | 3 |
+| `15m` | `logistic_regression` | 0 | 4 |
+| `5m` | `lightgbm` | 0 | 6 |
+| `5m` | `lightgbm` | 3 | 7 |
+| `5m` | `xgboost` | 0 | **8** |
+| `1h` | `logistic_regression` | 0 | 8 |
+| `1m` | `lightgbm` | 3 | 8 |
+| `30m` | `lightgbm` | 0 | 9 |
+
+Exactly one of them, `5m` XGBoost fold 0, carries a deciding verdict. It changes no denominator and moved no condition, exactly as
+predeclared; it is a reason to distrust that one fold's number rather than the
+gate's arithmetic.
+`tests/test_p6_evidence.py::test_the_thin_folds_are_the_ones_this_document_names`
+recomputes the flag from the frozen cells and holds this paragraph to it.
 
 **Two secondary families would have passed, and the design forbade taking them.**
 Logistic regression cleared all three conditions on `1m`, `5m` and `15m`, and

@@ -71,6 +71,7 @@ from nn.p6_preregistration import (
     REGION,
     SEED,
     SEQ_LEN,
+    STOPPING_RULE,
     preregistration_hash,
 )
 from nn.research_contract import load_contract
@@ -116,6 +117,13 @@ class Registration:
     prefix: str
     preregistration_hash: str
     manifest: str
+    #: What the decision record says its answer is, and what it says a reader
+    #: should conclude from each outcome. Both are checkpoint-specific prose, and
+    #: both used to be P6's for every registration — which put P6's stopping
+    #: rule, naming P7, into P6-EXT's decision record. See
+    #: `docs/p6_extension_preregistration.md`'s closure.
+    answer_is: str
+    stopping_rule: dict[str, str]
 
 
 def registration(name: str) -> Registration:
@@ -131,6 +139,12 @@ def registration(name: str) -> Registration:
             prefix="btc_p6",
             preregistration_hash=preregistration_hash(),
             manifest="artifacts/btc_p6_SHA256SUMS.txt",
+            answer_is=(
+                "the five per-clock verdicts above. `outcome` says only whether any clock "
+                "cleared the absolute gate; it is not a checkpoint-level score and there "
+                "is deliberately no best-clock row."
+            ),
+            stopping_rule=dict(STOPPING_RULE),
         )
     if name == "p6ext":
         from nn import p6_extension_preregistration as ext
@@ -145,6 +159,23 @@ def registration(name: str) -> Registration:
             prefix="btc_p6ext",
             preregistration_hash=ext.preregistration_hash(),
             manifest="artifacts/btc_p6ext_SHA256SUMS.txt",
+            # Left exactly as the committed P6-EXT decision record carries it:
+            # it is accurate for two clocks as well as five, and reproducing a
+            # frozen artifact matters more than rephrasing it.
+            answer_is=(
+                "the per-clock verdicts above, one for every clock the checkpoint "
+                "registered. `outcome` says only whether any clock cleared the absolute "
+                "gate; it is not a checkpoint-level score and there is deliberately no "
+                "best-clock row."
+            ),
+            # P6-EXT registered `on_pass` and `on_fail` and no `on_all_fail`: it
+            # screens two clocks for a mode, and both failing is its `on_fail`
+            # rather than a third state.
+            stopping_rule={
+                "on_pass": ext.STOPPING_RULE["on_pass"],
+                "on_fail": ext.STOPPING_RULE["on_fail"],
+                "on_all_fail": ext.STOPPING_RULE["on_fail"],
+            },
         )
     raise SystemExit(f"unknown registration {name!r}; this runner executes 'p6' or 'p6ext'")
 

@@ -432,8 +432,11 @@ Five things about this matter more than the numbers:
 - **The trades are thin.** The `1m` specialist scored 1.16 million outer rows and
   took 101 trades — the frozen threshold selector and an 80.5% HOLD class balance
   behaving exactly as a fixed cost threshold at a six-minute horizon implies.
-- **Buy-and-hold beat every specialist on every fold**, at full exposure. A
-  reference, not a competitor, as since P2a.
+- **Buy-and-hold beat the deciding specialist in 19 of the 20 clock-folds**, at
+  full exposure. The exception is `15m` fold 2 — `+0.094854` against `+0.035290`
+  — one fold, on a clock the gate still found not viable. A reference, not a
+  competitor, as since P2a; the closure of
+  [`p6_preregistration.md`](p6_preregistration.md) has the full comparison.
 
 **Do not respond to this by tuning anything.** The clock set, the horizon rule,
 `seq_len`, the cost model, the class definition and the gate were predeclared;
@@ -630,10 +633,13 @@ with later numbers and their content unchanged.
 
 ### Future axes, documented and not started
 
-None of the following has been designed, preregistered, implemented or run.
-They are recorded so that "what is left" is a list rather than a memory, and so
-that the next checkpoint is chosen deliberately rather than by whichever idea is
-nearest to hand.
+None of the following has been implemented or run, and none of them has a
+number. **P8 is the one exception to "not designed": its design is committed and
+hashed, and it is still not opened** — preregistering a rule before anything can
+be fitted to it is the cheapest moment to fix it, and doing so is not running it.
+The rest have not been designed either. They are recorded so that "what is left"
+is a list rather than a memory, and so that the next checkpoint is chosen
+deliberately rather than by whichever idea is nearest to hand.
 
 - **P8 — automatic trading-mode router.** Whether a causal router can choose among
   eligible trading modes with incremental cost-aware value over fixed-mode

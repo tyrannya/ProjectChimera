@@ -49,7 +49,16 @@ hashes, so the two checkpoints cannot drift apart.
 
 [`trading_modes_v1.md`](trading_modes_v1.md) describes a SWING mode whose primary
 clocks are `30m`, `1h` and `4h` with `1d` as slow context. Two of those had no
-specialist at all. **A mode is not eligible until the specialists it names exist
+specialist at all.
+
+*(Chronology, because the citation reads as though that document already existed:
+it did not. This preregistration was committed at `aafdcd5` and the mode document
+at `91ae835`, two commits later. What was fixed first is the thing that matters —
+the clock set `{4h, 1d}` is in this file's hashed payload, committed before the
+first P6-EXT fit, so the mode document could not have been used to choose which
+clocks to test. It was written afterwards, to the set fixed here, and it records
+`SWING` as `NOT_ELIGIBLE`; a document written after a negative result, declaring
+the mode it describes ineligible, is not a way of winning anything.)* **A mode is not eligible until the specialists it names exist
 and have been screened**, and calling 30m/1h-only operation "swing" would be
 describing a different thing by the same name.
 
@@ -144,6 +153,57 @@ Evidence:
 [`artifacts/benchmark/btc_p6ext_decision/`](../artifacts/benchmark/btc_p6ext_decision/),
 over six primary cells frozen under
 [`artifacts/btc_p6ext_SHA256SUMS.txt`](../artifacts/btc_p6ext_SHA256SUMS.txt).
+
+**One field of that decision record is wrong, and it stays wrong.** Its
+`interpretation` quotes **P6's** stopping rule — the one that ends "P7 may still
+run" — because `nn.p6_decision` read the stopping rule from
+`nn.p6_preregistration` for every registration it served. P6-EXT registered its
+own (§10), and closed *after* P7 had already closed, so the sentence is both the
+wrong checkpoint's and, by then, no longer true of P7.
+
+The module now reads the registration's own rule, so a re-run of `make
+p6ext-decide` emits P6-EXT's `on_fail` text instead. That makes the committed
+record the one artifact on this branch that does not regenerate byte for byte,
+and the divergence is exactly one prose field: no number, no condition, no
+verdict and no outcome differs.
+`tests/test_p6_extension.py::test_the_decision_regenerates_from_the_frozen_cells_except_one_prose_field`
+regenerates the record from the frozen cells and asserts that `interpretation`
+is the only key that differs, so the disclosure is checked rather than promised.
+Rewriting the artifact to fix a sentence would be a closed checkpoint editing its
+own evidence, which is a worse habit than carrying a visible defect.
+
+**Two more of P6's strings are on P6-EXT's artifacts, and those stay in the code
+as well as in the files.** The six cells declare
+`evidence_class: "one native-timeframe specialist, fitted once; P6 primary
+evidence"` and the decision record declares `"the preregistered gate, applied to
+frozen cells; the P6 outcome"`. Both name P6 because both constants live in the
+shared runner. Unlike the stopping rule these are labels rather than claims, and
+each sits beside a `checkpoint: "P6-EXT"` and a
+`question: "btc_p6ext_swing_clock_specialist_screen"` in the same object, so
+nothing is ambiguous about which checkpoint the artifact belongs to. Making them
+registration-scoped would break the byte-reproducibility of six frozen cells to
+rephrase a label that no reader can misread, which is a bad trade; they are
+recorded here instead.
+
+### What the thinness note predicted, and what the run produced
+
+§4's thinness note (`THINNESS_NOTE`) was written before any P6-EXT fit and estimated 1,946
+in-region 1d bars becoming 1,253 usable rows, with outer blocks of "roughly 130
+rows". The realised figures: **1,950** in-region 1d bars (the note's 1,946 was
+four short), **1,253** usable rows exactly as predicted, and outer blocks of
+**119, 201, 201 and 194** rows rather than a uniform ~130 — the four frozen
+periods are calendar windows of unequal length, and on a daily clock that
+inequality is visible where on a 1m clock it is not.
+
+Two consequences worth stating plainly. The 1d training block **starts
+2020-09-15**, not at the frozen `train_start` of 2020-01-04: the 78-bar warm-up
+and the segment cuts consume the first eight and a half months of the region, so
+the earliest usable daily row is later than the calendar boundary the fold plan
+asks for. The cells report the period they actually trained on, and this is what
+that period is. And `4h` XGBoost fold 3 took **9 outer trades**, below the
+10-trade line P6's imported `trade_count` diagnostic said would be flagged; no
+flag field was emitted, so it is flagged here. Neither changes a condition, and neither was
+known before the verdicts were computed.
 
 ### Three things about this result
 

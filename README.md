@@ -416,6 +416,12 @@ additionally had a negative mean:
 | `30m` | 3 hours | 2 / 4 | `-0.0091055` | 4 / 4 |
 | `1h` | 6 hours | 2 / 4 | `-0.0267705` | 4 / 4 |
 
+The momentum column is a floor, not a compliment. `MomentumBaseline` takes a
+position on every bar it is allowed to, so at six native bars and a 20 bps round
+trip it pays the cost model roughly a hundred times per fold and returns about
+`-1.0`. "Beats native momentum 4 / 4" means "did not trade itself to death", and
+both deciding documents say so; the gate's first condition is what bound.
+
 Three clocks have a positive mean while improving two of four folds — the
 count-the-folds rule, predeclared in P2b, firing for the third time. Two
 secondary families would have passed on the fast clocks; the design named
@@ -433,7 +439,12 @@ specialist with no closed bar yet is unavailable, and unavailable is not a
 fold-wise best of its own constituents in 1 of 4 folds with mean delta
 `-0.0265515`; day trading (5m) in 1 of 4 with mean delta `-0.034336`. Both
 validity gates passed: each mode's own decision-clock specialist reproduced its
-frozen P6 cell exactly, over 1,161,875 and 232,285 rows.
+frozen P6 cell exactly, over the 1,161,875 and 232,285 decision rows of the four
+folds. Read the trade counts before the deltas: the day-trading consensus took
+6, 1, 6 and **0** trades across its four folds, so that mode's `-0.034336` rests
+on thirteen realised trades. The preregistration's own low-trade flag, and where
+it fires, are in the closure of
+[`docs/p7_preregistration.md`](docs/p7_preregistration.md).
 
 Each checkpoint's design was committed and pushed before its first fit, and each
 document carries the SHA-256 of the machine-readable design it was run under:

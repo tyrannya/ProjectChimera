@@ -86,6 +86,41 @@ def test_the_validity_gate_passed_on_every_mode(modes, name):
 
 
 @pytest.mark.parametrize("name", MODE_IDS)
+def test_the_preregistered_validity_gate_holds_on_the_frozen_evidence(modes, name):
+    """§6 as written, checked here because the runtime gate checks a proxy for it.
+
+    `nn.p7.validity_gate` asserts that the own-clock alignment is the identity —
+    that the action array P7 replays is the action array P6 selected, row for
+    row. §6 of the preregistration asks for the consequence of that: **the four
+    outer net returns must reproduce the frozen P6 cell's exactly**. Identical
+    actions imply identical returns only if P7's accounting is P6's, which is the
+    part the proxy does not establish.
+
+    So it is established here, against the committed artifacts, on both modes.
+    Nothing about the result depends on this test passing — it either was valid
+    or it was not, and it was; what the test adds is that the property the
+    document promised is checked somewhere rather than nowhere.
+    """
+    payload = modes[name]
+    clock = payload["mode"]["decision_clock"]
+    cell = json.loads(
+        (REPO / "artifacts" / "benchmark" / f"btc_p6_{clock}_xgboost" / "p6.json").read_text()
+    )
+
+    replayed = [
+        round(record["constituents"][clock]["net_return"], 6) for record in payload["folds"]
+    ]
+    frozen = [
+        round(float(record["outer_validation"]["xgboost"]["trading"]["net_return"]), 6)
+        for record in cell["folds"]
+    ]
+    assert replayed == frozen, (
+        f"{name}: P7 replays the {clock} specialist as {replayed}, and its frozen P6 cell "
+        f"says {frozen}. §6 makes that disagreement an invalid P7, not a delta."
+    )
+
+
+@pytest.mark.parametrize("name", MODE_IDS)
 def test_no_specialist_was_refitted(modes, name):
     """P7's evidence names the frozen cells and carries no fit of its own."""
     payload = modes[name]

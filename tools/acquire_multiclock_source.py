@@ -24,10 +24,22 @@ places every 2020 candle in 1970. Either mistake produces a frame that sorts,
 de-duplicates and resamples without complaint. The unit is therefore derived per
 file from the magnitude of the values and recorded per file in the manifest.
 
-**Only research-visible history is acquired.** The download stops at
+**Only research-visible history is committed, and the boundary-spanning month is
+downloaded whole.** Binance publishes by calendar month and
 :data:`nn.multiclock.RESEARCH_VISIBLE_END` — the first instant of the retired
-``P4-HOLD`` region — and the frame is trimmed to it before anything is written.
-Styx is three months further on and is never approached.
+``P4-HOLD`` region — falls on 2025-05-19, so the 2025-05 object is fetched and
+parsed in full and the frame is then trimmed to the boundary before anything is
+written. No committed candle is at or after it.
+
+What the manifest does carry from inside the region is that month's *archive*
+facts: its published SHA-256, its row count, and its ``first_open`` and
+``last_open``, which for 2025-05 is 2025-05-31T23:59. These are properties of a
+public file and of the calendar, not prices, positions or labels; a model cannot
+be fitted on "the May archive has 44,640 rows". They are recorded because
+dropping them would leave the provenance chain unable to say which object the
+committed prefix came out of. **No P4-HOLD price, volume or label is read,
+committed, scored or summarised anywhere.** Styx is three months further on and
+is never approached.
 """
 
 from __future__ import annotations

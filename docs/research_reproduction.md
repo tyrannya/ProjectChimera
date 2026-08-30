@@ -495,10 +495,19 @@ multi-clock source verified.
 ```
 
 Like §2's verifier it recomputes rather than reads: the file digests, the
-research-input digest, the whole-minute grid, the per-clock bar availability, the
-month-by-month provenance chain, and the 1h parity comparison — recomputed from
-the committed 1m file and held to the exact overlap, mismatch and timestamp list
-the manifest publishes. It takes about fifteen seconds and touches no network.
+research-input digest, the whole-minute grid, the per-clock bar availability, and
+the 1h parity comparison — recomputed from the committed 1m file and the
+committed 1h reference, and held to the exact overlap, mismatch count, agreement
+fraction and timestamp list the manifest publishes. It takes about fifteen
+seconds and touches no network.
+
+The per-month provenance records are the one part it cannot recompute, and it
+only checks their shape rather than pretending otherwise: the monthly `.zip`
+objects are not committed, so their published SHA-256s are checked for being
+SHA-256s, their declared `open_time_unit` for being one Binance actually
+publishes, and their declared row total for being at least the committed file's.
+Recomputing those digests means re-downloading the archives, which is
+`make multiclock-acquire` and needs a network.
 The 29 mismatching hours it confirms are an inconsistency inside Binance's own
 archive, all before 2022-05 and none inside any outer block;
 [`multiclock_v1.md`](multiclock_v1.md) §7 has the three-way comparison that
@@ -560,7 +569,7 @@ code with the one that produced it beyond the cost model both are obliged to use
 | `1d` | 1,253 | P6-EXT; small enough that the fold geometry, not the fit, is the constraint |
 
 `seq_len = 1` — one native bar of the fourteen columns — which is why 2.8 million
-1m samples fit at all; [`p6_preregistration.md`](p6_preregistration.md) §4.4
+1m samples fit at all; [`p6_preregistration.md`](p6_preregistration.md) §5
 records that choice and the measurement behind it. Expect the five-clock sweep to
 take a few hours in sequence on four cores, almost all of it on `1m`, and budget
 several GB of RAM for the `1m` cells. Running two clocks concurrently is the

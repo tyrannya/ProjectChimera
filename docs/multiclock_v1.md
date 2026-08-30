@@ -119,8 +119,12 @@ the manifest because every clock's completeness is a function of them:
 | 4h | 11,767 | 24 |
 | 1d | 1,950 | 16 |
 
-A slower clock loses more bars to the same outage, which is the expected shape:
-one missing minute destroys one 5m bar and one 1d bar alike.
+One missing minute destroys one bar on every clock, so a slower clock loses more
+bars up to the point where its bars are wide enough to *contain* several outages
+at once. That is exactly where the column turns: 1h drops 14, 4h drops 24, and
+1d drops only 16 — the fifteen outages fall into fewer distinct daily bars than
+four-hourly ones. The count is not monotonic in the timeframe and should not be
+read as though it were.
 
 ## 6. The 1h parity check
 
@@ -178,6 +182,19 @@ archive, **every `open` and every `close` matches exactly** on all 47,123
 overlapping hours, and only `volume` (22 hours) and the extremes (2 hours and 1
 hour) differ — the shape of a 1m archive that is missing individual trades the
 hourly aggregation captured, never of a misaligned or shifted grid.
+
+**What the middle leg was, and why a clone cannot re-check it.** The second and
+third rows compare against **Binance's published 1h archive** —
+`data/spot/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-YYYY-MM.zip`, the hourly sibling
+of the monthly objects §2 acquires, fetched over the same endpoint and checked
+against the same published `.CHECKSUM`. It is **not committed and no tool here
+fetches it**: it is a diagnostic input to one investigation, not research data,
+and committing a second exchange series to settle a question about the first
+would enlarge the surface this generation is trying to keep small. Re-checking
+those two rows therefore means downloading those objects and running
+`nn.multiclock.parity_against` over them; the first and third rows, which are the
+ones the manifest publishes and the verifier enforces, need nothing but the
+repository.
 
 **Where they are.** All 29 lie between `2020-04-09` and `2022-05-01`. The
 earliest reported outer block begins `2023-03-04T07:00Z`, so **none of them

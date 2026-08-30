@@ -212,7 +212,15 @@ def test_the_disagreeing_hours_are_confined_to_the_early_history(manifest):
 
 
 def test_control_shifted_higher_timeframe_bar_is_caught(synthetic_minutes):
-    """A 1h bar moved one period into the future stops matching its constituents."""
+    """A 1h bar moved one period into the future stops matching its constituents.
+
+    Two halves, and the second is the one that says something about the
+    resampler. The first mutates the resampler's *output* and shows the detector
+    catches it. The second takes the unmutated output and checks each bar against
+    the minutes it claims to summarise — that a bar labelled `t` is built from
+    `[t, t+1h)` and from nothing later — which is the property the mutation
+    violates, asserted directly rather than by proxy.
+    """
     clean = resample_from_minutes(synthetic_minutes, "1h", boundary=None)
     leaked = clean.copy()
     leaked["date"] = leaked["date"] - pd.Timedelta(hours=1)
@@ -223,6 +231,21 @@ def test_control_shifted_higher_timeframe_bar_is_caught(synthetic_minutes):
     # from the minutes it claims to summarise disagrees on every value.
     result = parity_against(leaked, clean, timeframe="1h")
     assert result.mismatching_bars > 0
+
+    # And the resampler itself does not produce such a bar: every OHLCV value of
+    # every bar is the aggregate of exactly the minutes inside its own window.
+    minutes = synthetic_minutes.sort_values("date")
+    for row in clean.itertuples():
+        inside = (minutes["date"] >= row.date) & (
+            minutes["date"] < row.date + pd.Timedelta(hours=1)
+        )
+        window = minutes.loc[inside]
+        assert len(window) == 60
+        assert row.open == pytest.approx(window["open"].iloc[0])
+        assert row.close == pytest.approx(window["close"].iloc[-1])
+        assert row.high == pytest.approx(window["high"].max())
+        assert row.low == pytest.approx(window["low"].min())
+        assert row.volume == pytest.approx(window["volume"].sum())
 
 
 def test_control_incomplete_bar_is_caught(synthetic_minutes):
@@ -349,3 +372,34 @@ def test_control_verifier_rejects_an_unenumerated_parity_claim(tmp_path, manifes
     path.write_text(json.dumps(mutated))
     with pytest.raises(verifier.SnapshotError, match="disagree and enumerates"):
         verifier.verify(path)
+
+
+@pytest.mark.parametrize(
+    "column, value, message",
+    [
+        ("close", 0.0, "non-positive price"),
+        ("open", -1.0, "non-positive price"),
+        ("high", 1.0, "does not contain its own open and close"),
+        ("low", 10_000.0, "does not contain its own open and close"),
+        ("volume", -1.0, "negative volume"),
+    ],
+)
+def test_control_a_broken_candle_is_refused_rather_than_aggregated(
+    synthetic_minutes, column, value, message
+):
+    """One impossible row inside an hour must not become that hour's wick.
+
+    `high` and `low` are a max and a min over the constituents, so a single row
+    with a high below its own body widens — or narrows — the bar it lands in, and
+    nothing downstream can tell the result from a real wick.
+    """
+    broken = synthetic_minutes.copy()
+    broken.loc[7, column] = value
+    with pytest.raises(MulticlockError, match=message):
+        resample_from_minutes(broken, "1h", boundary=None)
+
+
+def test_the_committed_source_carries_no_broken_candle(minutes):
+    """Not a property of the checker: a property of what is committed."""
+    dates = assert_minute_grid(minutes, what="the committed 1m source")
+    assert len(dates) == len(minutes)

@@ -15,6 +15,7 @@ entered.
 from __future__ import annotations
 
 import inspect
+import re
 import json
 from pathlib import Path
 
@@ -289,10 +290,35 @@ def test_the_profit_tripwire_actually_fires():
 
 
 def test_the_selection_source_covers_every_function_that_can_choose_a_mode():
+    """Discovered, not listed — a list checked against itself proves nothing.
+
+    `selection_source` concatenates three named functions, so asserting those
+    three appear in it is true by construction. What has to hold instead is that
+    those three are *all* of them: every module-level function in
+    `chimera.modes` that can hand back a mode, an eligibility or a transition is
+    inside the text the profit tripwire scans. A fourth selector added tomorrow
+    and forgotten fails here.
+    """
+    from chimera import modes as module
+
+    decisive = {"ModeDecision", "Eligibility", "TransitionPlan", "TradingMode"}
+    selectors = {
+        name
+        for name, function in vars(module).items()
+        if inspect.isfunction(function)
+        and function.__module__ == module.__name__
+        and not name.startswith("_")
+        and decisive & set(re.findall(r"\w+", str(function.__annotations__.get("return", ""))))
+    }
+    assert selectors == {
+        "evaluate_eligibility",
+        "decide_mode",
+        "plan_mode_transition",
+    }, f"a function that can choose a mode is outside the tripwire's reach: {selectors}"
+
     source = selection_source()
-    for function in (evaluate_eligibility, decide_mode, plan_mode_transition):
-        assert function.__name__ in source
-    assert inspect.getsource(decide_mode) in source
+    for name in selectors:
+        assert inspect.getsource(getattr(module, name)) in source
 
 
 def test_a_specialist_status_carries_no_performance_field():

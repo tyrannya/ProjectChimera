@@ -24,7 +24,15 @@ that has not happened yet.
 ## 2. The engineering smoke
 
 ```
-make paper-smoke          # or: python -m tools.paper_run --smoke --bars 500
+make paper-smoke
+```
+
+`make paper-smoke` writes to `artifacts/paper_smoke/`, which is the **committed**
+smoke report, so running it regenerates a tracked artifact. To try a variation
+without disturbing it, send the run somewhere else:
+
+```
+python -m tools.paper_run --smoke --bars 500 --out /tmp/paper_smoke_scratch
 ```
 
 Deterministic and offline. It walks closed decision bars in time order, runs the

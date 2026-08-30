@@ -106,17 +106,52 @@ controls, for the reason P4 §6.2 gives. And `btc_p5_decision` is frozen while
 `btc_p5_comparison` is not: the decision record is what the checkpoint answered,
 and the comparison is regenerated whenever the aggregator improves.
 
-**None of these seven replaces another.** They answer seven different questions,
-so seven rows are CURRENT at once and `status` is scoped per research question
-rather than across the index.
+**The current multi-clock specialist screen is
+[`benchmark/btc_p6_decision/`](benchmark/btc_p6_decision/), its swing-clock
+extension is [`benchmark/btc_p6ext_decision/`](benchmark/btc_p6ext_decision/),
+and the cross-timeframe consensus is
+[`benchmark/btc_p7_decision/`](benchmark/btc_p7_decision/).** These are the
+eighth, ninth and tenth questions, and the first three on this index that change
+the **clock** rather than the columns attached to one. All three are **negative**.
 
-### One directory here is not research evidence at all
+P6 screened `1m`, `5m`, `15m`, `30m` and `1h` as independent native-timeframe
+specialists at six of each clock's own bars. Not one is viable: every clock
+cleared exactly two of the four folds a gate fixed at three required, and `30m`
+and `1h` also failed the positive-mean condition. P6-EXT applied the same design
+to `4h` and `1d` — 0 of 4 and 1 of 4 positive folds, and unlike every fast clock
+both also lost to their own native momentum baseline in half the folds — so the
+`SWING` mode those two clocks would serve is `NOT_ELIGIBLE`. P7 replayed the
+frozen P6 cells into a strict-majority consensus on two decision clocks and
+improved on the fold-wise best constituent in 1 of 4 folds in each mode, mean
+deltas `-0.0265515` and `-0.034336`. Its validity gate passed on both: each
+mode's own decision-clock specialist reproduced its frozen P6 cell exactly.
+
+The fifteen P6 cells are frozen under
+[`btc_p6_SHA256SUMS.txt`](btc_p6_SHA256SUMS.txt), the six P6-EXT cells under
+[`btc_p6ext_SHA256SUMS.txt`](btc_p6ext_SHA256SUMS.txt), the two P7 mode artifacts
+under [`btc_p7_SHA256SUMS.txt`](btc_p7_SHA256SUMS.txt), and each decision record
+under its own manifest beside them.
+
+**None of these ten replaces another.** They answer ten different questions, so
+ten rows are CURRENT at once and `status` is scoped per research question rather
+than across the index.
+
+### Two directories here are not research evidence at all
 
 [`futures_dry_run_v1/`](futures_dry_run_v1/) is the report of an **engineering**
 protocol: the operational validation of Futures Execution v1, described in
 [`../docs/futures_dry_run_validation.md`](../docs/futures_dry_run_validation.md).
-It declares `evidence_class: operational` and it is listed here so that a reader
-walking this index does not have to work out what it is.
+
+[`paper_smoke/`](paper_smoke/) is the report of an **engineering smoke** of the
+paper chain — specialists, consensus, mode controller, Aegis, Hermes, the dry-run
+venue — described in
+[`../docs/paper_operation_runbook.md`](../docs/paper_operation_runbook.md). Under
+the committed evidence no mode is eligible, so it decides `FLAT` on every bar and
+places no orders, and its report denies being sustained paper validation, live,
+real money or evidence about alpha in fields rather than only in prose.
+
+Both declare `evidence_class: operational` and are listed here so that a reader
+walking this index does not have to work out what they are.
 
 It is **not** evidence of trading alpha, not evidence about real exchange
 execution quality, and not evidence about any research checkpoint. Its acceptance

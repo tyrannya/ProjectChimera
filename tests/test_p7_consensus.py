@@ -317,3 +317,63 @@ def test_the_validity_gate_refuses_a_non_identity_replay():
     shifted[0] = SHORT_IDX
     with pytest.raises(P7Error, match="does not align to itself as the identity"):
         validity_gate(decision, shifted, "1m")
+
+
+def test_a_mode_declaring_another_horizon_is_refused_rather_than_scored_at_six():
+    """The declared field is used, so a mode cannot declare one and get another."""
+    from nn.p7 import P7Error, run_mode
+
+    design = dict(SCALPING)
+    design["horizon_bars"] = 12
+    with pytest.raises(P7Error, match="A replay is not a refit"):
+        run_mode(design)
+
+
+def test_the_measured_staleness_is_the_one_this_document_publishes():
+    """The alignment's unbounded staleness, recomputed from the frozen cells.
+
+    P7 v1 has no staleness bound and the closure of `docs/p7_preregistration.md`
+    says so with numbers. A disclosure that nothing recomputes is a sentence, so
+    this recomputes it: the worst age of an aligned vote, per mode and
+    specialist, must be what the document publishes, and zero on each mode's own
+    decision clock.
+    """
+    import numpy as np
+
+    from nn.multiclock import constituent_count
+    from nn.p7 import align_to_decision_clock, load_specialist
+
+    expected = {
+        ("SCALPING", "1m"): "0 days 00:00:00",
+        ("SCALPING", "5m"): "0 days 09:29:00",
+        ("SCALPING", "15m"): "1 days 00:14:00",
+        ("DAY_TRADING", "5m"): "0 days 00:00:00",
+        ("DAY_TRADING", "15m"): "1 days 00:10:00",
+        ("DAY_TRADING", "30m"): "1 days 22:55:00",
+        ("DAY_TRADING", "1h"): "3 days 20:55:00",
+    }
+
+    for design in (SCALPING, DAY_TRADING):
+        clock = design["decision_clock"]
+        frames = {name: load_specialist(name) for name in design["specialists"]}
+        for name in design["specialists"]:
+            worst = pd.Timedelta(0)
+            for fold in sorted(frames[clock]["fold"].unique()):
+                decision = frames[clock].loc[frames[clock]["fold"] == fold]
+                specialist = frames[name].loc[frames[name]["fold"] == fold]
+                opens = decision["timestamp"].to_numpy(dtype="datetime64[ns]")
+                theirs = specialist["timestamp"].to_numpy(dtype="datetime64[ns]")
+                index = align_to_decision_clock(opens, clock, theirs, name)
+                available = index >= 0
+                reference = opens[available] + np.timedelta64(constituent_count(clock), "m")
+                closes = theirs[index[available]] + np.timedelta64(
+                    constituent_count(name), "m"
+                )
+                ages = pd.to_timedelta(reference - closes)
+                assert (ages >= pd.Timedelta(0)).all(), "a vote from the future"
+                if len(ages):
+                    worst = max(worst, ages.max())
+            assert str(worst) == expected[(design["mode"], name)], (
+                f"{design['mode']} {name}: worst staleness is {worst} and the closure "
+                f"publishes {expected[(design['mode'], name)]}"
+            )

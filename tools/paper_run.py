@@ -18,8 +18,10 @@ reachable from `chimera.futures` at all. Nothing here places a real order.
 
 **Two market-data sources, one loop.**
 
-* ``ReplaySource`` reads the committed multi-clock snapshot and the frozen P6
-  predictions. Deterministic, offline, and what ``--smoke`` uses.
+* ``ReplaySource`` reads the frozen P6 outer predictions — only those; it does
+  not open the multi-clock source, because a replayed decision needs the
+  specialist's action and not the candle it was fitted on. Deterministic,
+  offline, and what ``--smoke`` uses.
 * ``LiveSource`` is the seam a sustained run plugs into: it needs a feed of
   closed candles and a specialist that serves predictions on each clock. P6
   measured its specialists but did not persist estimators, so no such specialist
@@ -45,7 +47,7 @@ from typing import Any, Iterator, Protocol
 import pandas as pd
 
 from chimera import metrics
-from chimera.contracts import Signal
+from chimera.contracts import LONG_IDX, SHORT_IDX, HOLD_IDX, Signal
 from chimera.futures import (
     DeterministicFillModel,
     DryRunFuturesVenue,
@@ -154,7 +156,11 @@ class ReplaySource:
             yield (pd.Timestamp(row["timestamp"]) + width, REPLAY_REFERENCE_PRICE, signals)
 
 
-SHORT, HOLD, LONG = 0, 1, 2
+#: The stored `selected_action` encoding, taken from the contract that defines it
+#: rather than restated. `nn.p7` builds the same mapping from the same constants;
+#: two modules agreeing on `0, 1, 2` by coincidence is one renumbering away from a
+#: replay that reads every SHORT as a LONG.
+SHORT, HOLD, LONG = SHORT_IDX, HOLD_IDX, LONG_IDX
 
 #: Constant on purpose. A replay drives the execution chain, not a PnL: a varying
 #: price would produce a simulated equity curve that somebody could mistake for a
@@ -391,11 +397,26 @@ def build_argparser() -> argparse.ArgumentParser:
         default=TradingMode.SCALPING.value,
         help="the operator's declared mode; honoured only if the evidence supports it",
     )
-    parser.add_argument("--bars", type=int, default=500)
+    parser.add_argument(
+        "--bars",
+        type=int,
+        default=500,
+        help="how many decision bars to replay; 0 means every bar in the fold",
+    )
     parser.add_argument("--fold", type=int, default=0)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--state", type=Path)
     return parser
+
+
+def bar_limit(bars: int) -> int | None:
+    """``--bars 0`` means the whole fold, not an empty run.
+
+    The runbook's long-soak command passes ``0``, and a literal zero limit made
+    that command replay nothing and exit successfully — a soak test that proved
+    the loop could start.
+    """
+    return bars if bars > 0 else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -416,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         source.bars()  # raises, with the reason
         return 1
 
-    source = ReplaySource(decision_clock, clocks, limit=args.bars, fold=args.fold)
+    source = ReplaySource(decision_clock, clocks, limit=bar_limit(args.bars), fold=args.fold)
     out = args.out or (REPO_ROOT / "artifacts" / "paper_smoke")
     state = args.state or (out / "futures_state.json")
     state.parent.mkdir(parents=True, exist_ok=True)
