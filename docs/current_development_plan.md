@@ -31,7 +31,7 @@ rewritten; the forward plan is.
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
-| `P7` | `btc_p7_cross_timeframe_consensus` | **unrun** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **preregistered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
 <!-- research-state:end -->
@@ -132,8 +132,8 @@ cost-aware value beyond the corresponding individual specialists?
 Two trading-mode experiments with separate verdicts — scalping on a 1m decision
 clock and day trading on a 5m decision clock — over the **frozen** P6 specialists
 and their frozen predictions. Nothing is refitted, retuned or reweighted.
-Its preregistration is committed at `docs/p7_preregistration.md` after P6 closed
-and before any P7 number is computed. A negative P6 does not cancel P7: agreement
+Preregistered after P6 closed and before any P7 number was computed, in
+[`p7_preregistration.md`](p7_preregistration.md). A negative P6 does not cancel P7: agreement
 among individually unprofitable specialists is a separate question, and P6 §9.4
 predeclared that P7 must not depend on which specialists cleared the gate.
 

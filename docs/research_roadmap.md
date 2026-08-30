@@ -45,7 +45,7 @@ committed and its evidence is not.
 | `P5` | `btc_p5_information_set_benchmark` | **answered** |
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **unrun** |
-| `P7` | `btc_p7_cross_timeframe_consensus` | **unrun** |
+| `P7` | `btc_p7_cross_timeframe_consensus` | **preregistered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **unrun** |
 
 <!-- research-state:end -->
@@ -527,7 +527,7 @@ it opens are:
 - **P7 — Pythia cross-timeframe consensus.** Whether causal agreement between the
   frozen P6 specialists adds cost-aware value over the corresponding individual
   specialists, in two separately reported trading modes. Preregistered after P6
-  closed, in `docs/p7_preregistration.md`. That P6 was negative does not cancel
+  closed, in [`p7_preregistration.md`](p7_preregistration.md). That P6 was negative does not cancel
   it: agreement among individually unprofitable specialists is a different
   question, and §9.4 of P6's preregistration predeclared that P7 must not depend
   on which specialists cleared an absolute floor.
