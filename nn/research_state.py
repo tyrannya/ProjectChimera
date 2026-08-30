@@ -146,6 +146,7 @@ FRONT_DOOR_DOCUMENTS: tuple[str, ...] = (
     "docs/microstructure_v1.md",
     "docs/p4_preregistration.md",
     "docs/p5_preregistration.md",
+    "docs/p6_preregistration.md",
 )
 
 
