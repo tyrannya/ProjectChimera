@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import json
 import socket
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -168,6 +169,32 @@ def probe(url: str, timeout: int = 30) -> dict[str, Any]:
         return {"url": url, "reachable": False, "status": None, "error": str(reason)}
 
 
+def source_provenance() -> dict[str, Any]:
+    """The revision this record was generated at, and whether the tree was dirty.
+
+    Recorded rather than assumed: P6's primary cells carry ``dirty: true`` and
+    their fits are consequently not reconstructible from a clean checkout, which
+    is the defect this checkpoint refuses to repeat.
+    """
+
+    def _git(*args: str) -> str:
+        try:
+            return subprocess.run(
+                ["git", *args], capture_output=True, text=True, timeout=30, check=False
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    status = _git("status", "--porcelain")
+    return {
+        "revision": _git("rev-parse", "HEAD"),
+        "dirty": bool(status),
+        "dirty_paths": sorted(
+            line.split(maxsplit=1)[-1] for line in status.splitlines() if line.strip()
+        ),
+    }
+
+
 def refusal_record(probes: list[dict[str, Any]], symbol: str, note: str) -> dict[str, Any]:
     """The evidence behind a NOT EVALUABLE determination.
 
@@ -180,6 +207,7 @@ def refusal_record(probes: list[dict[str, Any]], symbol: str, note: str) -> dict
         "refusal_schema": REFUSAL_SCHEMA,
         "checkpoint": prereg.CHECKPOINT,
         "preregistration_hash": prereg.preregistration_hash(),
+        "provenance": source_provenance(),
         "outcome": "NOT EVALUABLE",
         "reason": note,
         "planned_object_count": plan["object_count"],
