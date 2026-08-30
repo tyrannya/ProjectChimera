@@ -53,6 +53,7 @@ from chimera.futures.accounting import (
 from chimera.futures.domain import (
     ZERO,
     EventKind,
+    can_transition,
     FuturesError,
     InvalidTransition,
     OrderEvent,
@@ -61,6 +62,7 @@ from chimera.futures.domain import (
     OrderSide,
     OrderState,
     Position,
+    PositionError,
     PositionSide,
     TargetPosition,
     plan_flatten,
@@ -198,6 +200,19 @@ class FuturesExecutor:
     #: when the position goes away.
     _published_symbols: set[str] = field(default_factory=set)
 
+    def __post_init__(self) -> None:
+        # Seed the order counter past every id the store already holds. `_plan`
+        # writes `store.state.orders[order_id]`, so a counter that restarted at
+        # zero after a restart would hand the first new order the first old
+        # order's id and *replace* the persisted record — its fills, its fees,
+        # its history and its `applied_events`, which is the whole of the
+        # idempotency guarantee. The one boundary the store exists to survive
+        # would have been the one that broke it.
+        for order_id in self.store.state.orders:
+            tail = order_id.rpartition("-")[2]
+            if tail.isdigit():
+                self._order_seq = max(self._order_seq, int(tail))
+
     # ------------------------------------------------------------------
     # state
     # ------------------------------------------------------------------
@@ -212,7 +227,7 @@ class FuturesExecutor:
         return self.venue.constraints(symbol)
 
     def require_ready(self, symbol: str) -> None:
-        """Refuse to plan while the account's state is unknown or disputed."""
+        """Refuse to plan while the account is unknown, disputed, or off-regime."""
         if not self.store.state.bootstrapped:
             raise NotBootstrapped(
                 "the futures executor has not adopted a starting position. An empty "
@@ -225,6 +240,22 @@ class FuturesExecutor:
                 f"{symbol} is disputed: {dispute}. Local and reported state disagree, so "
                 "any new order would be sized against a position that may not exist. "
                 "Resolve it with resolve_reconciliation(), or flatten."
+            )
+        held = self.position(symbol)
+        if not held.is_flat and (
+            held.leverage != self.config.leverage
+            or held.margin_mode != self.config.margin_mode
+        ):
+            # The config check at construction is about what this process will
+            # *open*. A position adopted at bootstrap, or restored from a store an
+            # older build wrote, can carry another regime — and `margin_state`
+            # would then hand Aegis a liquidation price computed for leverage this
+            # package does not support.
+            raise FuturesError(
+                f"{symbol} is held at {held.leverage}x {held.margin_mode} and this "
+                f"executor is configured for {self.config.leverage}x "
+                f"{self.config.margin_mode}. The margin model, the liquidation figure "
+                "Aegis is handed and the whole test matrix are written for the latter."
             )
         blocked = [
             o
@@ -241,9 +272,7 @@ class FuturesExecutor:
     # ------------------------------------------------------------------
     # restart / recovery
     # ------------------------------------------------------------------
-    def recover(
-        self, reported: Mapping[str, Position] | None = None
-    ) -> ReconciliationReport | None:
+    def recover(self, reported: Mapping[str, Position]) -> ReconciliationReport | None:
         """Bring a freshly started process to a state it may act from.
 
         Idempotent: calling it again on an already-bootstrapped executor
@@ -253,12 +282,19 @@ class FuturesExecutor:
         reached by the same call, and a recovery that behaved differently the
         second time would be a sixth case nobody tested.
 
-        ``reported`` is the venue's own view. It is *adopted* only when there is
-        no local state to contradict; where local state exists it is
-        **compared**, never overwritten.
+        ``reported`` is the venue's own view, and it is **required**. There is
+        deliberately no default: ``reconcile(symbol)`` reads ``None`` as "ask the
+        venue", so a ``recover()`` that read it as "the venue holds nothing" would
+        give the same word opposite meanings on the same class — and the reading
+        that costs money is the one the shorter spelling would have got.
+        ``recover({})`` is still available and still means what it says: an
+        explicit assertion that the venue holds nothing.
+
+        It is *adopted* only when there is no local state to contradict; where
+        local state exists it is **compared**, never overwritten.
         """
         metrics.FUT_RECOVERY.labels(outcome=self.store.outcome.value).inc()
-        reported = dict(reported or {})
+        reported = dict(reported)
 
         if self.store.outcome is LoadOutcome.UNREADABLE:
             # Returns unbootstrapped rather than adopting anything. `recover({})`
@@ -347,7 +383,17 @@ class FuturesExecutor:
         local = self.position(symbol)
         venue_view = self.venue.reported_position(symbol) if reported is None else reported
 
-        if local.side is venue_view.side and local.quantity == venue_view.quantity:
+        agrees = (
+            local.side is venue_view.side
+            and local.quantity == venue_view.quantity
+            # The margin regime is part of what a position *is*: two views that
+            # agree on side and size and disagree on leverage disagree about how
+            # much is at risk, and `margin_state` would hand Aegis a liquidation
+            # price computed for the wrong one.
+            and (local.is_flat or local.leverage == venue_view.leverage)
+            and (local.is_flat or local.margin_mode == venue_view.margin_mode)
+        )
+        if agrees:
             metrics.FUT_RECONCILIATION.labels(outcome=ReconciliationOutcome.AGREED.value).inc()
             # An agreement does NOT clear a standing dispute. Two states can come
             # to agree again for a reason nobody has explained — a later fill
@@ -362,8 +408,10 @@ class FuturesExecutor:
             )
 
         detail = (
-            f"local says {local.side.value} {local.quantity}, the venue says "
-            f"{venue_view.side.value} {venue_view.quantity}"
+            f"local says {local.side.value} {local.quantity} at {local.leverage}x "
+            f"{local.margin_mode} (entry {local.entry_price}), the venue says "
+            f"{venue_view.side.value} {venue_view.quantity} at {venue_view.leverage}x "
+            f"{venue_view.margin_mode} (entry {venue_view.entry_price})"
         )
         logger.critical("Futures reconciliation mismatch on %s: %s", symbol, detail)
         metrics.FUT_RECONCILIATION.labels(outcome=ReconciliationOutcome.MISMATCH.value).inc()
@@ -520,6 +568,21 @@ class FuturesExecutor:
         all and still records the reason, because "we tried to flatten and there
         was nothing there" is a thing an operator needs in the log.
         """
+        # Before `record_flatten`, and the order matters: that call saves the
+        # store, which on the UNREADABLE path would overwrite the very file the
+        # load path preserved. An executor that has adopted nothing does not know
+        # the account is flat — `FuturesState.position` returns FLAT for any
+        # symbol it has never heard of — so "already flat" would be a conclusion
+        # drawn from an empty map. `FlattenCause.DATA_LOSS` exists for exactly
+        # this situation and must not be the case that silently does nothing.
+        if not self.store.state.bootstrapped:
+            raise NotBootstrapped(
+                f"cannot flatten {symbol}: the executor has not adopted a starting "
+                "position, so an empty position map is not evidence of a flat account. "
+                "Adopt one first — from the venue's reported positions, or with "
+                "FuturesStore.adopt_after_unreadable(reported, reason) after an "
+                "unreadable state file — and then flatten."
+            )
         at = datetime.fromtimestamp(self.clock(), tz=timezone.utc).isoformat()
         self.store.record_flatten(symbol, cause.value, at)
         metrics.FUT_EMERGENCY_FLATTEN.labels(cause=cause.value).inc()
@@ -539,14 +602,33 @@ class FuturesExecutor:
             stop_price=None,
             bypass_risk_gate=True,
         )
-        logger.critical(
-            "Emergency flatten on %s (%s): %s %s -> %s",
-            symbol,
-            cause.value,
-            intents[0].side.value,
-            intents[0].quantity,
-            self.position(symbol).to_dict(),
-        )
+        after = self.position(symbol)
+        if not after.is_flat:
+            # The order was planned from the *local* position; the venue applies
+            # it to its own, and refuses a reducing fill larger than what is
+            # there. `_submit` turns that into a FAILED record and returns
+            # normally, so without this the position simply survived a flatten
+            # that reported itself done — worst under ReconciliationPolicy.FLATTEN,
+            # whose whole trigger is that the two quantities differ.
+            detail = (
+                f"emergency flatten ({cause.value}) did not reach zero: the order ended "
+                f"{record.state.value} ({record.reason or 'no reason given'}) and the "
+                f"position stands at {after.side.value} {after.quantity}"
+            )
+            logger.critical("Emergency flatten on %s FAILED: %s", symbol, detail)
+            self.store.state.disputed[symbol] = detail
+            self.store.save()
+            metrics.FUT_RECONCILIATION.labels(
+                outcome=ReconciliationOutcome.MISMATCH.value
+            ).inc()
+        else:
+            logger.critical(
+                "Emergency flatten on %s (%s): %s %s -> flat",
+                symbol,
+                cause.value,
+                intents[0].side.value,
+                intents[0].quantity,
+            )
         self._publish_position_metrics(reference_price)
         return record
 
@@ -627,6 +709,17 @@ class FuturesExecutor:
                 )
                 return record
             self.risk.record_order()
+            if self.risk.halted:
+                # `record_order` can itself trip the rate-limit halt, and the
+                # order that trips it is still this one. The spot path re-checks
+                # here for the same reason; without it the futures path lets
+                # exactly one order through the limit it just breached.
+                record.transition(
+                    OrderState.REJECTED, f"halted: {self.risk.state.halt_reason}"
+                )
+                self.store.save()
+                metrics.FUT_RISK_VETOES.labels(reason="order_rate").inc()
+                return record
 
         record.transition(OrderState.RISK_APPROVED)
         self.store.save()
@@ -717,12 +810,19 @@ class FuturesExecutor:
             if stop_price is not None
             else self._implied_stop(intent.position_side, entry)
         )
-        prospective = self.position(intent.symbol).apply_fill(
-            intent.side, intent.quantity, constraints.quantize_price(reference_price)
-        )[0]
-        state = margin_state(
-            prospective, constraints.quantize_price(reference_price), constraints
-        )
+        price = constraints.quantize_price(reference_price)
+        try:
+            prospective = self.position(intent.symbol).apply_fill(
+                intent.side, intent.quantity, price
+            )[0]
+        except PositionError:
+            # The prospective position is only needed for the liquidation figure.
+            # An opening leg whose quantity was quantized down can fail to cancel
+            # an off-grid position exactly, and that must not become an exception
+            # escaping the risk gate — Aegis is told there is no liquidation price
+            # to judge, which is a case it already handles.
+            prospective = None
+        state = None if prospective is None else margin_state(prospective, price, constraints)
         return self.risk.evaluate_entry(
             pair=intent.symbol,
             equity=equity,
@@ -834,9 +934,22 @@ class FuturesExecutor:
             ).inc()
             return
 
+        # The destination is decided, and refused, while nothing has moved.
+        # Booking the fill first and transitioning afterwards left a refused
+        # transition with the position, the fees and the ledger already changed
+        # and the event id *not* recorded — so redelivering the same event booked
+        # the same exposure again, and again. The idempotency key is only
+        # recorded by `apply_event` on a clean return, which is exactly why
+        # nothing may be booked before the last thing that can raise.
+        complete = record.filled_quantity + event.quantity >= intent.quantity
+        target = OrderState.FILLED if complete else OrderState.PARTIALLY_FILLED
+        if not can_transition(record.state, target):
+            record.transition(target)  # raises InvalidTransition, naming both states
+
         before = self.position(intent.symbol)
         after, realised = before.apply_fill(intent.side, event.quantity, event.price)
         self.store.state.set_position(after)
+        self._report_exposure(after, event.price)
 
         record.book_fill(event.quantity, event.price, event.fee)
 
@@ -854,13 +967,35 @@ class FuturesExecutor:
                 float(adverse / reference_price * Decimal("10000"))
             )
 
-        complete = record.filled_quantity >= intent.quantity
         metrics.FUT_FILLS.labels(
             side=intent.side.value, kind="full" if complete else "partial"
         ).inc()
-        record.transition(OrderState.FILLED if complete else OrderState.PARTIALLY_FILLED)
+        record.transition(target)
 
     # ------------------------------------------------------------------
+    def _report_exposure(self, position: Position, price: Decimal) -> None:
+        """Tell Aegis how much of the account this symbol is now using.
+
+        Without this the three *cumulative* limits — `max_open_positions`,
+        `max_total_exposure_pct` and `max_exposure_per_asset_pct` — are inert on
+        the futures path: they all read `RiskState.open_positions`, which only
+        `set_position_exposure` and `close_position` write, and nothing here was
+        writing them. `evaluate_entry` still bounded each *individual* order, so a
+        position built by repeated INCREASE legs was never measured as a whole.
+
+        Assignment, not accumulation, matching the method's own contract and the
+        spot path in `strategies.common.risk_manager`. Reported as margin — the
+        notional divided by leverage — because that is the unit `_ask_aegis`
+        passes as ``proposed_stake`` and the unit the limits are fractions of.
+        """
+        if position.is_flat:
+            self.risk.close_position(position.symbol)
+            return
+        self.risk.set_position_exposure(
+            position.symbol,
+            float(position.notional(price)) / float(self.config.leverage),
+        )
+
     def _publish_position_metrics(self, mark_price: Decimal | None = None) -> None:
         gross = ZERO
         net = ZERO

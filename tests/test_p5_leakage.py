@@ -417,11 +417,16 @@ def test_an_ineligible_row_holds_the_declared_fill_and_is_never_scored(snapshot)
     view = aligned.views[MTF_V1]
     assert (view.features[ineligible] == INELIGIBLE_FILL).all()
 
+    # Every block of every fold starts past the last ineligible row. Written as
+    # one unconditional assertion over all three blocks: the earlier form carried
+    # an `or block != "train"` that made it vacuously true for the inner and
+    # outer blocks, which are the two that actually decide anything.
     folds, _ = plan_from_manifest(manifest, len(spine))
     evidence = aligned.prove_alignment(folds, SEQ_LEN)
+    assert len(evidence["folds"]) == 4
     for fold in evidence["folds"]:
         for block in ("train", "inner_validation", "outer_validation"):
-            assert fold[block]["first_row"] > ineligible.max() or block != "train"
+            assert fold[block]["first_row"] > ineligible.max(), (fold["fold"], block)
 
 
 def test_the_fill_value_cannot_reach_a_fitted_model(snapshot):

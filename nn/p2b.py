@@ -1324,10 +1324,6 @@ def main(argv: list[str] | None = None) -> int:
             if checkpoint.trade_source and aligned.micro_spec is not None
             else {}
         ),
-        # Present only for a checkpoint whose evidence is defined against the
-        # derivatives source. A cell that recorded `null` here would be claiming
-        # a relationship to a source it never opened, and would not be
-        # byte-comparable with the cells the earlier checkpoints already froze.
         # Present only for a checkpoint whose arms are functions of a clock wider
         # than the base one. A cell that recorded `null` here would be claiming a
         # relationship to a family it never computed, and would not be
@@ -1343,6 +1339,10 @@ def main(argv: list[str] | None = None) -> int:
             if checkpoint.mtf_source and aligned.mtf_spec is not None
             else {}
         ),
+        # Present only for a checkpoint whose evidence is defined against the
+        # derivatives source. A cell that recorded `null` here would be claiming
+        # a relationship to a source it never opened, and would not be
+        # byte-comparable with the cells the earlier checkpoints already froze.
         **(
             {
                 "derivatives_snapshot": derivatives_provenance,

@@ -35,7 +35,6 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -286,8 +285,3 @@ class FuturesStore:
     def record_flatten(self, symbol: str, reason: str, at: str) -> None:
         self.state.flatten_reasons.append({"symbol": symbol, "reason": reason, "at": at})
         self.save()
-
-
-def decimal_str(value: Decimal) -> str:
-    """One place that turns a Decimal into the string the store persists."""
-    return str(value)

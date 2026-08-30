@@ -282,12 +282,13 @@ fail until every front-door document is reconciled with it.
 
 <!-- research-state:end -->
 
-### 4b. Research: information sets (checkpoints P2b, P2c and P3)
+### 4b. Research: information sets (checkpoints P2b, P2c, P3, P4 and P5)
 
 P2a asked whether the *model family* changes what can be extracted from the
 frozen OHLCV14 feature set, and found that it barely does. That makes the next
 question an information question: is there measurable, causal structure the
-fourteen columns do not carry — in the price series, or in a different source?
+fourteen columns do not carry — in the price series, in a different source, or
+on a different clock?
 
 ```bash
 make p2b-btc && make p2b-compare      # market structure
@@ -336,7 +337,7 @@ Five families have now failed on this design — three transformations of the 1h
 
 
 `--checkpoint` is a required input rather than something inferred from the arms,
-because `ohlcv14` is the control of all three and cannot say which question a
+because `ohlcv14` is the control of all five and cannot say which question a
 cell answers. Every artifact records the checkpoint and the question it belongs to,
 and `nn.p2b_compare` refuses to join cells that disagree about either.
 

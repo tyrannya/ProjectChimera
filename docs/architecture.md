@@ -4,8 +4,8 @@ This describes the code as it is, not as it is intended to become.
 
 ## Boundaries
 
-The system has one execution engine (Freqtrade) and a strict rule about who may
-do what:
+The system has one exchange-facing execution engine (Freqtrade) and a strict
+rule about who may do what:
 
 - **ML code never places orders.** Nothing under `nn/` imports an exchange
   client for trading, opens a position, or manages one. The inference service's
@@ -14,8 +14,9 @@ do what:
   anything. The one place it touches a model directly is offline backtesting,
   where it loads a frozen artifact read-only.
 - **Every entry passes the risk engine.** `confirm_trade_entry` is the single
-  gate, and it is a synchronous local check — no network call stands between a
-  halted account and a blocked order.
+  gate on the Freqtrade path, and the dry-run futures executor asks the same
+  engine before any order that increases exposure. It is a synchronous local
+  check — no network call stands between a halted account and a blocked order.
 - **`chimera/` never imports torch or freqtrade.** It is loaded in every
   container, so it stays light enough to be.
 
@@ -53,6 +54,11 @@ flowchart TD
         FT["Freqtrade<br/>dry-run execution"]
     end
 
+    subgraph FuturesDryRun["Futures (dry-run only)"]
+        HARN["tools/futures_dry_run.py<br/>replay harness"]
+        FUT["chimera/futures/<br/>executor, ledger,<br/>simulated venue"]
+    end
+
     subgraph Observability
         MET["chimera/metrics.py"]
         PROM["Prometheus"]
@@ -77,9 +83,13 @@ flowchart TD
     STRAT -->|entry signal| FT
     FT -->|confirm_trade_entry| RISK
     RISK -->|allow + stake| FT
+    HARN --> FUT
+    FUT -->|evaluate_entry| RISK
+    RISK -->|allow| FUT
     ART -.->|backtest only, in-process| STRAT
     STRAT --> MET
     RISK --> MET
+    FUT --> MET
     SVC --> MET
     MET --> PROM --> GRAF
     PROM --> ALERT
@@ -103,10 +113,19 @@ dependencies on purpose.
 | `inference_client.py` | HTTP client with caching and fail-closed semantics. |
 | `metrics.py` | Every Prometheus series the system exports. |
 | `notify.py` | Optional Telegram, deduplicated and rate limited. |
+| `futures/` | Dry-run USD-M perpetual execution: positions, order state machine, venue constraints, fees and funding. |
 
 `features.py` being shared is the load-bearing decision: the training pipeline
 and the live strategy call the *same function*, so a model cannot be served
 inputs computed differently than the ones it learned from.
+
+`futures/` is dry-run only. There is no live-order path:
+`FuturesExecutionConfig(dry_run=False)` raises, and the only venue class in the
+package simulates fills in this process. Every order it plans that increases
+exposure passes `RiskEngine.evaluate_entry` first, so the boundary above holds
+for it unchanged. Nothing in `strategies/` is wired to it today;
+`tools/futures_dry_run.py` is what exercises it. The design, and the reasons
+for it, are in [`futures_execution_v1.md`](futures_execution_v1.md).
 
 ### `nn/` — data, model, training, serving
 
@@ -177,7 +196,8 @@ whenever the network does.
 
 ## What is deliberately absent
 
-- No second trading engine. Freqtrade executes; nothing else does.
+- No second engine that places orders. Freqtrade executes; `chimera/futures/`
+  only simulates.
 - No order placement from `nn/`.
 - No live-capable path in CI.
 - No metric on a dashboard that nothing exports.

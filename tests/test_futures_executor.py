@@ -64,8 +64,23 @@ COARSE_LOT_TABLE = {SYMBOL: {**default_constraints_table()[SYMBOL], "min_quantit
 
 
 def wide_limits(**overrides):
-    """Limits loose enough that only the guard a test is about can veto."""
-    return RiskLimits(**{"max_position_pct": 1.0, "risk_per_trade_pct": 0.5, **overrides})
+    """Limits loose enough that only the guard a test is about can veto.
+
+    The two exposure caps are widened as well as the per-trade ones. They are
+    *cumulative* limits — they read the position the executor reports back to the
+    engine — so at their defaults they veto the second leg of any lifecycle that
+    builds a position in steps, which is a real guard and not the one these tests
+    are about. Their own tests set them deliberately.
+    """
+    return RiskLimits(
+        **{
+            "max_position_pct": 1.0,
+            "risk_per_trade_pct": 0.5,
+            "max_total_exposure_pct": 10.0,
+            "max_exposure_per_asset_pct": 10.0,
+            **overrides,
+        }
+    )
 
 
 def dry_run_venue(cls=DryRunFuturesVenue, *, fill_model=None, table=None):
@@ -603,7 +618,11 @@ def test_a_mismatch_moves_open_orders_aside_and_never_overwrites_the_local_posit
     report = executor.reconcile(SYMBOL)
 
     assert report.outcome is ReconciliationOutcome.MISMATCH
-    assert report.detail == "local says LONG 0.25, the venue says SHORT 2"
+    # The detail names the margin regime and the entry price as well as the side
+    # and the size: two views that agree on side and size and disagree on
+    # leverage disagree about how much is at risk.
+    assert "local says LONG 0.25 at 1x ISOLATED" in report.detail
+    assert "the venue says SHORT 2 at 1x ISOLATED" in report.detail
     assert report.local == local
     assert report.reported.side is PositionSide.SHORT
     assert order.state is OrderState.RECONCILIATION_REQUIRED

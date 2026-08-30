@@ -25,8 +25,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any, Iterable, Mapping, Protocol
+from decimal import (
+    ROUND_DOWN,
+    ROUND_HALF_UP,
+    Decimal,
+    InvalidOperation,
+    getcontext,
+    localcontext,
+)
+from typing import Any, Mapping, Protocol
 
 from chimera.futures.domain import (
     ZERO,
@@ -234,12 +241,20 @@ class SymbolConstraints:
         Down, never to nearest. Rounding up would hand the venue an order larger
         than the one the risk engine approved, and "larger by one step" is still
         larger than the risk envelope says.
+
+        The division runs in a widened context. At the default 28 significant
+        digits a quantity with more digits than that divides to a value one ulp
+        *above* an integer, and ``ROUND_DOWN`` then floors to the next step up —
+        rounding the order up, which is the one direction this method exists to
+        prevent. Nothing in the package produces such a quantity today; the guard
+        is here because the failure would be silent and in the wrong direction.
         """
         if quantity <= ZERO:
             return ZERO
-        return (quantity / self.step_size).to_integral_value(
-            rounding=ROUND_DOWN
-        ) * self.step_size
+        with localcontext() as context:
+            context.prec = max(getcontext().prec, len(quantity.as_tuple().digits) + 10)
+            steps = (quantity / self.step_size).to_integral_value(rounding=ROUND_DOWN)
+        return steps * self.step_size
 
     def quantize_price(self, price: Decimal) -> Decimal:
         """``price`` rounded to the nearest tick."""
@@ -517,6 +532,40 @@ class DryRunFuturesVenue:
             intent.quantity, plan.fills[0][1], reduce_only=intent.reduce_only
         )
         position = self.reported_position(intent.symbol)
+        if intent.reduce_only:
+            # `reduce_only` is the venue-level restatement of the invariant
+            # `Position.apply_fill` enforces locally, and the only venue in this
+            # package has to model it or the guarantee is one-sided: whenever the
+            # venue's view differs from local in the direction that matters, a
+            # close would have opened or grown the opposite exposure *here*, and
+            # only a later reconcile would have noticed.
+            fill_side = (
+                PositionSide.LONG if intent.side is OrderSide.BUY else PositionSide.SHORT
+            )
+            if position.is_flat or position.side is fill_side:
+                events.append(
+                    OrderEvent(
+                        event_id=self._next_id(order_id),
+                        kind=EventKind.REJECTED,
+                        reason=(
+                            "reduce-only order would open or increase the position: the "
+                            f"venue holds {position.side.value} {position.quantity}"
+                        ),
+                    )
+                )
+                return events
+            if intent.quantity > position.quantity:
+                events.append(
+                    OrderEvent(
+                        event_id=self._next_id(order_id),
+                        kind=EventKind.REJECTED,
+                        reason=(
+                            f"reduce-only order for {intent.quantity} exceeds the "
+                            f"{position.quantity} the venue holds"
+                        ),
+                    )
+                )
+                return events
         remaining = intent.quantity
         for quantity, price in plan.fills:
             constraints.check_on_grid(quantity, price)
@@ -584,11 +633,3 @@ def load_constraint_source(
     table: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> StaticConstraintSource:
     return StaticConstraintSource.from_mapping(table or default_constraints_table())
-
-
-def symbols_of(source: StaticConstraintSource) -> Iterable[str]:
-    return sorted(source.table)
-
-
-def position_side_supported(constraints: SymbolConstraints, side: PositionSide) -> bool:
-    return side is PositionSide.FLAT or side.value in constraints.supported_position_sides

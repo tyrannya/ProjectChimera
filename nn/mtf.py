@@ -404,17 +404,36 @@ def mtf_join_evidence(candles: pd.DataFrame, context: MtfContext) -> dict[str, A
                 "match the bar the as-of index selected. A value is sitting on the wrong row."
             )
 
-        # Witness 2: atr_norm by close timestamp rather than by row number.
+        # Witness 2: atr_norm looked up from the ROW's own timestamp, not from
+        # `as_of`. Indexing the re-derivation by the same as_of the join used
+        # would have made this a second reading of one number rather than an
+        # independent one — the two would agree under any shift that moved
+        # as_of, which is the shift most worth catching. `merge_asof` on the
+        # close times reconstructs the alignment from the timestamps alone.
         features = compute_features(
             bars[["open", "high", "low", "close", "volume"]], context.spec.feature_spec
         )
-        by_close = pd.Series(
-            features["atr_norm"].to_numpy(dtype=np.float64),
-            index=pd.DatetimeIndex(bars["close_time"]),
+        # Both keys normalised to nanoseconds: the committed snapshot stores
+        # milliseconds and the bar frame carries microseconds, and `merge_asof`
+        # refuses two datetime resolutions rather than coercing them.
+        rederived = pd.merge_asof(
+            pd.DataFrame(
+                {
+                    "row_time": pd.DatetimeIndex(dates[eligible]).as_unit("ns"),
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "close_time": pd.DatetimeIndex(bars["close_time"]).as_unit("ns"),
+                    "atr_norm": features["atr_norm"].to_numpy(dtype=np.float64),
+                }
+            ),
+            left_on="row_time",
+            right_on="close_time",
+            direction="backward",
+            allow_exact_matches=True,
         )
-        looked_up = by_close.reindex(
-            pd.DatetimeIndex(bars["close_time"].to_numpy()[as_of[eligible]])
-        ).to_numpy()
+        looked_up = rederived["atr_norm"].to_numpy(dtype=np.float64)
         if not np.allclose(
             context.column(f"{prefix}atr_norm")[eligible], looked_up, rtol=0.0, atol=1e-12
         ):

@@ -1,6 +1,6 @@
 # Futures dry-run validation — the protocol, frozen before it was evaluated
 
-**Protocol hash:** `sha256:17a6a44d1fb5aca5eed16151c63a4b827566d664b1e1e78364357c32c6a44f4d`
+**Protocol hash:** `sha256:3ff5e05601c1eb616ecad7ad9809296300c8fba025bff7e467c0303841aa98ff`
 
 That hash is a digest of `tools.futures_dry_run.PROTOCOL` — every scenario, every
 invariant, the acceptance rule and the replay window, as data. It is asserted by
@@ -37,8 +37,13 @@ appears.
 ## 2. What it runs on
 
 Real observed prices from the committed pre-Styx OHLCV snapshot, restricted to
-rows `[40981, 45802)` — **outer block 3** of the research fold plan,
-`2024-09-04T21:00` to `2025-03-24T17:00`, 4,821 hourly candles.
+**spine** rows `[40981, 45802)` — **outer block 3** of the research fold plan,
+`2024-10-30T11:00` to `2025-05-19T07:00`, 4,821 hourly candles.
+
+Spine rows, not raw-file rows, and the distinction is not pedantic: the spine
+drops the OHLCV14 warm-up at the head of every segment, so raw row 40981 is
+`2024-09-04T21:00` — seven weeks earlier and not outer block 3 at all. The window
+is resolved to candles by timestamp.
 
 That window is chosen for what it is *not*:
 
@@ -139,7 +144,26 @@ definition of optimising against a metric that was never a criterion.
 Repair the **execution defect** and re-run the **same** protocol. Do not weaken
 the invariant; the hash makes that visible rather than possible-and-quiet.
 
-This has already happened once, and it is worth recording because it is the point
+The protocol itself may also be **strengthened**, and that also moves the hash —
+which is the mechanism working, not a loophole. It has been strengthened once, by
+the adversarial audit, in three places:
+
+- the replay window was labelled "outer block 3" while the row indices were into
+  the raw file rather than the spine, so the replay actually ran over
+  `2024-09-04` to `2025-03-24`. The indices are now resolved through the spine
+  and the label is true. The safety guard was never affected: raw row 45802 sits
+  well before P4-HOLD's first candle either way.
+- **I04** replayed events it reconstructed from their ids, deriving the kind from
+  a substring that never matched — so every redelivered event was an
+  ACKNOWLEDGED and no *fill* was ever redelivered. The invariant passed without
+  exercising the case it names. The scenario now redelivers the venue's own
+  event objects, three of them fills.
+- the replay read wall-clock time through `RiskEngine`'s own clock, so its veto
+  counts depended on how fast the machine ran it. Both clocks are now the same
+  injected deterministic one.
+
+This has also happened once in the other direction — a real defect, repaired
+without touching the protocol — and it is worth recording because it is the point
 of the exercise. The first run of this protocol failed **I08**: a reconciliation
 mismatch marked every *open order* for the symbol as
 `RECONCILIATION_REQUIRED`, but by the time a mismatch is noticed the orders that

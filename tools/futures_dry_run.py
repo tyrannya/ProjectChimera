@@ -45,6 +45,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
 from chimera.contracts import Signal, decide
@@ -104,8 +105,14 @@ PROTOCOL: dict[str, Any] = {
         "anything about P4, P5 or any research checkpoint",
     ],
     "source": {
-        "path": "data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet",
+        "path": "data/research/btc_usdt_1h_gen1_ohlcv14_outer_coverage.parquet",
+        "prices_from": "data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet",
         "rows": [40981, 45802],
+        "rows_are_indices_into": (
+            "the research SPINE, resolved to candles by timestamp. Not the raw file: "
+            "spine row 40981 is 2024-10-30T11:00 while raw row 40981 is 2024-09-04T21:00, "
+            "and only the first is outer block 3"
+        ),
         "why": (
             "outer block 3 of the research fold plan: real observed prices from a region "
             "six checkpoints have already read. The sealed Styx region is never opened, "
@@ -394,6 +401,7 @@ def _executor(
     venue = DryRunFuturesVenue(
         source=source, fill_model=fill_model or DeterministicFillModel()
     )
+    ticker = clock or _Clock()
     risk = RiskEngine(
         limits
         or RiskLimits(
@@ -401,7 +409,13 @@ def _executor(
             risk_per_trade_pct=0.5,
             max_total_exposure_pct=10.0,
             max_exposure_per_asset_pct=10.0,
-        )
+        ),
+        # The same deterministic clock the executor uses. `RiskEngine` reads its
+        # clock for the order-rate window and the loss-streak cooldown, so a
+        # replay left on wall time would report different veto counts depending
+        # on how fast the machine ran it — and a report that moves between two
+        # runs cannot be used to detect that a change altered execution.
+        clock=ticker,
     )
     risk.update_equity(equity)
     executor = FuturesExecutor(
@@ -409,7 +423,7 @@ def _executor(
         risk=risk,
         store=FuturesStore.open(store_path),
         config=FuturesExecutionConfig(reconciliation_policy=policy),
-        clock=clock or _Clock(),
+        clock=ticker,
     )
     executor.recover({})
     return executor, venue, risk
@@ -526,6 +540,24 @@ def scenario_reversal(equity: float = 1_000_000.0) -> list[InvariantResult]:
     return [_result("I03", "S03_reversal_is_two_legs", held, notes)]
 
 
+class _RecordingVenue(DryRunFuturesVenue):
+    """Keeps the events it returned, so the SAME objects can be redelivered.
+
+    The duplicate-event invariant is about redelivering a real fill, and a
+    scenario that reconstructed an approximation of one would be testing its own
+    reconstruction rather than the guarantee.
+    """
+
+    delivered: list[OrderEvent] = None  # type: ignore[assignment]
+
+    def submit(self, order_id, intent, reference_price):  # type: ignore[override]
+        events = super().submit(order_id, intent, reference_price)
+        if self.delivered is None:
+            self.delivered = []
+        self.delivered.extend(events)
+        return events
+
+
 class _RefusingVenue(DryRunFuturesVenue):
     """A venue that fails the run if it is reached at all."""
 
@@ -612,9 +644,25 @@ def scenario_reduction_survives_halt(equity: float = 1_000_000.0) -> list[Invari
 
 
 def scenario_partials_and_duplicates(equity: float = 1_000_000.0) -> list[InvariantResult]:
-    executor, venue, _ = _executor(
-        fill_model=DeterministicFillModel(max_fill_ratio=Decimal("0.4")), equity=equity
+    ticker = _Clock()
+    venue = _RecordingVenue(
+        source=load_constraint_source(),
+        fill_model=DeterministicFillModel(max_fill_ratio=Decimal("0.4")),
     )
+    risk = RiskEngine(
+        RiskLimits(
+            max_position_pct=1.0,
+            risk_per_trade_pct=0.5,
+            max_total_exposure_pct=10.0,
+            max_exposure_per_asset_pct=10.0,
+        ),
+        clock=ticker,
+    )
+    risk.update_equity(equity)
+    executor = FuturesExecutor(
+        venue=venue, risk=risk, store=FuturesStore.open(None), clock=ticker
+    )
+    executor.recover({})
     notes: list[str] = []
     records = executor.execute_target(
         _target(SYMBOL, PositionSide.LONG, "0.05"), Decimal("60000"), equity=equity
@@ -634,25 +682,17 @@ def scenario_partials_and_duplicates(equity: float = 1_000_000.0) -> list[Invari
         str(record.fees),
         executor.ledger.to_dict(),
     )
+    # Redeliver the venue's OWN event objects, fills included. An earlier version
+    # of this scenario rebuilt them from their ids and derived the kind from a
+    # substring that never matched, so every replayed event was an ACKNOWLEDGED
+    # and no fill was ever redelivered — the invariant passed without exercising
+    # the case it names.
+    delivered = list(venue.delivered or [])
+    fills = [e for e in delivered if e.kind in (EventKind.PARTIAL_FILL, EventKind.FILL)]
+    held &= _observe(len(fills) >= 2, f"the venue delivered {len(fills)} fill event(s)", notes)
     replayed = 0
-    for event_id in list(record.applied_events):
-        kind = EventKind.FILL if "x" in event_id else EventKind.ACKNOWLEDGED
-        # Replay the *same ids* with a fill payload; an id already applied must
-        # short-circuit before the payload is looked at at all.
-        executor.apply_event(
-            record.order_id,
-            (
-                OrderEvent(
-                    event_id=event_id,
-                    kind=kind,
-                    quantity=Decimal("0.05"),
-                    price=Decimal("60000"),
-                )
-                if kind is EventKind.FILL
-                else OrderEvent(event_id=event_id, kind=kind)
-            ),
-            Decimal("60000"),
-        )
+    for event in delivered:
+        executor.apply_event(record.order_id, event, Decimal("60000"))
         replayed += 1
     after = (
         executor.position(SYMBOL).to_dict(),
@@ -661,7 +701,10 @@ def scenario_partials_and_duplicates(equity: float = 1_000_000.0) -> list[Invari
         executor.ledger.to_dict(),
     )
     held &= _observe(
-        before == after, f"replaying {replayed} applied event id(s) changed nothing", notes
+        before == after,
+        f"redelivering {replayed} event object(s), {len(fills)} of them fills, changed "
+        "nothing",
+        notes,
     )
 
     invalid_raised = False
@@ -1035,18 +1078,39 @@ def scenario_live_route(
 
 
 def _load_replay(root: Path) -> pd.DataFrame:
-    """The replay window, with the forbidden regions checked rather than trusted."""
+    """The replay window, with the forbidden regions checked rather than trusted.
+
+    The row indices are into the research **spine**, which is what makes
+    "outer block 3" a true statement: the spine drops the OHLCV14 warm-up at the
+    head of every segment, so spine row 40981 and raw row 40981 are seven weeks
+    apart. The window is resolved to candles by timestamp rather than by position.
+    """
     start, end = PROTOCOL["source"]["rows"]
-    raw = pd.read_parquet(root / PROTOCOL["source"]["path"])
-    raw["date"] = pd.to_datetime(raw["date"], utc=True)
     hold_start = PROTOCOL["source"]["forbidden_rows"]["p4_hold"][0]
     if end > hold_start:
         raise ProtocolViolation(
-            f"the replay window ends at row {end}, at or past P4-HOLD's first row "
+            f"the replay window ends at spine row {end}, at or past P4-HOLD's first row "
             f"{hold_start}. P4-HOLD was retired unread and is not spent on an engineering "
             "test."
         )
-    return raw.iloc[start:end].reset_index(drop=True)
+    spine = pd.read_parquet(root / PROTOCOL["source"]["path"], columns=["date"])
+    spine["date"] = pd.to_datetime(spine["date"], utc=True)
+    if end > len(spine):
+        raise ProtocolViolation(
+            f"the replay window ends at spine row {end} and the spine holds {len(spine)}"
+        )
+    wanted = spine["date"].iloc[start:end]
+
+    raw = pd.read_parquet(root / PROTOCOL["source"]["prices_from"])
+    raw["date"] = pd.to_datetime(raw["date"], utc=True)
+    row_of = pd.Series(np.arange(len(raw), dtype=np.int64), index=raw["date"].to_numpy())
+    rows = row_of.reindex(wanted.to_numpy())
+    if rows.isna().any():
+        raise ProtocolViolation(
+            f"{int(rows.isna().sum())} spine timestamp(s) in the replay window have no "
+            "candle; the two files do not describe the same period"
+        )
+    return raw.iloc[rows.to_numpy(dtype=np.int64)].reset_index(drop=True)
 
 
 def scenario_replay(

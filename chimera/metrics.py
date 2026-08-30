@@ -100,8 +100,15 @@ LAST_INFERENCE_TS = Gauge(
 # state, an outcome. None of them carries a free-text reason, an order id, a
 # price or a quantity — a label whose value set grows with traffic is a new time
 # series per event, and Prometheus keeps them forever. The one exception is
-# `symbol`, which is bounded by the configured whitelist in the same way
-# DATA_DELAY's `pair` already is.
+# `symbol` on FUT_POSITION_QUANTITY, and unlike DATA_DELAY's `pair` there is no
+# configured whitelist behind it. An *order* is bounded: it can only be planned
+# for a symbol the venue's constraint table has, because
+# StaticConstraintSource.constraints refuses an unknown one. The gauge is wider,
+# because the executor publishes it from `store.state.positions`, which can also
+# hold a symbol adopted at bootstrap from the venue's reported positions or
+# restored from a state file — neither is checked against the constraint table.
+# What keeps it finite is that a value appears only where a position exists, so
+# the set is the symbols the account has held, not one series per event.
 FUT_SIGNALS = Counter(
     f"{_PREFIX}_futures_signals_total",
     "Futures signals received, by what happened to them",

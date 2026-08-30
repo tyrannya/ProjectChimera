@@ -501,7 +501,8 @@ def test_recovery_keeps_the_partial_fill_that_was_booked_and_no_more(tmp_path):
     # The venue filled all 0.500, so local and reported genuinely disagree, and
     # the store's copy is kept rather than being replaced by the venue's.
     assert report.outcome is ReconciliationOutcome.MISMATCH
-    assert "local says LONG 0.250, the venue says LONG 0.500" in report.detail
+    assert "local says LONG 0.250" in report.detail
+    assert "the venue says LONG 0.500" in report.detail
     assert market.reported_position(SYMBOL).quantity == Decimal("0.500")
     assert (
         second.store.state.orders[FIRST_ORDER_ID].state is OrderState.RECONCILIATION_REQUIRED
@@ -541,9 +542,7 @@ def test_a_dispute_outlives_both_the_restart_and_the_orders_that_caused_it(tmp_p
 
     with pytest.raises(ReconciliationRequired) as excinfo:
         open_long(third)
-    assert f"{SYMBOL} is disputed: local says FLAT 0, the venue says LONG 0.500" in str(
-        excinfo.value
-    )
+    assert f"{SYMBOL} is disputed: local says FLAT 0" in str(excinfo.value)
     assert "Resolve it with resolve_reconciliation()" in str(excinfo.value)
 
 

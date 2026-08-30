@@ -356,8 +356,17 @@ free-text reason, an order id, a price or a quantity. An Aegis veto reaches
 `chimera_futures_risk_vetoes_total` as a collapsed token (`halted`, `liquidation`,
 `total_exposure`), never as the human sentence, because a label whose value set
 grows with traffic is a new time series per event and Prometheus keeps them
-forever. The one non-enum label is `symbol`, bounded by the configured whitelist
-exactly as `chimera_data_delay_seconds{pair}` already is.
+forever.
+
+The one non-enum label is `symbol`, and it is worth being precise about what
+bounds it, because the obvious answer is wrong: there is **no configured
+whitelist**. An *order* can only be planned for a symbol the constraint table
+holds — `StaticConstraintSource.constraints` refuses an unknown one — but the
+position gauge is wider than that, because it publishes from
+`FuturesState.positions`, which can also hold a symbol adopted at bootstrap or
+restored from a state file, neither of which is checked against the table. The
+label is still finite: a value appears only where a position exists, not once
+per event.
 
 The position gauge is zeroed for every symbol it has ever published before the
 current positions are written, because `FuturesState.set_position` removes a flat

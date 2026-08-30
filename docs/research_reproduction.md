@@ -3,16 +3,17 @@
 Every command on this page runs on one machine with a network connection long
 enough to install packages, and nothing else. **No VPS, no exchange
 credentials, no private dataset, and no access to the sealed block.** The
-research checkpoints P2b, P2c and P3 all run entirely from data committed to
-this repository.
+research checkpoints P2b, P2c, P3 and P5 all run entirely from data committed
+to this repository.
 
 What that costs: it is not the whole pipeline. `nn.train`, `nn.walkforward` and
 the dry-run stack still need a locally built dataset from
 `make backfill` + `make features`, and the v4 MTST generation cannot be
 re-derived here at all — its source dataset is not committed and no fingerprint
 can be computed for it after the fact ([`../artifacts/README.md`](../artifacts/README.md)).
-What *is* reproducible from a clone is P2b, P2c and P3: twenty-seven benchmark
-cells, their three joins, and every test that guards them.
+What *is* reproducible from a clone is P2b, P2c, P3 and P5: thirty-six
+benchmark cells, their four joins, P5's decision record, and every test that
+guards them.
 
 Design and rationale: [`p2b_methodology.md`](p2b_methodology.md). Feature
 definitions: [`smc_v1.md`](smc_v1.md),
@@ -389,6 +390,89 @@ Verification without re-fitting:
 `python -m tools.freeze_evidence --verify artifacts/btc_p4_screen_SHA256SUMS.txt`
 
 `python -m pytest tests/test_p4_evidence.py tests/test_p4_holdout.py tests/test_p4_stage1.py -q`
+
+### P5, the fifth checkpoint — ran in full, negative
+
+P5 asked whether strictly causal higher-timeframe context adds information
+beyond OHLCV14 in the unchanged BTC 1h/6h cost-aware setup. `mtf_v1`
+([`mtf_v1.md`](mtf_v1.md)) is not a fifth handcrafted family: it is
+`chimera.features.compute_features` — the fourteen columns the control is built
+from, unchanged, window lengths included — evaluated over **fully closed** 4h and
+1d bars on the fixed UTC grid, and aligned to each 1h row by the last bar that
+had closed.
+
+**The answer is negative.** The deciding comparison, `xgboost x
+ohlcv14_plus_mtf_v1` against `xgboost x ohlcv14`, improved **1 of 4** outer folds
+against a preregistered bar of 3: `+0.11508`, `-0.075359`, `-0.039844`,
+`-0.183647`. Mean `-0.0459425` and worst fold `-0.183647` are reported and, as
+[`p5_preregistration.md`](p5_preregistration.md) §8.3 requires, decisive in
+neither direction — they may not rescue a fold-count failure and may not veto a
+fold-count pass. The availability gate passed on all four folds.
+
+**P5 acquires nothing.** `nn.mtf` cuts the 4h and 1d bars out of
+`data/research/btc_usdt_1h_gen1_raw_pre_styx.parquet` — the same history the
+control is built from — every time a cell runs, so there is no second snapshot,
+no acquisition tool and no verifier of its own, and P5 adds no new way to reach
+Styx because it adds no new data. That also makes it the first checkpoint since
+P2c whose inputs a fresh clone derives for itself rather than receives: P3's
+hourly trade aggregate is committed and a clone reads it, but it was folded out
+of 84 downloaded archives and cannot be rebuilt here, and P4's derivatives
+snapshot is not committed at all.
+
+```bash
+make p5-btc        # nine cells: ohlcv14, mtf_v1, ohlcv14_plus_mtf_v1
+make p5-compare    # -> artifacts/benchmark/btc_p5_comparison
+make p5-decide     # -> artifacts/benchmark/btc_p5_decision
+```
+
+The nine cells land in `btc_p5_<information_set>_<model>/`. `nn.p5` does not
+exist, for the same reason `nn.p3` does not: P5 is `nn.p2b --checkpoint P5`, the
+same runner, verifying the same snapshot before it fits anything.
+`nn.p5_decision` is the one new module, and `make p5-decide` is not commentary
+on the cells: it recomputes the sample universe from the snapshot, checks it
+against the universe digest every cell recorded, evaluates the availability
+gate, and applies the preregistered rule to exactly one cell pair. It decides
+nothing new — the cells it reads are already frozen — but it is where the answer
+is written down, which P2b, P2c and P3 have no equivalent of: their bar lived in
+a verdict string that nothing enforced.
+
+Verification without re-fitting:
+
+```bash
+python -m tools.freeze_evidence --verify artifacts/btc_p5_SHA256SUMS.txt
+python -m tools.freeze_evidence --verify artifacts/btc_p5_decision_SHA256SUMS.txt
+python -m pytest tests/test_p5_evidence.py tests/test_p5_leakage.py \
+    tests/test_p5_preregistration.py -q
+```
+
+Two manifests because P5 has two classes of primary evidence: the nine cells, and
+the decision record, which is frozen because it is *what the checkpoint
+answered*. `btc_p5_comparison` is derived and is not frozen, on the reasoning in
+§8.
+
+**A re-run costs hours, and it is not what the result rests on.** Nine cells at
+four folds each is 36 fits, and the three `xgboost` cells are most of the wall
+clock; the combined arm is 42 columns × 64 timesteps = 2,688 inputs per row,
+narrower than P2b's widest arm and than P3's, so §4's timing table is the right
+shape to plan against. The frozen cells are the evidence. Re-running them checks
+that they reproduce in your environment; it does not replace them — and §7.5 is
+the reason to expect a `logistic_regression` cell to come back different if your
+BLAS differs.
+
+**P5's `ohlcv14` control is not P2b's, and is not meant to be.** §7.5 records
+that the P2b, P2c and P3 XGBoost `ohlcv14` control reproduces P2a's frozen
+seed-42 evidence, fold return for fold return. P5's control does not, and the
+difference is by construction rather than by accident: `mtf_v1` is undefined
+until each higher clock has warmed up, so P5 computes one eligible-row universe
+and applies it to all three arms from the same array object
+([`p5_preregistration.md`](p5_preregistration.md) §6.1). Comparing an arm scored
+where its data exists against a control scored everywhere would measure two
+market periods and report the difference as an information set. Every ineligible
+row sits at the head, inside a training block, so the control still scores the
+same rows: its per-fold outer `sample_index_sha256` values are identical to
+P2b's. What differs is the training block it was fitted on. Its numbers are
+therefore its own, and the only control a P5 arm may be compared against is the
+one under `btc_p5_ohlcv14_<model>/`.
 
 ### Optional, post-hoc
 

@@ -527,14 +527,34 @@ preregistered design at all.
 
 ## 13. Research classification
 
+> P5 was designed after P4's outer results had been seen, and by the time it
+> runs these four outer blocks will have been read by v4, P2a, P2b, the P2b
+> ablation, the P2b regime description, P2c, P3 and P4. Its feature
+> definition, arms, models, folds and decision rule were fixed before its own
+> outer numbers existed, and the axis was chosen because four handcrafted
+> families on one clock had failed — so this is exploratory adaptive evidence:
+> it generates hypotheses and cannot confirm one
 
+That is `nn/p5_preregistration.py::RESEARCH_CLASSIFICATION` word for word, and
+it is inside the hashed payload rather than beside it. Every P5 cell carries
+the same sentence as its own `adaptive_status`, so a reader who never opens
+this document still gets the label with the number.
 
 ---
 
 ## Post-run closure
 
-*(Appended after P5 ran. Nothing above this line was edited after the first fit,
-and the preregistration hash at the top is the one all nine cells record.)*
+*(Appended after P5 ran. No constant, rule, arm, fold or success criterion above
+this line moved after the first fit. The checkable form of that claim is
+`nn/p5_preregistration.py`, which has not changed by a byte since the
+preregistration commit, and the preregistration hash at the top is still the one
+all nine cells record. Two things above the line did change, and neither is part
+of the design: the generated research-state block, which `nn.research_state`
+rewrites from the artifact tree and which turned P5 from `preregistered` into
+`answered` when P5 was answered; and §13, which was empty because its text was
+lost to a shell-expansion error when this document was generated, and now carries
+the `RESEARCH_CLASSIFICATION` constant that was in the hashed payload all
+along.)*
 
 P5 ran under the preregistered design and is **negative**.
 
@@ -583,3 +603,27 @@ decision record under
 [`../artifacts/btc_p5_decision_SHA256SUMS.txt`](../artifacts/btc_p5_decision_SHA256SUMS.txt),
 and the derived comparison at
 [`../artifacts/benchmark/btc_p5_comparison/`](../artifacts/benchmark/btc_p5_comparison/).
+
+### Errata
+
+One field in the frozen design above is wrong, and it stays wrong.
+`MEASURED_AVAILABILITY["eligible_fraction"]` is `0.964368`, which is 44,170 of
+45,802; the counts beside it are 44,171 of 45,802, which is `0.9643902…` and
+rounds to `0.96439`. It is an off-by-one, in a field derived from two counts that
+are themselves right.
+
+It is not corrected, because the field is in the hashed payload: changing it moves
+the preregistration hash, and every one of the nine cells records the current one.
+A preregistration that edits itself after the result is in is no longer a
+preregistration, and the cost of holding that line is occasionally carrying a
+visible wrong digit rather than a corrected document nobody can check against the
+cells.
+
+**The counts are the authoritative figures** — 44,171 eligible, 45,802 spine rows,
+1,631 ineligible. They are what §6.4 states, what every P5 cell recomputes from
+the snapshot and reports as its own `eligible_fraction` of `0.96439`, and what
+`tests/test_p5_preregistration.py` asserts; the fraction in the constant is
+asserted by no test and read by no code. Nothing in the decision depended on it:
+the availability rule of §6.2 is a per-block fraction and the gate of §6.3 is a
+fold count, both recomputed at run time, and §8.3 counts folds. No number in this
+closure is derived from the eligible fraction.
