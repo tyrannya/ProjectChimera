@@ -25,6 +25,22 @@ ROOT = Path(__file__).resolve().parents[1]
 #: decision-relevant constant moves it, which is the point.
 EXPECTED_HASH = prereg.preregistration_hash()
 
+#: The ORIGINAL preregistration's hash, committed and pushed at 939f3815 before
+#: any attempt to obtain data. Written as a literal, because the whole value of a
+#: superseded hash is that it is not recomputed from the thing that superseded
+#: it. Amendment A1 (§8a) moved the active hash away from this one; the committed
+#: acquisition evidence still carries it, and that is correct — it was generated
+#: under the original design and is deliberately not rewritten.
+ORIGINAL_HASH = "sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767"
+
+#: Where the acquisition evidence lives. It is the record of a NOT EVALUABLE
+#: environment outcome, not an economic result.
+ACQUISITION_EVIDENCE = (
+    "artifacts/benchmark/btc_p13_carry/acquisition_plan.json",
+    "artifacts/benchmark/btc_p13_carry/acquisition_refusal.json",
+    "artifacts/benchmark/btc_p13_carry/STATUS.md",
+)
+
 
 # ---------------------------------------------------------------------------
 # The tripwire
@@ -579,3 +595,83 @@ def test_the_boundary_straddling_month_has_a_stated_rule():
     assert "TRUNCATED AT LOAD" in rule
     assert "WHOLE published object" in rule
     assert "exactly two things" in rule
+
+
+# ---------------------------------------------------------------------------
+# Amendment A1 — the forced close with no following bar
+# ---------------------------------------------------------------------------
+
+
+def test_the_amendment_declares_itself_an_amendment():
+    """A rule adopted after the freeze must say so, and say what it replaced."""
+    a1 = prereg.FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR
+    assert a1["amendment"] == "A1"
+    assert "not an original preregistration rule" in a1["amendment_status"]
+    assert "silence" in a1["supersedes"]
+
+
+def test_the_amendment_was_adopted_before_any_economic_observation():
+    """The one fact that makes a post-freeze amendment admissible."""
+    a1 = prereg.FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR
+    assert "BEFORE any P13 economic observation" in a1["amendment_status"]
+    assert "no market data informed this rule" in a1["amendment_status"]
+    assert "never been obtained" in a1["not_chosen_from_data"]
+    assert prereg.CURRENT_RESULT_STATE.endswith("NOT YET RUN")
+
+
+def test_the_amendment_can_only_make_the_verdict_harder():
+    """It forfeits VIABLE outright, so it cannot be a rescue of a bad result."""
+    a1 = prereg.FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR
+    assert "strictly one-way" in a1["direction_of_conservatism"]
+    assert "INVALID" in a1["the_rule"]
+    assert "VIABLE unreachable" in a1["direction_of_conservatism"]
+
+
+def test_the_amendment_invents_no_price_and_reads_nothing_past_the_bound():
+    a1 = prereg.FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR
+    assert "no price is invented" in a1["why_not_a_price"]
+    assert "acausal" in a1["why_not_a_price"]
+    assert "flattering" in a1["why_invalid_rather_than_excluded"]
+
+
+def test_the_amendment_does_not_re_decide_what_the_frozen_text_already_settled():
+    """Scoped honestly: the FILL rule is deduction, only the GATE rule is new."""
+    a1 = prereg.FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR
+    already = a1["what_the_original_text_already_determines"]
+    assert "NOT re-decided here" in already
+    assert "FOLLOWING bar" in already
+    # And the rule it defers to is still the one the original design froze.
+    assert "FOLLOWING bar" in prereg.MARGIN_AND_LIQUIDATION["forced_close_price"]
+
+
+def test_the_amendment_moved_the_hash_rather_than_pretending_it_did_not():
+    """A payload that changed and a hash that did not would be the dishonest
+    version of this repair."""
+    assert EXPECTED_HASH != ORIGINAL_HASH
+    assert "forced_close_without_a_following_bar" in prereg.payload()
+
+
+def test_the_document_records_both_the_active_and_the_superseded_hash():
+    doc = (ROOT / "docs" / "p13_preregistration.md").read_text()
+    assert EXPECTED_HASH in doc
+    assert ORIGINAL_HASH in doc
+    assert "Superseded hash, kept as provenance" in doc
+
+
+def test_the_acquisition_evidence_still_carries_the_hash_it_was_generated_under():
+    """Historical evidence stays historical.
+
+    The refusal, the plan and the STATUS were written at 2b1b400e under the
+    original design. Rewriting them to quote the amended hash would be a claim
+    that they were produced under a rule that did not exist yet.
+    """
+    for name in ACQUISITION_EVIDENCE:
+        text = (ROOT / name).read_text()
+        assert ORIGINAL_HASH in text, f"{name} no longer carries the original hash"
+        assert EXPECTED_HASH not in text, (
+            f"{name} was rewritten to quote the amended hash. It was generated before the "
+            "amendment existed; back-dating it would misstate the chronology."
+        )
+    assert prereg.FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR[
+        "does_not_disturb_the_acquisition_evidence"
+    ].startswith("the committed acquisition plan")

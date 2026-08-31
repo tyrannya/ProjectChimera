@@ -1069,6 +1069,132 @@ MARGIN_AND_LIQUIDATION = {
     ),
 }
 
+#: What happens when a liquidation trigger has no permitted following bar.
+#:
+#: **This is amendment A1, and it is not an original preregistration rule.**
+#:
+#: The original design settled the FILL: ``forced_close_price`` says a
+#: liquidation-forced close executes at the OPEN OF THE FOLLOWING BAR, and
+#: ``POSITION_LIFECYCLE.close_instant`` bounds every exit search by the block end
+#: and by the research boundary. Read together those two sentences already
+#: determine that a trigger on the block's FINAL quote has no permitted fill: the
+#: trigger bar's own open is a price stamped before the touch that caused the
+#: liquidation, the next block's first bar is outside the bound, and for the
+#: final block that bar is at or after the research boundary. That much is
+#: deduction, not choice, and this amendment does not restate it as a decision.
+#:
+#: What the original text did NOT settle is what such a block does to the GATE.
+#: ``VIABILITY_GATE.excluded_blocks`` authorises exclusion for blocks that could
+#: not be OPENED, and this block opened. ``VIABILITY_GATE.liquidated_blocks``
+#: says a liquidated block is "counted as included blocks ... Not excluded", and
+#: this block cannot be counted at a realised return because it has none.
+#: ``close_instant`` names the state — UNCLOSED, "reported ... with its reason
+#: rather than back-dated" — and stops there. Two frozen rules point in opposite
+#: directions and neither reaches this case, so a future run would have had to
+#: choose one WITH THE DATA IN FRONT OF IT. That is the researcher degree of
+#: freedom this amendment removes.
+#:
+#: **Adopted after an environment-only NOT EVALUABLE outcome and before any P13
+#: economic observation of any kind.** The sources were never obtained, no block
+#: was opened, no return, funding total, basis figure or gate condition was ever
+#: computed, and nothing about the market informed this choice. The only
+#: information that entered it is the shape of the frozen text itself.
+#:
+#: **The direction is fail-closed, and that is checkable rather than asserted.**
+#: Excluding the block would have been the flattering option: it drops a block
+#: that was being liquidated out of G2's mean and out of G3's worst-block test,
+#: while G1's required count of four positives is unchanged by removing a
+#: non-positive block. Terminating the screen INVALID cannot flatter anything —
+#: it forfeits the possibility of a VIABLE verdict outright. An amendment that
+#: can only make the verdict harder to obtain is the one safe kind to make after
+#: a design is frozen.
+FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR: dict[str, Any] = {
+    "amendment": "A1",
+    "amendment_status": (
+        "adopted after P13's environment-only NOT EVALUABLE closure — the preregistered "
+        "Binance archives were unreachable — and BEFORE any P13 economic observation "
+        "exists. No block was opened, no return, funding total, basis figure or gate "
+        "condition was computed, and no market data informed this rule. It is an "
+        "execution-semantics amendment, not an original preregistration rule"
+    ),
+    "supersedes": (
+        "silence. The original text fixed the forced-close FILL (the following bar's open) "
+        "and bounded the exit search by the block end and the research boundary, but said "
+        "nothing about what an opened-and-unclosable block does to the viability gate"
+    ),
+    "what_the_original_text_already_determines": (
+        "NOT re-decided here, and recorded so this amendment is not read as wider than it "
+        "is:\n"
+        "  * the forced close fills at the OPEN of the FOLLOWING bar "
+        "(MARGIN_AND_LIQUIDATION.forced_close_price);\n"
+        "  * no fill may use the trigger bar's own open, which is stamped BEFORE the "
+        "intra-bar touch that caused the liquidation;\n"
+        "  * the exit search may not run past the block end or the research boundary "
+        "(POSITION_LIFECYCLE.close_instant), so the following bar of the NEXT block is not "
+        "available and, for the final block, is inside the retired P4-HOLD region."
+    ),
+    "the_rule": (
+        "when a liquidation trigger fires on the FINAL quote of a block, no permitted "
+        "forced-close fill exists. The block is recorded UNCLOSED and LIQUIDATED at the "
+        "trigger instant, with the funding, fees and slippage actually incurred up to that "
+        "instant reported as the facts they are. Its close-dependent economics — exit "
+        "basis, basis PnL, net PnL and net return — are NOT DETERMINABLE and are emitted "
+        "as NaN rather than as zero, so a gate that ignores the UNCLOSED flag raises "
+        "instead of averaging in a number nobody measured. The SCREEN terminates "
+        "'P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: INVALID'."
+    ),
+    "why_invalid_rather_than_excluded": (
+        "excluding the block would drop a block that was being liquidated out of G2's mean "
+        "and out of G3's worst-block test, which is precisely the flattering treatment "
+        "VIABILITY_GATE.liquidated_blocks already refuses for every OTHER liquidated block. "
+        "INVALID is the only treatment that neither invents a price nor improves the "
+        "verdict."
+    ),
+    "why_not_a_price": (
+        "no price is invented and nothing outside the permitted region is read. The "
+        "alternatives all require one: the trigger bar's open is acausal, a mark or close "
+        "is never a fill under EXECUTION_PRICE_POLICY, a zero valuation is a fabricated "
+        "number, and the next block's open crosses a bound the frozen text sets."
+    ),
+    "applies_equally_to_the_other_unclosed_cause": (
+        "POSITION_LIFECYCLE.close_instant already reports a block UNCLOSED when no valid "
+        "instant exists at or before the block's last hour. That block is unclosable for a "
+        "different reason and has the same missing quantity, so it takes the same "
+        "treatment. Defining UNCLOSED once, for both causes, is a narrower commitment than "
+        "defining it only for the case that prompted the question."
+    ),
+    "direction_of_conservatism": (
+        "strictly one-way. This rule can only remove a verdict, never produce or improve "
+        "one: it makes VIABLE unreachable for the whole screen. It is therefore incapable "
+        "of rescuing a negative result, which is the property that makes a post-freeze "
+        "amendment admissible at all."
+    ),
+    "not_chosen_from_data": (
+        "no market observation of any kind was available when this was adopted, and none "
+        "was consulted. P13's sources have never been obtained."
+    ),
+    "does_not_disturb_the_acquisition_evidence": (
+        "the committed acquisition plan, refusal record and STATUS at "
+        "artifacts/benchmark/btc_p13_carry/ were generated at 2b1b400e under the ORIGINAL "
+        "design and quote its hash. They are NOT regenerated and NOT rewritten. This "
+        "amendment governs block execution — a rule about which bar a forced close fills "
+        "at — and the acquisition never obtained a single row for any bar, so nothing in "
+        "that evidence was produced under a rule this changes. Historical evidence stays "
+        "historical; the superseded hash it carries is recorded in "
+        "docs/p13_preregistration.md as provenance"
+    ),
+    "reachability": (
+        "STATED so the amendment is not read as academic. Under the PRIMARY portfolio "
+        "model the hedged book is price-invariant, so a liquidation can only follow "
+        "cumulative funding and cost losses and a trigger on a block's very last hour is "
+        "remote. Under S4, the isolated diagnostic, a price touch alone can trigger it and "
+        "the design already records that a strictly isolated 1x short is liquidated in four "
+        "of six blocks — so the case is reachable in the diagnostic that exists to be "
+        "unforgiving, which is exactly where an undefined rule would have been resolved "
+        "against a visible number."
+    ),
+}
+
 # ---------------------------------------------------------------------------
 # §8  Temporal partition
 # ---------------------------------------------------------------------------
@@ -1569,6 +1695,7 @@ def payload() -> dict[str, Any]:
         "funding_semantics": FUNDING_SEMANTICS,
         "basis_definition": BASIS_DEFINITION,
         "margin_and_liquidation": MARGIN_AND_LIQUIDATION,
+        "forced_close_without_a_following_bar": FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR,
         "temporal_partition": TEMPORAL_PARTITION,
         "min_settlements_per_block": MIN_SETTLEMENTS_PER_BLOCK,
         "min_included_blocks": MIN_INCLUDED_BLOCKS,

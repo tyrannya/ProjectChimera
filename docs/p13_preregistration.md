@@ -142,7 +142,8 @@ surviving instant is strictly below the boundary and recording it in the evidenc
 manifest. This is the only place the "a row at or after the boundary is a
 refusal, not a filter" rule is relaxed; it is relaxed only for a file whose extra
 rows were committed long before P13 existed, and a freshly acquired archive is
-still refused rather than truncated.
+still refused rather than truncated. §4 carries the single full statement of this
+carve-out, and the preregistration module is authoritative over both.
 
 **The mark-price fallback is per archive object**, not all-or-nothing: any month
 whose `markPriceKlines` object is unpublished falls back to the spot close for
@@ -166,7 +167,21 @@ all-or-nothing rule would have had no defined behaviour for it.
   does not create independence.
 - Enforcement is fail-closed: a row at or after the boundary is a refusal, and
   the frozen evidence records the maximum observed instant so an auditor can
-  check it without trusting the code.
+  check it without trusting the code. `nn/p13_carry.py::evaluate_block` asserts
+  it too, on quotes and on funding settlements alike, so the sentence is true of
+  the evaluator and not only of the acquisition.
+- **One carve-out, and this is its single statement.** The boundary falls
+  mid-month, so the final archive month (`2025-05`) necessarily contains rows on
+  both sides of it. The rule is about research *observations*, not bytes on disk:
+  that month is fetched whole — a partial object cannot be checksum-verified
+  against Binance's published digest — and **truncated at load** before any P13
+  computation touches a row, with the surviving maximum instant and the dropped
+  row count recorded, and the manifest carrying the digest of the *whole*
+  published object. The carve-out covers exactly two things: that one month, and
+  the pre-existing committed spot snapshot of §3. Every other archive month lies
+  wholly before the boundary and is refused rather than truncated.
+  `DATA_BOUNDARY["the_boundary_straddling_month"]` in
+  [`nn/p13_preregistration.py`](../nn/p13_preregistration.py) is authoritative.
 
 ## 5. Funding causality
 
@@ -342,6 +357,68 @@ the maintenance-amount deduction, auto-deleveraging, wallet-transfer latency —
 listed rather than papered over, and the check uses the hourly **high** of the
 mark series as a conservative intra-bar touch where available, recording which
 was used.
+
+**The forced close is a different instant from the trigger.** A liquidation is
+detected from within-bar action an hourly grid cannot resolve, so filling at the
+trigger price would assume an execution precision the data does not support. The
+forced close therefore executes at the **open of the following bar** — the first
+price an operator could actually have transacted at, and a choice that errs
+against the position. A fill at the trigger bar's own open would be a price
+stamped an hour *before* the high that caused the liquidation: a fill preceding
+its own cause. `nn/p13_carry.py` records the trigger instant and the fill instant
+as two fields so an auditor can see they differ.
+
+### 8a. Amendment A1 — a forced close with no following bar
+
+**This is amendment A1, and it is not an original preregistration rule.** It is
+`FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR` in
+[`nn/p13_preregistration.py`](../nn/p13_preregistration.py), inside the hashed
+payload.
+
+**What the original text already determines, and A1 does not re-decide.** The
+fill rule above is frozen, and §6's exit search is bounded by the block end and
+by the research boundary. Together those already exclude every candidate price
+for a liquidation triggered on a block's *final* bar: the trigger bar's own open
+is acausal, a close is never a fill, and the following bar belongs to the next
+block — or, for the last block, lies at or after the retired P4-HOLD instant.
+
+**What it did not determine, and A1 does.** What such a block does to the gate.
+§10 authorises exclusion only for a block that could not be **opened**, and this
+one opened; §10 also says a liquidated block is *included* at its realised
+return, and this one has none. §6 names the state — **UNCLOSED**, reported with
+its reason rather than back-dated — and stops there. Two frozen rules point in
+opposite directions and neither reaches the case, so a future run would have had
+to choose between them *with the data in front of it*.
+
+**The rule.** A liquidation trigger on a block's final quote leaves the block
+**UNCLOSED**. The funding, fees and slippage incurred up to the trigger are
+reported as the facts they are; the close-dependent quantities — exit basis,
+basis PnL, net PnL, net return — are **not determinable** and are emitted as
+`NaN` rather than zero, so a gate that ignores the flag raises instead of
+averaging in a number nobody measured. The screen terminates
+**`P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: INVALID`**. The same treatment applies
+to the other cause of an UNCLOSED block that §6 already names.
+
+**Why INVALID rather than excluded.** Excluding it is the flattering option: it
+drops a block that was being liquidated out of G2's mean and out of G3's
+worst-block test, which is exactly what §10 refuses for every other liquidated
+block. INVALID forfeits the possibility of a VIABLE verdict outright, so this
+amendment **can only make the verdict harder to obtain, never easier** — the
+property that makes a post-freeze amendment admissible at all.
+
+**When, and on what information.** Adopted after P13's environment-only
+**NOT EVALUABLE** closure and **before any P13 economic observation of any
+kind**. No block was opened, no return, funding total, basis figure or gate
+condition was ever computed, and no market data informed the choice — the only
+input was the shape of the frozen text. **This intentionally moves the
+preregistration hash**; the superseded hash is recorded in §15 as history.
+
+**It does not disturb the acquisition evidence.**
+`artifacts/benchmark/btc_p13_carry/` was generated at `2b1b400e` under the
+original design and quotes its hash. Those files are **not** regenerated and
+**not** rewritten. A1 governs block execution, and the acquisition never obtained
+a single row for any bar, so nothing in that evidence was produced under a rule
+this changes.
 
 ## 9. Temporal partition
 
@@ -548,8 +625,25 @@ close and emergency-flatten paths remain available under halt.
 ## 15. Preregistration hash
 
 ```text
-sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767
+sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099
 ```
+
+**Superseded hash, kept as provenance:**
+`sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` was the
+active hash for the original preregistration, committed and pushed at
+`939f38151cfa607e04c4d74846e081a8ab91ed49`, before amendment A1 (§8a) added
+`forced_close_without_a_following_bar` to the hashed payload.
+
+| design | hash | superseded by |
+| --- | --- | --- |
+| original preregistration | `sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` | A1 (§8a) |
+
+It is recorded here as history, not as an alternative: **no P13 economic number,
+block, gate condition or decision was ever produced under it, and none may be
+produced under it now.** What *was* produced under it is the acquisition evidence
+in `artifacts/benchmark/btc_p13_carry/`, which is a record of sources that could
+not be obtained rather than an economic result; it keeps the hash it was
+generated with, and is deliberately not rewritten.
 
 Recompute with:
 
