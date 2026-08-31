@@ -47,6 +47,7 @@ committed and its evidence is not.
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
+| `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -428,7 +429,21 @@ Five things about this matter more than the numbers:
 - **Two secondary families would have passed and were declined.** Logistic
   regression cleared all three conditions on `1m`, `5m` and `15m`, LightGBM on
   `1m` and `5m`. XGBoost was named the deciding family before any P6 fit existed.
-  The winner-shopping was available and the design refused it.
+  The winner-shopping was available and the design refused it. Those cells are
+  **post-selection leads, not promoted evidence**, and they stay that way: a new
+  checkpoint that simply declares one of them the winner **on these same four
+  burned blocks** is not fresh confirmation and carries little information.
+  Making them mean anything requires new data or a genuinely different question.
+- **The negative is deciding-family-specific.** It says that under this frozen
+  multi-clock design and the preregistered XGBoost deciding rule, none of the
+  seven clocks cleared the screen. It does not say "short timeframes do not
+  work", and it must not be expanded into that.
+- **The primary fits came from a dirty tree.** All fifteen cells record
+  `dirty: true`, two untracked source files, and a digest of that uncommitted
+  tree. The committed per-sample predictions and the gate arithmetic replay
+  exactly, so the verdict is the historical verdict — but the *fit itself* is not
+  reconstructible from a clean checkout, and this is the defect that later
+  generations must refuse rather than repeat.
 - **The trades are thin.** The `1m` specialist scored 1.16 million outer rows and
   took 101 trades — the frozen threshold selector and an 80.5% HOLD class balance
   behaving exactly as a fixed cost threshold at a six-minute horizon implies.
@@ -490,6 +505,22 @@ Four things about this matter more than the numbers:
   best constituent rather than the average or a fixed member — predeclared in
   §5.1 precisely so "beats one of its members" could not be reported as "adds
   value", and not relaxed now that it bound.
+
+**What the independent audit added, and what it does not change.** Reconstructing
+these folds without the P7 evaluator, the audit found that the consensus beat the
+**mean constituent** in all four folds of both modes. That is a genuinely weaker
+benchmark, it was *not* the preregistered decision rule, and it does not move the
+verdict by one basis point — P7 remains negative against the fold-wise best
+constituent. What it does rule out is the broader sentence: "consensus
+necessarily destroyed component value" is too strong a reading of this evidence.
+
+Two further limits bound how far the negative reaches. Day trading realised
+**13 trades across four folds**, one of them zero, so that mode's `-0.034336`
+rests on very little. And the frozen alignment rule carried **no staleness
+bound**, so an observed slower vote could be almost four days old. If
+cross-timeframe fusion is ever revisited, staleness, a minimum effective trade
+count and the benchmark choice must be fixed in a *new* preregistration before
+any new evidence is read — not retrofitted into this one.
 
 This is agreement among components P6 had already found individually non-viable,
 which is exactly the experiment preregistered and exactly the limit on what it
@@ -561,6 +592,63 @@ The programme's next move is deliberately **not** another handcrafted feature
 family on the same hourly bars. Five negative information-set answers in a row
 is the signal to change axis, and the interval between checkpoints was spent on
 the machinery a future strategy will need whatever the research says.
+
+**The clock axis has since been spent too, and the axis after it has been
+chosen.** The two checkpoints this section opened — `P6` and `P7` — have both
+run and both answered negative, and `P6-EXT` closed the two slow clocks with
+them; they are recorded above under "Answered". `P8` was preregistered and left
+unopened because no mode is eligible. The independent post-merge audit then
+returned *COHERENT WITH REQUIRED REPAIRS*, and the mandatory decision review in
+[`current_development_plan.md`](current_development_plan.md) selected the next
+axis: **structural, non-directional alpha**, as a preregistered BTC
+spot/perpetual delta-hedged funding/basis carry feasibility screen.
+
+That is a change of *mechanism*, not of feature family. Everything from `P2a`
+to `P8` asked some version of "what predicts the next move"; this asks whether a
+position that is deliberately indifferent to the next move can be paid to exist,
+after both legs' frictions. **`P4` does not answer it** — `P4` read funding,
+open interest and basis as *information* for a directional model, whereas a
+hedged carry position uses funding and basis as the *payoff mechanism itself*.
+A negative `P4` says nothing about this question.
+
+Two limits are part of that choice rather than caveats bolted onto it. The
+historical funding record was already public knowledge when the screen was
+designed, so any result is **exploratory and adaptive**, never confirmatory. And
+the reserved axes below — `P9` through `P12` — are not cancelled by this choice;
+they are not next.
+
+### P13 — structural funding/basis carry: preregistered, **not evaluable**
+
+The screen is designed, frozen, hashed and pushed at
+[`p13_preregistration.md`](p13_preregistration.md) — before any attempt to obtain
+data, which is the strongest pre-commitment this programme has managed, since
+there was no result available to fit the design to.
+
+It has **not run**, and the reason is not scientific. All four preregistered
+Binance source families were probed and all four refused: `data.binance.vision`
+answers `403` to `CONNECT` under the execution environment's organisation egress
+policy. The repository holds no substitute — across the entire git object
+database, all branches and all history, no funding rate, perpetual price, mark
+price or premium series has ever been committed.
+
+So `P13` stays **`preregistered`**, not `answered`: a committed design and no
+evidence, which is exactly what that state means. **NOT EVALUABLE is not a
+negative result** — no return, funding total, basis figure or gate decision was
+computed, and the viability gate was never evaluated. Nothing was substituted to
+manufacture one: not another venue, not a REST endpoint, not a reconstructed
+series, and not a relaxation of the frozen source set.
+
+**Design-complete is not implementation-complete.** The next step is egress and
+the remaining machinery — the accounting core and the networkless plan exist; the
+downloader, loader, block runner, gate, stress runners, event ledger and decision
+writer do not, so there is no end-to-end path from an archive object to a gate
+decision. Freezing the design early bought a question that cannot be reshaped by
+a result, not a screen that is ready to run. It did not buy freedom from every
+further *design* decision either: **amendment A1** (§8a of
+[`p13_preregistration.md`](p13_preregistration.md)) resolved a micro-rule the
+frozen text named but left open — what a liquidation triggered on a block's final
+bar does to the gate — after the NOT EVALUABLE closure and before any economic
+observation, in the only direction that cannot flatter a verdict.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 
@@ -687,6 +775,31 @@ still support — which, after eight readings, is not much.
   rebuilt without re-fitting. Comparisons and ablation tables are derived from
   those cells, are regenerated whenever the aggregator improves, and are pinned
   by regenerating them and checking what they say rather than by a hash.
+  **This rule is era-dependent, and the history says so.** Earlier `P2b`/`P2c`-era
+  derived reports and manifests were regenerated, and some operational evidence
+  was replaced after repairs; later generations became progressively stricter
+  about immutable primary evidence. Four things are therefore distinguished
+  rather than blurred: immutable primary economic evidence under the modern
+  discipline; derived reports regenerable from immutable inputs; historical
+  exceptions already disclosed in Git history; and code or document repairs made
+  after closure that changed no frozen economic outcome. Old primary numbers are
+  not rewritten to make the history look cleaner.
+- **Styx is a repository non-read seal with a hindsight-era ceiling.** The sealed
+  instant is `2025-08-27T23:00:00+00:00` and the research-visible cutoff is
+  `2025-05-19T08:00:00+00:00`, but this programme and its sealing machinery were
+  authored in **August 2026**, after those market dates had passed. The seal is
+  real protection against subsequent in-repository adaptivity and accidental
+  reads; it is *not* evidence that the designers were blind to what the market
+  did after the boundary. Any future Styx result is a one-shot,
+  repository-sealed *historical* evaluation and is described as such — never as
+  pristine prospective evidence. Genuinely stronger confirmation needs a
+  strategy frozen before wall-clock data that has not yet occurred.
+- **A primary fit from a dirty tree is a provenance defect, and `P6` has one.**
+  The fifteen primary `P6` cells record `dirty: true` and a digest of an
+  uncommitted tree. Their committed predictions and gate arithmetic replay
+  exactly, so the verdict stands — but the *fit* is not reconstructible from a
+  clean checkout, `P6-EXT` and `P7` do not inherit the defect, and a future cell
+  must refuse or loudly fail a primary fit from an uncommitted source tree.
 - **The four outer blocks are adaptive and stay labelled as such.** Every
   checkpoint from P2a onward has read them. No later checkpoint may present a
   result on those blocks as confirmation, and no later checkpoint may split them

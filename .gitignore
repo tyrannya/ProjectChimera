@@ -109,6 +109,15 @@ ray_results/
 !artifacts/benchmark/btc_p5_comparison/*
 !artifacts/benchmark/btc_p5_decision/*
 
+# P13's acquisition evidence. The frozen stopping rule requires NOT EVALUABLE to
+# be "recorded as NOT EVALUABLE with the acquisition evidence that establishes
+# it", and a STATUS.md asserting a refusal is not that evidence — the refusal
+# record carries the per-family probes, the plan digest and the generation
+# provenance, and the plan carries the 260 objects the screen would have needed.
+# Without these a fresh clone has the claim and not the thing it rests on.
+!artifacts/benchmark/btc_p13_carry/*
+!artifacts/btc_p13_SHA256SUMS.txt
+
 # Frozen P6 primary evidence and its decision record. Fifteen cells — five
 # clocks times three model families — plus the decision that applies the frozen
 # viability gate to the five deciding XGBoost cells. Every clock is named

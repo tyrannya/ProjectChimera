@@ -27,6 +27,7 @@ The machine-readable twin is [`nn/p7_preregistration.py`](../nn/p7_preregistrati
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
+| `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
 
 <!-- research-state:end -->
 

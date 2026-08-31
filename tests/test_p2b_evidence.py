@@ -558,6 +558,7 @@ def test_the_repository_has_the_manifests_these_tests_think_it_has():
     test above would fail, so the set is named once, here.
     """
     assert MANIFESTS == (
+        "btc_p13_SHA256SUMS.txt",
         "btc_p2a_SHA256SUMS.txt",
         "btc_p2b_SHA256SUMS.txt",
         "btc_p2b_ablation_SHA256SUMS.txt",

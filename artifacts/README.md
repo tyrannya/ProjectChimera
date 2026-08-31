@@ -219,6 +219,7 @@ repository can declare a checkpoint unrun while its aggregate is committed here.
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
+| `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -346,6 +347,7 @@ one that shares its `research question`.
 | `benchmark/btc_p6ext_decision` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6_decision` | the six `btc_p6ext_*` cells | **yes** | current |
 | `benchmark/btc_p6ext_4h_logistic_regression` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `benchmark/btc_p6ext_4h_lightgbm` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
+| `benchmark/btc_p13_carry` | P13 | `btc_p13_structural_carry_feasibility` | CURRENT | `tools.acquire_p13_sources` | itself (the acquisition record and its plan) | **yes** | current |
 | `benchmark/btc_p6ext_4h_xgboost` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `benchmark/btc_p6ext_1d_logistic_regression` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `benchmark/btc_p6ext_1d_lightgbm` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |

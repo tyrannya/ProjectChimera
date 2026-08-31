@@ -1,0 +1,56 @@
+{
+  "refusal_schema": "chimera.p13-acquisition-refusal/1",
+  "checkpoint": "P13",
+  "preregistration_hash": "sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767",
+  "provenance": {
+    "revision": "2b1b400e4669557fe62e035497afc4d16e2f7431",
+    "dirty": false,
+    "dirty_paths": []
+  },
+  "outcome": "NOT EVALUABLE",
+  "reason": "the preregistered Binance archive host could not be reached from this environment; every required source family is unreachable",
+  "planned_object_count": 260,
+  "plan_digest": "sha256:e0caba374d12276e4bf5ebf6b155d0239c9ef7fbb71deacf375c292ee887a405",
+  "probes": [
+    {
+      "field": "spot_price",
+      "url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2020-01.zip",
+      "reachable": false,
+      "status": null,
+      "error": "Tunnel connection failed: 403 Forbidden"
+    },
+    {
+      "field": "perpetual_price",
+      "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2020-01.zip",
+      "reachable": false,
+      "status": null,
+      "error": "Tunnel connection failed: 403 Forbidden"
+    },
+    {
+      "field": "mark_price",
+      "url": "https://data.binance.vision/data/futures/um/monthly/markPriceKlines/BTCUSDT/1h/BTCUSDT-1h-2020-01.zip",
+      "reachable": false,
+      "status": null,
+      "error": "Tunnel connection failed: 403 Forbidden"
+    },
+    {
+      "field": "funding_settlement",
+      "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2020-01.zip",
+      "reachable": false,
+      "status": null,
+      "error": "Tunnel connection failed: 403 Forbidden"
+    }
+  ],
+  "unreachable_count": 4,
+  "hosts_refused": [
+    "data.binance.vision"
+  ],
+  "what_this_does_not_mean": "this is not a negative economic result. No P13 return, funding total, basis figure or gate decision was computed, and none is estimated from anything that was reachable. The frozen design stays executable exactly as written.",
+  "what_was_not_done": [
+    "no substitution of a different venue",
+    "no substitution of a REST endpoint for the historical archive",
+    "no synthetic or reconstructed perpetual or funding series",
+    "no relaxation of the frozen source set to fit reachable data",
+    "no P4-HOLD read, no Styx read"
+  ]
+}
