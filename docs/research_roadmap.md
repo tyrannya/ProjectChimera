@@ -636,10 +636,19 @@ evidence, which is exactly what that state means. **NOT EVALUABLE is not a
 negative result** — no return, funding total, basis figure or gate decision was
 computed, and the viability gate was never evaluated. Nothing was substituted to
 manufacture one: not another venue, not a REST endpoint, not a reconstructed
-series, and not a relaxation of the frozen source set. The next step is egress
-and the remaining machinery — the accounting core and the networkless plan exist;
-the downloader, loader, block runner, gate and stress runners do not — but no
-further *design* decision is required, which is what freezing it early bought.
+series, and not a relaxation of the frozen source set.
+
+**Design-complete is not implementation-complete.** The next step is egress and
+the remaining machinery — the accounting core and the networkless plan exist; the
+downloader, loader, block runner, gate, stress runners, event ledger and decision
+writer do not, so there is no end-to-end path from an archive object to a gate
+decision. Freezing the design early bought a question that cannot be reshaped by
+a result, not a screen that is ready to run. It did not buy freedom from every
+further *design* decision either: **amendment A1** (§8a of
+[`p13_preregistration.md`](p13_preregistration.md)) resolved a micro-rule the
+frozen text named but left open — what a liquidation triggered on a block's final
+bar does to the gate — after the NOT EVALUABLE closure and before any economic
+observation, in the only direction that cannot flatter a verdict.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 
