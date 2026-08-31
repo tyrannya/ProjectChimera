@@ -17,7 +17,8 @@ boundary, which it asserts rather than trusts.
 The viability gate is **not implemented here at all**. Nor is the downloader, the
 checksum verification, the loader and its truncating read, the source manifests,
 the block runner, the stress runners, the event ledger or the decision writer.
-This is the accounting core the rest of that will be built on.
+This is the accounting core the rest of that will be built on — P13 is not
+implementation-complete, and no economic quantity has ever been computed with it.
 
 **Where the money is.** For an equal-quantity hedge the two legs' price PnL
 telescopes to ``Q x (basis_in - basis_out)``: everything the price does in
@@ -45,6 +46,18 @@ from nn.p13_preregistration import DATA_BOUNDARY
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
+
+#: The value of an economic quantity that was never measured, used ONLY for the
+#: close-dependent fields of an UNCLOSED block (amendment A1).
+#:
+#: A quiet ``NaN`` rather than a zero, and the choice is load-bearing. Zero is a
+#: number: a viability gate that forgot to consult ``BlockResult.unclosed`` would
+#: silently average a zero return into G2 and read a harmless worst block into
+#: G3, which is exactly the flattering treatment a preregistration exists to
+#: forbid. ``Decimal("NaN")`` raises :class:`decimal.InvalidOperation` on every
+#: ordering comparison, so the same forgetful gate crashes instead. It fails
+#: closed by construction rather than by remembering to.
+NOT_DETERMINABLE = Decimal("NaN")
 
 #: The research boundary, read from the frozen preregistration rather than
 #: restated. ``DATA_BOUNDARY["enforcement"]`` says "the acquisition AND THE
@@ -185,8 +198,13 @@ class Quote:
     ``t`` would execute at a price revealed an hour later, at both ends of the
     position, which is the whole of the price PnL.
 
-    The open fields default to the closes so a synthetic witness can be written
-    in a flat world without restating every price twice.
+    The open fields have no default. They once fell back to the close, which
+    meant a production row that simply lacked an open would have executed at a
+    price revealed an hour later WITHOUT SAYING SO — the exact lookahead
+    ``EXECUTION_PRICE_POLICY.close_is_never_a_fill`` exists to forbid, reached by
+    an absent field rather than by a decision. A synthetic witness in a flat
+    world states ``spot_open=spot`` and ``perp_open=perp`` explicitly; a
+    production row that cannot is INVALID and fails closed.
     """
 
     instant_ns: int
@@ -233,14 +251,39 @@ class Quote:
         return self.mark_high is not None
 
     @property
+    def has_execution_opens(self) -> bool:
+        """Whether BOTH legs carry the open the frozen design fills against."""
+        return self.spot_open is not None and self.perp_open is not None
+
+    @property
     def spot_fill(self) -> Decimal:
-        """What a spot order at this instant executes against."""
-        return self.spot if self.spot_open is None else self.spot_open
+        """What a spot order at this instant executes against.
+
+        Refuses when the open is absent. Substituting the close would be a
+        one-hour lookahead at an execution instant, and an absent field is not a
+        licence to take one: the frozen design says the close is NEVER a fill.
+        """
+        if self.spot_open is None:
+            raise CarryError(
+                f"no spot open at {self.instant_ns}; the frozen design fills at the candle "
+                "OPEN and the close is never a fill, so a row without one is INVALID rather "
+                "than executable at its close"
+            )
+        return self.spot_open
 
     @property
     def perp_fill(self) -> Decimal:
-        """What a perpetual order at this instant executes against."""
-        return self.perp if self.perp_open is None else self.perp_open
+        """What a perpetual order at this instant executes against.
+
+        Refuses when the open is absent, for the reason :attr:`spot_fill` gives.
+        """
+        if self.perp_open is None:
+            raise CarryError(
+                f"no perpetual open at {self.instant_ns}; the frozen design fills at the "
+                "candle OPEN and the close is never a fill, so a row without one is INVALID "
+                "rather than executable at its close"
+            )
+        return self.perp_open
 
     @property
     def basis(self) -> Decimal:
@@ -503,6 +546,21 @@ class BlockResult:
     liquidated: bool
     max_adverse_excursion: Decimal
     thin_sample: bool
+    #: The instant the liquidation TRIGGER became observable — the bar whose
+    #: adverse touch crossed the threshold. It is not the fill instant: under
+    #: ``MARGIN_AND_LIQUIDATION.forced_close_price`` the forced close executes at
+    #: the OPEN OF THE FOLLOWING BAR, so the two are recorded separately and an
+    #: auditor can see that no fill preceded its own trigger.
+    liquidation_instant_ns: int | None = None
+    #: The instant of the bar whose OPEN the forced close actually filled at.
+    #: Always strictly after :attr:`liquidation_instant_ns`, or ``None`` when no
+    #: permitted following bar existed.
+    forced_close_instant_ns: int | None = None
+    #: Amendment A1: the position was opened but no permitted exit fill exists,
+    #: so this block has NO determinable return. The close-dependent economics
+    #: below are ``NaN`` rather than zero precisely so that a gate which ignores
+    #: this flag raises instead of averaging in a number nobody measured.
+    unclosed: bool = False
 
     @property
     def net_funding(self) -> Decimal:
@@ -525,6 +583,22 @@ def evaluate_block(
     a settlement before the open or after the close is not this position's cash
     flow — and only ever at its own instant, which is the whole of the causality
     story for a strategy that takes no funding signal.
+
+    **Liquidation is a trigger and a fill, and they are different instants.** The
+    trigger bar is the one whose adverse intra-bar touch crossed the threshold;
+    per ``MARGIN_AND_LIQUIDATION.forced_close_price`` the forced close fills at
+    the OPEN OF THE FOLLOWING BAR. Filling at the trigger bar's own open — which
+    this function once did — executes at a price stamped an hour BEFORE the high
+    that caused the liquidation, so the fill would precede its own cause. The
+    position stops accruing at the TRIGGER instant: a settlement after it belongs
+    to a position that no longer existed, and is not applied even though the fill
+    bar is later.
+
+    When the trigger is the block's final quote there is no following bar inside
+    the permitted region, and the exit search may not run past the block end or
+    the research boundary to find one. Amendment A1 makes that block UNCLOSED:
+    no price is invented, nothing beyond the bound is read, the close-dependent
+    fields are :data:`NOT_DETERMINABLE`, and the screen is INVALID.
     """
     for quote in quotes:
         if quote.instant_ns >= RESEARCH_BOUNDARY_NS:
@@ -533,6 +607,14 @@ def evaluate_block(
                 f"{DATA_BOUNDARY['span_end_exclusive']}. A row past the boundary is a "
                 "refusal, not something to filter: reaching here means a loader admitted "
                 "one."
+            )
+        if not quote.has_execution_opens:
+            raise CarryError(
+                f"quote at {quote.instant_ns} carries no explicit execution open on one or "
+                "both legs. The frozen design fills at the candle OPEN and the close is "
+                "NEVER a fill, so a row without one is INVALID and is refused here rather "
+                "than reported as a block that merely failed to open — reaching here means "
+                "a loader admitted a row it should have rejected."
             )
     for settlement in (settlements := list(settlements)):
         if settlement.instant_ns >= RESEARCH_BOUNDARY_NS:
@@ -575,22 +657,70 @@ def evaluate_block(
         key=lambda s: s.instant_ns,
     )
 
-    liquidated = False
     worst = ZERO
-    exit_quote = final
     settled_count = 0
     pending = {s.instant_ns: s for s in due}
     traded_quantity = position.quantity
+    trigger_index: int | None = None
 
-    for quote in quotes[1:]:
+    for index, quote in enumerate(quotes[1:], start=1):
         for instant in sorted(k for k in pending if k <= quote.instant_ns):
             apply_funding(position, pending.pop(instant))
             settled_count += 1
         worst = min(worst, position.equity(quote) - allocation.total_capital)
         if is_liquidated(position, quote, venue, isolated):
-            liquidated = True
-            exit_quote = quote
+            trigger_index = index
             break
+
+    liquidated = trigger_index is not None
+    liquidation_instant: int | None = None
+    forced_close_instant: int | None = None
+    if trigger_index is None:
+        exit_quote = final
+    else:
+        # MARGIN_AND_LIQUIDATION.forced_close_price: the trigger is detected from
+        # WITHIN-bar action an hourly grid cannot resolve, so the fill is the OPEN
+        # OF THE FOLLOWING BAR. Filling at the trigger bar's own open would
+        # execute at a price stamped BEFORE the high that caused the liquidation
+        # — a fill that precedes its own cause.
+        liquidation_instant = quotes[trigger_index].instant_ns
+        if trigger_index + 1 >= len(quotes):
+            # Amendment A1. There is no following bar inside the block, and the
+            # exit search is bounded by the block end and the research boundary,
+            # so no permitted fill exists. Nothing is invented and nothing is
+            # read past the bound: the block is UNCLOSED.
+            return BlockResult(
+                **{
+                    **empty.__dict__,
+                    "opened": True,
+                    "reason": (
+                        "UNCLOSED: liquidation triggered at the final quote of the block, "
+                        "and the preregistered forced-close fill is the OPEN of the "
+                        "FOLLOWING bar, which lies outside the permitted region. Per "
+                        "amendment A1 the block has no determinable return and the screen "
+                        "is INVALID."
+                    ),
+                    "settlements": settled_count,
+                    "quantity": traded_quantity,
+                    "basis_entry": entry.fill_basis,
+                    "basis_exit": NOT_DETERMINABLE,
+                    "basis_pnl": NOT_DETERMINABLE,
+                    "funding_received": position.funding_received,
+                    "funding_paid": position.funding_paid,
+                    "fees": position.fees,
+                    "slippage": position.slippage,
+                    "net_pnl": NOT_DETERMINABLE,
+                    "net_return": NOT_DETERMINABLE,
+                    "liquidated": True,
+                    "max_adverse_excursion": worst,
+                    "thin_sample": settled_count < min_settlements,
+                    "liquidation_instant_ns": liquidation_instant,
+                    "forced_close_instant_ns": None,
+                    "unclosed": True,
+                }
+            )
+        exit_quote = quotes[trigger_index + 1]
+        forced_close_instant = exit_quote.instant_ns
 
     # The identity holds on the prices actually transacted, not on the marks.
     basis_entry = entry.fill_basis
@@ -602,7 +732,11 @@ def evaluate_block(
     return BlockResult(
         label=label,
         opened=True,
-        reason="liquidated" if liquidated else "closed at block end",
+        reason=(
+            "liquidated; forced close at the following bar's open"
+            if liquidated
+            else "closed at block end"
+        ),
         settlements=settled_count,
         quantity=traded_quantity,
         basis_entry=basis_entry,
@@ -618,4 +752,6 @@ def evaluate_block(
         liquidated=liquidated,
         max_adverse_excursion=worst,
         thin_sample=settled_count < min_settlements,
+        liquidation_instant_ns=liquidation_instant,
+        forced_close_instant_ns=forced_close_instant,
     )

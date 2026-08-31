@@ -15,13 +15,14 @@ is not testing the accounting.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import pytest
 
 from chimera.futures.accounting import FundingEvent, funding_cash_flow
 from chimera.futures.domain import Position, PositionSide
 from nn.p13_carry import (
+    RESEARCH_BOUNDARY_NS,
     Allocation,
     CarryError,
     Costs,
@@ -56,11 +57,21 @@ REAL = Costs(
 
 
 def quote(instant: int, spot: str, perp: str, mark: str | None = None) -> Quote:
+    """A flat synthetic witness: open EQUALS close on both legs, said out loud.
+
+    `Quote` no longer falls back to the close when an execution open is missing —
+    that fallback let a production row without an open execute at a price revealed
+    an hour later without anyone deciding to. A witness written in a flat world is
+    entitled to open == close, so it states both rather than inheriting one, and
+    every hand-traced number below is unchanged by the difference.
+    """
     return Quote(
         instant_ns=instant,
         spot=D(spot),
         perp=D(perp),
         mark=D(mark) if mark is not None else None,
+        spot_open=D(spot),
+        perp_open=D(perp),
     )
 
 
@@ -422,11 +433,19 @@ def test_the_portfolio_model_survives_a_doubling_the_isolated_model_does_not():
 
 
 def test_an_isolated_liquidation_forfeits_margin_but_not_the_spot_leg():
-    quotes = [quote(0, "100", "100"), quote(1, "200", "200")]
+    # Three bars, not two: the trigger is the middle one, so the forced close has
+    # the FOLLOWING bar the frozen design fills at. Its open is 200 — the same
+    # price the two-bar version of this witness used to fill at — so the claim and
+    # the arithmetic below are unchanged; only the causality is now legal. A
+    # trigger on the LAST bar has no permitted fill at all, and that case is
+    # amendment A1's, tested separately.
+    quotes = [quote(0, "100", "100"), quote(1, "200", "200"), quote(2, "200", "200")]
     result = evaluate_block(
         "b", quotes, [], CAPITAL, FREE, VENUE, min_settlements=1, isolated=True
     )
-    assert result.liquidated
+    assert result.liquidated and not result.unclosed
+    assert result.liquidation_instant_ns == 1
+    assert result.forced_close_instant_ns == 2
     # The spot leg roughly doubled while the short lost its margin, so this is a
     # hedge failure rather than a total loss. Asserting the sign, not a guess.
     assert result.net_pnl > -CAPITAL.total_capital
@@ -585,3 +604,339 @@ def test_liquidation_is_tested_against_the_intra_bar_high_when_available():
     assert closes_only.liquidation_touch == D("120")
     assert not closes_only.liquidation_touch_is_high
     assert not is_liquidated(position, closes_only, VENUE, isolated=True)
+
+
+# ---------------------------------------------------------------------------
+# Liquidation causality — the trigger and the fill are different instants
+# ---------------------------------------------------------------------------
+#
+# The frozen rule (MARGIN_AND_LIQUIDATION.forced_close_price) is that a
+# liquidation-forced close fills at the OPEN OF THE FOLLOWING BAR. The engine
+# used to fill at the TRIGGER bar's own open — a price stamped an hour before the
+# intra-bar high that caused the liquidation, so the fill preceded its own cause.
+#
+# One witness, hand-traced, at zero cost and Q = 5.000 from 1,000 of capital:
+#
+#   t0 open 100/100      -> entry, fill basis 0
+#   t1 open 150/158      -> TRIGGER (mark high spikes), fill basis 8
+#   t2 open 300/301      -> the following bar, fill basis 1
+#
+# Correct:  net = Q x (basis_in - basis_out) = 5 x (0 - 1) = -5
+# Acausal:  net = Q x (basis_in - basis_out) = 5 x (0 - 8) = -40
+# ---------------------------------------------------------------------------
+
+HOUR = 3_600_000_000_000
+
+#: A mark high absurdly far above the closes. It is a synthetic control of the
+#: LIQUIDATION PREDICATE and nothing else: the primary portfolio model is
+#: price-invariant at equal quantity, so no ordinary price path can fire it, and
+#: the question under test is which bar's open the forced close then executes at.
+PREDICATE_SPIKE = "60000"
+
+
+def _liquidation_witness(final_bar_is_the_trigger: bool) -> list[Quote]:
+    trigger = Quote(
+        instant_ns=HOUR,
+        spot=D("200"),
+        perp=D("200"),
+        mark_high=D(PREDICATE_SPIKE),
+        spot_open=D("150"),
+        perp_open=D("158"),
+    )
+    quotes = [quote(0, "100", "100"), trigger]
+    if not final_bar_is_the_trigger:
+        quotes.append(
+            Quote(
+                instant_ns=2 * HOUR,
+                spot=D("400"),
+                perp=D("400"),
+                spot_open=D("300"),
+                perp_open=D("301"),
+            )
+        )
+    return quotes
+
+
+def test_a_forced_close_fills_at_the_following_bars_open_not_the_trigger_bars():
+    """The defect the external audit proved, and the number that separates them."""
+    quotes = _liquidation_witness(final_bar_is_the_trigger=False)
+    result = evaluate_block("b", quotes, [], CAPITAL, FREE, VENUE, min_settlements=0)
+
+    assert result.liquidated and not result.unclosed
+    assert result.liquidation_instant_ns == HOUR
+    assert result.forced_close_instant_ns == 2 * HOUR
+    # The economic close, not merely the bookkeeping: the exit basis is the
+    # FOLLOWING bar's 301 - 300, not the trigger bar's 158 - 150.
+    assert result.basis_exit == D("1")
+    assert result.net_pnl == D("-5")
+    assert result.net_pnl == result.basis_pnl
+
+    # And what the acausal fill would have produced, stated so the test cannot
+    # pass by accident: the trigger bar's own fill basis is 8, worth -40.
+    assert quotes[1].fill_basis == D("8")
+    acausal = (result.basis_entry - quotes[1].fill_basis) * result.quantity
+    assert acausal == D("-40")
+    assert result.net_pnl != acausal
+
+
+def test_no_forced_close_ever_fills_before_its_own_trigger():
+    """The invariant behind the witness, asserted as an invariant."""
+    for isolated in (False, True):
+        result = evaluate_block(
+            "b",
+            _liquidation_witness(final_bar_is_the_trigger=False),
+            [],
+            CAPITAL,
+            FREE,
+            VENUE,
+            min_settlements=0,
+            isolated=isolated,
+        )
+        assert result.liquidated
+        assert result.forced_close_instant_ns > result.liquidation_instant_ns
+
+
+def test_a_settlement_after_the_liquidation_trigger_is_not_this_positions_cash_flow():
+    """The position stopped existing at the trigger, an hour before the fill.
+
+    A settlement between the trigger and the forced-close bar belongs to a
+    position that no longer existed, and crediting it would be a gift bought with
+    the extra hour the causal fill rule introduced.
+    """
+    quotes = _liquidation_witness(final_bar_is_the_trigger=False)
+    after_trigger = FundingSettlement(2 * HOUR, D("0.001"), D("100"))
+    result = evaluate_block(
+        "b", quotes, [after_trigger], CAPITAL, FREE, VENUE, min_settlements=0
+    )
+    assert result.liquidated
+    assert result.settlements == 0
+    assert result.funding_received == ZERO
+
+    # At the trigger instant itself it IS applied: the position was held through
+    # that accrual window. This is the frozen boundary tie rule, at the one
+    # instant the repair moved things around.
+    at_trigger = FundingSettlement(HOUR, D("0.001"), D("100"))
+    tied = evaluate_block("b", quotes, [at_trigger], CAPITAL, FREE, VENUE, min_settlements=0)
+    assert tied.settlements == 1
+    assert tied.funding_received > ZERO
+
+
+# ---------------------------------------------------------------------------
+# Amendment A1 — a liquidation on the final bar has no permitted fill
+# ---------------------------------------------------------------------------
+
+
+def test_a_liquidation_on_the_final_bar_leaves_the_block_unclosed():
+    """No price is invented and nothing past the block end is read."""
+    quotes = _liquidation_witness(final_bar_is_the_trigger=True)
+    result = evaluate_block("b", quotes, [], CAPITAL, FREE, VENUE, min_settlements=0)
+
+    assert result.opened and result.liquidated and result.unclosed
+    assert result.liquidation_instant_ns == HOUR
+    assert result.forced_close_instant_ns is None
+    assert "UNCLOSED" in result.reason and "A1" in result.reason
+    # Facts that were actually incurred are still reported.
+    assert result.quantity == D("5.000")
+    assert result.basis_entry == ZERO
+
+
+def test_an_unclosed_blocks_return_is_not_determinable_rather_than_zero():
+    """A gate that forgets the UNCLOSED flag must crash, not average in a zero.
+
+    Zero is the flattering answer: it would enter G2's mean as a harmless block
+    and G3's worst-block test as a block that lost nothing, which is exactly the
+    treatment VIABILITY_GATE.liquidated_blocks refuses for every other liquidated
+    block.
+    """
+    result = evaluate_block(
+        "b",
+        _liquidation_witness(final_bar_is_the_trigger=True),
+        [],
+        CAPITAL,
+        FREE,
+        VENUE,
+        min_settlements=0,
+    )
+    for value in (result.net_return, result.net_pnl, result.basis_pnl, result.basis_exit):
+        assert value.is_nan()
+        assert value != ZERO
+    with pytest.raises(InvalidOperation):
+        _ = result.net_return > ZERO
+    with pytest.raises(InvalidOperation):
+        _ = result.net_return < D("-0.02")
+
+
+def test_the_unclosed_rule_fires_on_the_absence_of_a_bar_not_on_the_liquidation():
+    """The same trigger closes normally the moment a permitted bar exists.
+
+    Which is what establishes that the rule reads the block's own bars and does
+    not reach past its end to find one.
+    """
+    with_following = evaluate_block(
+        "b",
+        _liquidation_witness(final_bar_is_the_trigger=False),
+        [],
+        CAPITAL,
+        FREE,
+        VENUE,
+        min_settlements=0,
+    )
+    without = evaluate_block(
+        "b",
+        _liquidation_witness(final_bar_is_the_trigger=True),
+        [],
+        CAPITAL,
+        FREE,
+        VENUE,
+        min_settlements=0,
+    )
+    assert with_following.liquidation_instant_ns == without.liquidation_instant_ns
+    assert not with_following.unclosed and without.unclosed
+    assert with_following.net_pnl == D("-5")
+
+
+# ---------------------------------------------------------------------------
+# Funding settlement ties, at the two instants that decide them
+# ---------------------------------------------------------------------------
+
+
+def test_a_settlement_exactly_at_the_open_instant_is_not_applied():
+    """`open_instant < settlement_instant`, strictly. Every block opens at
+    00:00:00 on 1 January, which is itself a settlement instant, so this tie
+    fires six times out of six."""
+    quotes = [quote(0, "100", "100"), quote(HOUR, "100", "100")]
+    at_open = FundingSettlement(0, D("0.001"), D("100"))
+    result = evaluate_block("b", quotes, [at_open], CAPITAL, FREE, VENUE, min_settlements=0)
+    assert result.settlements == 0
+    assert result.funding_received == ZERO
+
+
+def test_a_settlement_exactly_at_the_close_instant_is_applied():
+    """`settlement_instant <= close_instant`, inclusive. The position was held
+    through that accrual window."""
+    quotes = [quote(0, "100", "100"), quote(HOUR, "100", "100")]
+    at_close = FundingSettlement(HOUR, D("0.001"), D("100"))
+    result = evaluate_block("b", quotes, [at_close], CAPITAL, FREE, VENUE, min_settlements=0)
+    assert result.settlements == 1
+    # Q = 5.000 at a mark of 100 is 500 of notional; a +0.001 rate pays the short
+    # 0.50, and nothing else moved.
+    assert result.funding_received == D("0.500")
+    assert result.net_pnl == D("0.500")
+
+
+def test_a_delayed_settlement_does_not_become_visible_at_an_earlier_quote():
+    """Its cash must follow its instant, and the equity path must say so.
+
+    The observable is a liquidation at the bar BEFORE the settlement: the flow is
+    not this position's, so neither the reported funding nor the maximum adverse
+    excursion may contain it.
+    """
+    quotes = _liquidation_witness(final_bar_is_the_trigger=False)
+    later = FundingSettlement(2 * HOUR, D("-0.01"), D("100"))
+    earlier = FundingSettlement(HOUR, D("-0.01"), D("100"))
+
+    delayed = evaluate_block("b", quotes, [later], CAPITAL, FREE, VENUE, min_settlements=0)
+    on_time = evaluate_block("b", quotes, [earlier], CAPITAL, FREE, VENUE, min_settlements=0)
+
+    assert delayed.settlements == 0 and delayed.funding_paid == ZERO
+    assert on_time.settlements == 1 and on_time.funding_paid == D("5.000")
+    # The equity path itself, not merely the totals: the excursion at the trigger
+    # bar cannot contain a payment that had not happened.
+    assert delayed.max_adverse_excursion == ZERO
+    assert on_time.max_adverse_excursion == D("-5.000")
+    assert delayed.net_pnl != on_time.net_pnl
+
+
+# ---------------------------------------------------------------------------
+# The execution open is required, and its absence is never a licence to fill
+# at the close
+# ---------------------------------------------------------------------------
+
+
+def test_a_quote_without_an_execution_open_refuses_to_produce_a_fill():
+    closes_only = Quote(instant_ns=0, spot=D("100"), perp=D("101"))
+    assert not closes_only.has_execution_opens
+    # The close is still available as a MARK — that is what it is for.
+    assert closes_only.basis == D("1")
+    with pytest.raises(CarryError, match="no spot open"):
+        _ = closes_only.spot_fill
+    with pytest.raises(CarryError, match="no perpetual open"):
+        _ = closes_only.perp_fill
+
+
+@pytest.mark.parametrize("missing", ["spot_open", "perp_open"])
+def test_a_missing_execution_open_fails_the_block_closed_rather_than_softly(missing):
+    """It must REFUSE, not report a block that merely failed to open.
+
+    "Not opened" is a reported reason that leaves a block out of G1 and G2 — a
+    filter. A row without the field the design executes against is invalid data,
+    and the difference between refusing and quietly excluding is the difference
+    between a loader bug that stops the run and one that reshapes the sample.
+    """
+    fields = {"spot_open": D("100"), "perp_open": D("100")}
+    del fields[missing]
+    lame = Quote(instant_ns=HOUR, spot=D("100"), perp=D("100"), **fields)
+    quotes = [quote(0, "100", "100"), lame]
+    with pytest.raises(CarryError, match="execution open"):
+        evaluate_block("b", quotes, [], CAPITAL, FREE, VENUE, min_settlements=0)
+
+
+# ---------------------------------------------------------------------------
+# The research boundary, asserted by the production evaluator itself
+# ---------------------------------------------------------------------------
+#
+# Deleting evaluate_block's boundary block must make these fail. They call the
+# evaluator, not the preregistration constant and not the acquisition planner:
+# the external audit removed that enforcement and the whole suite stayed green.
+# ---------------------------------------------------------------------------
+
+LAST_LEGAL_NS = RESEARCH_BOUNDARY_NS - 1
+
+
+def test_the_last_instant_strictly_before_the_boundary_is_accepted():
+    """The positive half, which is what makes the four refusals below mean `<`
+    rather than `<=`."""
+    quotes = [
+        quote(RESEARCH_BOUNDARY_NS - HOUR, "100", "100"),
+        quote(LAST_LEGAL_NS, "100", "100"),
+    ]
+    settlement = FundingSettlement(LAST_LEGAL_NS, D("0.001"), D("100"))
+    result = evaluate_block("b", quotes, [settlement], CAPITAL, FREE, VENUE, min_settlements=0)
+    assert result.opened
+    assert result.settlements == 1
+
+
+@pytest.mark.parametrize(
+    "instant",
+    [RESEARCH_BOUNDARY_NS, RESEARCH_BOUNDARY_NS + 1],
+    ids=["exactly_at_the_boundary", "strictly_after_the_boundary"],
+)
+def test_a_quote_at_or_after_the_research_boundary_is_refused(instant):
+    quotes = [quote(RESEARCH_BOUNDARY_NS - HOUR, "100", "100"), quote(instant, "100", "100")]
+    with pytest.raises(CarryError, match="research boundary"):
+        evaluate_block("b", quotes, [], CAPITAL, FREE, VENUE, min_settlements=0)
+
+
+@pytest.mark.parametrize(
+    "instant",
+    [RESEARCH_BOUNDARY_NS, RESEARCH_BOUNDARY_NS + 1],
+    ids=["exactly_at_the_boundary", "strictly_after_the_boundary"],
+)
+def test_a_funding_settlement_at_or_after_the_research_boundary_is_refused(instant):
+    quotes = [
+        quote(RESEARCH_BOUNDARY_NS - HOUR, "100", "100"),
+        quote(LAST_LEGAL_NS, "100", "100"),
+    ]
+    settlement = FundingSettlement(instant, D("0.001"), D("100"))
+    with pytest.raises(CarryError, match="research boundary"):
+        evaluate_block("b", quotes, [settlement], CAPITAL, FREE, VENUE, min_settlements=0)
+
+
+def test_the_boundary_the_evaluator_asserts_is_the_one_the_design_froze():
+    """Read from the preregistration, never a second literal to drift from it."""
+    from datetime import datetime
+
+    from nn.p13_preregistration import DATA_BOUNDARY
+
+    frozen = datetime.fromisoformat(DATA_BOUNDARY["span_end_exclusive"])
+    assert RESEARCH_BOUNDARY_NS == int(frozen.timestamp() * 1_000_000_000)
