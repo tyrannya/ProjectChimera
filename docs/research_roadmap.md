@@ -640,11 +640,14 @@ series, and not a relaxation of the frozen source set.
 
 **Which design a future run is governed by**, stated here because the wrong
 answer would invalidate the run before it started. The active design is
-**P13-A1**, `sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099`,
-and it is **NOT YET RUN**. The original
-`sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` is
-**historical provenance only** — it is the design the committed acquisition
-evidence was generated under, and it must not govern new economic evidence.
+**P13-A2**, `sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c`,
+and it is **NOT YET RUN**. Two superseded hashes are **historical provenance
+only** and must not govern new economic evidence: **P13-A1**
+`sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099`, and the
+original `sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767`,
+which is the design the committed acquisition evidence was generated under.
+Both are recorded as literals in `SUPERSEDED_HASHES` inside the hashed payload,
+so a run quoting one is quoting a design the module itself marks retired.
 
 **Design-complete is not implementation-complete.** The next step is egress and
 the remaining machinery — the accounting core and the networkless plan exist; the
@@ -656,7 +659,15 @@ further *design* decision either: **amendment A1** (§8a of
 [`p13_preregistration.md`](p13_preregistration.md)) resolved a micro-rule the
 frozen text named but left open — what a liquidation triggered on a block's final
 bar does to the gate — after the NOT EVALUABLE closure and before any economic
-observation, in the only direction that cannot flatter a verdict.
+observation, in the only direction that cannot flatter a verdict. **Amendment A2**
+(§8d) then settled a second one: how a mark-less period is treated before a block
+opens versus after it has opened. Before the open, the causal opening search
+advances inside the same block; after the open, a held bar with no authorised
+liquidation mark terminates the screen **NOT EVALUABLE**, screen-wide, rather than
+dropping the affected block or jumping the hole. It is a **source-validity**
+amendment — triggered by the presence of an archive row, never by anything a run
+computes — frozen before acquisition because it can change which historical
+observations enter a block, and **it is design only: no runtime implements it**.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 

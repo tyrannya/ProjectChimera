@@ -1195,6 +1195,406 @@ FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR: dict[str, Any] = {
     ),
 }
 
+#: The three distinct states a missing liquidation mark can put a block in.
+#:
+#: Named as constants because a future block runner and this design must agree on
+#: the vocabulary, and because the whole point of A2 is that these three are NOT
+#: the same state and must never be collapsed into one "no mark" branch.
+MARKLESS_STATE_PRE_OPEN = "pre_open_mark_absent"
+MARKLESS_STATE_HELD = "held_bar_mark_absent"
+MARKLESS_STATE_NO_VALID_OPEN = "no_valid_opening_instant_in_block"
+
+MARKLESS_STATES: tuple[str, ...] = (
+    MARKLESS_STATE_PRE_OPEN,
+    MARKLESS_STATE_HELD,
+    MARKLESS_STATE_NO_VALID_OPEN,
+)
+
+#: What a mark-less period does to a block — settled before any number exists that
+#: could settle it.
+#:
+#: **This is amendment A2, and it is not an original preregistration rule.**
+#:
+#: The frozen design already admits the fact that forces the question. The
+#: ``mark_price`` entry in :data:`DATA_SOURCES` records that the first published
+#: month for BTCUSDT is UNMEASURED, and :data:`MARK_PRICE_FALLBACK` is explicitly
+#: "PER ARCHIVE OBJECT, not all-or-nothing" — so a mark series present for some
+#: months and absent for others is this design's own stated expectation rather than
+#: a surprise.
+#:
+#: **What the frozen text already settles, and A2 does not re-decide.**
+#: ``MARK_PRICE_FALLBACK`` authorises the spot close as a substitute for the
+#: FUNDING NOTIONAL BASE. ``BASIS_DEFINITION.which_series_plays_which_role`` names
+#: the liquidation test as a SECOND, separate use of the mark series and does not
+#: extend that substitution to it.
+#: ``MARGIN_AND_LIQUIDATION.what_the_simulation_cannot_determine`` requires the
+#: liquidation test to use "the hourly HIGH of the mark series where available and
+#: the hourly close otherwise", and to record which was used. Read together those
+#: already determine that a HELD bar carrying neither a mark high nor a mark close
+#: has NO authorised liquidation touch, which is why ``nn.p13_carry.Quote`` refuses
+#: one. That is deduction, and this amendment does not restate it as a choice.
+#:
+#: **What the frozen text does NOT settle** is what the block runner — which does
+#: not exist yet — must DO with that refusal, and it fails to settle it in two
+#: places that pull in opposite directions:
+#:
+#:   * BEFORE a position exists. ``POSITION_LIFECYCLE.open_instant`` requires
+#:     "spot, perpetual and (where used) mark observations" to be present and valid
+#:     at the opening instant. Whether the mark is "used" there is precisely the
+#:     ambiguity: it is not a fill price, and it IS the series every subsequent held
+#:     bar's risk check depends on.
+#:   * AFTER a position exists. ``VIABILITY_GATE.excluded_blocks`` authorises
+#:     exclusion only for a block that could not be OPENED; ``liquidated_blocks``
+#:     refuses to drop a block that was opened; ``NOT_EVALUABLE_MEANING`` speaks to
+#:     sources that could not be obtained at all. None of the three reaches a block
+#:     that opened and then met a bar whose required risk quantity is not
+#:     computable.
+#:
+#: A run meeting that gap with the data in front of it would have to choose, and
+#: the available choices are not equally flattering: excluding the affected block,
+#: or jumping the hole, keeps a screen evaluable by discarding exactly the periods
+#: where the venue's own risk series is missing. That is the researcher degree of
+#: freedom this amendment removes.
+#:
+#: **Adopted before any P13 economic observation of any kind.** No archive object
+#: has been fetched, no block opened, no funding total, basis figure, return or gate
+#: condition computed, and no market data informed this rule. The only inputs were
+#: the shape of the frozen text and the coverage fact the design already declares.
+#:
+#: **The direction is fail-closed, and it is checkable rather than asserted.** Every
+#: branch either leaves a verdict exactly where the frozen design put it or removes
+#: the possibility of one. Nothing here can add a block, add a positive block, raise
+#: a mean, lift a worst block, lengthen an exposure, or make any gate condition
+#: easier to satisfy.
+MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
+    "amendment": "A2",
+    "amendment_status": (
+        "adopted after P13's environment-only NOT EVALUABLE closure and after the A1-era "
+        "evaluator repair that removed the unauthorised third liquidation tier, and BEFORE "
+        "any P13 economic observation exists. No archive object was fetched, no block was "
+        "opened, no return, funding total, basis figure or gate condition was computed, and "
+        "no market data informed this rule. It is a SOURCE-VALIDITY amendment, not an "
+        "original preregistration rule and not an economic one"
+    ),
+    "amendment_timing": (
+        "BEFORE ANY P13 ECONOMIC OBSERVATION, and specifically before acquisition. The "
+        "timing is not a formality: this rule can change WHICH historical observations enter "
+        "a block, and a rule that selects observations is inadmissible once the observations "
+        "are visible. It is therefore an explicit hash-moving amendment rather than a "
+        "clarification, even though it moves no threshold"
+    ),
+    "supersedes": (
+        "silence, in two distinct places. POSITION_LIFECYCLE.open_instant requires the mark "
+        "to be valid at the open '(where used)' without saying whether it is used there, and "
+        "no frozen rule reaches a block that OPENED and then met a held bar carrying no "
+        "authorised liquidation touch"
+    ),
+    "what_the_original_text_already_determines": (
+        "NOT re-decided here, and recorded so this amendment is not read as wider than it "
+        "is:\n"
+        "  * the liquidation test takes the hourly mark HIGH where available and the hourly "
+        "mark CLOSE otherwise, recording which was used "
+        "(MARGIN_AND_LIQUIDATION.what_the_simulation_cannot_determine);\n"
+        "  * MARK_PRICE_FALLBACK's spot substitution is authorised for the FUNDING NOTIONAL "
+        "BASE and for nothing else;\n"
+        "  * BASIS_DEFINITION.which_series_plays_which_role keeps the liquidation test a "
+        "SEPARATE use of the mark series, so the funding substitution does not reach it;\n"
+        "  * therefore a HELD bar with neither mark series has no computable liquidation "
+        "quantity, and nn.p13_carry.Quote already refuses it."
+    ),
+    "scope": (
+        "SOURCE VALIDITY ONLY. A2 decides which historical instants the frozen design is "
+        "entitled to evaluate, and what happens when it is entitled to evaluate none. It "
+        "introduces no signal, no filter conditioned on anything economic, no threshold, no "
+        "parameter and no new instrument"
+    ),
+    "authorised_liquidation_sources": ("mark_high", "mark_close"),
+    "source_priority": (
+        "the mark HIGH is PREFERRED whenever the bar carries it, because adverse for a SHORT "
+        "means HIGH and an hourly grid cannot otherwise resolve a within-bar touch. The mark "
+        "CLOSE is the authorised fallback and is a materially weaker test, which is why the "
+        "two are recorded by name rather than by a boolean. If the bar carries neither, no "
+        "liquidation quantity is computable and there is no third tier"
+    ),
+    "authorised_liquidation_surrogates": (),
+    "forbidden_liquidation_surrogates": (
+        "the Binance spot close",
+        "the Binance spot high",
+        "the perpetual TRADE close",
+        "the perpetual TRADE high",
+        "any REST endpoint value",
+        "any other venue's price",
+        "a reconstructed or synthetic mark series",
+        "zero",
+        "infinity",
+        "any other surrogate whatsoever",
+    ),
+    "why_no_surrogate": (
+        "each substitution answers a different question from the one the liquidation test "
+        "asks, and every one of them errs in the same anti-conservative direction. A spot "
+        "close or spot high cannot see a perpetual mark spike at all. A perpetual TRADE "
+        "price is wrong by the basis — the quantity this checkpoint exists to measure — and "
+        "is not the series the venue liquidates against. A REST value is not a row of the "
+        "preregistered historical source, which docs/p4_preregistration.md section 3 already "
+        "settled. Another venue breaks VENUE_POLICY. A reconstructed mark is a number this "
+        "design invented, and zero or infinity are fabricated numbers dressed as data. "
+        "Refusing all of them is the same refusal nn.p13_carry.Quote already performs"
+    ),
+    "states": {
+        MARKLESS_STATE_PRE_OPEN: {
+            "when": (
+                "a candidate opening grid instant inside a block at which the required "
+                "liquidation mark is unavailable, while NO position exists yet"
+            ),
+            "treatment": (
+                "the instant is NOT a valid opening instant. The block's opening search "
+                "advances CAUSALLY to the first valid executable instant at or after the "
+                "calendar block boundary, provided it remains inside that same block, "
+                "remains strictly before the research boundary, and satisfies every other "
+                "preregistered validity requirement including "
+                "POSITION_LIFECYCLE.validity_definition and both execution legs' opens. This "
+                "is the forward search POSITION_LIFECYCLE.open_instant already describes, "
+                "with the mark's role in it made explicit"
+            ),
+            "terminal": False,
+            "result_state": None,
+            "scope": "this block's opening instant only",
+            "no_attribution_before_the_open": (
+                "no position exists during the skipped pre-open interval, so NOTHING may be "
+                "attributed to the strategy across it: no liquidation exposure, no funding "
+                "cash flow, no basis PnL, no fee and no slippage. The block's holding period "
+                "begins at the valid opening instant, and the capital sits idle at zero "
+                "yield before it, exactly as VIABILITY_GATE.the_hurdle_is_zero_yield_cash "
+                "already requires of idle capital"
+            ),
+            "is_not": (
+                "not block deletion, not block exclusion, not a redefined block span, and "
+                "NOT a new economic signal. The block's calendar period is unchanged; only "
+                "the instant at which a valid position can first exist inside it moves"
+            ),
+            "direction": (
+                "unfavourable to the result, which is why it is safe. A later open means "
+                "LESS time in the carry, so it can only reduce the funding a block accrues; "
+                "it cannot manufacture a positive block. The alternative — opening at an "
+                "instant whose risk series is absent — would buy exposure the design cannot "
+                "audit"
+            ),
+        },
+        MARKLESS_STATE_HELD: {
+            "when": (
+                "a HELD bar — one of bars 0 .. N-1 of an OPENED block's holding window — "
+                "carrying neither a mark high nor a mark close"
+            ),
+            "treatment": (
+                "the historical screen TERMINATES. The required liquidation quantity for a "
+                "bar the position was actually exposed through is not computable from the "
+                "preregistered sources, and no authorised substitute exists"
+            ),
+            "terminal": True,
+            "result_state": "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE",
+            "scope": (
+                "SCREEN-WIDE and terminal for this governed run. Not per bar, not per block"
+            ),
+            "forbidden_treatments": (
+                "silently skipping the bar",
+                "jumping across the missing period",
+                "closing the position before it",
+                "reopening after it",
+                "excluding only the affected block",
+                "converting the block to opened=False",
+                "treating the missing period as a zero return",
+                "recording the block UNCLOSED or INVALID merely to preserve evaluability",
+                "altering the G1-G6 denominators",
+                "continuing with five blocks",
+            ),
+            "why_terminal_rather_than_local": (
+                "every local treatment is a selection rule that fires on source coverage and "
+                "lands on the result. Dropping the affected block removes precisely the "
+                "period whose risk series is missing from G2's mean and G3's worst-block "
+                "test; jumping the hole reports an exposure the run never audited; a zero "
+                "return is a number nobody measured. A2 refuses the whole screen instead, "
+                "which is the one treatment that cannot improve a verdict"
+            ),
+            "what_it_is_not": (
+                "the reason is SOURCE INSUFFICIENCY FOR A REQUIRED RISK QUANTITY, not an "
+                "observed economic failure. NOT EVALUABLE says nothing about carry, is not a "
+                "negative result, and must never be cited as one — the same reading "
+                "docs/current_development_plan.md already fixes for the environment-only NOT "
+                "EVALUABLE closure"
+            ),
+            "partial_numbers_are_not_a_result": (
+                "STATED because this state, unlike the acquisition-time NOT EVALUABLE that "
+                "preceded it, can be reached after computation has begun. Any block "
+                "economics computed before the refusal fires are NOT a result: they are not "
+                "written as primary evidence, not reported as a partial answer, and do not "
+                "enter any gate. The run reports the terminal state and what was missing"
+            ),
+        },
+        MARKLESS_STATE_NO_VALID_OPEN: {
+            "when": (
+                "an entire calendar block in which the causal opening search finds no valid "
+                "opening instant at all, because the required liquidation mark source never "
+                "becomes available inside that block before the research boundary"
+            ),
+            "treatment": (
+                "the historical screen TERMINATES. The block is not opened, and it is NOT "
+                "converted into an excluded block"
+            ),
+            "terminal": True,
+            "result_state": "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE",
+            "scope": "SCREEN-WIDE and terminal for this governed run",
+            "why_not_an_excluded_block": (
+                "VIABILITY_GATE.excluded_blocks exists for a block the CONSTRUCTION could "
+                "not open — a quantity flooring to zero at the step size, a leg below the "
+                "venue minimum notional, required rows absent or invalid. Reading it as "
+                "covering 'the mark archive was never published for this year' would turn a "
+                "source-availability fact into an escape hatch that drops whole years out of "
+                "G1's and G2's denominators, and it would drop exactly the years whose risk "
+                "series is missing. The existing excluded-block rule is NOT broadened here, "
+                "and it must not be broadened later"
+            ),
+        },
+    },
+    "exit_bar": {
+        "rule": (
+            "a NORMAL exit bar needs no liquidation mark. Under the repaired holding-window "
+            "semantics the held bars are 0 .. N-1 and the exit bar N is POST-EXIT: the "
+            "position closes at bar N's OPEN, before that bar's post-open high or close "
+            "exists, so there is no intra-bar window at N the position was exposed through "
+            "and no causal liquidation test to perform there"
+        ),
+        "what_is_still_required_at_the_exit_bar": (
+            "BOTH execution legs' opens, under the existing execution validity rules. The "
+            "exemption is from the LIQUIDATION mark and from nothing else: an exit bar "
+            "missing a leg's open is invalid exactly as POSITION_LIFECYCLE.close_instant "
+            "already provides, and the exit search moves to the first valid instant at or "
+            "after it within the same bounds"
+        ),
+        "not_a_relaxation": (
+            "this exempts no bar the position was actually held through. It states the "
+            "consequence of a fill rule already frozen: a position closed at an open was "
+            "never exposed to that bar's subsequent price action"
+        ),
+    },
+    "funding_fallback_independence": {
+        "rule": (
+            "MARK_PRICE_FALLBACK is INDEPENDENT of this policy and is not narrowed by it. If "
+            "a funding settlement at the close instant needs a notional base and no mark "
+            "exists there, the already-authorised substitution of the spot candle CLOSE "
+            "applies — for the FUNDING NOTIONAL BASE ALONE"
+        ),
+        "the_coupling_that_is_forbidden": (
+            "in BOTH directions. A mark-less bar does not disable the funding fallback, and "
+            "the funding fallback does not authorise a liquidation touch. The two are "
+            "different uses of one series with different error properties: the funding "
+            "substitution is wrong by basis_fraction x rate of notional, a product of two "
+            "small numbers, while a spot-based liquidation touch is structurally blind to a "
+            "perpetual mark spike"
+        ),
+        "reporting": (
+            "unchanged. MARK_PRICE_FALLBACK.reporting_granularity still requires the "
+            "substitution flag per block and a count of settlements that used the "
+            "substituted base, and the liquidation touch provenance remains a separate count "
+            "of liquidation TESTS by source"
+        ),
+    },
+    "evidence_requirement": {
+        "fields": (
+            "the reason a block's opening was delayed, named as one of MARKLESS_STATES",
+            "the amount of pre-open time skipped inside the block, and the count of skipped "
+            "grid instants",
+            "the realised opening instant, against the calendar block boundary",
+        ),
+        "relationship_to_the_per_block_report": (
+            "IN ADDITION to TEMPORAL_PARTITION.per_block_report_fields, which is unchanged"
+        ),
+        "not_implemented_yet": (
+            "STATED so this commit is not read as more than it is. The preregistration "
+            "commit freezes the requirement; it writes no reporting code, no block runner, "
+            "no loader and no downloader, and none of those exists"
+        ),
+    },
+    "gate_structure_unchanged": (
+        "six UTC calendar-year inference blocks",
+        "G1 breadth, G2 mean, G3 downside floor, G4 sample, G5 stress, G6 effect size",
+        "4-of-6 breadth",
+        "the strict positive-mean rule",
+        "the -0.02 worst-block floor",
+        "the 200-settlement and 5-included-block rule",
+        "the S1 and S3 gate requirements",
+        "the 0.0025 minimum effect size",
+        "the S2 and S4 diagnostics",
+        "D1-D3",
+        "the cost model",
+        "leverage",
+        "the venue",
+        "the hedge ratio",
+        "the research boundary",
+    ),
+    "no_gate_denominator_change": (
+        "A2 never adds a block to, removes a block from, or reweights the denominators of G1 "
+        "and G2. Its terminal branches stop the screen instead of editing a denominator, "
+        "which is exactly why they cannot be used to improve a verdict"
+    ),
+    "no_affected_block_exclusion": (
+        "no block is ever excluded, dropped, shortened, split, re-dated or re-labelled "
+        "BECAUSE its mark coverage is incomplete. Source coverage may terminate the screen; "
+        "it may never select which periods the screen reports"
+    ),
+    "direction_of_conservatism": (
+        "strictly one-way, and checkable branch by branch. The pre-open branch can only "
+        "SHORTEN a block's exposure, which can only reduce accrued funding. The two terminal "
+        "branches forfeit every verdict outright, VIABLE included. No branch can add a "
+        "positive block, raise a mean, lift a worst block or relax a gate condition. A rule "
+        "incapable of rescuing a negative result is the only kind of post-freeze amendment "
+        "admissible at all"
+    ),
+    "why_this_is_source_validity_not_an_economic_rule": (
+        "the trigger is the PRESENCE OF AN ARCHIVE ROW and nothing else. It is never fired "
+        "by a return, a funding total, a basis level, a drawdown, a stress outcome or any "
+        "other quantity a run computes — the same availability-only discipline "
+        "MARK_PRICE_FALLBACK.never_triggered_by already imposes on the funding substitution. "
+        "A rule that fired on an economic observation would be a filter chosen against a "
+        "result; this one is decidable from the source manifest before a single economic "
+        "number exists"
+    ),
+    "not_chosen_from_data": (
+        "no market observation of any kind was available when this was adopted, and none was "
+        "consulted. P13's sources have never been obtained, no coverage probe has been run "
+        "against Binance, and the mark archive's first published month for BTCUSDT remains "
+        "unmeasured. The policy is written to be correct under EVERY coverage outcome "
+        "precisely because the actual coverage is unknown"
+    ),
+    "relation_to_not_evaluable_meaning": (
+        "NOT_EVALUABLE_MEANING is unchanged and is not rewritten. It describes the "
+        "acquisition-time case — sources that could not be obtained — and A2 adds two "
+        "further routes to the SAME terminal state, both of them source insufficiency rather "
+        "than economics. The one difference worth stating is that A2's held-bar route can be "
+        "reached after computation has begun, and "
+        "states.held_bar_mark_absent.partial_numbers_are_not_a_result governs that case "
+        "explicitly"
+    ),
+    "boundaries_and_seals_unchanged": (
+        "the exclusive research boundary remains 2025-05-19T08:00:00+00:00. P4-HOLD remains "
+        "retired and unread, Styx remains sealed, and P8 remains unopened. The causal "
+        "opening search introduced here is bounded by the block AND by that boundary, so it "
+        "can never reach a sealed or retired instant"
+    ),
+    "does_not_disturb_the_acquisition_evidence": (
+        "the committed acquisition plan, refusal record and STATUS at "
+        "artifacts/benchmark/btc_p13_carry/ were generated at 2b1b400e under the ORIGINAL "
+        "design and quote its hash. They are NOT regenerated and NOT rewritten. That "
+        "acquisition obtained no row for any bar, so nothing in it was produced under a rule "
+        "this amendment changes. Historical evidence stays historical; the superseded hashes "
+        "are recorded in SUPERSEDED_HASHES and in docs/p13_preregistration.md as provenance"
+    ),
+    "implementation_status": (
+        "DESIGN ONLY. This amendment is frozen before the runtime that will obey it exists. "
+        "nn/p13_carry.py is unchanged by it, no downloader, loader or block runner was "
+        "written with it, and P13 remains economically NOT YET RUN"
+    ),
+}
+
 # ---------------------------------------------------------------------------
 # §8  Temporal partition
 # ---------------------------------------------------------------------------
@@ -1662,6 +2062,59 @@ TEST_REQUIREMENTS: tuple[str, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# §15  Which design is active, and which are history
+# ---------------------------------------------------------------------------
+
+#: The design a future economic run is governed by. Named in the payload so the
+#: answer is machine-readable rather than inferred from a document.
+ACTIVE_DESIGN = "P13-A2"
+
+#: Every hash this preregistration has ever had, EXCEPT the active one, each
+#: marked SUPERSEDED.
+#:
+#: Written as literals, because the whole value of a superseded hash is that it is
+#: not recomputed from the thing that superseded it. Kept INSIDE the hashed payload
+#: for one specific reason: it makes the claim "hash X is the active P13 design"
+#: falsifiable from the module alone. A future run that quotes a hash listed here
+#: is quoting a design this file states is retired, and
+#: ``tests/test_p13_preregistration.py`` asserts the active hash is never a member
+#: of this tuple.
+#:
+#: Nothing here is an alternative design. **No P13 economic number, block, gate
+#: condition or decision was ever produced under any of them, and none may be
+#: produced under any of them now.** What *was* produced under the original is the
+#: acquisition evidence in ``artifacts/benchmark/btc_p13_carry/`` — a record of
+#: sources that could not be obtained, not an economic result — which keeps the
+#: hash it was generated with and is deliberately not rewritten.
+SUPERSEDED_HASHES: tuple[dict[str, str], ...] = (
+    {
+        "design": "P13 original preregistration",
+        "hash": "sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767",
+        "status": "SUPERSEDED",
+        "committed_at": "939f38151cfa607e04c4d74846e081a8ab91ed49",
+        "superseded_by": "A1",
+        "what_it_governs_now": (
+            "historical provenance only, plus the committed acquisition evidence generated "
+            "under it. It must not govern new economic evidence"
+        ),
+    },
+    {
+        "design": "P13-A1",
+        "hash": "sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099",
+        "status": "SUPERSEDED",
+        "committed_at": "51f2a9b8e585b75a3d797c7a19953461196eba65",
+        "superseded_by": "A2",
+        "what_it_governs_now": (
+            "historical provenance only. A1's rule itself is NOT withdrawn — "
+            "FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR remains in the hashed payload and in "
+            "force — but the A1 HASH is retired, and no P13 economic run may claim it as "
+            "the active design"
+        ),
+    },
+)
+
+
 def payload() -> dict[str, Any]:
     """The canonical, hashable design. Every decision-relevant constant is here."""
     return {
@@ -1696,6 +2149,8 @@ def payload() -> dict[str, Any]:
         "basis_definition": BASIS_DEFINITION,
         "margin_and_liquidation": MARGIN_AND_LIQUIDATION,
         "forced_close_without_a_following_bar": FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR,
+        "markless_liquidation_validity_policy": MARKLESS_LIQUIDATION_VALIDITY_POLICY,
+        "markless_states": list(MARKLESS_STATES),
         "temporal_partition": TEMPORAL_PARTITION,
         "min_settlements_per_block": MIN_SETTLEMENTS_PER_BLOCK,
         "min_included_blocks": MIN_INCLUDED_BLOCKS,
@@ -1719,6 +2174,8 @@ def payload() -> dict[str, Any]:
         "artifact_policy": ARTIFACT_POLICY,
         "tripwire": TRIPWIRE,
         "test_requirements": list(TEST_REQUIREMENTS),
+        "active_design": ACTIVE_DESIGN,
+        "superseded_hashes": [dict(h) for h in SUPERSEDED_HASHES],
     }
 
 

@@ -1,9 +1,12 @@
 # P13 — BTC structural funding/basis carry feasibility
 
-Status: **preregistered, not run.** No P13 economic number exists, and
+Status: **P13-A2 — preregistered, NOT YET RUN.** The active design is **P13-A2**
+(§8d), `sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c`.
+No P13 economic number exists, and
 [`nn/p13_preregistration.py`](../nn/p13_preregistration.py) says so in
-`CURRENT_RESULT_STATE`. This document is the human-readable half of that module;
-the module is authoritative, and where the two disagree the module wins.
+`CURRENT_RESULT_STATE` and in `ACTIVE_DESIGN`. This document is the
+human-readable half of that module; the module is authoritative, and where the
+two disagree the module wins.
 
 Machine-readable design: [`nn/p13_preregistration.py`](../nn/p13_preregistration.py)
 Accounting engine: [`nn/p13_carry.py`](../nn/p13_carry.py)
@@ -476,10 +479,10 @@ for liquidation.
 This is enforcement of already-frozen source semantics, not a new scientific
 choice, so the active preregistration hash does not move. `TOUCH_SPOT_CLOSE`
 remains compatibility vocabulary only and is unreachable from a successful
-governed evaluation. A separate scientific question remains unresolved: whether
-a mark-less month may be dropped, degraded, or reported separately. Any such
-treatment requires an explicit pre-economic, hash-moving amendment before an
-economic run.
+governed evaluation. The separate scientific question this raised — whether
+a mark-less period may be dropped, degraded, or reported separately — was left
+open here and is **now settled by amendment A2 (§8d)**, which is the explicit
+pre-economic, hash-moving amendment this paragraph called for.
 
 Note also that `MARK_PRICE_FALLBACK.reporting_granularity` asks for a count of
 **settlements** that used the substituted notional base. The touch provenance
@@ -537,6 +540,141 @@ how far a forced close's fill actually lay from its trigger. The economics are
 unchanged by this; only the evidence gets richer. `SOURCE_FREEZE_FIELDS` already
 requires "gaps detected" of the acquisition, and this is the same fact recorded on
 the evaluation side.
+
+### 8d. Amendment A2 — mark-less periods, before and after a block opens
+
+**This is amendment A2, and it is not an original preregistration rule.** It is
+`MARKLESS_LIQUIDATION_VALIDITY_POLICY` in
+[`nn/p13_preregistration.py`](../nn/p13_preregistration.py), inside the hashed
+payload, and **it moves the preregistration hash** — see §15.
+
+**Why it is needed.** §3 already records that `markPriceKlines` availability can
+differ by archive object and month: `MARK_PRICE_FALLBACK` is explicitly *per
+archive object, not all-or-nothing*, and the first published month for BTCUSDT is
+**unmeasured**. §8b-i then removed the unauthorised third liquidation tier, so the
+evaluator now refuses a **held** bar carrying neither a mark high nor a mark
+close. That refusal is enforcement of frozen source semantics. What remains
+unfrozen is what the **block runner** — which does not exist — must do with it,
+and the frozen text fails to settle it in two places that pull opposite ways:
+
+- **Before a position exists.** §6 requires "spot, perpetual and *(where used)*
+  mark observations" to be valid at the opening instant, without saying whether
+  the mark is "used" there.
+- **After a position exists.** §10 authorises exclusion only for a block that
+  could not be **opened**; it refuses to drop a block that *was* opened; and
+  `NOT_EVALUABLE_MEANING` speaks to sources that could not be obtained at all.
+  None of the three reaches a block that opened and then met a bar whose required
+  risk quantity is not computable.
+
+A run meeting that gap with the data in front of it would have to choose, and the
+choices are not equally flattering: excluding the affected block, or jumping the
+hole, keeps a screen evaluable by discarding exactly the periods where the venue's
+own risk series is missing. Because the rule can change **which historical
+observations enter a block**, it must be frozen before acquisition, and it must be
+an explicit hash-moving amendment rather than a clarification.
+
+**1. Authorised liquidation data.** For a held bar the mark **high** is preferred
+where available and the mark **close** is the authorised fallback. If neither
+exists, no liquidation quantity is computable. There is no third tier, and no
+surrogate is ever substituted for the governed liquidation touch — not the spot
+close, not the spot high, not the perpetual *trade* close or high, not a REST
+value, not another venue, not a reconstructed or synthetic mark, not zero, not
+infinity, not anything else. The machine-readable
+`authorised_liquidation_surrogates` is the **empty tuple**, and that is asserted
+by test.
+
+**2. Before a block opens.** A grid instant at which the required liquidation mark
+is unavailable is **not a valid opening instant**. The block's opening search
+advances **causally** to the first valid executable instant at or after the
+calendar block boundary, provided it stays inside that same block, stays strictly
+before the research boundary, and satisfies every other preregistered validity
+requirement. This is **source-validity handling** — not block deletion, not block
+exclusion, and **not a new economic signal**; the block's calendar period is
+unchanged and only the first instant at which a valid position can exist inside it
+moves.
+
+No position exists across the skipped pre-open interval, so **nothing** may be
+attributed to the strategy over it: no liquidation exposure, no funding cash flow,
+no basis PnL, no fee, no slippage. The direction is unfavourable — a later open
+means less time in the carry, so it can only reduce accrued funding.
+
+**3. After a block has opened.** Every held bar (bars 0 .. N-1) must have an
+authorised liquidation mark: **mark high, else mark close**. If a held bar has
+neither, the screen becomes
+**`P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE`**, and that outcome is
+**screen-wide and terminal** for the governed run. Explicitly forbidden: silently
+skipping the bar, jumping the missing period, closing before it, reopening after
+it, excluding only the affected block, converting it to `opened=False`, treating
+it as a zero return, recording it UNCLOSED or INVALID merely to preserve
+evaluability, altering the G1–G6 denominators, or continuing with five blocks.
+
+The reason is **source insufficiency for a required risk quantity**, not an
+observed economic failure. Unlike the acquisition-time NOT EVALUABLE that preceded
+it, this state can be reached *after computation has begun* — so any block
+economics computed before the refusal fires are **not a result**: not written as
+primary evidence, not reported as a partial answer, and not admitted to any gate.
+
+**4. If no valid opening instant exists.** If an entire calendar block has no valid
+opening instant because the required mark source never becomes available, the
+screen is **also NOT EVALUABLE**, terminally. It is **not** an excluded block. §10's
+excluded-block rule exists for a block the *construction* could not open — quantity
+flooring to zero, a leg below minimum notional, rows absent or invalid — and it is
+**not broadened** into a source-availability escape hatch, here or later.
+
+**5. Exit bar.** The repaired holding-window semantics are preserved: held bars are
+**0 .. N-1** and exit bar **N** is post-exit. A normal exit bar needs no mark *for
+liquidation*, because the position closes at that bar's **open**, before its
+post-open high or close exists — there is no intra-bar window at N the position was
+exposed through. Both execution legs' opens are still required under the existing
+execution validity rules; the exemption is from the liquidation mark and nothing
+else.
+
+**6. The funding fallback stays independent.** `MARK_PRICE_FALLBACK` is not
+narrowed by A2. If a funding settlement at the close instant needs a notional base
+and no mark exists there, the spot candle **close** may still be substituted — for
+the **funding notional base alone**. The coupling is forbidden in both directions:
+a mark-less bar does not disable the funding fallback, and the funding fallback
+never authorises a liquidation touch.
+
+**7. What A2 does not change.** Six calendar-year inference blocks; G1–G6; 4-of-6
+breadth; the mean rule; the −0.02 floor; the settlement-count rule; the S1/S3 gate
+requirements; the 0.0025 effect-size threshold; the S2/S4 diagnostics; D1–D3;
+costs; leverage; venue; hedge ratio; the research boundary. A2 never adds a block
+to, removes one from, or reweights the denominators of G1 and G2 — its terminal
+branches stop the screen instead of editing a denominator. The exclusive research
+boundary remains `2025-05-19T08:00:00+00:00`; P4-HOLD remains retired and unread,
+Styx sealed, P8 unopened, and the causal opening search is bounded by the block
+*and* by that boundary, so it can never reach a sealed instant.
+
+**Direction of conservatism, checkable branch by branch.** The pre-open branch can
+only shorten a block's exposure, which can only reduce accrued funding. The two
+terminal branches forfeit every verdict, `VIABLE` included. No branch can add a
+positive block, raise a mean, lift a worst block or relax a gate condition — the
+property that makes a post-freeze amendment admissible at all.
+
+**Why this is source validity and not an economic rule.** The trigger is the
+*presence of an archive row* and nothing else. It is never fired by a return,
+funding total, basis level, drawdown or stress outcome — the same availability-only
+discipline `MARK_PRICE_FALLBACK.never_triggered_by` already imposes — and it is
+decidable from the source manifest before a single economic number exists.
+
+**When, and on what information.** Adopted **before any P13 economic observation of
+any kind**. No archive object has been fetched, no coverage probe has been run
+against Binance, no block opened, and no funding total, basis figure, return or
+gate condition computed. The mark archive's first published month for BTCUSDT
+remains unmeasured, which is exactly why the policy is written to be correct under
+*every* coverage outcome.
+
+**Evidence the runner must eventually carry**, in addition to §9's per-block
+fields: the reason a block's opening was delayed, the pre-open time and instant
+count skipped, and the realised opening instant against the calendar boundary.
+**This preregistration commit freezes the requirement and implements none of it.**
+`nn/p13_carry.py` is unchanged by A2, and no downloader, loader or block runner
+exists.
+
+**It does not disturb the acquisition evidence.**
+`artifacts/benchmark/btc_p13_carry/` was generated at `2b1b400e` under the original
+design and keeps that hash. Those files are not regenerated and not rewritten.
 
 ## 9. Temporal partition
 
@@ -742,26 +880,39 @@ close and emergency-flatten paths remain available under halt.
 
 ## 15. Preregistration hash
 
+The active design is **P13-A2**, and it is **NOT YET RUN**.
+
 ```text
-sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099
+sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c
 ```
 
-**Superseded hash, kept as provenance:**
-`sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` was the
-active hash for the original preregistration, committed and pushed at
-`939f38151cfa607e04c4d74846e081a8ab91ed49`, before amendment A1 (§8a) added
-`forced_close_without_a_following_bar` to the hashed payload.
+**Superseded hashes, kept as provenance.** Both are recorded as literals in
+`SUPERSEDED_HASHES` in [`nn/p13_preregistration.py`](../nn/p13_preregistration.py)
+— inside the hashed payload, so that the claim "hash X is the active P13 design"
+is falsifiable from the module alone, and
+`tests/test_p13_preregistration.py` asserts the active hash is never a member of
+that tuple.
 
 | design | hash | superseded by |
 | --- | --- | --- |
 | original preregistration | `sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` | A1 (§8a) |
+| P13-A1 | `sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099` | A2 (§8d) |
 
-It is recorded here as history, not as an alternative: **no P13 economic number,
-block, gate condition or decision was ever produced under it, and none may be
-produced under it now.** What *was* produced under it is the acquisition evidence
-in `artifacts/benchmark/btc_p13_carry/`, which is a record of sources that could
-not be obtained rather than an economic result; it keeps the hash it was
-generated with, and is deliberately not rewritten.
+`sha256:1369c88…` was active for the original preregistration, committed and pushed
+at `939f38151cfa607e04c4d74846e081a8ab91ed49` before any attempt to obtain data.
+`sha256:43971098…` was active for **P13-A1**, committed at
+`51f2a9b8e585b75a3d797c7a19953461196eba65`, until amendment A2 (§8d) added
+`markless_liquidation_validity_policy` to the hashed payload. **A1's rule itself is
+not withdrawn** — `forced_close_without_a_following_bar` remains in the payload and
+in force — but the A1 *hash* is retired and no economic run may claim it as the
+active design.
+
+They are recorded here as history, not as alternatives: **no P13 economic number,
+block, gate condition or decision was ever produced under any of them, and none may
+be produced under any of them now.** What *was* produced under the original is the
+acquisition evidence in `artifacts/benchmark/btc_p13_carry/`, which is a record of
+sources that could not be obtained rather than an economic result; it keeps the
+hash it was generated with, and is deliberately not rewritten.
 
 Recompute with:
 
