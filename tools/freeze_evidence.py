@@ -73,7 +73,32 @@ EVIDENCE_CLASS_KEY = "evidence_class"
 #: Extensions worth freezing. A checkpoint directory can also hold caches and
 #: editor droppings, and a manifest that covers those fails for reasons that
 #: have nothing to do with the evidence.
-EVIDENCE_SUFFIXES = (".json", ".md", ".parquet", ".csv", ".txt")
+#:
+#: **The compressed half is not decoration.** P13's preregistered sources are
+#: Binance archive objects — ``{SYMBOL}-{interval}-{YYYY}-{MM}.zip`` and its
+#: ``.zip.CHECKSUM`` companion, per ``nn.p13_preregistration.DATA_SOURCES`` — and
+#: a covering rule keyed on extension would have let every one of them land in a
+#: checkpoint directory UNMANIFESTED, for no better reason than being compressed.
+#: The two directions of the rule fail in opposite ways there: the freezer would
+#: not hash them, and the coverage test would not notice they were unhashed. A
+#: source object is the most load-bearing evidence a checkpoint has, so the
+#: suffixes are widened to reach it rather than left to be discovered by the
+#: acquisition run.
+#:
+#: Widened deliberately narrowly: the archive formats the frozen designs name,
+#: and ``.gz`` beside ``.zip`` because it is the other shape published source
+#: data arrives in. Not a general "freeze every binary" rule — the scan still
+#: only ever walks the directories it is given.
+EVIDENCE_SUFFIXES = (
+    ".json",
+    ".md",
+    ".parquet",
+    ".csv",
+    ".txt",
+    ".zip",
+    ".gz",
+    ".CHECKSUM",
+)
 
 
 def evidence_class_of(directory: Path) -> str | None:

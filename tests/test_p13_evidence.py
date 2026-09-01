@@ -213,3 +213,83 @@ def test_a_corrupted_evidence_file_still_fails(scratch):
     target = scratch / REQUIRED_EVIDENCE[0]
     target.write_text(target.read_text() + "\nedited\n")
     assert check(scratch / MANIFEST, root=scratch) != []
+
+
+# --------------------------------------------------------------------------- #
+# Coverage cannot be escaped by being compressed
+# --------------------------------------------------------------------------- #
+#
+# The rule above is keyed on file extension, and P13's PREREGISTERED SOURCES are
+# `.zip` archive objects with `.zip.CHECKSUM` companions. Under the original
+# suffix list every one of the 260 objects the acquisition will fetch could have
+# landed in this directory unmanifested — not because anyone excluded them, but
+# because the covering rule did not recognise the shape source data arrives in.
+#
+# These are synthetic filesystem tests. No archive is downloaded, no host is
+# contacted, and the files written below are empty placeholders with the right
+# names.
+# --------------------------------------------------------------------------- #
+
+
+def source_object_suffixes() -> set[str]:
+    """Every archive suffix the frozen P13 design says it will fetch.
+
+    Derived from the preregistration rather than restated, so widening the source
+    set later cannot leave this test agreeing with a list that no longer matches
+    the design.
+    """
+    from nn.p13_preregistration import DATA_SOURCES
+
+    suffixes: set[str] = set()
+    for source in DATA_SOURCES:
+        for key in ("object", "checksum_object"):
+            # `checksum_object` carries a trailing ", sha256" note; the object
+            # name is the first comma-separated field.
+            name = str(source[key]).split(",")[0].strip()
+            suffixes.add(Path(name).suffix)
+    return suffixes
+
+
+def test_the_frozen_design_really_does_name_compressed_source_objects():
+    """The premise, checked. Without it the next test could pass vacuously."""
+    assert source_object_suffixes() == {".zip", ".CHECKSUM"}
+
+
+@pytest.mark.parametrize("suffix", sorted(source_object_suffixes()))
+def test_no_preregistered_source_suffix_can_escape_the_coverage_rule(suffix):
+    assert suffix in EVIDENCE_SUFFIXES, (
+        f"a preregistered P13 source object ending in {suffix} would not be seen by the "
+        "coverage scan, so the acquisition could leave it unmanifested silently"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "BTCUSDT-1h-2020-01.zip",
+        "BTCUSDT-1h-2020-01.zip.CHECKSUM",
+        "BTCUSDT-fundingRate-2020-01.zip",
+        "block_results.csv.gz",
+    ],
+)
+def test_a_source_archive_dropped_into_the_evidence_directory_cannot_arrive_quietly(
+    scratch, name
+):
+    """The acquisition stage's exact failure mode, executed against a scratch tree."""
+    (scratch / PRIMARY_DIR / name).write_bytes(b"")
+    problems = coverage_problems(scratch)
+    assert any(
+        name in problem for problem in problems
+    ), f"{name} landed in the primary evidence directory and nothing objected"
+    assert any("UNCOVERED BY MANIFEST" in problem and name in problem for problem in problems)
+
+
+def test_the_widening_did_not_reach_files_that_are_not_evidence(scratch):
+    """Narrow on purpose: a cache or an editor dropping must still be ignored.
+
+    A rule that covered everything would fail for reasons having nothing to do
+    with the evidence, which is how a checksum stops being a signal.
+    """
+    for name in ("notes.swp", "cache.pyc", "scratch.tmp"):
+        (scratch / PRIMARY_DIR / name).write_bytes(b"")
+    assert coverage_problems(scratch) == []

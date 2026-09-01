@@ -22,11 +22,18 @@ import pytest
 from chimera.futures.accounting import FundingEvent, funding_cash_flow
 from chimera.futures.domain import Position, PositionSide
 from nn.p13_carry import (
+    NOMINAL_BAR_NS,
+    NOT_DETERMINABLE,
     RESEARCH_BOUNDARY_NS,
+    TOUCH_MARK_CLOSE,
+    TOUCH_MARK_HIGH,
+    TOUCH_SOURCES,
+    TOUCH_SPOT_CLOSE,
     Allocation,
     CarryError,
     Costs,
     FundingSettlement,
+    LiquidationTouchProvenance,
     Quote,
     Venue,
     apply_funding,
@@ -35,6 +42,7 @@ from nn.p13_carry import (
     hedge_quantity,
     is_liquidated,
     open_carry,
+    unclosed_block_result,
 )
 
 D = Decimal
@@ -64,12 +72,19 @@ def quote(instant: int, spot: str, perp: str, mark: str | None = None) -> Quote:
     an hour later without anyone deciding to. A witness written in a flat world is
     entitled to open == close, so it states both rather than inheriting one, and
     every hand-traced number below is unchanged by the difference.
+
+    The mark series DEFAULTS to the flat world's price rather than to absence. A
+    held bar without a mark is not a valid bar under the frozen design — the
+    liquidation test is defined on the mark series and nothing else — so absence
+    is the exceptional case and the F1 section states it outright rather than
+    letting it be the silent default here. The default equals the close, so the
+    number the liquidation test reads is exactly the number it read before.
     """
     return Quote(
         instant_ns=instant,
         spot=D(spot),
         perp=D(perp),
-        mark=D(mark) if mark is not None else None,
+        mark=D(mark if mark is not None else spot),
         spot_open=D(spot),
         perp_open=D(perp),
     )
@@ -480,8 +495,17 @@ def test_orders_fill_at_the_candle_open_not_its_close():
 
 
 def test_the_basis_identity_holds_on_transacted_prices_when_open_differs_from_close():
+    # Bar 0 is HELD, so it carries a mark; the mark equals its own close, which is
+    # the number the liquidation test read here before there was a mark at all.
+    # The EXIT bar deliberately carries none: the position closed at its open and
+    # its liquidation is never tested, so requiring one there would be wrong.
     entry = Quote(
-        instant_ns=0, spot=D("111"), perp=D("113"), spot_open=D("100"), perp_open=D("101")
+        instant_ns=0,
+        spot=D("111"),
+        perp=D("113"),
+        spot_open=D("100"),
+        perp_open=D("101"),
+        mark=D("111"),
     )
     exit_ = Quote(
         instant_ns=1, spot=D("300"), perp=D("300"), spot_open=D("200"), perp_open=D("200")
@@ -722,31 +746,65 @@ def test_a_settlement_after_the_liquidation_trigger_is_not_this_positions_cash_f
 
 
 # ---------------------------------------------------------------------------
-# Amendment A1 — a liquidation on the final bar has no permitted fill
+# Amendment A1 — and what correct holding-window attribution does to it
+# ---------------------------------------------------------------------------
+#
+# A1 is unchanged, still hashed, and still in force. What changed is which of its
+# two causes can reach the evaluator.
+#
+# The held intra-bar windows are bars 0 .. N-1, so a liquidation trigger always
+# has a successor and the LIQUIDATION route into A1 is unreachable from
+# evaluate_block. That route was reachable only while the loop also tested bar N
+# — a bar the position had already closed at the OPEN of — so the case A1 was
+# written against was in part an artefact of the off-by-one this branch repairs.
+#
+# The surviving cause is the one A1 says it "applies equally to": the block that
+# has no valid exit instant at or before its last hour
+# (POSITION_LIFECYCLE.close_instant). That belongs to the block runner, which
+# does not exist. So A1's encoding is tested directly, through the function both
+# causes are meant to call, rather than through a branch nothing can reach.
 # ---------------------------------------------------------------------------
 
 
-def test_a_liquidation_on_the_final_bar_leaves_the_block_unclosed():
-    """No price is invented and nothing past the block end is read."""
-    quotes = _liquidation_witness(final_bar_is_the_trigger=True)
-    result = evaluate_block("b", quotes, [], CAPITAL, FREE, VENUE, min_settlements=0)
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+@pytest.mark.parametrize("length", [2, 3, 4, 5])
+def test_no_liquidation_trigger_can_leave_a_block_unclosed(length, isolated):
+    """The reachability claim, executed over every shape rather than asserted.
 
-    assert result.opened and result.liquidated and result.unclosed
-    assert result.liquidation_instant_ns == HOUR
-    assert result.forced_close_instant_ns is None
-    assert "UNCLOSED" in result.reason and "A1" in result.reason
-    # Facts that were actually incurred are still reported.
-    assert result.quantity == D("5.000")
-    assert result.basis_entry == ZERO
+    A trigger on bar k needs bar k+1 to fill at. Under bars-0..N-1 attribution
+    k <= N-1 always, so the fill always exists — for every block length, every
+    position of the touch, and both margin models. If this ever fails, the
+    holding window has drifted back over the exit bar.
+    """
+    for spike_at in range(length):
+        quotes = []
+        for index in range(length):
+            quotes.append(
+                Quote(
+                    instant_ns=index * HOUR,
+                    spot=D("100"),
+                    perp=D("100"),
+                    spot_open=D("100"),
+                    perp_open=D("100"),
+                    mark=D("100"),
+                    mark_high=D(PREDICATE_SPIKE) if index == spike_at else None,
+                )
+            )
+        result = evaluate_block(
+            "b", quotes, [], CAPITAL, FREE, VENUE, min_settlements=0, isolated=isolated
+        )
+        assert not result.unclosed, f"length={length} spike_at={spike_at} reached A1"
+        if result.liquidated:
+            assert result.forced_close_instant_ns is not None
+            assert result.forced_close_instant_ns > result.liquidation_instant_ns
 
 
-def test_an_unclosed_blocks_return_is_not_determinable_rather_than_zero():
-    """A gate that forgets the UNCLOSED flag must crash, not average in a zero.
+def test_a_touch_on_the_old_final_bar_no_longer_triggers_at_all():
+    """The specific witness the A1 liquidation route used to rest on.
 
-    Zero is the flattering answer: it would enter G2's mean as a harmless block
-    and G3's worst-block test as a block that lost nothing, which is exactly the
-    treatment VIABILITY_GATE.liquidated_blocks refuses for every other liquidated
-    block.
+    Two quotes, the touch on the second: the position closed at that bar's OPEN,
+    so its post-open high happens to a position that no longer exists. It must
+    close normally, not liquidate and not go UNCLOSED.
     """
     result = evaluate_block(
         "b",
@@ -757,42 +815,82 @@ def test_an_unclosed_blocks_return_is_not_determinable_rather_than_zero():
         VENUE,
         min_settlements=0,
     )
+    assert result.opened
+    assert not result.liquidated and not result.unclosed
+    assert result.reason == "closed at block end"
+    assert result.held_bars == 1
+    # It closed at the final bar's OPEN — 150 spot against 158 perp, basis 8 —
+    # so by hand net = Q x (basis_in - basis_out) = 5 x (0 - 8) = -40.
+    assert result.basis_exit == D("8")
+    assert result.net_pnl == D("-40")
+
+
+def test_the_a1_encoding_reports_incurred_facts_and_not_determinable_economics():
+    """A1's rule, exercised through the definition both of its causes call.
+
+    Hand-supplied facts, so nothing here is read back out of the evaluator: what
+    is under test is that the encoding reports what WAS incurred and refuses to
+    put a number on what was not.
+    """
+    result = unclosed_block_result(
+        "2025",
+        "UNCLOSED: no valid exit instant at or before the block's last hour",
+        settlements=812,
+        quantity=D("70.123"),
+        basis_entry=D("12.5"),
+        funding_received=D("9000"),
+        funding_paid=D("400"),
+        fees=D("1500"),
+        slippage=D("500"),
+        max_adverse_excursion_pnl=D("-2500"),
+        total_capital=D("1000000"),
+        thin_sample=False,
+    )
+
+    assert result.opened and result.unclosed
+    assert result.forced_close_instant_ns is None
+    # The facts A1 says are reported "as the facts they are".
+    assert result.settlements == 812
+    assert result.quantity == D("70.123")
+    assert result.basis_entry == D("12.5")
+    assert result.net_funding == D("8600")
+    assert result.fees == D("1500")
+    assert result.slippage == D("500")
+    assert result.max_adverse_excursion_pnl == D("-2500")
+    # And the fraction the frozen design names, on the same base as the return.
+    assert result.max_adverse_excursion == D("-0.0025")
+    # And the close-dependent quantities, which nobody measured.
     for value in (result.net_return, result.net_pnl, result.basis_pnl, result.basis_exit):
         assert value.is_nan()
         assert value != ZERO
+
+
+def test_an_unclosed_blocks_return_is_not_determinable_rather_than_zero():
+    """A gate that forgets the UNCLOSED flag must crash, not average in a zero.
+
+    Zero is the flattering answer: it would enter G2's mean as a harmless block
+    and G3's worst-block test as a block that lost nothing, which is exactly the
+    treatment VIABILITY_GATE.liquidated_blocks refuses for every other liquidated
+    block.
+    """
+    result = unclosed_block_result(
+        "2025",
+        "UNCLOSED",
+        settlements=0,
+        quantity=D("5"),
+        basis_entry=ZERO,
+        funding_received=ZERO,
+        funding_paid=ZERO,
+        fees=ZERO,
+        slippage=ZERO,
+        max_adverse_excursion_pnl=ZERO,
+        total_capital=D("1000"),
+        thin_sample=True,
+    )
     with pytest.raises(InvalidOperation):
         _ = result.net_return > ZERO
     with pytest.raises(InvalidOperation):
         _ = result.net_return < D("-0.02")
-
-
-def test_the_unclosed_rule_fires_on_the_absence_of_a_bar_not_on_the_liquidation():
-    """The same trigger closes normally the moment a permitted bar exists.
-
-    Which is what establishes that the rule reads the block's own bars and does
-    not reach past its end to find one.
-    """
-    with_following = evaluate_block(
-        "b",
-        _liquidation_witness(final_bar_is_the_trigger=False),
-        [],
-        CAPITAL,
-        FREE,
-        VENUE,
-        min_settlements=0,
-    )
-    without = evaluate_block(
-        "b",
-        _liquidation_witness(final_bar_is_the_trigger=True),
-        [],
-        CAPITAL,
-        FREE,
-        VENUE,
-        min_settlements=0,
-    )
-    assert with_following.liquidation_instant_ns == without.liquidation_instant_ns
-    assert not with_following.unclosed and without.unclosed
-    assert with_following.net_pnl == D("-5")
 
 
 # ---------------------------------------------------------------------------
@@ -840,10 +938,17 @@ def test_a_delayed_settlement_does_not_become_visible_at_an_earlier_quote():
 
     assert delayed.settlements == 0 and delayed.funding_paid == ZERO
     assert on_time.settlements == 1 and on_time.funding_paid == D("5.000")
-    # The equity path itself, not merely the totals: the excursion at the trigger
-    # bar cannot contain a payment that had not happened.
-    assert delayed.max_adverse_excursion == ZERO
-    assert on_time.max_adverse_excursion == D("-5.000")
+    # The equity path itself, not merely the totals. Both blocks liquidate and
+    # both lose the same 5 of basis at the forced close, so the ONLY thing that
+    # can separate their excursions is the 5 of funding — and it separates them
+    # exactly, which is what makes this a measurement of the payment rather than
+    # of anything else.
+    assert delayed.net_pnl == D("-5") and delayed.max_adverse_excursion_pnl == D("-5")
+    assert on_time.net_pnl == D("-10") and on_time.max_adverse_excursion_pnl == D("-10")
+    assert on_time.max_adverse_excursion_pnl - delayed.max_adverse_excursion_pnl == D("-5")
+    # The same facts on the block return's own base: of 1,000 of capital.
+    assert delayed.max_adverse_excursion == D("-0.005")
+    assert on_time.max_adverse_excursion == D("-0.01")
     assert delayed.net_pnl != on_time.net_pnl
 
 
@@ -940,3 +1045,1328 @@ def test_the_boundary_the_evaluator_asserts_is_the_one_the_design_froze():
 
     frozen = datetime.fromisoformat(DATA_BOUNDARY["span_end_exclusive"])
     assert RESEARCH_BOUNDARY_NS == int(frozen.timestamp() * 1_000_000_000)
+
+
+# ---------------------------------------------------------------------------
+# R1 — the holding window is bars 0 .. N-1, and nothing else
+# ---------------------------------------------------------------------------
+#
+# A position opened at bar 0's OPEN is exposed to the REMAINDER OF BAR 0. A
+# position closed at bar N's OPEN is exposed to NOTHING after that open. The
+# evaluator once ran its liquidation and excursion loop over `quotes[1:]`, which
+# is wrong at BOTH ends at once: it hid the entry bar's intra-bar action from the
+# liquidation model and simultaneously tested the exit bar's post-open window
+# against a position that had already closed.
+#
+# Every number below is hand-traced at zero cost, Q = 5.000 out of 1,000 of
+# capital, so nothing is read back out of the function under test:
+#
+#   Q = step_floor(min(500/100, 500/100)) = 5.000
+#   spot notional 500, perp notional 500 = margin, free cash 0
+#   equity_t = 0 + 5 x spot_close_t + 500 + (100 - perp_close_t) x 5
+# ---------------------------------------------------------------------------
+
+
+def bar(
+    instant: int,
+    spot_open: str,
+    perp_open: str,
+    spot_close: str | None = None,
+    perp_close: str | None = None,
+    mark: str | None = None,
+    mark_high: str | None = None,
+) -> Quote:
+    """A witness bar whose OPEN and CLOSE are stated separately and on purpose.
+
+    The fills come from the opens; the marks, the basis series and the excursion
+    come from the closes. Keeping them distinct is what lets one bar carry an
+    ordinary fill and a catastrophic close, which is the shape every window
+    question below turns on.
+
+    The mark CLOSE defaults to this bar's own close, for the reason `quote` gives:
+    a held bar that carries no mark at all is refused by the liquidation test, so
+    a witness about the holding window, funding or the excursion should not be
+    silently making that separate claim. `markless` below is how a test says the
+    mark series is absent, and it says so on purpose.
+    """
+    close = spot_close if spot_close is not None else spot_open
+    return Quote(
+        instant_ns=instant,
+        spot=D(close),
+        perp=D(perp_close if perp_close is not None else perp_open),
+        spot_open=D(spot_open),
+        perp_open=D(perp_open),
+        mark=D(mark if mark is not None else close),
+        mark_high=D(mark_high) if mark_high is not None else None,
+    )
+
+
+def markless(instant: int, spot_open: str, perp_open: str, **kwargs) -> Quote:
+    """A witness bar carrying NO mark series of any kind — neither high nor close.
+
+    This is the shape a month with no published `markPriceKlines` object produces,
+    and under the frozen design it is the shape the liquidation test must REFUSE
+    rather than approximate from a series it was never given.
+    """
+    built = bar(instant, spot_open, perp_open, **kwargs)
+    return Quote(
+        instant_ns=built.instant_ns,
+        spot=built.spot,
+        perp=built.perp,
+        spot_open=built.spot_open,
+        perp_open=built.perp_open,
+        mark=None,
+        mark_high=None,
+    )
+
+
+def _run(quotes, settlements=(), isolated=False, venue=VENUE):
+    return evaluate_block(
+        "b",
+        quotes,
+        list(settlements),
+        CAPITAL,
+        FREE,
+        venue,
+        min_settlements=0,
+        isolated=isolated,
+    )
+
+
+# --- Witness A: the entry bar --------------------------------------------- #
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_witness_a_a_touch_during_the_remainder_of_the_entry_bar_liquidates(isolated):
+    """The position held through bar 0. Its high must reach the liquidation model.
+
+    Portfolio, by hand: the maintenance requirement is Q x touch x mmr =
+    5 x 60,000 x 0.004 = 1,200 against an equity of 1,000, so the bar liquidates.
+    Isolated: the touch is far past entry x (2 - mmr) = 199.6. Under the old
+    `quotes[1:]` window neither fired, because bar 0 was never tested at all.
+
+    The forced close then fills at bar 1's OPEN — 100 spot against 103 perp,
+    basis 3 — so net = Q x (basis_in - basis_out) = 5 x (0 - 3) = -15.
+    """
+    quotes = [
+        bar(0, "100", "100", mark_high=PREDICATE_SPIKE),
+        bar(HOUR, "100", "103"),
+        bar(2 * HOUR, "100", "100"),
+    ]
+    result = _run(quotes, isolated=isolated)
+
+    assert result.liquidated, "a touch inside the entry bar was invisible to the model"
+    assert not result.unclosed
+    assert result.liquidation_instant_ns == 0
+    assert result.forced_close_instant_ns == HOUR
+    assert result.held_bars == 1
+    assert result.basis_exit == D("3")
+    if not isolated:
+        assert result.net_pnl == D("-15")
+        assert result.net_pnl == result.basis_pnl
+
+
+def test_witness_b_a_touch_on_a_middle_held_bar_still_liquidates():
+    """The control. Without it a window that tested NOTHING would look repaired."""
+    quotes = [
+        bar(0, "100", "100"),
+        bar(HOUR, "100", "100", mark_high=PREDICATE_SPIKE),
+        bar(2 * HOUR, "100", "102"),
+    ]
+    result = _run(quotes)
+    assert result.liquidated and not result.unclosed
+    assert result.liquidation_instant_ns == HOUR
+    assert result.forced_close_instant_ns == 2 * HOUR
+    assert result.held_bars == 2
+    # Filled at bar 2's open, basis 2: net = 5 x (0 - 2) = -10.
+    assert result.net_pnl == D("-10")
+
+
+# --- Witness C: the normal exit bar ---------------------------------------- #
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_witness_c_the_exit_bars_post_open_window_is_not_tested(isolated):
+    """The position closed at bar 2's OPEN. Bar 2's high is not its business.
+
+    The same spike that liquidates on bars 0 and 1 must do nothing here, and the
+    block must close normally at that bar's open — basis 2, so net = -10.
+    """
+    quotes = [
+        bar(0, "100", "100"),
+        bar(HOUR, "100", "100"),
+        bar(2 * HOUR, "100", "102", mark_high=PREDICATE_SPIKE),
+    ]
+    result = _run(quotes, isolated=isolated)
+
+    assert not result.liquidated, "a bar closed at the open of was still tested"
+    assert not result.unclosed
+    assert result.liquidation_instant_ns is None
+    assert result.forced_close_instant_ns is None
+    assert result.reason == "closed at block end"
+    assert result.held_bars == 2
+    assert result.net_pnl == D("-10")
+
+
+def test_the_same_touch_liquidates_on_a_held_bar_and_not_on_the_exit_bar():
+    """The two-sided control: one spike, two positions, opposite answers.
+
+    Neither half means much alone — a model that never liquidates passes the
+    second, one that always liquidates passes the first. Together they pin the
+    window's far edge to exactly one bar.
+    """
+    held = _run(
+        [
+            bar(0, "100", "100"),
+            bar(HOUR, "100", "100", mark_high=PREDICATE_SPIKE),
+            bar(2 * HOUR, "100", "100"),
+        ]
+    )
+    after_exit = _run(
+        [
+            bar(0, "100", "100"),
+            bar(HOUR, "100", "100"),
+            bar(2 * HOUR, "100", "100", mark_high=PREDICATE_SPIKE),
+        ]
+    )
+    assert held.liquidated and not after_exit.liquidated
+
+
+# --- Witness D: the excursion window --------------------------------------- #
+
+
+def test_witness_d_movement_after_the_exit_cannot_reach_the_excursion():
+    """Bar 2 opens flat and closes catastrophically. The position left at the open.
+
+    By hand, had that close been marked: equity = 0 + 5 x 100 + 500 +
+    (100 - 200) x 5 = 500, an excursion of -500. It must not appear, and the
+    realised result must be exactly zero, because the exit FILL basis is zero.
+    """
+    quotes = [
+        bar(0, "100", "100"),
+        bar(HOUR, "100", "100"),
+        bar(2 * HOUR, "100", "100", spot_close="100", perp_close="200"),
+    ]
+    result = _run(quotes)
+    assert result.max_adverse_excursion_pnl == ZERO
+    assert result.max_adverse_excursion == ZERO
+    assert result.max_adverse_excursion_pnl != D("-500")
+    assert result.net_pnl == ZERO
+
+
+def test_the_entry_bars_own_close_does_reach_the_excursion():
+    """The mirror image, and the reason the previous test is not vacuous.
+
+    The identical -500 basis excursion, moved onto bar 0 — a bar the position
+    held through — must be recorded. A window that simply dropped both ends would
+    pass the test above and fail this one.
+    """
+    quotes = [
+        bar(0, "100", "100", spot_close="100", perp_close="200"),
+        bar(HOUR, "100", "100"),
+        bar(2 * HOUR, "100", "100"),
+    ]
+    result = _run(quotes)
+    assert result.max_adverse_excursion_pnl == D("-500")
+    # -500 of 1,000 of capital. G3's floor is -0.02 on this same base, so an
+    # excursion reported in quote units would read as 25,000x its true depth.
+    assert result.max_adverse_excursion == D("-0.5")
+    assert result.net_pnl == ZERO
+
+
+def test_the_excursion_stops_at_the_liquidation_trigger():
+    """A liquidated position stops accruing marks at the trigger, not at block end."""
+    quotes = [
+        bar(0, "100", "100"),
+        bar(HOUR, "100", "100", mark_high=PREDICATE_SPIKE),
+        bar(2 * HOUR, "100", "100", spot_close="100", perp_close="900"),
+    ]
+    result = _run(quotes)
+    assert result.liquidated
+    assert result.max_adverse_excursion == ZERO
+
+
+# ---------------------------------------------------------------------------
+# R2 — an economic quantity nobody measured is not a zero
+# ---------------------------------------------------------------------------
+#
+# VIABILITY_GATE.excluded_blocks leaves an unopened block out of G1 and G2, so a
+# correct gate never reads these fields. The repair is about the gate that
+# FORGETS: a finite zero enters G2's mean as an ordinary block and G3's
+# worst-block test as a block that lost nothing. No gate rule changes here — only
+# whether the flattering failure mode is available at all.
+# ---------------------------------------------------------------------------
+
+#: Nothing can be bought with 500 of allocation at a 10,000 minimum notional.
+CANNOT_OPEN = Venue(
+    step_size=D("0.001"), min_notional=D("10000"), maintenance_margin_rate=D("0.004")
+)
+
+#: Every field whose value is an ECONOMIC MEASUREMENT of a position. With no
+#: position there is no measurement, so none of them may be a number.
+UNMEASURED_FIELDS = (
+    "basis_entry",
+    "basis_exit",
+    "basis_pnl",
+    "net_pnl",
+    "net_return",
+    "max_adverse_excursion_pnl",
+    "max_adverse_excursion",
+)
+
+#: Every field that is a STRUCTURAL FACT about a block with no position rather
+#: than a measurement of one. These stay numeric on purpose: no fill happened, so
+#: no fee was charged; no position existed, so no funding reached it. Losing this
+#: half would be the opposite error — refusing to state what IS known.
+STRUCTURAL_FIELDS = (
+    "quantity",
+    "funding_received",
+    "funding_paid",
+    "fees",
+    "slippage",
+    "rebalance_cost",
+)
+
+
+def _not_opened() -> "object":
+    return _run([bar(0, "100", "100"), bar(HOUR, "100", "100")], venue=CANNOT_OPEN)
+
+
+def _too_few_quotes() -> "object":
+    return _run([bar(0, "100", "100")])
+
+
+@pytest.mark.parametrize(
+    "make", [_not_opened, _too_few_quotes], ids=["not_opened", "one_quote"]
+)
+@pytest.mark.parametrize("name", UNMEASURED_FIELDS)
+def test_an_unmeasured_economic_field_is_not_a_finite_zero(make, name):
+    value = getattr(make(), name)
+    assert value.is_nan(), f"{name} is a number for a block that never opened"
+    assert value != ZERO
+
+
+@pytest.mark.parametrize(
+    "make", [_not_opened, _too_few_quotes], ids=["not_opened", "one_quote"]
+)
+@pytest.mark.parametrize("name", STRUCTURAL_FIELDS)
+def test_a_structurally_known_zero_stays_a_number(make, name):
+    """The other direction. NaN everywhere would be its own kind of dishonest."""
+    value = getattr(make(), name)
+    assert not value.is_nan()
+    assert value == ZERO
+
+
+def test_the_not_opened_flags_stay_readable_without_touching_the_economics():
+    """Checking `opened is False` must remain the cheap, obvious thing to do."""
+    result = _not_opened()
+    assert result.opened is False
+    assert result.liquidated is False
+    assert result.unclosed is False
+    assert result.thin_sample is True
+    assert result.settlements == 0
+    assert result.held_bars == 0
+    assert "not opened" in result.reason
+
+
+def test_the_unmeasured_value_is_the_modules_own_declared_sentinel():
+    """Not merely "some NaN": the one NOT_DETERMINABLE names.
+
+    A Decimal NaN is never equal to itself, so what can be asserted is the
+    representation — which is enough to catch a signalling NaN, a negative one, or
+    a float sneaking in where a Decimal belongs.
+    """
+    value = _not_opened().net_return
+    assert isinstance(value, type(NOT_DETERMINABLE))
+    assert str(value) == str(NOT_DETERMINABLE) == "NaN"
+
+
+def test_ordering_an_unmeasured_return_fails_closed():
+    """G1's `> 0` and G3's `>= -0.02` must raise rather than answer."""
+    result = _not_opened()
+    for other in (ZERO, D("-0.02"), D("0.0025")):
+        with pytest.raises(InvalidOperation):
+            _ = result.net_return > other
+        with pytest.raises(InvalidOperation):
+            _ = result.net_return < other
+
+
+def test_an_accidental_mean_cannot_silently_absorb_an_unmeasured_return():
+    """G2 averages block returns. A forgotten exclusion must poison the mean.
+
+    Two real blocks at -0.01 and +0.03 average to +0.01 — a passing-looking
+    number. Letting a block that never opened in as a zero would drag it to
+    +0.00667 and still look like an answer. It must be NaN, and any decision
+    taken on it must raise.
+    """
+    unmeasured = _not_opened().net_return
+    honest = (D("-0.01") + D("0.03")) / 2
+    assert honest == D("0.01")
+
+    contaminated = (D("-0.01") + D("0.03") + unmeasured) / 3
+    assert contaminated.is_nan()
+    assert not contaminated == D("0.00666666666666666666666666667")
+    with pytest.raises(InvalidOperation):
+        _ = contaminated > ZERO
+
+
+def test_summing_unmeasured_returns_does_not_produce_a_total():
+    """The aggregate half: a total built over a NaN is a NaN, not a subtotal."""
+    unmeasured = _not_opened().net_return
+    assert sum([D("0.01"), unmeasured, D("0.02")], ZERO).is_nan()
+
+
+# ---------------------------------------------------------------------------
+# R3 — which series the liquidation check actually used, persisted
+# ---------------------------------------------------------------------------
+#
+# MARGIN_AND_LIQUIDATION requires the check to record whether it used the hourly
+# mark HIGH or a weaker fallback, "so the check is never quietly weaker than it
+# claims to be". Quote knew; BlockResult threw it away at the end of the loop, so
+# a block checked entirely against spot closes was byte-identical to one checked
+# against real mark highs.
+#
+# Three sources, not two: MARK_PRICE_FALLBACK substitutes the SPOT close for the
+# mark series itself, per archive object, so a mark close and a spot close are
+# different fallbacks of different strength.
+# ---------------------------------------------------------------------------
+
+
+def _three_bars(**kwargs) -> list[Quote]:
+    return [bar(i * HOUR, "100", "100", **kwargs) for i in range(3)]
+
+
+def test_a_block_checked_entirely_against_mark_highs_records_high_coverage():
+    result = _run(_three_bars(mark="100", mark_high="100"))
+    provenance = result.liquidation_touch_provenance
+    assert provenance.as_dict() == {
+        TOUCH_MARK_HIGH: 2,
+        TOUCH_MARK_CLOSE: 0,
+        TOUCH_SPOT_CLOSE: 0,
+    }
+    assert provenance.all_mark_high
+    assert not provenance.used_a_weaker_fallback
+    # Two held bars, two tests. A count that drifted from the window would show.
+    assert provenance.tested == result.held_bars == 2
+
+
+def test_a_block_that_fell_back_to_the_mark_close_records_that_fallback():
+    result = _run(_three_bars(mark="100"))
+    provenance = result.liquidation_touch_provenance
+    assert provenance.as_dict() == {
+        TOUCH_MARK_HIGH: 0,
+        TOUCH_MARK_CLOSE: 2,
+        TOUCH_SPOT_CLOSE: 0,
+    }
+    assert provenance.used_a_weaker_fallback
+    assert not provenance.all_mark_high
+
+
+def test_a_block_with_no_mark_series_at_all_is_refused_rather_than_filed_as_spot():
+    """MARK_PRICE_FALLBACK's month, and the engine must REFUSE it, not record it.
+
+    This test previously asserted the opposite — that such a block evaluated
+    successfully and recorded a `spot_close` provenance. That was F1: the frozen
+    design authorises the spot substitution as the FUNDING NOTIONAL BASE only, so
+    a spot-close liquidation test was a tier the design never granted, and
+    recording it truthfully still meant computing it.
+    """
+    with pytest.raises(CarryError, match="no mark series"):
+        _run([markless(i * HOUR, "100", "100") for i in range(3)])
+
+
+def test_changing_high_availability_changes_the_recorded_provenance():
+    """The discriminating claim: the record follows the data, not the code path.
+
+    Two arms, not three. The third availability state — no mark series at all —
+    has no provenance to compare because it has no result: it is refused, which
+    the arm below asserts so the missing case is visible rather than dropped.
+    """
+    strong = _run(_three_bars(mark="100", mark_high="100")).liquidation_touch_provenance
+    middle = _run(_three_bars(mark="100")).liquidation_touch_provenance
+    assert strong.as_dict() != middle.as_dict()
+    with pytest.raises(CarryError, match="no mark series"):
+        _run([markless(i * HOUR, "100", "100") for i in range(3)])
+
+
+def test_a_block_that_mixes_sources_reports_every_one_of_them():
+    """Partial availability is the LIKELY case: the fallback is per archive object."""
+    quotes = [
+        bar(0, "100", "100", mark="100", mark_high="100"),
+        bar(HOUR, "100", "100", mark="100"),
+        bar(2 * HOUR, "100", "100"),
+    ]
+    provenance = _run(quotes).liquidation_touch_provenance
+    assert provenance.as_dict() == {
+        TOUCH_MARK_HIGH: 1,
+        TOUCH_MARK_CLOSE: 1,
+        TOUCH_SPOT_CLOSE: 0,
+    }
+    assert not provenance.all_mark_high
+    assert provenance.used_a_weaker_fallback
+
+
+def test_the_artifact_facing_record_cannot_claim_all_high_coverage_after_a_fallback():
+    """One weak bar in a hundred strong ones still forfeits the claim."""
+    quotes = [bar(i * HOUR, "100", "100", mark="100", mark_high="100") for i in range(20)]
+    quotes[7] = bar(7 * HOUR, "100", "100", mark="100")
+    provenance = _run(quotes).liquidation_touch_provenance
+    assert provenance.mark_high == 18 and provenance.mark_close == 1
+    assert not provenance.all_mark_high
+    assert sum(provenance.as_dict().values()) == provenance.tested
+
+
+def test_a_block_that_never_opened_does_not_claim_high_coverage_vacuously():
+    """No test ran, so no coverage was established. `all` over nothing is not True here."""
+    provenance = _not_opened().liquidation_touch_provenance
+    assert provenance.tested == 0
+    assert not provenance.all_mark_high
+    assert not provenance.used_a_weaker_fallback
+
+
+def test_the_provenance_of_a_liquidated_block_counts_only_the_bars_tested():
+    """It stops at the trigger, like the rest of the holding window."""
+    quotes = [
+        bar(0, "100", "100", mark="100", mark_high="100"),
+        bar(HOUR, "100", "100", mark="100", mark_high=PREDICATE_SPIKE),
+        bar(2 * HOUR, "100", "100"),
+        bar(3 * HOUR, "100", "100"),
+    ]
+    result = _run(quotes)
+    assert result.liquidated and result.held_bars == 2
+    assert result.liquidation_touch_provenance.mark_high == 2
+    assert result.liquidation_touch_provenance.tested == 2
+
+
+def test_the_touch_source_names_agree_with_the_value_the_touch_takes():
+    """The name and the number must come from the same branch, or the record lies."""
+    high = bar(0, "100", "100", spot_close="110", mark="120", mark_high="130")
+    assert (
+        high.liquidation_touch == D("130") and high.liquidation_touch_source == TOUCH_MARK_HIGH
+    )
+    close = bar(0, "100", "100", spot_close="110", mark="120")
+    assert (
+        close.liquidation_touch == D("120")
+        and close.liquidation_touch_source == TOUCH_MARK_CLOSE
+    )
+    # The third branch is a REFUSAL, and both accessors must take it together: a
+    # name without a value behind it would let an artifact claim a bar was tested.
+    absent = markless(0, "100", "100", spot_close="110")
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch_source
+    # The vocabulary keeps its shape for already-written artifacts even though the
+    # third name is now unreachable from a successful evaluation.
+    assert set(TOUCH_SOURCES) == {TOUCH_MARK_HIGH, TOUCH_MARK_CLOSE, TOUCH_SPOT_CLOSE}
+
+
+def test_a_negative_touch_count_is_refused():
+    with pytest.raises(CarryError, match="negative"):
+        LiquidationTouchProvenance(mark_high=-1)
+
+
+# ---------------------------------------------------------------------------
+# R4 — causality is read from the instants, never from the caller's list order
+# ---------------------------------------------------------------------------
+
+
+def test_a_sorted_unique_quote_series_is_accepted():
+    """The positive control, without which the four refusals below prove nothing."""
+    result = _run([bar(i * HOUR, "100", "100") for i in range(4)])
+    assert result.opened and result.held_bars == 3
+
+
+@pytest.mark.parametrize(
+    "instants,ids",
+    [
+        ([0, HOUR, HOUR, 2 * HOUR], "duplicate_timestamp"),
+        ([2 * HOUR, HOUR, 0], "fully_descending"),
+        ([0, 2 * HOUR, HOUR, 3 * HOUR], "one_inversion_inside_a_sorted_series"),
+        ([0, 0], "duplicate_at_the_open"),
+    ],
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_a_quote_series_that_is_not_strictly_increasing_is_refused(instants, ids):
+    with pytest.raises(CarryError, match="strictly increasing"):
+        _run([bar(i, "100", "100") for i in instants])
+
+
+def test_the_chronology_check_runs_before_any_economic_state_exists():
+    """It must REFUSE, not report a block. A malformed series is invalid data.
+
+    Proved by making the series one that would otherwise have opened and traded:
+    if the check ran after `open_carry`, a BlockResult would come back instead.
+    """
+    good = _run([bar(0, "100", "100"), bar(HOUR, "100", "102")])
+    assert good.opened and good.net_pnl == D("-10")
+    with pytest.raises(CarryError, match="strictly increasing"):
+        _run([bar(HOUR, "100", "102"), bar(0, "100", "100")])
+
+
+def test_an_out_of_order_series_is_refused_rather_than_sorted():
+    """Sorting it would be the flattering repair: it would silently invent an
+    entry and an exit the caller never handed over, at prices belonging to
+    different bars."""
+    ascending = _run([bar(0, "100", "100"), bar(HOUR, "100", "105")])
+    assert ascending.basis_exit == D("5")
+    with pytest.raises(CarryError):
+        _run([bar(HOUR, "100", "105"), bar(0, "100", "100")])
+
+
+# --- Funding: order-independent by construction, and deduplicated ---------- #
+
+
+def _settled_series() -> list[Quote]:
+    return [bar(i * HOUR, "100", "100") for i in range(3)]
+
+
+def test_funding_settlements_are_order_independent_because_production_sorts_them():
+    """Not a new rule — the existing one, executed.
+
+    `evaluate_block` sorts the due settlements by instant and keys them by it, so
+    the caller's list order cannot reach the result. Q = 5 at a mark of 100 is 500
+    of notional; a +0.001 rate pays the short 0.50, twice.
+    """
+    first = FundingSettlement(HOUR, D("0.001"), D("100"))
+    second = FundingSettlement(2 * HOUR, D("0.001"), D("100"))
+    forward = _run(_settled_series(), [first, second])
+    backward = _run(_settled_series(), [second, first])
+
+    assert forward.settlements == backward.settlements == 2
+    assert forward.funding_received == backward.funding_received == D("1.000")
+    assert forward.net_pnl == backward.net_pnl == D("1.000")
+
+
+def test_a_duplicated_settlement_row_changes_nothing():
+    """FUNDING_SEMANTICS.application: "deduplicated by settlement instant"."""
+    once = FundingSettlement(HOUR, D("0.001"), D("100"))
+    plain = _run(_settled_series(), [once])
+    repeated = _run(_settled_series(), [once, once, once])
+    assert plain.settlements == repeated.settlements == 1
+    assert plain.funding_received == repeated.funding_received == D("0.500")
+
+
+def test_a_settlement_at_the_close_instant_survives_the_corrected_window():
+    """The tie rule fires at an instant the held-bar loop no longer visits.
+
+    Bars 0..N-1 are the held windows, so the loop stops before the close instant.
+    A settlement AT the close is still this position's cash flow — the position
+    held through that accrual window — and must be applied after the loop rather
+    than dropped with the bar.
+    """
+    at_close = FundingSettlement(2 * HOUR, D("0.001"), D("100"))
+    result = _run(_settled_series(), [at_close])
+    assert result.settlements == 1
+    assert result.funding_received == D("0.500")
+    assert result.net_pnl == D("0.500")
+
+
+# ---------------------------------------------------------------------------
+# Gaps — a multi-hour jump must not look like an ordinary +1h transition
+# ---------------------------------------------------------------------------
+#
+# "Following bar" means the next VALID EXECUTABLE OBSERVATION, which is the
+# frozen text's own resolution rather than a choice made here:
+# MARGIN_AND_LIQUIDATION.forced_close_price calls the next open "the first price
+# an operator could actually have transacted at", and all three lifecycle
+# instants in POSITION_LIFECYCLE resolve an invalid grid point by moving to the
+# first VALID one at or after it. An operator cannot transact at a hole.
+#
+# So the rule needs no amendment. What it needs is for the hole to be visible.
+# ---------------------------------------------------------------------------
+
+
+def test_a_contiguous_hourly_block_records_no_gap_and_a_one_bar_step():
+    """The two fields say different things, and the names now say which.
+
+    Zero gaps, and a largest ADJACENT SPACING of one nominal bar. The spacing is
+    not a gap, which is why it is no longer called one: a non-zero "max gap"
+    beside a gap count of zero would be a contradiction sitting in the evidence.
+    """
+    result = _run([bar(i * HOUR, "100", "100") for i in range(5)])
+    assert result.quote_gap_count == 0
+    assert result.max_quote_step_ns == NOMINAL_BAR_NS
+
+
+def test_a_hole_in_the_grid_is_detected_and_its_duration_recorded():
+    quotes = [bar(0, "100", "100"), bar(HOUR, "100", "100"), bar(6 * HOUR, "100", "100")]
+    result = _run(quotes)
+    assert result.quote_gap_count == 1
+    assert result.max_quote_step_ns == 5 * HOUR
+    assert result.max_quote_step_ns > NOMINAL_BAR_NS
+
+
+def test_a_multi_hour_jump_does_not_look_identical_to_a_normal_transition():
+    """The whole requirement, as one comparison of two otherwise identical blocks."""
+    contiguous = _run(
+        [bar(0, "100", "100"), bar(HOUR, "100", "100"), bar(2 * HOUR, "100", "102")]
+    )
+    gapped = _run([bar(0, "100", "100"), bar(HOUR, "100", "100"), bar(9 * HOUR, "100", "102")])
+    # Same economics, by construction — the fills and marks are the same prices.
+    assert contiguous.net_pnl == gapped.net_pnl == D("-10")
+    # And distinguishable anyway, which is the point.
+    assert (contiguous.quote_gap_count, contiguous.max_quote_step_ns) != (
+        gapped.quote_gap_count,
+        gapped.max_quote_step_ns,
+    )
+    assert gapped.quote_gap_count == 1 and gapped.max_quote_step_ns == 8 * HOUR
+
+
+def test_a_forced_close_that_fills_across_a_gap_records_how_far_it_reached():
+    """The fill is still the next VALID observation. How far away it was is a fact.
+
+    Trigger on bar 0; the next executable observation is four hours later, so the
+    forced close is four hours after its trigger rather than one — visible in the
+    record instead of implied by two instants a reader has to subtract.
+    """
+    quotes = [
+        bar(0, "100", "100", mark_high=PREDICATE_SPIKE),
+        bar(4 * HOUR, "100", "103"),
+        bar(5 * HOUR, "100", "100"),
+    ]
+    result = _run(quotes)
+    assert result.liquidated
+    assert result.liquidation_instant_ns == 0
+    assert result.forced_close_instant_ns == 4 * HOUR
+    assert result.forced_close_gap_ns == 4 * HOUR
+    assert result.forced_close_gap_ns > NOMINAL_BAR_NS
+    # The rule itself is unchanged: it filled at that bar's OPEN, basis 3.
+    assert result.basis_exit == D("3")
+    assert result.net_pnl == D("-15")
+
+
+def test_a_forced_close_on_a_contiguous_grid_reaches_exactly_one_bar():
+    quotes = [
+        bar(0, "100", "100", mark_high=PREDICATE_SPIKE),
+        bar(HOUR, "100", "103"),
+        bar(2 * HOUR, "100", "100"),
+    ]
+    result = _run(quotes)
+    assert result.forced_close_gap_ns == NOMINAL_BAR_NS
+
+
+def test_a_block_with_no_forced_close_has_no_forced_close_gap():
+    assert _run([bar(0, "100", "100"), bar(HOUR, "100", "100")]).forced_close_gap_ns is None
+
+
+def test_the_nominal_bar_is_the_hourly_grid_the_design_froze():
+    """Read off the frozen sources rather than chosen here."""
+    from nn.p13_preregistration import DATA_SOURCES
+
+    assert NOMINAL_BAR_NS == 3600 * 1_000_000_000
+    klines = [s for s in DATA_SOURCES if s["field"].endswith("price")]
+    assert len(klines) == 3
+    for source in klines:
+        assert "/1h/" in source["archive"]
+        assert "open + 1h" in source["timestamp_semantics"]
+
+
+# ---------------------------------------------------------------------------
+# The excursion's unit, which the frozen design fixes and the code did not
+# ---------------------------------------------------------------------------
+#
+# VIABILITY_GATE.maximum_adverse_excursion: "the most negative value of
+# (equity_t - total_starting_capital) over the holding period, AS A FRACTION OF
+# TOTAL CAPITAL — the same base as the block return, so the two are comparable."
+#
+# It was reported in quote units. At the design's 1,000,000 USDT that is a
+# millionfold misreading of a field a reader is invited to compare against G3's
+# -0.02 floor. The frozen text settles the unit, so reporting the fraction
+# conforms to the preregistration rather than amending it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_excursion_is_reported_on_the_same_base_as_the_block_return():
+    """The comparability the frozen sentence asks for, asserted as a ratio."""
+    quotes = [
+        bar(0, "100", "100", spot_close="100", perp_close="140"),
+        bar(HOUR, "100", "100"),
+        bar(2 * HOUR, "100", "102"),
+    ]
+    result = _run(quotes)
+    # By hand: equity at bar 0's close = 0 + 5x100 + 500 + (100-140)x5 = 800,
+    # an excursion of -200 against 1,000 of capital, so -0.2 as a fraction.
+    assert result.max_adverse_excursion_pnl == D("-200")
+    assert result.max_adverse_excursion == D("-0.2")
+    # And the pair holds the same relationship net_pnl / net_return does — stated
+    # as hand-derived literals on both halves rather than by dividing one of them
+    # by the capital base, which would only restate the production line.
+    assert result.net_pnl == D("-10") and result.net_return == D("-0.01")
+
+
+def test_the_excursion_fraction_is_scale_free():
+    """The property that makes it comparable at all: 1,000 or 1,000,000, same number.
+
+    CAPITAL_CONTRACT.returns_are_fractions says the scale is not a parameter and
+    any scale yields the same fractional result. An excursion in quote units does
+    not have that property, which is why it could not be compared to -0.02.
+    """
+    quotes = [
+        bar(0, "100", "100", spot_close="100", perp_close="140"),
+        bar(HOUR, "100", "100"),
+        bar(2 * HOUR, "100", "100"),
+    ]
+    small = _run(quotes)
+    big = evaluate_block(
+        "b",
+        quotes,
+        [],
+        Allocation(total_capital=D("1000000"), spot=D("500000"), perp=D("500000")),
+        FREE,
+        VENUE,
+        min_settlements=0,
+    )
+    assert small.max_adverse_excursion_pnl != big.max_adverse_excursion_pnl
+    assert small.max_adverse_excursion == big.max_adverse_excursion == D("-0.2")
+
+
+# ---------------------------------------------------------------------------
+# The excursion covers the WHOLE holding period, ends included
+# ---------------------------------------------------------------------------
+#
+# VIABILITY_GATE.maximum_adverse_excursion: "the most negative value of
+# (equity_t - total_starting_capital) OVER THE HOLDING PERIOD". The holding
+# period starts at the entry instant and ends at the close instant, and
+# VIABILITY_GATE.block_net_pnl defines the block return as "equity AT THE
+# BLOCK'S CLOSE minus total_starting_capital". So the close is one of the points
+# the excursion ranges over, and `max_adverse_excursion <= net_return` is not an
+# observation about these witnesses — it is an identity the definition forces.
+#
+# Sampling only the held bars' CLOSES broke it at both ends: the entry instant
+# was never marked (so an opened block could report an excursion of exactly zero
+# while having already paid its entry frictions), and the close instant was never
+# marked (so a funding payment settling exactly at the close — which the frozen
+# boundary tie rule DOES apply — reached the block return without ever reaching
+# the drawdown).
+#
+# These witnesses run at REAL frictions on purpose. Every other excursion test in
+# this file uses FREE, and in a zero-cost world entry equity equals capital
+# exactly, so the whole defect class is invisible to them by construction.
+# ---------------------------------------------------------------------------
+
+
+def _run_real(quotes, settlements=(), isolated=False):
+    return evaluate_block(
+        "b",
+        quotes,
+        list(settlements),
+        CAPITAL,
+        REAL,
+        VENUE,
+        min_settlements=0,
+        isolated=isolated,
+    )
+
+
+# Hand-traced at the frozen rates, capital 1,000 split 500/500, price 100 flat:
+#   Q = step_floor(min(500/100.15, 500/100.10)) = step_floor(4.99251...) = 4.992
+#   notional per leg      4.992 x 100 = 499.20
+#   entry frictions       499.20 x (0.001 + 0.0005) spot  = 0.7488
+#                       + 499.20 x (0.0005 + 0.0005) perp = 0.4992   -> 1.2480
+#   exit frictions        the same again                             -> 1.2480
+#   equity at entry       1000 - 1.2480 = 998.7520
+#   equity at close       1000 - 2.4960 = 997.5040
+ENTRY_FRICTION = D("1.2480")
+ROUND_TRIP = D("2.4960")
+
+
+def test_a_flat_block_at_real_frictions_has_a_hand_traced_excursion():
+    result = _run_real([bar(0, "100", "100"), bar(HOUR, "100", "100")])
+    assert result.quantity == D("4.992")
+    assert result.fees + result.slippage == ROUND_TRIP
+    assert result.net_pnl == -ROUND_TRIP
+    # The deepest point IS the close here, because nothing else moved.
+    assert result.max_adverse_excursion_pnl == -ROUND_TRIP
+    assert result.max_adverse_excursion == -ROUND_TRIP / CAPITAL.total_capital
+
+
+def test_an_opened_block_cannot_report_a_zero_excursion_once_frictions_are_charged():
+    """Equity at the entry instant is capital minus the two legs' entry frictions.
+
+    That is the equity invariant asserted elsewhere in this file, so an opened
+    block's excursion is strictly negative whenever any friction is charged, and
+    a reported zero is not a shallow drawdown — it is a missing measurement.
+    """
+    result = _run_real([bar(0, "100", "100"), bar(HOUR, "100", "100")])
+    assert result.opened
+    assert result.max_adverse_excursion_pnl < ZERO
+    assert result.max_adverse_excursion_pnl <= -ENTRY_FRICTION
+
+
+def test_a_settlement_at_the_close_instant_reaches_the_excursion():
+    """It reaches the block return, so it must reach the drawdown too.
+
+    The frozen boundary tie rule applies a settlement whose instant EQUALS the
+    close. The held-bar loop stops one bar earlier, so this payment lands after
+    the last bar sample — and before this repair it was charged to the result
+    while leaving the reported drawdown untouched.
+    """
+    # 4.992 BTC at a mark of 100 is 499.20 of notional; a -0.01 rate makes the
+    # SHORT pay 4.9920, on top of the 2.4960 round trip.
+    at_close = FundingSettlement(HOUR, D("-0.01"), D("100"))
+    result = _run_real([bar(0, "100", "100"), bar(HOUR, "100", "100")], [at_close])
+    assert result.settlements == 1
+    assert result.funding_paid == D("4.99200")
+    assert result.net_pnl == -(ROUND_TRIP + D("4.99200"))
+    assert result.max_adverse_excursion_pnl == result.net_pnl
+
+    # The negative control: the same payment one nanosecond later is not this
+    # position's, and then it is in neither number.
+    after = FundingSettlement(HOUR + 1, D("-0.01"), D("100"))
+    clean = _run_real([bar(0, "100", "100"), bar(HOUR, "100", "100")], [after])
+    assert clean.settlements == 0
+    assert clean.net_pnl == -ROUND_TRIP
+    assert clean.max_adverse_excursion_pnl == -ROUND_TRIP
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_the_excursion_is_never_shallower_than_the_block_return(isolated):
+    """The identity the frozen definition forces, over every shape and both models.
+
+    Not a property of these prices: the close is inside the holding period, so a
+    block cannot finish worse than its own worst point. A violation means the
+    excursion is not ranging over the period the design says it ranges over.
+    """
+    paths = [
+        ["100", "100", "100"],
+        ["100", "120", "90"],
+        ["100", "90", "140"],
+        ["100", "101", "99"],
+        ["100", "100"],
+        ["100", "105", "95", "115", "85"],
+    ]
+    for path in paths:
+        for skew in ("100", "103", "97"):
+            quotes = [
+                bar(i * HOUR, price, skew if i == 0 else price) for i, price in enumerate(path)
+            ]
+            result = _run_real(quotes, isolated=isolated)
+            if not result.opened or result.unclosed:
+                continue
+            assert result.max_adverse_excursion <= result.net_return, (
+                f"path={path} skew={skew}: drawdown {result.max_adverse_excursion} is "
+                f"shallower than the realised return {result.net_return}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Two funding rows at one instant that disagree
+# ---------------------------------------------------------------------------
+#
+# FUNDING_SEMANTICS.application deduplicates "a redelivered or duplicated archive
+# row" — a row delivered TWICE. Two rows at one instant carrying DIFFERENT rates
+# are not that; they are exactly what POSITION_LIFECYCLE.validity_definition
+# calls invalid: "no duplicate row makes the instant ambiguous. Anything else is
+# invalid and fails closed."
+#
+# Collapsing them by last-writer-wins let the CALLER'S LIST ORDER choose which
+# rate the payoff variable took — the same defect R4 removed from the quote path.
+# ---------------------------------------------------------------------------
+
+
+def test_two_settlements_at_one_instant_that_disagree_are_refused():
+    positive = FundingSettlement(HOUR, D("0.001"), D("100"))
+    negative = FundingSettlement(HOUR, D("-0.001"), D("100"))
+    for order in ([positive, negative], [negative, positive]):
+        with pytest.raises(CarryError, match="ambiguous"):
+            _run(_settled_series(), order)
+
+
+def test_settlements_at_one_instant_that_disagree_only_on_the_mark_are_refused():
+    """The notional base is as decision-relevant as the rate."""
+    one = FundingSettlement(HOUR, D("0.001"), D("100"))
+    other = FundingSettlement(HOUR, D("0.001"), D("200"))
+    with pytest.raises(CarryError, match="ambiguous"):
+        _run(_settled_series(), [one, other])
+
+
+def test_an_identical_redelivered_row_is_still_silently_deduplicated():
+    """The frozen sentence this must NOT break: a duplicate row changes nothing."""
+    once = FundingSettlement(HOUR, D("0.001"), D("100"))
+    twin = FundingSettlement(HOUR, D("0.001"), D("100"))
+    plain = _run(_settled_series(), [once])
+    doubled = _run(_settled_series(), [once, twin, once])
+    assert plain.settlements == doubled.settlements == 1
+    assert plain.funding_received == doubled.funding_received == D("0.500")
+    assert plain.net_pnl == doubled.net_pnl
+
+
+def test_the_entry_instant_is_the_excursions_first_sample():
+    """A block that finishes UP still had a worst point, and it is the entry.
+
+    Hand-traced. Entry fills 100 spot / 102 perp, exit fills 100/100, and the
+    entry bar closes at a basis of 0 so the short is already ahead by the time
+    that bar ends:
+
+      Q = step_floor(min(500/100.15, 500/(102 x 1.001))) = step_floor(4.8971...)
+        = 4.897
+      spot notional 489.70,  perp notional 4.897 x 102 = 499.494 = margin
+      entry frictions  489.70 x 0.0015 + 499.494 x 0.0010 = 1.234044
+      equity at entry  1000 - 1.234044        -> excursion -1.234044
+      equity at bar 0's close  +8.559956      (the short is up 2 x 4.897)
+      basis PnL 4.897 x (2 - 0) = 9.794, exit frictions 1.224250
+      net PnL  9.794 - 1.234044 - 1.224250 = 7.335706  -> finishes UP
+
+    Every sample except the entry is positive, so the entry instant is the only
+    thing standing between this block and a reported drawdown of zero — which is
+    what a floor of zero used to report, for a position that had already paid
+    1.234044 of frictions the moment it opened.
+    """
+    quotes = [
+        bar(0, "100", "102", spot_close="100", perp_close="100"),
+        bar(HOUR, "100", "100"),
+    ]
+    result = _run_real(quotes)
+
+    assert result.quantity == D("4.897")
+    assert result.net_pnl == D("7.335706")
+    assert result.net_pnl > ZERO
+    assert result.max_adverse_excursion_pnl == D("-1.234044")
+    assert result.max_adverse_excursion_pnl == -(result.fees + result.slippage - D("1.224250"))
+    assert result.max_adverse_excursion == D("-1.234044") / CAPITAL.total_capital
+    # The claim stated as the thing that would break: a zero floor reports 0 here.
+    assert result.max_adverse_excursion_pnl != ZERO
+
+
+# ---------------------------------------------------------------------------
+# F1 — the liquidation test has exactly two tiers, and spot is not one of them
+# ---------------------------------------------------------------------------
+#
+# MARGIN_AND_LIQUIDATION.what_the_simulation_cannot_determine fixes the ladder:
+# test "against the hourly HIGH of the mark series where available and the hourly
+# close otherwise, and to RECORD which was used". Two tiers, both on the MARK
+# series, and BASIS_DEFINITION.which_series_plays_which_role confirms the scope —
+# "the MARK series is used for two things only: the funding notional and the
+# liquidation test".
+#
+# MARK_PRICE_FALLBACK substitutes the spot close for exactly ONE of those two
+# uses. It is authorised "as the funding notional base", and the role table
+# extends it no further than "the funding notional at a settlement instant ...
+# under MARK_PRICE_FALLBACK it is the spot candle CLOSE". The liquidation test is
+# named separately in the same sentence and receives no such extension.
+#
+# The evaluator nevertheless carried a THIRD tier: given no mark series at all it
+# tested liquidation against the SPOT close. Unauthorised, and anti-conservative
+# in the one direction that matters — a spot close cannot see a perpetual mark
+# spike, so a hedge failure the mark series would have caught passed silently.
+#
+# The repair REFUSES instead. That is enforcement of the frozen text, not a new
+# decision: whether a mark-less month may be evaluated economically at all is a
+# question for a pre-economic amendment, and failing closed is precisely what
+# leaves that question open and visible rather than answering it by default.
+# ---------------------------------------------------------------------------
+
+
+class _SpotFallbackQuote(Quote):
+    """The F1 defect, kept executable on a subclass no production path builds.
+
+    These are the exact lines the repair removed. They live on here so the tests
+    below are provably DISCRIMINATING: without a mutant to run, "production
+    refuses" is an assertion that could pass for want of anything to catch.
+    """
+
+    @property
+    def liquidation_touch(self) -> Decimal:
+        if self.mark_high is not None:
+            return self.mark_high
+        return self.mark if self.mark is not None else self.spot
+
+    @property
+    def liquidation_touch_source(self) -> str:
+        if self.mark_high is not None:
+            return TOUCH_MARK_HIGH
+        return TOUCH_MARK_CLOSE if self.mark is not None else TOUCH_SPOT_CLOSE
+
+
+def _mutant_bars(count: int = 3) -> list[Quote]:
+    """``count`` mark-less bars that still carry the F1 fallback."""
+    return [
+        _SpotFallbackQuote(
+            instant_ns=i * HOUR,
+            spot=D("100"),
+            perp=D("100"),
+            spot_open=D("100"),
+            perp_open=D("100"),
+        )
+        for i in range(count)
+    ]
+
+
+# --- tier 1: the mark high, where the source provides it -------------------- #
+
+
+def test_tier_one_the_liquidation_touch_is_the_mark_high_when_it_exists():
+    """The strong tier, and it must beat both closes rather than tie with them."""
+    held = bar(0, "100", "100", spot_close="110", mark="120", mark_high="130")
+    assert held.liquidation_touch == D("130")
+    assert held.liquidation_touch_source == TOUCH_MARK_HIGH
+    assert held.liquidation_touch_is_high
+
+
+def test_tier_one_reaches_the_liquidation_model_on_both_margin_paths():
+    """A spike only the mark HIGH can see must fire under primary AND S4."""
+    position = open_carry(quote(0, "100", "100"), CAPITAL, FREE, VENUE)
+    spike = bar(HOUR, "100", "100", mark="100", mark_high=PREDICATE_SPIKE)
+    assert is_liquidated(position, spike, VENUE, isolated=True)
+    assert is_liquidated(position, spike, VENUE, isolated=False)
+
+
+# --- tier 2: the mark close, when the high is absent ------------------------ #
+
+
+def test_tier_two_the_liquidation_touch_is_the_mark_close_when_the_high_is_absent():
+    """The authorised fallback. It is weaker, and it is recorded as weaker."""
+    held = bar(0, "100", "100", spot_close="110", mark="120")
+    assert held.liquidation_touch == D("120")
+    assert held.liquidation_touch_source == TOUCH_MARK_CLOSE
+    assert not held.liquidation_touch_is_high
+
+
+def test_tier_two_uses_the_mark_close_and_not_the_spot_close_beside_it():
+    """The discriminating pair: spot and mark disagree, and the mark must win.
+
+    With both closes at 110 and the mark at 205, only the mark reaches the
+    isolated threshold of entry x (2 - mmr) = 199.6. A test reading the spot
+    close beside it would report no liquidation, which is the anti-conservative
+    direction and exactly what F1 permitted.
+    """
+    position = open_carry(quote(0, "100", "100"), CAPITAL, FREE, VENUE)
+    diverged = bar(HOUR, "100", "100", spot_close="110", perp_close="110", mark="205")
+    assert diverged.liquidation_touch == D("205")
+    assert diverged.spot == D("110")
+    assert is_liquidated(position, diverged, VENUE, isolated=True)
+
+
+# --- there is no tier 3 ----------------------------------------------------- #
+
+
+def test_a_held_bar_with_no_mark_series_refuses_rather_than_reading_spot():
+    """F1 itself. Both accessors refuse, and neither returns the spot close."""
+    absent = markless(0, "100", "100", spot_close="110")
+    assert absent.spot == D("110"), "the spot close is present, it is simply not eligible"
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch_source
+
+
+def test_the_refusal_names_the_frozen_clauses_it_is_enforcing():
+    """A fail-closed message that cannot be traced to the design is not evidence."""
+    with pytest.raises(CarryError) as raised:
+        markless(0, "100", "100").liquidation_touch
+    message = str(raised.value)
+    assert "MARK_PRICE_FALLBACK" in message
+    assert "FUNDING NOTIONAL BASE" in message
+    assert "BASIS_DEFINITION.which_series_plays_which_role" in message
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_neither_margin_path_can_consume_a_spot_close_liquidation(isolated):
+    """Requirement 5: the primary portfolio test and S4 both go through the mark.
+
+    ``is_liquidated`` reads one accessor for both models, so the refusal is not a
+    property of whichever branch a caller happens to take.
+    """
+    position = open_carry(quote(0, "100", "100"), CAPITAL, FREE, VENUE)
+    absent = markless(HOUR, "100", "100", spot_close=PREDICATE_SPIKE)
+    with pytest.raises(CarryError, match="no mark series"):
+        is_liquidated(position, absent, VENUE, isolated=isolated)
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_a_governed_evaluation_over_mark_less_bars_fails_closed(isolated):
+    """No BlockResult at all: not a zero, not a skip, not a silent spot test."""
+    with pytest.raises(CarryError, match="no mark series"):
+        _run([markless(i * HOUR, "100", "100") for i in range(3)], isolated=isolated)
+
+
+def test_the_refusal_is_not_converted_into_a_not_opened_result():
+    """R2's fail-open shape is the one this must not regress into.
+
+    A block that never opened returns a BlockResult carrying NOT_DETERMINABLE. A
+    mark-less HELD bar is a different failure entirely — the block DID open — so
+    it must raise rather than be filed as an unopened block with a reason string.
+    """
+    with pytest.raises(CarryError, match="no mark series"):
+        _run(
+            [
+                bar(0, "100", "100", mark="100"),
+                markless(HOUR, "100", "100"),
+                bar(2 * HOUR, "100", "100", mark="100"),
+            ]
+        )
+    # The control: the same shape with a mark on every held bar evaluates fine.
+    fine = _run([bar(i * HOUR, "100", "100", mark="100") for i in range(3)])
+    assert fine.opened and not fine.liquidated
+    assert fine.reason == "closed at block end"
+
+
+# --- the exit bar is not a held bar, and still needs nothing ---------------- #
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_a_mark_less_exit_bar_does_not_make_the_block_fail(isolated):
+    """Requirement 4, and the far edge of the R1 window restated as a data claim.
+
+    The position closes at bar N's OPEN, so bar N's liquidation is never tested
+    and its mark series is never read. Requiring one there would have quietly
+    widened the holding window R1 had just finished narrowing.
+    """
+    quotes = [
+        bar(0, "100", "100", mark="100"),
+        bar(HOUR, "100", "100", mark="100"),
+        markless(2 * HOUR, "100", "102"),
+    ]
+    result = _run(quotes, isolated=isolated)
+    assert result.opened and not result.liquidated
+    assert result.reason == "closed at block end"
+    assert result.held_bars == 2
+    # Filled at bar 2's open, basis 2: net = 5 x (0 - 2) = -10, as witness C.
+    assert result.net_pnl == D("-10")
+
+
+def test_only_the_held_bars_mark_matters_which_is_the_r1_window_exactly():
+    """The two-sided control: move the absence one bar earlier and it refuses."""
+    ok = _run(
+        [
+            bar(0, "100", "100", mark="100"),
+            bar(HOUR, "100", "100", mark="100"),
+            markless(2 * HOUR, "100", "100"),
+        ]
+    )
+    assert ok.opened and ok.held_bars == 2
+    with pytest.raises(CarryError, match="no mark series"):
+        _run(
+            [
+                bar(0, "100", "100", mark="100"),
+                markless(HOUR, "100", "100"),
+                bar(2 * HOUR, "100", "100", mark="100"),
+            ]
+        )
+
+
+def test_bar_zero_is_still_a_held_bar_and_still_needs_its_mark():
+    """The near edge. R1 put bar 0 inside the window, so it carries a mark too."""
+    with pytest.raises(CarryError, match="no mark series"):
+        _run(
+            [
+                markless(0, "100", "100"),
+                bar(HOUR, "100", "100", mark="100"),
+                bar(2 * HOUR, "100", "100", mark="100"),
+            ]
+        )
+
+
+# --- the provenance vocabulary is unreachable, not deleted ------------------ #
+
+
+def test_no_successful_block_can_record_a_spot_close_touch():
+    """Requirement 6, swept over shapes rather than asserted on one.
+
+    Every combination of availability that CAN produce a result is run, and none
+    may file a ``spot_close``. The combination that cannot produce a result is
+    covered by the fail-closed tests above.
+    """
+    shapes = [
+        _three_bars(mark="100", mark_high="100"),
+        _three_bars(mark="100"),
+        [
+            bar(0, "100", "100", mark="100", mark_high="100"),
+            bar(HOUR, "100", "100", mark="100"),
+            markless(2 * HOUR, "100", "100"),
+        ],
+        [
+            bar(0, "100", "100", mark="100"),
+            bar(HOUR, "100", "100", mark="100", mark_high=PREDICATE_SPIKE),
+            bar(2 * HOUR, "100", "100", mark="100"),
+        ],
+    ]
+    for quotes in shapes:
+        provenance = _run(quotes).liquidation_touch_provenance
+        assert provenance.as_dict()[TOUCH_SPOT_CLOSE] == 0
+        assert provenance.tested == sum(provenance.as_dict().values())
+
+
+def test_the_spot_close_name_survives_for_artifacts_that_already_used_it():
+    """Retained vocabulary, so an already-frozen record stays readable.
+
+    Deleting the name would make a historical artifact unreadable and would hide
+    that the mark-less month is still an open pre-economic question.
+    """
+    assert TOUCH_SPOT_CLOSE == "spot_close"
+    assert TOUCH_SOURCES == (TOUCH_MARK_HIGH, TOUCH_MARK_CLOSE, TOUCH_SPOT_CLOSE)
+    assert LiquidationTouchProvenance(spot_close=2).as_dict()[TOUCH_SPOT_CLOSE] == 2
+
+
+# --- the mutation test ------------------------------------------------------ #
+
+
+def test_the_spot_close_fallback_mutant_is_killed():
+    """Requirement 7: put ``return self.spot`` back and this test goes red.
+
+    The first half is the assertion that does the killing. The second half runs
+    the mutant to show the first half discriminates: it demonstrates that the
+    removed line really did return the spot close and file it as such.
+    """
+    absent = markless(0, "100", "100", spot_close="110")
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch
+
+    mutant = _SpotFallbackQuote(
+        instant_ns=0,
+        spot=D("110"),
+        perp=D("110"),
+        spot_open=D("100"),
+        perp_open=D("100"),
+    )
+    assert mutant.liquidation_touch == D("110")
+    assert mutant.liquidation_touch_source == TOUCH_SPOT_CLOSE
+
+
+def test_the_mutant_reproduces_f1_end_to_end_beside_the_repaired_engine():
+    """The reviewer's finding, kept executable next to its repair.
+
+    With the fallback present a mark-less block evaluated SUCCESSFULLY and filed
+    two spot-close liquidation tests. That is the behaviour the frozen design
+    does not authorise, and the repaired engine refuses the very same input.
+    """
+    defective = _run(_mutant_bars(3))
+    assert defective.opened
+    assert defective.liquidation_touch_provenance.as_dict()[TOUCH_SPOT_CLOSE] == 2
+
+    with pytest.raises(CarryError, match="no mark series"):
+        _run([markless(i * HOUR, "100", "100") for i in range(3)])
+
+
+# --- what the repair must NOT have touched ---------------------------------- #
+
+
+def test_the_funding_mark_fallback_to_spot_is_untouched():
+    """Requirement 9. MARK_PRICE_FALLBACK's authorised use is still authorised.
+
+    The repair narrows the LIQUIDATION test only. Funding still takes its notional
+    base from whatever the caller supplies, which under MARK_PRICE_FALLBACK is the
+    spot close: the one substitution the frozen design actually grants.
+
+    By hand: Q = 5.000, base 100, rate +1e-4, and a SHORT RECEIVES when the rate
+    is positive, so the flow is 5 x 100 x 1e-4 = +0.05.
+    """
+    quotes = [bar(i * HOUR, "100", "100", mark="100") for i in range(3)]
+    spot_based_notional = FundingSettlement(HOUR, D("0.0001"), D("100"))
+    result = _run(quotes, settlements=[spot_based_notional])
+    assert result.settlements == 1
+    assert result.funding_received == D("0.05")
+    assert result.funding_paid == ZERO
+
+
+def test_the_funding_base_is_independent_of_the_liquidation_series():
+    """The two uses of the mark series are separable, and stay separable.
+
+    A block whose bars carry a mark of 205 funds off a settlement base of 100. If
+    the repair had coupled the liquidation series to the funding base, this would
+    fund off 205 and the number below would be 0.1025 instead.
+    """
+    quotes = [bar(i * HOUR, "100", "100", mark="205") for i in range(3)]
+    result = _run(quotes, settlements=[FundingSettlement(HOUR, D("0.0001"), D("100"))])
+    assert result.funding_received == D("0.05")

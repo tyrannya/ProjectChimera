@@ -638,6 +638,14 @@ computed, and the viability gate was never evaluated. Nothing was substituted to
 manufacture one: not another venue, not a REST endpoint, not a reconstructed
 series, and not a relaxation of the frozen source set.
 
+**Which design a future run is governed by**, stated here because the wrong
+answer would invalidate the run before it started. The active design is
+**P13-A1**, `sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099`,
+and it is **NOT YET RUN**. The original
+`sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` is
+**historical provenance only** — it is the design the committed acquisition
+evidence was generated under, and it must not govern new economic evidence.
+
 **Design-complete is not implementation-complete.** The next step is egress and
 the remaining machinery — the accounting core and the networkless plan exist; the
 downloader, loader, block runner, gate, stress runners, event ledger and decision
