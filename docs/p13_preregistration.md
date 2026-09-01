@@ -534,7 +534,7 @@ research boundary.
 
 What this **does** require is that a hole stop being invisible. A multi-hour jump
 must not read as an ordinary `+1h` transition, so `BlockResult` now records
-`quote_gap_count`, `max_quote_gap_ns` and `forced_close_gap_ns` — the last being
+`quote_gap_count`, `max_quote_step_ns` and `forced_close_gap_ns` — the last being
 how far a forced close's fill actually lay from its trigger. The economics are
 unchanged by this; only the evidence gets richer. `SOURCE_FREEZE_FIELDS` already
 requires "gaps detected" of the acquisition, and this is the same fact recorded on
