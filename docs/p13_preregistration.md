@@ -420,6 +420,77 @@ original design and quotes its hash. Those files are **not** regenerated and
 a single row for any bar, so nothing in that evidence was produced under a rule
 this changes.
 
+### 8b. Reachability of A1 after the holding-window repair — a clarification, not an amendment
+
+**Nothing in §8a changes, and the preregistration hash does not move.** A1's rule
+is unchanged, still hashed, and still in force. What follows is an engineering
+fact about which of A1's two causes the evaluator can now produce.
+
+`nn/p13_carry.py` evaluated liquidation and the maximum adverse excursion over
+`quotes[1:]` — bars 1 .. N. That is wrong at both ends: a position opened at bar
+0's **open** holds through the remainder of bar 0, and a position closed at bar
+N's **open** holds through nothing after it. The held windows are **bars
+0 .. N-1**, and the evaluator now uses them.
+
+The consequence for A1 is precise. A liquidation trigger can now only land on a
+bar in 0 .. N-1, so the following bar always exists inside the block and the
+forced close always has a permitted fill. **The liquidation route into A1 is
+therefore unreachable from `evaluate_block`.** It was reachable only while the
+loop also tested bar N — a bar the position had already closed at the open of —
+so the "liquidation on the block's final quote" case A1 was written against was
+in part an artefact of that off-by-one.
+
+**A1 is not relaxed and its history is not rewritten.** Three things follow, and
+only these three:
+
+- A1 still governs the **other** UNCLOSED cause it already names — the block with
+  no valid exit instant at or before its last hour (§6,
+  `POSITION_LIFECYCLE.close_instant`). A1's own text says it "applies equally" to
+  that cause, so this is the case it now primarily governs, and it belongs to the
+  block runner, which does not exist yet.
+- The rule keeps a **single executable definition**,
+  `nn.p13_carry.unclosed_block_result`, callable by whatever produces either
+  cause, so a frozen rule is not left encoded only in a branch nothing can reach.
+- The `reachability` note inside the hashed A1 payload argues the liquidation
+  case is reachable under **S4**. Read against the corrected window that note
+  **overstates the reachability of the liquidation route**, and it is left
+  untouched: it is amendment text inside the hashed payload, editing it would move
+  the hash for a reason that is not a design decision, and A1's history is
+  recorded rather than tidied. This paragraph is the forward-looking correction a
+  future reader should carry instead.
+
+Nothing here was chosen from data. No P13 economic observation exists, and none
+informed this.
+
+### 8c. "Following bar" when the grid has a hole
+
+Recorded because a future run needs it settled and the frozen text does settle
+it: **the following bar is the next VALID EXECUTABLE OBSERVATION, not the next
+exact hourly grid instant.** No amendment is required, because this is deduction
+from rules already frozen rather than a choice:
+
+- §8's forced-close rule calls the next open "the first price an operator could
+  actually have transacted at". An operator cannot transact at a missing or
+  invalid grid point.
+- All three lifecycle instants in `POSITION_LIFECYCLE` resolve an invalid grid
+  point the same way: the open is "the **first** hourly grid instant ... at which
+  observations are all present and valid", and an invalid close moves to "the
+  **first valid instant at or after** it — an operator who cannot trade keeps
+  holding".
+- `validity_definition` makes an invalid instant fail closed. Filling at one would
+  contradict the rule that a fill is a knowable, present open.
+
+The bound is unchanged: the search still may not run past the block end or the
+research boundary.
+
+What this **does** require is that a hole stop being invisible. A multi-hour jump
+must not read as an ordinary `+1h` transition, so `BlockResult` now records
+`quote_gap_count`, `max_quote_gap_ns` and `forced_close_gap_ns` — the last being
+how far a forced close's fill actually lay from its trigger. The economics are
+unchanged by this; only the evidence gets richer. `SOURCE_FREEZE_FIELDS` already
+requires "gaps detected" of the acquisition, and this is the same fact recorded on
+the evaluation side.
+
 ## 9. Temporal partition
 
 Six UTC calendar-year blocks: **2020, 2021, 2022, 2023, 2024, 2025-partial**

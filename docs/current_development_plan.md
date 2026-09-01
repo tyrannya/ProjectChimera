@@ -84,10 +84,19 @@ Only after a coherent alpha architecture exists should the project proceed throu
 
 ## P13 — preregistered, not evaluable
 
-**State: `preregistered`.** Design frozen at
-`sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767`, committed and pushed at `939f38151cfa607e04c4d74846e081a8ab91ed49` **before any attempt to obtain data**. Result state: `P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE`.
+**State: `preregistered`.** Two facts, and an operator about to run this must not
+confuse them:
 
-That original hash was superseded by **amendment A1** (§8a of [`p13_preregistration.md`](p13_preregistration.md)), adopted after the NOT EVALUABLE closure and **before any P13 economic observation**: it fixes what a liquidation triggered on a block's final bar does to the gate, a case the frozen text named but did not resolve. The amendment can only make the verdict harder — it terminates the screen `INVALID` rather than dropping the block — and it moved the hash rather than pretending it did not. Both hashes are recorded in that document; the committed acquisition evidence keeps the original one, because that is the design it was generated under.
+| | |
+| --- | --- |
+| **Historical attempt** (Claude Cloud) | `P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE` — a **source-access environment** outcome, not an economic one |
+| **Active economic design** | **P13-A1 — NOT YET RUN.** No block opened, no return, no gate condition, no decision |
+| **Hash that governs any future economic run** | `sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099` |
+| **Original hash** | `sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` — **historical provenance only; it must not govern new economic evidence** |
+
+The original design was frozen and pushed at `939f38151cfa607e04c4d74846e081a8ab91ed49` **before any attempt to obtain data**, and that is what the committed acquisition evidence was generated under — which is why it keeps that hash and is not rewritten.
+
+It was then superseded by **amendment A1** (§8a of [`p13_preregistration.md`](p13_preregistration.md)), adopted after the NOT EVALUABLE closure and **before any P13 economic observation**: it fixes what an opened-but-unclosable block does to the gate, a case the frozen text named but did not resolve. The amendment can only make the verdict harder — it terminates the screen `INVALID` rather than dropping the block — and it moved the hash rather than pretending it did not. §8b of that document records one further clarification: after the evaluator's holding-window repair, the *liquidation* route into A1 is unreachable and A1 primarily governs the no-valid-exit cause it always also named. That is an engineering fact, not an amendment, and **it does not move the hash**.
 
 **What P13 asks.** Whether a mechanically defined delta-hedged BTC spot/perpetual carry position — LONG Binance spot BTCUSDT against SHORT Binance USD-M BTCUSDT perpetual, equal BTC quantity, 1x gross, always-on within each of six UTC calendar-year blocks from 2020-01-01 to the research boundary — earns robust positive net returns from funding and basis after **both** legs' frictions. It is the structural axis the decision review selected. It is **not** P4: P4 read funding, open interest and basis as *predictive information* and was screened out at Stage 1; P13 uses them as the *payoff mechanism itself*, and neither result bears on the other.
 
