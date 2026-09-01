@@ -661,6 +661,18 @@ class BlockResult:
     net_pnl: Decimal
     net_return: Decimal
     liquidated: bool
+    #: The most negative ``equity_t - total_starting_capital`` over the holding
+    #: period, in QUOTE UNITS. The absolute half of the pair, exactly as
+    #: :attr:`net_pnl` is to :attr:`net_return`.
+    max_adverse_excursion_pnl: Decimal
+    #: The same excursion AS A FRACTION OF TOTAL CAPITAL, which is what
+    #: ``VIABILITY_GATE.maximum_adverse_excursion`` defines it to be: "the most
+    #: negative value of (equity_t - total_starting_capital) over the holding
+    #: period, AS A FRACTION OF TOTAL CAPITAL — the same base as the block return,
+    #: so the two are comparable". It was reported in quote units, so a reader
+    #: comparing it against the -0.02 scale of G3 was out by the whole capital
+    #: base. The frozen text settles the unit, so this conforms to the
+    #: preregistration rather than amending it.
     max_adverse_excursion: Decimal
     thin_sample: bool
     #: The instant the liquidation TRIGGER became observable — the bar whose
@@ -729,7 +741,8 @@ def unclosed_block_result(
     funding_paid: Decimal,
     fees: Decimal,
     slippage: Decimal,
-    max_adverse_excursion: Decimal,
+    max_adverse_excursion_pnl: Decimal,
+    total_capital: Decimal,
     thin_sample: bool,
     liquidated: bool = False,
     liquidation_instant_ns: int | None = None,
@@ -780,7 +793,10 @@ def unclosed_block_result(
         net_pnl=NOT_DETERMINABLE,
         net_return=NOT_DETERMINABLE,
         liquidated=liquidated,
-        max_adverse_excursion=max_adverse_excursion,
+        max_adverse_excursion_pnl=max_adverse_excursion_pnl,
+        # Derived here rather than accepted as a second argument, so the absolute
+        # and the fraction cannot be handed over disagreeing with each other.
+        max_adverse_excursion=max_adverse_excursion_pnl / total_capital,
         thin_sample=thin_sample,
         liquidation_instant_ns=liquidation_instant_ns,
         forced_close_instant_ns=None,
@@ -941,6 +957,7 @@ def evaluate_block(
         net_pnl=NOT_DETERMINABLE,
         net_return=NOT_DETERMINABLE,
         liquidated=False,
+        max_adverse_excursion_pnl=NOT_DETERMINABLE,
         max_adverse_excursion=NOT_DETERMINABLE,
         thin_sample=True,
         liquidation_touch_provenance=LiquidationTouchProvenance(),
@@ -1034,7 +1051,8 @@ def evaluate_block(
                 funding_paid=position.funding_paid,
                 fees=position.fees,
                 slippage=position.slippage,
-                max_adverse_excursion=worst,
+                max_adverse_excursion_pnl=worst,
+                total_capital=allocation.total_capital,
                 thin_sample=settled_count < min_settlements,
                 liquidated=True,
                 liquidation_instant_ns=liquidation_instant,
@@ -1074,7 +1092,8 @@ def evaluate_block(
         net_pnl=net_pnl,
         net_return=net_pnl / allocation.total_capital,
         liquidated=liquidated,
-        max_adverse_excursion=worst,
+        max_adverse_excursion_pnl=worst,
+        max_adverse_excursion=worst / allocation.total_capital,
         thin_sample=settled_count < min_settlements,
         liquidation_instant_ns=liquidation_instant,
         forced_close_instant_ns=forced_close_instant,

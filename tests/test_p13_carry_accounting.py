@@ -825,7 +825,8 @@ def test_the_a1_encoding_reports_incurred_facts_and_not_determinable_economics()
         funding_paid=D("400"),
         fees=D("1500"),
         slippage=D("500"),
-        max_adverse_excursion=D("-2500"),
+        max_adverse_excursion_pnl=D("-2500"),
+        total_capital=D("1000000"),
         thin_sample=False,
     )
 
@@ -838,7 +839,9 @@ def test_the_a1_encoding_reports_incurred_facts_and_not_determinable_economics()
     assert result.net_funding == D("8600")
     assert result.fees == D("1500")
     assert result.slippage == D("500")
-    assert result.max_adverse_excursion == D("-2500")
+    assert result.max_adverse_excursion_pnl == D("-2500")
+    # And the fraction the frozen design names, on the same base as the return.
+    assert result.max_adverse_excursion == D("-0.0025")
     # And the close-dependent quantities, which nobody measured.
     for value in (result.net_return, result.net_pnl, result.basis_pnl, result.basis_exit):
         assert value.is_nan()
@@ -863,7 +866,8 @@ def test_an_unclosed_blocks_return_is_not_determinable_rather_than_zero():
         funding_paid=ZERO,
         fees=ZERO,
         slippage=ZERO,
-        max_adverse_excursion=ZERO,
+        max_adverse_excursion_pnl=ZERO,
+        total_capital=D("1000"),
         thin_sample=True,
     )
     with pytest.raises(InvalidOperation):
@@ -919,8 +923,10 @@ def test_a_delayed_settlement_does_not_become_visible_at_an_earlier_quote():
     assert on_time.settlements == 1 and on_time.funding_paid == D("5.000")
     # The equity path itself, not merely the totals: the excursion at the trigger
     # bar cannot contain a payment that had not happened.
-    assert delayed.max_adverse_excursion == ZERO
-    assert on_time.max_adverse_excursion == D("-5.000")
+    assert delayed.max_adverse_excursion_pnl == ZERO
+    assert on_time.max_adverse_excursion_pnl == D("-5.000")
+    # The same fact on the block return's own base: 5.000 of 1,000 is 0.005.
+    assert on_time.max_adverse_excursion == D("-0.005")
     assert delayed.net_pnl != on_time.net_pnl
 
 
@@ -1194,8 +1200,9 @@ def test_witness_d_movement_after_the_exit_cannot_reach_the_excursion():
         bar(2 * HOUR, "100", "100", spot_close="100", perp_close="200"),
     ]
     result = _run(quotes)
+    assert result.max_adverse_excursion_pnl == ZERO
     assert result.max_adverse_excursion == ZERO
-    assert result.max_adverse_excursion != D("-500")
+    assert result.max_adverse_excursion_pnl != D("-500")
     assert result.net_pnl == ZERO
 
 
@@ -1212,7 +1219,10 @@ def test_the_entry_bars_own_close_does_reach_the_excursion():
         bar(2 * HOUR, "100", "100"),
     ]
     result = _run(quotes)
-    assert result.max_adverse_excursion == D("-500")
+    assert result.max_adverse_excursion_pnl == D("-500")
+    # -500 of 1,000 of capital. G3's floor is -0.02 on this same base, so an
+    # excursion reported in quote units would read as 25,000x its true depth.
+    assert result.max_adverse_excursion == D("-0.5")
     assert result.net_pnl == ZERO
 
 
@@ -1252,6 +1262,7 @@ UNMEASURED_FIELDS = (
     "basis_pnl",
     "net_pnl",
     "net_return",
+    "max_adverse_excursion_pnl",
     "max_adverse_excursion",
 )
 
@@ -1685,3 +1696,63 @@ def test_the_nominal_bar_is_the_hourly_grid_the_design_froze():
     for source in klines:
         assert "/1h/" in source["archive"]
         assert "open + 1h" in source["timestamp_semantics"]
+
+
+# ---------------------------------------------------------------------------
+# The excursion's unit, which the frozen design fixes and the code did not
+# ---------------------------------------------------------------------------
+#
+# VIABILITY_GATE.maximum_adverse_excursion: "the most negative value of
+# (equity_t - total_starting_capital) over the holding period, AS A FRACTION OF
+# TOTAL CAPITAL — the same base as the block return, so the two are comparable."
+#
+# It was reported in quote units. At the design's 1,000,000 USDT that is a
+# millionfold misreading of a field a reader is invited to compare against G3's
+# -0.02 floor. The frozen text settles the unit, so reporting the fraction
+# conforms to the preregistration rather than amending it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_excursion_is_reported_on_the_same_base_as_the_block_return():
+    """The comparability the frozen sentence asks for, asserted as a ratio."""
+    quotes = [
+        bar(0, "100", "100", spot_close="100", perp_close="140"),
+        bar(HOUR, "100", "100"),
+        bar(2 * HOUR, "100", "102"),
+    ]
+    result = _run(quotes)
+    # By hand: equity at bar 0's close = 0 + 5x100 + 500 + (100-140)x5 = 800,
+    # an excursion of -200 against 1,000 of capital, so -0.2 as a fraction.
+    assert result.max_adverse_excursion_pnl == D("-200")
+    assert result.max_adverse_excursion == D("-0.2")
+    # And the pair holds the same relationship net_pnl / net_return does.
+    assert result.net_pnl == D("-10") and result.net_return == D("-0.01")
+    assert result.max_adverse_excursion == (
+        result.max_adverse_excursion_pnl / CAPITAL.total_capital
+    )
+
+
+def test_the_excursion_fraction_is_scale_free():
+    """The property that makes it comparable at all: 1,000 or 1,000,000, same number.
+
+    CAPITAL_CONTRACT.returns_are_fractions says the scale is not a parameter and
+    any scale yields the same fractional result. An excursion in quote units does
+    not have that property, which is why it could not be compared to -0.02.
+    """
+    quotes = [
+        bar(0, "100", "100", spot_close="100", perp_close="140"),
+        bar(HOUR, "100", "100"),
+        bar(2 * HOUR, "100", "100"),
+    ]
+    small = _run(quotes)
+    big = evaluate_block(
+        "b",
+        quotes,
+        [],
+        Allocation(total_capital=D("1000000"), spot=D("500000"), perp=D("500000")),
+        FREE,
+        VENUE,
+        min_settlements=0,
+    )
+    assert small.max_adverse_excursion_pnl != big.max_adverse_excursion_pnl
+    assert small.max_adverse_excursion == big.max_adverse_excursion == D("-0.2")
