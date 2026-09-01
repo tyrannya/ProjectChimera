@@ -278,9 +278,9 @@ def test_a_source_archive_dropped_into_the_evidence_directory_cannot_arrive_quie
     """The acquisition stage's exact failure mode, executed against a scratch tree."""
     (scratch / PRIMARY_DIR / name).write_bytes(b"")
     problems = coverage_problems(scratch)
-    assert any(name in problem for problem in problems), (
-        f"{name} landed in the primary evidence directory and nothing objected"
-    )
+    assert any(
+        name in problem for problem in problems
+    ), f"{name} landed in the primary evidence directory and nothing objected"
     assert any("UNCOVERED BY MANIFEST" in problem and name in problem for problem in problems)
 
 

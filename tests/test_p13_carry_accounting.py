@@ -1068,8 +1068,14 @@ def bar(
 
 def _run(quotes, settlements=(), isolated=False, venue=VENUE):
     return evaluate_block(
-        "b", quotes, list(settlements), CAPITAL, FREE, venue,
-        min_settlements=0, isolated=isolated,
+        "b",
+        quotes,
+        list(settlements),
+        CAPITAL,
+        FREE,
+        venue,
+        min_settlements=0,
+        isolated=isolated,
     )
 
 
@@ -1155,16 +1161,20 @@ def test_the_same_touch_liquidates_on_a_held_bar_and_not_on_the_exit_bar():
     second, one that always liquidates passes the first. Together they pin the
     window's far edge to exactly one bar.
     """
-    held = _run([
-        bar(0, "100", "100"),
-        bar(HOUR, "100", "100", mark_high=PREDICATE_SPIKE),
-        bar(2 * HOUR, "100", "100"),
-    ])
-    after_exit = _run([
-        bar(0, "100", "100"),
-        bar(HOUR, "100", "100"),
-        bar(2 * HOUR, "100", "100", mark_high=PREDICATE_SPIKE),
-    ])
+    held = _run(
+        [
+            bar(0, "100", "100"),
+            bar(HOUR, "100", "100", mark_high=PREDICATE_SPIKE),
+            bar(2 * HOUR, "100", "100"),
+        ]
+    )
+    after_exit = _run(
+        [
+            bar(0, "100", "100"),
+            bar(HOUR, "100", "100"),
+            bar(2 * HOUR, "100", "100", mark_high=PREDICATE_SPIKE),
+        ]
+    )
     assert held.liquidated and not after_exit.liquidated
 
 
@@ -1267,7 +1277,9 @@ def _too_few_quotes() -> "object":
     return _run([bar(0, "100", "100")])
 
 
-@pytest.mark.parametrize("make", [_not_opened, _too_few_quotes], ids=["not_opened", "one_quote"])
+@pytest.mark.parametrize(
+    "make", [_not_opened, _too_few_quotes], ids=["not_opened", "one_quote"]
+)
 @pytest.mark.parametrize("name", UNMEASURED_FIELDS)
 def test_an_unmeasured_economic_field_is_not_a_finite_zero(make, name):
     value = getattr(make(), name)
@@ -1275,7 +1287,9 @@ def test_an_unmeasured_economic_field_is_not_a_finite_zero(make, name):
     assert value != ZERO
 
 
-@pytest.mark.parametrize("make", [_not_opened, _too_few_quotes], ids=["not_opened", "one_quote"])
+@pytest.mark.parametrize(
+    "make", [_not_opened, _too_few_quotes], ids=["not_opened", "one_quote"]
+)
 @pytest.mark.parametrize("name", STRUCTURAL_FIELDS)
 def test_a_structurally_known_zero_stays_a_number(make, name):
     """The other direction. NaN everywhere would be its own kind of dishonest."""
@@ -1294,6 +1308,18 @@ def test_the_not_opened_flags_stay_readable_without_touching_the_economics():
     assert result.settlements == 0
     assert result.held_bars == 0
     assert "not opened" in result.reason
+
+
+def test_the_unmeasured_value_is_the_modules_own_declared_sentinel():
+    """Not merely "some NaN": the one NOT_DETERMINABLE names.
+
+    A Decimal NaN is never equal to itself, so what can be asserted is the
+    representation — which is enough to catch a signalling NaN, a negative one, or
+    a float sneaking in where a Decimal belongs.
+    """
+    value = _not_opened().net_return
+    assert isinstance(value, type(NOT_DETERMINABLE))
+    assert str(value) == str(NOT_DETERMINABLE) == "NaN"
 
 
 def test_ordering_an_unmeasured_return_fails_closed():
@@ -1354,7 +1380,11 @@ def _three_bars(**kwargs) -> list[Quote]:
 def test_a_block_checked_entirely_against_mark_highs_records_high_coverage():
     result = _run(_three_bars(mark="100", mark_high="100"))
     provenance = result.liquidation_touch_provenance
-    assert provenance.as_dict() == {TOUCH_MARK_HIGH: 2, TOUCH_MARK_CLOSE: 0, TOUCH_SPOT_CLOSE: 0}
+    assert provenance.as_dict() == {
+        TOUCH_MARK_HIGH: 2,
+        TOUCH_MARK_CLOSE: 0,
+        TOUCH_SPOT_CLOSE: 0,
+    }
     assert provenance.all_mark_high
     assert not provenance.used_a_weaker_fallback
     # Two held bars, two tests. A count that drifted from the window would show.
@@ -1364,7 +1394,11 @@ def test_a_block_checked_entirely_against_mark_highs_records_high_coverage():
 def test_a_block_that_fell_back_to_the_mark_close_records_that_fallback():
     result = _run(_three_bars(mark="100"))
     provenance = result.liquidation_touch_provenance
-    assert provenance.as_dict() == {TOUCH_MARK_HIGH: 0, TOUCH_MARK_CLOSE: 2, TOUCH_SPOT_CLOSE: 0}
+    assert provenance.as_dict() == {
+        TOUCH_MARK_HIGH: 0,
+        TOUCH_MARK_CLOSE: 2,
+        TOUCH_SPOT_CLOSE: 0,
+    }
     assert provenance.used_a_weaker_fallback
     assert not provenance.all_mark_high
 
@@ -1373,7 +1407,11 @@ def test_a_block_that_fell_back_to_the_spot_close_records_the_weaker_provenance(
     """MARK_PRICE_FALLBACK's case, and it must not be filed as a mark close."""
     result = _run(_three_bars())
     provenance = result.liquidation_touch_provenance
-    assert provenance.as_dict() == {TOUCH_MARK_HIGH: 0, TOUCH_MARK_CLOSE: 0, TOUCH_SPOT_CLOSE: 2}
+    assert provenance.as_dict() == {
+        TOUCH_MARK_HIGH: 0,
+        TOUCH_MARK_CLOSE: 0,
+        TOUCH_SPOT_CLOSE: 2,
+    }
     assert provenance.used_a_weaker_fallback
     assert not provenance.all_mark_high
 
@@ -1394,7 +1432,11 @@ def test_a_block_that_mixes_sources_reports_every_one_of_them():
         bar(2 * HOUR, "100", "100"),
     ]
     provenance = _run(quotes).liquidation_touch_provenance
-    assert provenance.as_dict() == {TOUCH_MARK_HIGH: 1, TOUCH_MARK_CLOSE: 1, TOUCH_SPOT_CLOSE: 0}
+    assert provenance.as_dict() == {
+        TOUCH_MARK_HIGH: 1,
+        TOUCH_MARK_CLOSE: 1,
+        TOUCH_SPOT_CLOSE: 0,
+    }
     assert not provenance.all_mark_high
     assert provenance.used_a_weaker_fallback
 
@@ -1434,11 +1476,19 @@ def test_the_provenance_of_a_liquidated_block_counts_only_the_bars_tested():
 def test_the_touch_source_names_agree_with_the_value_the_touch_takes():
     """The name and the number must come from the same branch, or the record lies."""
     high = bar(0, "100", "100", spot_close="110", mark="120", mark_high="130")
-    assert high.liquidation_touch == D("130") and high.liquidation_touch_source == TOUCH_MARK_HIGH
+    assert (
+        high.liquidation_touch == D("130") and high.liquidation_touch_source == TOUCH_MARK_HIGH
+    )
     close = bar(0, "100", "100", spot_close="110", mark="120")
-    assert close.liquidation_touch == D("120") and close.liquidation_touch_source == TOUCH_MARK_CLOSE
+    assert (
+        close.liquidation_touch == D("120")
+        and close.liquidation_touch_source == TOUCH_MARK_CLOSE
+    )
     spot = bar(0, "100", "100", spot_close="110")
-    assert spot.liquidation_touch == D("110") and spot.liquidation_touch_source == TOUCH_SPOT_CLOSE
+    assert (
+        spot.liquidation_touch == D("110")
+        and spot.liquidation_touch_source == TOUCH_SPOT_CLOSE
+    )
     assert set(TOUCH_SOURCES) == {TOUCH_MARK_HIGH, TOUCH_MARK_CLOSE, TOUCH_SPOT_CLOSE}
 
 
@@ -1574,7 +1624,9 @@ def test_a_hole_in_the_grid_is_detected_and_its_duration_recorded():
 
 def test_a_multi_hour_jump_does_not_look_identical_to_a_normal_transition():
     """The whole requirement, as one comparison of two otherwise identical blocks."""
-    contiguous = _run([bar(0, "100", "100"), bar(HOUR, "100", "100"), bar(2 * HOUR, "100", "102")])
+    contiguous = _run(
+        [bar(0, "100", "100"), bar(HOUR, "100", "100"), bar(2 * HOUR, "100", "102")]
+    )
     gapped = _run([bar(0, "100", "100"), bar(HOUR, "100", "100"), bar(9 * HOUR, "100", "102")])
     # Same economics, by construction — the fills and marks are the same prices.
     assert contiguous.net_pnl == gapped.net_pnl == D("-10")
