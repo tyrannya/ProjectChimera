@@ -640,9 +640,10 @@ series, and not a relaxation of the frozen source set.
 
 **Which design a future run is governed by**, stated here because the wrong
 answer would invalidate the run before it started. The active design is
-**P13-A2**, `sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c`,
-and it is **NOT YET RUN**. Two superseded hashes are **historical provenance
-only** and must not govern new economic evidence: **P13-A1**
+**P13-A2R1**, `sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0`,
+and it is **NOT YET RUN**. Three superseded hashes are **historical provenance
+only** and must not govern new economic evidence: the first committed **P13-A2**
+`sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c`, **P13-A1**
 `sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099`, and the
 original `sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767`,
 which is the design the committed acquisition evidence was generated under.
@@ -668,6 +669,14 @@ dropping the affected block or jumping the hole. It is a **source-validity**
 amendment — triggered by the presence of an archive row, never by anything a run
 computes — frozen before acquisition because it can change which historical
 observations enter a block, and **it is design only: no runtime implements it**.
+Revision **A2R1** then withdrew a false claim inside that hashed payload: the
+first committed A2 said a delayed pre-open “can only reduce accrued
+funding”, which is wrong, since funding takes either sign against a short
+perpetual and a later open also moves `basis_at_entry`. A2R1 states instead that
+the pre-open branch is **economically indeterminate ex ante** and rests on
+ex-ante timing, a source-only trigger and causal implementability; the two
+terminal branches remain fail-closed. No treatment changed, the correction
+strengthens no evidence, and commit `0d023ba` stays in history unrewritten.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 

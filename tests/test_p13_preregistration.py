@@ -42,6 +42,17 @@ ORIGINAL_HASH = "sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d7
 #: active design.
 A1_HASH = "sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099"
 
+#: The FIRST committed A2's hash, retired by revision A2R1. A literal for the same
+#: reason as the two above, and kept for a sharper one: the design it names made a
+#: FALSE scientific claim — that a delayed pre-open "can only reduce accrued
+#: funding" — and the correction is only auditable if the superseded design stays
+#: nameable. A2's source-validity BEHAVIOUR is unchanged by A2R1; only the
+#: justification and the hash moved.
+A2_FIRST_HASH = "sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c"
+
+#: The commit that first froze A2, left in history rather than amended or rebased.
+FIRST_A2_COMMIT = "0d023ba5a33bbcae55bb079146838f5f22959607"
+
 #: Where the acquisition evidence lives. It is the record of a NOT EVALUABLE
 #: environment outcome, not an economic result.
 ACQUISITION_EVIDENCE = (
@@ -703,24 +714,28 @@ def test_a2_is_inside_the_hashed_payload():
     )
 
 
-def test_a2_moved_the_hash_away_from_both_older_designs():
+def test_a2r1_moved_the_hash_away_from_every_older_design():
     """A payload that changed and a hash that did not would be the dishonest version."""
-    assert EXPECTED_HASH != A1_HASH
-    assert EXPECTED_HASH != ORIGINAL_HASH
-    assert A1_HASH != ORIGINAL_HASH
+    older = (A2_FIRST_HASH, A1_HASH, ORIGINAL_HASH)
+    for hash_ in older:
+        assert EXPECTED_HASH != hash_
+    assert len(set(older)) == 3
 
 
-def test_the_active_design_is_named_a2():
-    assert prereg.ACTIVE_DESIGN == "P13-A2"
+def test_the_active_design_is_named_a2r1():
+    assert prereg.ACTIVE_DESIGN == "P13-A2R1"
 
 
-def test_both_older_hashes_are_recorded_as_superseded_provenance():
+def test_all_three_older_hashes_are_recorded_as_superseded_provenance():
     """Provenance is kept, not tidied away, and it is kept as literals."""
     recorded = {entry["hash"]: entry for entry in prereg.SUPERSEDED_HASHES}
     assert ORIGINAL_HASH in recorded
     assert A1_HASH in recorded
+    assert A2_FIRST_HASH in recorded
     assert recorded[ORIGINAL_HASH]["superseded_by"] == "A1"
     assert recorded[A1_HASH]["superseded_by"] == "A2"
+    assert recorded[A2_FIRST_HASH]["superseded_by"] == "A2R1"
+    assert recorded[A2_FIRST_HASH]["committed_at"] == FIRST_A2_COMMIT
     for entry in prereg.SUPERSEDED_HASHES:
         assert entry["status"] == "SUPERSEDED"
 
@@ -733,7 +748,16 @@ def test_a_future_run_cannot_claim_a_superseded_hash_as_active():
         "retired hash was pasted into the provenance table"
     )
     assert A1_HASH in retired
+    assert A2_FIRST_HASH in retired
     assert prereg.describe()["preregistration_hash"] == EXPECTED_HASH
+
+
+def test_the_first_a2_is_superseded_as_a_hash_but_its_behaviour_is_not_withdrawn():
+    """A2R1 retires the first A2 HASH. It repeals no A2 treatment."""
+    entry = next(e for e in prereg.SUPERSEDED_HASHES if e["hash"] == A2_FIRST_HASH)
+    assert "source-validity BEHAVIOUR is not withdrawn" in entry["what_it_governs_now"]
+    assert "can only reduce accrued" in entry["what_it_governs_now"]
+    assert "markless_liquidation_validity_policy" in prereg.payload()
 
 
 def test_a1_is_superseded_as_a_hash_but_its_rule_is_not_withdrawn():
@@ -913,12 +937,146 @@ def test_a2_was_adopted_before_any_economic_observation_and_before_acquisition()
     assert prereg.CURRENT_RESULT_STATE.endswith("NOT YET RUN")
 
 
-def test_a2_can_only_make_the_verdict_harder_never_easier():
+def test_the_pre_open_branch_claims_no_economic_direction():
+    """A2R1's core correction: shorter exposure is NOT economically monotone.
+
+    The first committed A2 asserted the pre-open rule "can only reduce accrued
+    funding". This pins the withdrawal of that claim, not a softened version of
+    it.
+    """
+    state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
+        prereg.MARKLESS_STATE_PRE_OPEN
+    ]
+    assert state["economic_direction"] == "INDETERMINATE EX ANTE"
+    assert "NOT economically monotone" in state["why_indeterminate"]
+    assert "claims no monotonicity" in state["why_indeterminate"]
+
+
+def test_the_pre_open_branch_acknowledges_funding_of_either_sign():
+    """Short the perpetual: it RECEIVES on a positive rate and PAYS on a negative one.
+
+    So skipping an interval can WORSEN the block (skipped funding it would have
+    received) or IMPROVE it (skipped funding it would have paid).
+    """
+    why = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
+        prereg.MARKLESS_STATE_PRE_OPEN
+    ]["why_indeterminate"]
+    assert "EITHER sign" in why
+    assert "SHORT the perpetual" in why
+    assert "RECEIVES on a positive rate" in why
+    assert "PAYS on a negative one" in why
+    assert "IMPROVES the block" in why
+    assert "WORSENS the block" in why
+
+
+def test_the_pre_open_branch_says_the_basis_entry_effect_is_direction_unknown():
+    """A later open sets a different basis_at_entry, which moves PnL either way."""
+    why = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
+        prereg.MARKLESS_STATE_PRE_OPEN
+    ]["why_indeterminate"]
+    assert "basis_at_entry" in why
+    assert "EITHER direction" in why
+    # The identity it reasons from is the one the frozen design already froze.
+    assert (
+        "basis_at_entry - basis_at_exit"
+        in prereg.BASIS_DEFINITION["structural_price_pnl_identity"]
+    )
+
+
+def test_the_policy_explicitly_disclaims_every_withdrawn_monotonicity_claim():
+    """Named one by one, so a future edit cannot quietly reinstate any of them."""
     policy = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY
-    direction = policy["direction_of_conservatism"]
-    assert "strictly one-way" in direction
-    assert "forfeit every verdict outright, VIABLE included" in direction
-    assert "add a positive block" in direction
+    disclaimer = policy["no_economic_monotonicity_is_claimed"]
+    for withdrawn in (
+        "can only reduce accrued funding",
+        "cannot add a positive block",
+        "cannot raise the mean of G2",
+        "cannot lift the worst block of G3",
+        "cannot improve any block",
+        "necessarily economically unfavourable",
+    ):
+        assert withdrawn in disclaimer
+    assert "Every one of those" in disclaimer and "false" in disclaimer
+
+
+def test_conservatism_is_claimed_only_for_the_two_terminal_branches():
+    """Not uniform across branches, and the payload must say which is which."""
+    direction = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["direction_of_conservatism"]
+    assert "NOT UNIFORM ACROSS BRANCHES" in direction
+    assert "genuinely fail-closed" in direction
+    assert "PRE-OPEN branch is NOT one-way" in direction
+    assert "INDETERMINATE EX ANTE" in direction
+    assert "is withdrawn here" in direction
+    # And the terminal branches really are the fail-closed ones.
+    for state_name in (prereg.MARKLESS_STATE_HELD, prereg.MARKLESS_STATE_NO_VALID_OPEN):
+        state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][state_name]
+        assert state["terminal"] is True
+        assert state["result_state"] == "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE"
+
+
+def test_admissibility_rests_on_timing_trigger_and_causality_not_on_direction():
+    """The weaker true argument, pinned in place of the stronger false one."""
+    basis = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["admissibility_basis"]
+    assert "TIMING" in basis and "before P13 source acquisition" in basis
+    assert "TRIGGER" in basis and "never by any quantity a run computes" in basis
+    assert "CAUSALITY" in basis and "forward only" in basis
+    assert "WEAKER argument than one-way conservatism" in basis
+    admissible = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
+        prereg.MARKLESS_STATE_PRE_OPEN
+    ]["why_it_is_nonetheless_admissible"]
+    assert "NOT because it is unfavourable" in admissible
+    assert "it may be favourable" in admissible
+
+
+def test_the_correction_does_not_strengthen_the_evidence_ceiling():
+    """Withdrawing an overstatement adds no evidential weight."""
+    ceiling = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["evidence_ceiling_unchanged"]
+    assert prereg.EVIDENCE_CEILING in ceiling
+    assert "adds no evidential weight" in ceiling
+    assert (
+        prereg.EVIDENCE_CEILING
+        == "EXPLORATORY / ADAPTIVE HISTORICAL STRUCTURAL FEASIBILITY EVIDENCE"
+    )
+
+
+def test_a2r1_changed_the_justification_and_no_source_validity_treatment():
+    """A hash movement must never hide a silent behaviour change."""
+    policy = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY
+    assert policy["amendment"] == "A2"
+    assert policy["revision"] == "A2R1"
+    unchanged = policy["behaviour_unchanged_from_first_a2"]
+    assert "alters NO source-validity treatment" in unchanged
+    assert "IDENTICAL to the first committed A2" in unchanged
+    history = {entry["revision"]: entry for entry in policy["revision_history"]}
+    assert history["A2"]["status"] == "SUPERSEDED"
+    assert history["A2"]["hash"] == A2_FIRST_HASH
+    assert history["A2"]["committed_at"] == FIRST_A2_COMMIT
+    assert "monotonicity claim" in history["A2"]["superseded_because"]
+    assert "FALSE" in history["A2"]["superseded_because"]
+    assert history["A2R1"]["status"] == "ACTIVE"
+    assert "JUSTIFICATION ONLY" in history["A2R1"]["what_changed"]
+
+
+def test_the_substantive_a2_treatments_survived_the_correction_verbatim():
+    """The behaviour A2R1 promises it did not touch, asserted rather than trusted."""
+    policy = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY
+    assert policy["authorised_liquidation_sources"] == ("mark_high", "mark_close")
+    assert policy["authorised_liquidation_surrogates"] == ()
+    assert len(policy["forbidden_liquidation_surrogates"]) == 10
+    pre_open = policy["states"][prereg.MARKLESS_STATE_PRE_OPEN]
+    assert pre_open["terminal"] is False
+    assert "NOT a valid opening instant" in pre_open["treatment"]
+    assert "advances CAUSALLY" in pre_open["treatment"]
+    assert "no liquidation exposure" in pre_open["no_attribution_before_the_open"]
+    held = policy["states"][prereg.MARKLESS_STATE_HELD]
+    assert len(held["forbidden_treatments"]) == 10
+    assert "SCREEN-WIDE" in held["scope"]
+    no_open = policy["states"][prereg.MARKLESS_STATE_NO_VALID_OPEN]
+    assert "NOT converted into an excluded block" in no_open["treatment"]
+    assert "NOT broadened here" in no_open["why_not_an_excluded_block"]
+    assert "POST-EXIT" in policy["exit_bar"]["rule"]
+    assert "INDEPENDENT of this policy" in policy["funding_fallback_independence"]["rule"]
+    assert "DESIGN ONLY" in policy["implementation_status"]
 
 
 def test_a2_changes_no_block_count_no_gate_and_no_denominator():
@@ -991,30 +1149,46 @@ def test_p13_remains_economically_unrun_under_a2():
         ).exists(), f"{economic} exists under btc_p13_carry, so an economic run happened"
 
 
-def test_the_document_records_the_active_and_both_superseded_hashes():
+def test_the_document_records_the_active_and_all_three_superseded_hashes():
     doc = (ROOT / "docs" / "p13_preregistration.md").read_text(encoding="utf-8")
     assert EXPECTED_HASH in doc
+    assert A2_FIRST_HASH in doc
     assert A1_HASH in doc
     assert ORIGINAL_HASH in doc
     assert "Superseded hashes, kept as provenance" in doc
-    assert "P13-A2" in doc
+    assert "P13-A2R1" in doc
 
 
-def test_the_plan_and_the_roadmap_name_a2_as_the_governing_design():
+def test_the_document_withdraws_the_false_claim_rather_than_deleting_it():
+    """A correction a reader cannot see is not a correction."""
+    doc = (ROOT / "docs" / "p13_preregistration.md").read_text(encoding="utf-8")
+    assert "INDETERMINATE EX ANTE" in doc
+    assert "not** economically monotone" in doc
+    assert "either sign" in doc
+    assert FIRST_A2_COMMIT[:7] in doc
+    # And the sentence that made the false claim is gone from the live prose.
+    assert "so it can only reduce accrued funding." not in doc
+
+
+def test_the_plan_and_the_roadmap_name_a2r1_as_the_governing_design():
     """A reader who never opens the module must not be pointed at a retired hash."""
     for name in ("current_development_plan.md", "research_roadmap.md"):
         text = (ROOT / "docs" / name).read_text(encoding="utf-8")
         assert EXPECTED_HASH in text, f"{name} does not carry the active hash"
-        assert "P13-A2" in text, f"{name} does not name the active design"
+        assert "P13-A2R1" in text, f"{name} does not name the active design"
         assert A1_HASH in text, f"{name} dropped the A1 hash instead of superseding it"
+        assert (
+            A2_FIRST_HASH in text
+        ), f"{name} dropped the first A2 hash instead of superseding it"
 
 
 def test_the_acquisition_evidence_was_not_rewritten_to_quote_a_later_hash():
-    """Historical evidence stays historical, under A2 exactly as under A1."""
+    """Historical evidence stays historical, under A2R1 exactly as under A1."""
     for name in ACQUISITION_EVIDENCE:
         text = (ROOT / name).read_text(encoding="utf-8")
         assert ORIGINAL_HASH in text
         assert A1_HASH not in text
+        assert A2_FIRST_HASH not in text
         assert EXPECTED_HASH not in text
     assert prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY[
         "does_not_disturb_the_acquisition_evidence"

@@ -1261,13 +1261,70 @@ MARKLESS_STATES: tuple[str, ...] = (
 #: condition computed, and no market data informed this rule. The only inputs were
 #: the shape of the frozen text and the coverage fact the design already declares.
 #:
-#: **The direction is fail-closed, and it is checkable rather than asserted.** Every
-#: branch either leaves a verdict exactly where the frozen design put it or removes
-#: the possibility of one. Nothing here can add a block, add a positive block, raise
-#: a mean, lift a worst block, lengthen an exposure, or make any gate condition
-#: easier to satisfy.
+#: **The two TERMINAL branches are fail-closed, and the pre-open branch is
+#: economically INDETERMINATE — revision A2R1 corrects a false claim the first
+#: committed A2 made here.** That first version asserted the pre-open rule "can
+#: only SHORTEN a block's exposure, which can only reduce accrued funding" and that
+#: no branch "can add a positive block, raise a mean, lift a worst block". **That
+#: monotonicity claim is false**, by arithmetic rather than by observation: a
+#: skipped pre-open interval may contain funding of EITHER sign, and moving the
+#: opening instant moves ``basis_entry``, which enters block PnL through the
+#: telescoping identity in ``BASIS_DEFINITION.structural_price_pnl_identity`` in
+#: EITHER direction. Skipping an interval of negative funding, or entering at a
+#: wider basis, can therefore IMPROVE a block. Shorter exposure is not
+#: economically monotone.
+#:
+#: What survives, and is the actual ground of admissibility: the rule was frozen
+#: BEFORE acquisition and before any P13 economic observation, and it is triggered
+#: ONLY by source validity. An ex-ante causal convention whose economic direction
+#: is unknown cannot be a rescue of a result nobody has seen. That is a different
+#: and weaker argument than one-way conservatism, and stating the weaker true one
+#: is the point of this revision.
+#:
+#: The two terminal branches remain genuinely fail-closed: each forfeits every
+#: verdict, ``VIABLE`` included, rather than producing or improving one.
 MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
     "amendment": "A2",
+    "revision": "A2R1",
+    "revision_history": (
+        {
+            "revision": "A2",
+            "hash": "sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c",
+            "committed_at": "0d023ba5a33bbcae55bb079146838f5f22959607",
+            "status": "SUPERSEDED",
+            "superseded_because": (
+                "it asserted that the pre-open branch 'can only SHORTEN a block's exposure, "
+                "which can only reduce accrued funding' and that no branch 'can add a "
+                "positive block, raise a mean, lift a worst block'. That monotonicity claim "
+                "is FALSE: skipped pre-open funding is not sign-constrained and a delayed "
+                "open moves basis_at_entry in either direction, so a delayed open may "
+                "improve a block. An independent review identified it before implementation "
+                "and before acquisition"
+            ),
+        },
+        {
+            "revision": "A2R1",
+            "status": "ACTIVE",
+            "what_changed": (
+                "the JUSTIFICATION ONLY. The false monotonicity claim is withdrawn and "
+                "replaced by an explicit statement that the pre-open branch's economic "
+                "direction is INDETERMINATE EX ANTE, with admissibility resting on ex-ante "
+                "timing, a source-only trigger and causal implementability instead"
+            ),
+        },
+    ),
+    "behaviour_unchanged_from_first_a2": (
+        "STATED because a hash movement should never hide a silent behaviour change. A2R1 "
+        "alters NO source-validity treatment. The authorised liquidation sources and their "
+        "priority, the empty authorised-surrogate list and the forbidden-surrogate list, the "
+        "pre-open causal search and its bounds, the prohibition on attributing anything to "
+        "the strategy before the valid open, the held-bar terminal NOT EVALUABLE and its "
+        "forbidden treatments, the no-valid-open terminal NOT EVALUABLE, the refusal to "
+        "convert either into an excluded block, the exit-bar exemption, the independence of "
+        "MARK_PRICE_FALLBACK, and the evidence requirement are all IDENTICAL to the first "
+        "committed A2. Only the claimed economic direction changed, and it changed from a "
+        "false claim to no claim"
+    ),
     "amendment_status": (
         "adopted after P13's environment-only NOT EVALUABLE closure and after the A1-era "
         "evaluator repair that removed the unauthorised third liquidation tier, and BEFORE "
@@ -1372,12 +1429,40 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
                 "NOT a new economic signal. The block's calendar period is unchanged; only "
                 "the instant at which a valid position can first exist inside it moves"
             ),
-            "direction": (
-                "unfavourable to the result, which is why it is safe. A later open means "
-                "LESS time in the carry, so it can only reduce the funding a block accrues; "
-                "it cannot manufacture a positive block. The alternative — opening at an "
-                "instant whose risk series is absent — would buy exposure the design cannot "
-                "audit"
+            "economic_direction": "INDETERMINATE EX ANTE",
+            "why_indeterminate": (
+                "CORRECTED IN A2R1, and the correction is arithmetic rather than empirical — "
+                "no market data was consulted to reach it. The first committed A2 claimed a "
+                "later open 'can only reduce the funding a block accrues'. It cannot: a "
+                "delayed open changes the ENTRY INSTANT, and the skipped interval is not "
+                "sign-constrained.\n"
+                "  * FUNDING. A Binance USD-M funding rate takes EITHER sign, and this "
+                "construction is SHORT the perpetual, so it RECEIVES on a positive rate and "
+                "PAYS on a negative one. A skipped interval may therefore contain funding "
+                "the block would have received (skipping it WORSENS the block) or funding "
+                "the block would have paid (skipping it IMPROVES the block). Nothing frozen "
+                "here fixes which.\n"
+                "  * BASIS. Under BASIS_DEFINITION.structural_price_pnl_identity the hedged "
+                "price PnL is Q x (basis_at_entry - basis_at_exit). A later open sets a "
+                "DIFFERENT basis_at_entry, so it moves basis PnL in EITHER direction; "
+                "entering at a wider basis raises it and entering at a narrower one lowers "
+                "it.\n"
+                "  * FEES AND SLIPPAGE are unchanged in count: the construction still "
+                "performs exactly one open and one close per block, so a delayed open does "
+                "not add or remove a round trip.\n"
+                "Shorter exposure is NOT economically monotone, and this design claims no "
+                "monotonicity for it in either direction"
+            ),
+            "why_it_is_nonetheless_admissible": (
+                "NOT because it is unfavourable — it may be favourable — but because of WHEN "
+                "and ON WHAT it was frozen. It is an ex-ante, causal, source-validity "
+                "convention: adopted before acquisition and before any P13 economic "
+                "observation, triggered only by whether an archive row exists, and "
+                "implementable by an operator standing at the instant. A rule whose economic "
+                "direction was unknown to its author, and which no observation informed, "
+                "cannot have been selected to rescue a result nobody had seen. The "
+                "alternative it refuses — opening at an instant whose risk series is absent "
+                "— would buy exposure the design cannot audit"
             ),
         },
         MARKLESS_STATE_HELD: {
@@ -1542,12 +1627,49 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
         "it may never select which periods the screen reports"
     ),
     "direction_of_conservatism": (
-        "strictly one-way, and checkable branch by branch. The pre-open branch can only "
-        "SHORTEN a block's exposure, which can only reduce accrued funding. The two terminal "
-        "branches forfeit every verdict outright, VIABLE included. No branch can add a "
-        "positive block, raise a mean, lift a worst block or relax a gate condition. A rule "
-        "incapable of rescuing a negative result is the only kind of post-freeze amendment "
-        "admissible at all"
+        "NOT UNIFORM ACROSS BRANCHES, and A2R1 says so rather than overclaiming.\n"
+        "  * The two TERMINAL branches — a held bar with no authorised mark, and a block "
+        "with no valid opening instant — are genuinely fail-closed. Each forfeits the whole "
+        "screen, VIABLE included, so neither can produce or improve a verdict.\n"
+        "  * The PRE-OPEN branch is NOT one-way. Its economic direction is INDETERMINATE EX "
+        "ANTE: see states.pre_open_mark_absent.why_indeterminate. It may improve or worsen "
+        "funding PnL, and it may improve or worsen basis PnL. No monotonicity is claimed for "
+        "it in either direction.\n"
+        "The first committed A2 asserted one-way conservatism for the whole policy. That was "
+        "wrong about the pre-open branch and is withdrawn here"
+    ),
+    "no_economic_monotonicity_is_claimed": (
+        "stated as its own commitment so it cannot be lost in prose. This design does NOT "
+        "claim that the pre-open rule can only reduce accrued funding, cannot add a positive "
+        "block, cannot raise the mean of G2, cannot lift the worst block of G3, cannot "
+        "improve any block, or is necessarily economically unfavourable. Every one of those "
+        "claims is false, and each was asserted by the first committed A2 "
+        "(sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c) and is "
+        "withdrawn by A2R1"
+    ),
+    "admissibility_basis": (
+        "the ground on which this amendment stands, now that one-way conservatism is not "
+        "available to it. Three facts, each checkable from the repository rather than "
+        "asserted:\n"
+        "  * TIMING. Frozen before P13 source acquisition and before any P13 economic "
+        "observation. No archive object has been fetched, no coverage probe run, no block "
+        "opened, and no funding total, basis figure, return or gate condition computed.\n"
+        "  * TRIGGER. Fired only by whether a required archive row exists, never by any "
+        "quantity a run computes — see why_this_is_source_validity_not_an_economic_rule.\n"
+        "  * CAUSALITY. The opening search advances forward only, inside the same block and "
+        "strictly before the research boundary, so it is implementable by an operator "
+        "standing at the instant.\n"
+        "A rule whose economic direction was unknown to its author, which no observation "
+        "informed, and which could not have been evaluated against a result that did not "
+        "exist, cannot be a rescue of that result. That is a WEAKER argument than one-way "
+        "conservatism, and it is the true one"
+    ),
+    "evidence_ceiling_unchanged": (
+        "this correction does not strengthen anything. Any future P13 result remains "
+        "EXPLORATORY / ADAPTIVE HISTORICAL STRUCTURAL FEASIBILITY EVIDENCE under "
+        "EVIDENCE_CEILING and HINDSIGHT_DISCLOSURE. Withdrawing a false conservatism claim "
+        "removes an overstatement; it adds no evidential weight, and no positive P13 result "
+        "becomes more credible because this text is now accurate"
     ),
     "why_this_is_source_validity_not_an_economic_rule": (
         "the trigger is the PRESENCE OF AN ARCHIVE ROW and nothing else. It is never fired "
@@ -2068,7 +2190,7 @@ TEST_REQUIREMENTS: tuple[str, ...] = (
 
 #: The design a future economic run is governed by. Named in the payload so the
 #: answer is machine-readable rather than inferred from a document.
-ACTIVE_DESIGN = "P13-A2"
+ACTIVE_DESIGN = "P13-A2R1"
 
 #: Every hash this preregistration has ever had, EXCEPT the active one, each
 #: marked SUPERSEDED.
@@ -2110,6 +2232,21 @@ SUPERSEDED_HASHES: tuple[dict[str, str], ...] = (
             "FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR remains in the hashed payload and in "
             "force — but the A1 HASH is retired, and no P13 economic run may claim it as "
             "the active design"
+        ),
+    },
+    {
+        "design": "P13-A2",
+        "hash": "sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c",
+        "status": "SUPERSEDED",
+        "committed_at": "0d023ba5a33bbcae55bb079146838f5f22959607",
+        "superseded_by": "A2R1",
+        "what_it_governs_now": (
+            "historical provenance only, and it is retained rather than quietly dropped "
+            "because it is the first committed A2 design and the chronology must show it. "
+            "A2's source-validity BEHAVIOUR is not withdrawn — A2R1 keeps every treatment "
+            "unchanged — but its claim that the pre-open branch 'can only reduce accrued "
+            "funding' was false and is withdrawn. No P13 economic run may claim this hash "
+            "as the active design"
         ),
     },
 )
