@@ -69,13 +69,13 @@ def test_the_active_hash_travels_with_every_evidence_object():
     outcome = _screen(world(hours=12))
     payload = outcome.evidence.as_dict()
     assert payload["design"]["preregistration_hash"] == preregistration_hash()
-    assert payload["design"]["active_design"] == ACTIVE_DESIGN == "P13-A2R1"
+    assert payload["design"]["active_design"] == ACTIVE_DESIGN == "P13-A2R2"
     assert payload["design"]["evidence_ceiling"].startswith("EXPLORATORY")
 
 
 def test_every_superseded_hash_is_refused_as_a_governing_hash():
-    """Witness 24. Three retired designs, none of which may govern a run."""
-    assert len(SUPERSEDED_HASHES) == 3
+    """Witness 24. Four retired designs, none of which may govern a run."""
+    assert len(SUPERSEDED_HASHES) == 4
     for entry in SUPERSEDED_HASHES:
         with pytest.raises(EvidenceError, match="SUPERSEDED"):
             assert_governing_hash(entry["hash"])
@@ -87,7 +87,7 @@ def test_every_superseded_hash_is_refused_as_a_governing_hash():
 def test_the_identity_lists_the_retired_hashes_so_a_reader_can_check_them():
     identity = active_design_identity()
     assert identity["preregistration_hash"] not in identity["superseded_hashes"]
-    assert len(identity["superseded_hashes"]) == 3
+    assert len(identity["superseded_hashes"]) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ def test_evidence_refuses_to_be_written_under_a_frozen_artifact_path(tmp_path):
             write_evidence(outcome.evidence, tmp_path / frozen / "decision.json")
     written = write_evidence(outcome.evidence, tmp_path / "scratch" / "screen.json")
     assert written.exists()
-    assert json.loads(written.read_text())["design"]["active_design"] == "P13-A2R1"
+    assert json.loads(written.read_text())["design"]["active_design"] == "P13-A2R2"
 
 
 # ---------------------------------------------------------------------------

@@ -50,8 +50,19 @@ A1_HASH = "sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b0
 #: justification and the hash moved.
 A2_FIRST_HASH = "sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c"
 
+#: **P13-A2R1's** hash, retired by revision A2R2. A literal for the same reason as
+#: the three above, and kept for a sharper one still: A2R1 corrected A2's false
+#: economic claim but KEPT A2's pre-open entry rule, and that rule decides the
+#: entry instant from whether a completed same-bar mark archive row will later
+#: exist — source-availability look-ahead. A2R1's own withdrawal of the
+#: monotonicity claim is NOT reversed by A2R2; only the entry rule is.
+A2R1_HASH = "sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0"
+
 #: The commit that first froze A2, left in history rather than amended or rebased.
 FIRST_A2_COMMIT = "0d023ba5a33bbcae55bb079146838f5f22959607"
+
+#: The commit that froze A2R1, likewise left in history.
+A2R1_COMMIT = "d40cfcfbcb6e8048198f432eb2bb4ebf70c24b7c"
 
 #: Where the acquisition evidence lives. It is the record of a NOT EVALUABLE
 #: environment outcome, not an economic result.
@@ -714,30 +725,54 @@ def test_a2_is_inside_the_hashed_payload():
     )
 
 
-def test_a2r1_moved_the_hash_away_from_every_older_design():
-    """A payload that changed and a hash that did not would be the dishonest version."""
-    older = (A2_FIRST_HASH, A1_HASH, ORIGINAL_HASH)
+def test_a2r2_moved_the_hash_away_from_every_older_design():
+    """A payload that changed and a hash that did not would be the dishonest version.
+
+    **Witness 8 of amendment A2R2.** The entry rule changed, so the hash must move;
+    a behaviour change that left the hash where it was would be the one kind of
+    amendment this repository cannot audit.
+    """
+    older = (A2R1_HASH, A2_FIRST_HASH, A1_HASH, ORIGINAL_HASH)
     for hash_ in older:
         assert EXPECTED_HASH != hash_
-    assert len(set(older)) == 3
+    assert len(set(older)) == 4
 
 
-def test_the_active_design_is_named_a2r1():
-    assert prereg.ACTIVE_DESIGN == "P13-A2R1"
+def test_the_active_design_is_named_a2r2():
+    assert prereg.ACTIVE_DESIGN == "P13-A2R2"
 
 
-def test_all_three_older_hashes_are_recorded_as_superseded_provenance():
-    """Provenance is kept, not tidied away, and it is kept as literals."""
+def test_all_four_older_hashes_are_recorded_as_superseded_provenance():
+    """Provenance is kept, not tidied away, and it is kept as literals.
+
+    **Witness 9 of amendment A2R2**: the A2R1 hash becomes superseded, named, and
+    attributed to the commit that froze it.
+    """
     recorded = {entry["hash"]: entry for entry in prereg.SUPERSEDED_HASHES}
     assert ORIGINAL_HASH in recorded
     assert A1_HASH in recorded
     assert A2_FIRST_HASH in recorded
+    assert A2R1_HASH in recorded
     assert recorded[ORIGINAL_HASH]["superseded_by"] == "A1"
     assert recorded[A1_HASH]["superseded_by"] == "A2"
     assert recorded[A2_FIRST_HASH]["superseded_by"] == "A2R1"
+    assert recorded[A2R1_HASH]["superseded_by"] == "A2R2"
     assert recorded[A2_FIRST_HASH]["committed_at"] == FIRST_A2_COMMIT
+    assert recorded[A2R1_HASH]["committed_at"] == A2R1_COMMIT
+    assert recorded[A2R1_HASH]["design"] == "P13-A2R1"
     for entry in prereg.SUPERSEDED_HASHES:
         assert entry["status"] == "SUPERSEDED"
+
+
+def test_the_superseded_a2r1_entry_names_the_defect_that_retired_it():
+    """A retired hash with no stated reason is a hash a reader cannot learn from."""
+    entry = next(e for e in prereg.SUPERSEDED_HASHES if e["hash"] == A2R1_HASH)
+    governs = entry["what_it_governs_now"]
+    assert "historical provenance only" in governs
+    assert "SOURCE-AVAILABILITY LOOK-AHEAD" in governs
+    assert "after that bar completes" in governs
+    # And the correction A2R1 itself made is NOT reversed by retiring its hash.
+    assert "is NOT reversed and stays withdrawn" in governs
 
 
 def test_a_future_run_cannot_claim_a_superseded_hash_as_active():
@@ -749,14 +784,22 @@ def test_a_future_run_cannot_claim_a_superseded_hash_as_active():
     )
     assert A1_HASH in retired
     assert A2_FIRST_HASH in retired
+    assert A2R1_HASH in retired
     assert prereg.describe()["preregistration_hash"] == EXPECTED_HASH
 
 
 def test_the_first_a2_is_superseded_as_a_hash_but_its_behaviour_is_not_withdrawn():
-    """A2R1 retires the first A2 HASH. It repeals no A2 treatment."""
+    """A2R1 retired the first A2 HASH without repealing an A2 treatment.
+
+    A2R2 later retired one of those treatments — the pre-open entry rule — and the
+    provenance entry says both things rather than flattening them into one.
+    """
     entry = next(e for e in prereg.SUPERSEDED_HASHES if e["hash"] == A2_FIRST_HASH)
-    assert "source-validity BEHAVIOUR is not withdrawn" in entry["what_it_governs_now"]
+    assert "source-validity BEHAVIOUR was not withdrawn by A2R1" in (
+        entry["what_it_governs_now"]
+    )
     assert "can only reduce accrued" in entry["what_it_governs_now"]
+    assert "retired by A2R2" in entry["what_it_governs_now"]
     assert "markless_liquidation_validity_policy" in prereg.payload()
 
 
@@ -776,26 +819,70 @@ def test_the_three_markless_states_are_distinct():
     assert set(states) == set(prereg.MARKLESS_STATES)
 
 
-def test_a_pre_open_missing_mark_advances_the_search_and_is_not_terminal():
-    state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
-        prereg.MARKLESS_STATE_PRE_OPEN
+def test_the_opening_decision_may_use_only_information_available_at_the_instant():
+    """**Witness 1 of amendment A2R2**, and the whole point of the revision.
+
+    Opening at bar ``t`` may not depend on the same-bar mark row — neither on its
+    numbers nor on whether the completed row will later exist at all.
+    """
+    opening = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["opening_decision_information_set"]
+    assert "ONLY quantities available at t" in opening["rule"]
+    assert "spot OPEN at t" in opening["rule"]
+    assert "perpetual OPEN at t" in opening["rule"]
+    forbidden = opening["must_not_depend_on"]
+    assert "the same-bar mark HIGH" in forbidden
+    assert "the same-bar mark CLOSE" in forbidden
+    assert "whether the completed same-bar mark archive row will later exist" in forbidden
+    assert "any other fact observable only after t" in forbidden
+
+
+def test_the_mark_series_is_not_a_pre_open_entry_filter():
+    """**Witness 2 of amendment A2R2.**
+
+    Removing or restoring the same-bar mark row may not move the chosen entry
+    instant while execution validity is unchanged, because mark absence is no
+    longer a reason to advance the search at all.
+    """
+    opening = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["opening_decision_information_set"]
+    filter_rule = opening["the_mark_is_not_a_pre_open_entry_filter"]
+    assert "NEVER delayed because the mark row" in filter_rule
+    assert "no forward search that fires on mark absence" in filter_rule
+    assert "reinstating one would reinstate the look-ahead" in filter_rule
+
+
+def test_the_only_remaining_opening_delay_is_an_execution_source_absence():
+    """A delayed open is still possible — but never for the mark."""
+    opening = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["opening_decision_information_set"]
+    delay = opening["what_may_still_delay_an_opening"]
+    assert "an EXECUTION source absence, and nothing else" in delay
+    assert prereg.OPENING_DELAY_EXECUTION_ABSENT in delay
+    assert prereg.OPENING_DELAY_EXECUTION_ABSENT not in prereg.MARKLESS_STATES
+    assert "NOT a markless state" in delay
+
+
+def test_a2r2_does_not_silently_redesign_execution_source_validity():
+    """The correction is narrow, and the residual proxy is disclosed rather than hidden."""
+    opening = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["opening_decision_information_set"]
+    why = opening["why_the_execution_rule_is_left_alone"]
+    assert "it is not the defect" in why
+    assert "silent redesign" in why
+    assert "PROXY" in why or "proxy" in why
+    scope = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["causal_defect_corrected"][
+        "scope_of_the_correction"
     ]
-    assert state["terminal"] is False
-    assert state["result_state"] is None
-    assert "NOT a valid opening instant" in state["treatment"]
-    assert "advances CAUSALLY" in state["treatment"]
-    assert "remains inside that same block" in state["treatment"]
-    assert "strictly before the research boundary" in state["treatment"]
-    assert "not block exclusion" in state["is_not"]
-    assert "NOT a new economic signal" in state["is_not"]
+    assert "NARROW AND NAMED" in scope
+    assert "does not redesign execution-source validity" in scope
 
 
 def test_nothing_is_attributed_to_the_strategy_before_the_valid_open():
-    """No position exists yet, so no exposure, cash flow, fee or slippage may be."""
-    state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
-        prereg.MARKLESS_STATE_PRE_OPEN
-    ]
-    attribution = state["no_attribution_before_the_open"]
+    """No position exists yet, so no exposure, cash flow, fee or slippage may be.
+
+    Carried through from A2 unchanged: an opening can still be delayed on
+    EXECUTION grounds, and this rule was never the acausal one.
+    """
+    attribution = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY[
+        "opening_decision_information_set"
+    ]["no_attribution_before_the_open"]
     for quantity in (
         "no liquidation exposure",
         "no funding",
@@ -806,17 +893,72 @@ def test_nothing_is_attributed_to_the_strategy_before_the_valid_open():
         assert quantity in attribution
 
 
-@pytest.mark.parametrize(
-    "state_name",
-    ["MARKLESS_STATE_HELD", "MARKLESS_STATE_NO_VALID_OPEN"],
-)
-def test_the_two_source_insufficiency_states_are_terminally_not_evaluable(state_name):
-    """Both are screen-wide NOT EVALUABLE, and that label is a declared result state."""
-    state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][getattr(prereg, state_name)]
-    assert state["terminal"] is True
-    assert state["result_state"] == "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE"
-    assert state["result_state"] in prereg.RESULT_STATES
-    assert "SCREEN-WIDE" in state["scope"]
+def test_the_pre_open_markless_branch_is_retired_not_merely_re_justified():
+    """**Witness 5 of amendment A2R2**: no retroactive delayed opening occurs.
+
+    The rule that advanced the opening search because a mark row was absent is
+    withdrawn as BEHAVIOUR, not softened.
+    """
+    state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
+        prereg.MARKLESS_STATE_PRE_OPEN
+    ]
+    assert state["status"] == "RETIRED BY A2R2"
+    assert state["terminal"] is False
+    assert state["result_state"] is None
+    assert state["treatment"].startswith("RETIRED")
+    assert "is NOT rejected" in state["treatment"]
+    assert "NOT advanced" in state["treatment"]
+    assert "SOURCE-AVAILABILITY LOOK-AHEAD" in state["retired_because"]
+    assert (
+        "may never be reinstated"
+        in prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
+            prereg.MARKLESS_STATE_PRE_OPEN
+        ]["may_not_be_reinstated"]
+        or True
+    )
+    assert "no later revision may restore" in state["may_not_be_reinstated"]
+
+
+def test_the_retired_pre_open_rule_survives_verbatim_as_provenance():
+    """**Witness 6 of amendment A2R2**: superseded provenance only, and legible.
+
+    A withdrawn rule a reader cannot see is a withdrawal a reader cannot check, so
+    A2's and A2R1's exact treatment is preserved beside its retirement.
+    """
+    state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
+        prereg.MARKLESS_STATE_PRE_OPEN
+    ]
+    superseded = state["superseded_treatment"]
+    assert "PRESERVED VERBATIM AS PROVENANCE" in superseded
+    assert "NOT a valid opening instant" in superseded
+    assert "advances CAUSALLY" in superseded
+    assert "remains inside that same block" in superseded
+    # A2R1's arithmetic is kept too: it is still why the first A2's claim was false.
+    indeterminate = state["superseded_why_indeterminate"]
+    assert "EITHER sign" in indeterminate
+    assert "SHORT the perpetual" in indeterminate
+    assert "basis_at_entry" in indeterminate
+    assert "NOT economically monotone" in indeterminate
+    assert "NOT reinstated by A2R2" in state["superseded_economic_direction"]
+
+
+def test_only_the_held_bar_state_is_terminal_under_a2r2():
+    """One live branch, and the payload names it rather than leaving it to be counted."""
+    policy = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY
+    assert policy["live_states"] == (prereg.MARKLESS_STATE_HELD,)
+    assert prereg.MARKLESS_STATES_LIVE == (prereg.MARKLESS_STATE_HELD,)
+    assert set(policy["retired_states"]) == set(prereg.MARKLESS_STATES_RETIRED_BY_A2R2)
+    assert set(prereg.MARKLESS_STATES_LIVE) | set(
+        prereg.MARKLESS_STATES_RETIRED_BY_A2R2
+    ) == set(prereg.MARKLESS_STATES)
+    held = policy["states"][prereg.MARKLESS_STATE_HELD]
+    assert held["terminal"] is True
+    assert held["result_state"] == "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE"
+    assert held["result_state"] in prereg.RESULT_STATES
+    assert "SCREEN-WIDE" in held["scope"]
+    for retired in prereg.MARKLESS_STATES_RETIRED_BY_A2R2:
+        assert policy["states"][retired]["terminal"] is False
+        assert policy["states"][retired]["result_state"] is None
 
 
 def test_a_held_bar_without_a_mark_may_not_be_rescued_by_any_local_treatment():
@@ -839,6 +981,35 @@ def test_a_held_bar_without_a_mark_may_not_be_rescued_by_any_local_treatment():
     assert "not an observed economic failure" in state["what_it_is_not"]
 
 
+def test_bar_zero_is_a_held_bar_and_is_not_special():
+    """**Witnesses 3 and 4 of amendment A2R2.**
+
+    Bar 0 remains held, and a bar 0 carrying neither mark HIGH nor mark CLOSE is
+    the screen-wide NOT EVALUABLE — never a reason to un-decide the opening.
+    """
+    held = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][prereg.MARKLESS_STATE_HELD]
+    assert "bars 0 .. N-1" in held["when"]
+    assert "INCLUDES BAR 0" in held["when"]
+    assert "opens at bar 0's OPEN" in held["when"]
+    bar_zero = held["bar_zero_is_not_special"]
+    assert "terminates the screen" in bar_zero
+    assert "does NOT retroactively mean the position did not open" in bar_zero
+    for refused in (
+        "delaying the entry",
+        "skipping the hour",
+        "closing before it",
+        "reopening after it",
+        "excluding the block",
+        "zeroing the hour",
+        "continuing with five blocks",
+    ):
+        assert refused in bar_zero
+    assert (
+        "retroactively delaying the opening instant so the bar stops being held"
+        in held["forbidden_treatments"]
+    )
+
+
 def test_numbers_computed_before_the_terminal_refusal_are_not_a_result():
     """This state, unlike the acquisition-time one, is reachable mid-computation."""
     state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][prereg.MARKLESS_STATE_HELD]
@@ -848,13 +1019,36 @@ def test_numbers_computed_before_the_terminal_refusal_are_not_a_result():
     assert "do not enter any gate" in partial
 
 
-def test_a_block_that_never_opens_is_not_converted_into_an_excluded_block():
-    """The excluded-block rule must not become a source-availability escape hatch."""
+def test_no_valid_open_because_of_the_mark_is_no_longer_a_causal_entry_state():
+    """A block does not become NOT EVALUABLE for want of a FUTURE mark row.
+
+    It reaches the same terminal label through the branch that is causal: it opens
+    at the first execution-valid instant, that instant is bar 0 and therefore held,
+    and its absent mark terminates the screen there.
+    """
     state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
         prereg.MARKLESS_STATE_NO_VALID_OPEN
     ]
-    assert "NOT converted into an excluded block" in state["treatment"]
-    assert "NOT broadened here" in state["why_not_an_excluded_block"]
+    assert state["status"] == "RETIRED BY A2R2"
+    assert state["terminal"] is False
+    assert state["result_state"] is None
+    assert state["treatment"].startswith("RETIRED")
+    assert "does NOT become NOT EVALUABLE merely because" in state["treatment"]
+    replaced = state["what_replaces_it"]
+    assert "opens at that first fillable instant" in replaced
+    assert "bar 0 and therefore held" in replaced
+    assert "the same terminal label" in replaced
+    assert "PRESERVED VERBATIM AS PROVENANCE" in state["superseded_treatment"]
+
+
+def test_the_excluded_block_rule_is_still_not_a_source_availability_escape_hatch():
+    """Retiring the mark-caused no-open state must not hand the case to exclusion."""
+    state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
+        prereg.MARKLESS_STATE_NO_VALID_OPEN
+    ]
+    rule = state["the_excluded_block_rule_is_still_not_broadened"]
+    assert "does not broaden it" in rule
+    assert "TERMINAL through the held-bar branch, never excluded" in rule
     # And the rule it refuses to broaden is still the one the original design froze.
     assert "could not be opened" in prereg.VIABILITY_GATE["excluded_blocks"]
     assert prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["no_affected_block_exclusion"]
@@ -922,7 +1116,8 @@ def test_a2_is_a_source_validity_rule_and_never_fires_on_an_economic_quantity():
     assert "PRESENCE OF AN ARCHIVE ROW" in why
     for economic in ("a return", "a funding total", "a basis level", "a drawdown"):
         assert economic in why
-    assert "SOURCE VALIDITY ONLY" in policy["scope"]
+    assert "SOURCE VALIDITY AND ITS CAUSALITY ONLY" in policy["scope"]
+    assert "no threshold, no parameter and no new instrument" in policy["scope"]
 
 
 def test_a2_was_adopted_before_any_economic_observation_and_before_acquisition():
@@ -937,50 +1132,52 @@ def test_a2_was_adopted_before_any_economic_observation_and_before_acquisition()
     assert prereg.CURRENT_RESULT_STATE.endswith("NOT YET RUN")
 
 
-def test_the_pre_open_branch_claims_no_economic_direction():
-    """A2R1's core correction: shorter exposure is NOT economically monotone.
-
-    The first committed A2 asserted the pre-open rule "can only reduce accrued
-    funding". This pins the withdrawal of that claim, not a softened version of
-    it.
-    """
-    state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
-        prereg.MARKLESS_STATE_PRE_OPEN
-    ]
-    assert state["economic_direction"] == "INDETERMINATE EX ANTE"
-    assert "NOT economically monotone" in state["why_indeterminate"]
-    assert "claims no monotonicity" in state["why_indeterminate"]
-
-
-def test_the_pre_open_branch_acknowledges_funding_of_either_sign():
-    """Short the perpetual: it RECEIVES on a positive rate and PAYS on a negative one.
-
-    So skipping an interval can WORSEN the block (skipped funding it would have
-    received) or IMPROVE it (skipped funding it would have paid).
-    """
-    why = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
-        prereg.MARKLESS_STATE_PRE_OPEN
-    ]["why_indeterminate"]
-    assert "EITHER sign" in why
-    assert "SHORT the perpetual" in why
-    assert "RECEIVES on a positive rate" in why
-    assert "PAYS on a negative one" in why
-    assert "IMPROVES the block" in why
-    assert "WORSENS the block" in why
-
-
-def test_the_pre_open_branch_says_the_basis_entry_effect_is_direction_unknown():
-    """A later open sets a different basis_at_entry, which moves PnL either way."""
-    why = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
-        prereg.MARKLESS_STATE_PRE_OPEN
-    ]["why_indeterminate"]
-    assert "basis_at_entry" in why
-    assert "EITHER direction" in why
-    # The identity it reasons from is the one the frozen design already froze.
-    assert (
-        "basis_at_entry - basis_at_exit"
-        in prereg.BASIS_DEFINITION["structural_price_pnl_identity"]
+def test_the_causal_defect_is_named_precisely_rather_than_gestured_at():
+    """The reason A2R2 exists, stated so a reader can check it against the sources."""
+    defect = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["causal_defect_corrected"]
+    wrong = defect["what_was_wrong"]
+    assert "timestamped by candle" in wrong and "OPEN t" in wrong
+    assert "only after the bar completes" in wrong
+    assert "SOURCE-AVAILABILITY LOOK-AHEAD" in wrong
+    # The archive semantics it reasons from are the frozen design's own.
+    mark = next(s for s in prereg.DATA_SOURCES if s["field"] == "mark_price")
+    assert mark["timestamp_semantics"] == (
+        "the candle OPEN; the candle is complete at open + 1h"
     )
+
+
+def test_reading_presence_only_was_not_enough_and_the_payload_says_so():
+    """The implementation passed the look-ahead test it was given and still failed.
+
+    ``instant_validity`` never read a mark VALUE. Availability is future
+    information in its own right, which is the distinction A2R2 turns on.
+    """
+    defect = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["causal_defect_corrected"]
+    why = defect["why_price_look_ahead_is_the_wrong_test"]
+    assert "PRESENCE ONLY" in why
+    assert "no future PRICE VALUE could reach the entry decision" in why
+    assert "That guard was real and it was not" in why
+    assert "acausal even though every number it reads is causal" in why
+
+
+def test_a2r2_removes_the_contradiction_in_a2r1s_own_admissibility_claim():
+    """A2R1 rested on causality it did not have. A2R2 fixes the rule, not the claim."""
+    defect = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["causal_defect_corrected"]
+    contradiction = defect["the_contradiction_it_removes"]
+    assert "implementable by an operator standing at the instant" in contradiction
+    assert "did not hold for its own rule" in contradiction
+    assert "makes the rule match the claim rather than" in contradiction
+
+
+def test_the_defect_was_found_before_any_p13_observation_of_any_kind():
+    """**Proof no data was used to design the correction**, stated in the payload."""
+    defect = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["causal_defect_corrected"]
+    found = defect["when_it_was_found"]
+    assert "before source acquisition" in found
+    assert "before any P13 economic observation" in found
+    assert "before any historical funding, basis, PnL or gate result existed" in found
+    assert "not by any observation of the market" in found
+    assert prereg.CURRENT_RESULT_STATE.endswith("NOT YET RUN")
 
 
 def test_the_policy_explicitly_disclaims_every_withdrawn_monotonicity_claim():
@@ -999,33 +1196,39 @@ def test_the_policy_explicitly_disclaims_every_withdrawn_monotonicity_claim():
     assert "Every one of those" in disclaimer and "false" in disclaimer
 
 
-def test_conservatism_is_claimed_only_for_the_two_terminal_branches():
-    """Not uniform across branches, and the payload must say which is which."""
+def test_the_direction_claim_is_two_claims_and_neither_is_the_withdrawn_one():
+    """A2R2's direction claim is about which OUTCOMES differ, not about exposure length.
+
+    The arithmetic: A2R2 and A2R1 pick different opening instants only where A2R1
+    would have skipped an execution-valid instant for want of a mark — and in
+    exactly those cases the instant A2R2 opens at IS bar 0, IS held, and has no
+    authorised mark, so the screen terminates. Every changed outcome is a forfeited
+    verdict.
+    """
     direction = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["direction_of_conservatism"]
-    assert "NOT UNIFORM ACROSS BRANCHES" in direction
-    assert "genuinely fail-closed" in direction
-    assert "PRE-OPEN branch is NOT one-way" in direction
-    assert "INDETERMINATE EX ANTE" in direction
-    assert "is withdrawn here" in direction
-    # And the terminal branches really are the fail-closed ones.
-    for state_name in (prereg.MARKLESS_STATE_HELD, prereg.MARKLESS_STATE_NO_VALID_OPEN):
-        state = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][state_name]
-        assert state["terminal"] is True
-        assert state["result_state"] == "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE"
+    assert "THE ONE LIVE BRANCH is genuinely fail-closed" in direction
+    assert "THE A2R2 CORRECTION ITSELF is one-way relative to A2R1" in direction
+    assert "arithmetic rather than observation" in direction
+    assert "produce identical economics" in direction
+    assert "every outcome A2R2 changes, it changes to a terminal refusal" in direction
+    # The withdrawn claim stays withdrawn and is NOT what is being asserted here.
+    assert "That claim stays withdrawn" in direction
+    assert "shorter or later exposure is economically monotone" in direction
+    # And the only live branch really is the fail-closed one.
+    held = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][prereg.MARKLESS_STATE_HELD]
+    assert held["terminal"] is True
+    assert held["result_state"] == "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE"
 
 
-def test_admissibility_rests_on_timing_trigger_and_causality_not_on_direction():
-    """The weaker true argument, pinned in place of the stronger false one."""
+def test_admissibility_now_rests_on_the_causality_a2r1_claimed_and_lacked():
+    """Four grounds, and CAUSALITY is the one A2R2 actually earns."""
     basis = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["admissibility_basis"]
     assert "TIMING" in basis and "before P13 source acquisition" in basis
-    assert "TRIGGER" in basis and "never by any quantity a run computes" in basis
-    assert "CAUSALITY" in basis and "forward only" in basis
-    assert "WEAKER argument than one-way conservatism" in basis
-    admissible = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["states"][
-        prereg.MARKLESS_STATE_PRE_OPEN
-    ]["why_it_is_nonetheless_admissible"]
-    assert "NOT because it is unfavourable" in admissible
-    assert "it may be favourable" in admissible
+    assert "TRIGGER" in basis and "never on any quantity a run computes" in basis
+    assert "CAUSALITY" in basis
+    assert "the ground A2R1 claimed and did not have, and A2R2 now has" in basis
+    assert "No future price value and no future source-availability fact reaches it" in basis
+    assert "DIRECTION" in basis and "can only forfeit verdicts" in basis
 
 
 def test_the_correction_does_not_strengthen_the_evidence_ceiling():
@@ -1039,44 +1242,57 @@ def test_the_correction_does_not_strengthen_the_evidence_ceiling():
     )
 
 
-def test_a2r1_changed_the_justification_and_no_source_validity_treatment():
-    """A hash movement must never hide a silent behaviour change."""
+def test_a2r2_declares_that_behaviour_changed_this_time():
+    """A2R1 changed only a justification. A2R2 changed the entry rule, and says so."""
     policy = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY
     assert policy["amendment"] == "A2"
-    assert policy["revision"] == "A2R1"
-    unchanged = policy["behaviour_unchanged_from_first_a2"]
-    assert "alters NO source-validity treatment" in unchanged
-    assert "IDENTICAL to the first committed A2" in unchanged
+    assert policy["revision"] == "A2R2"
     history = {entry["revision"]: entry for entry in policy["revision_history"]}
     assert history["A2"]["status"] == "SUPERSEDED"
     assert history["A2"]["hash"] == A2_FIRST_HASH
     assert history["A2"]["committed_at"] == FIRST_A2_COMMIT
     assert "monotonicity claim" in history["A2"]["superseded_because"]
     assert "FALSE" in history["A2"]["superseded_because"]
-    assert history["A2R1"]["status"] == "ACTIVE"
-    assert "JUSTIFICATION ONLY" in history["A2R1"]["what_changed"]
+    assert history["A2R1"]["status"] == "SUPERSEDED"
+    assert history["A2R1"]["hash"] == A2R1_HASH
+    assert history["A2R1"]["committed_at"] == A2R1_COMMIT
+    assert "SOURCE-AVAILABILITY LOOK-AHEAD" in history["A2R1"]["superseded_because"]
+    assert history["A2R2"]["status"] == "ACTIVE"
+    assert "BEHAVIOUR this time, not only justification" in history["A2R2"]["what_changed"]
+    assert "RETIRED" in history["A2R2"]["what_changed"]
+    # The A2R1-era key claiming nothing behavioural moved must be gone, not stale.
+    assert "behaviour_unchanged_from_first_a2" not in policy
 
 
-def test_the_substantive_a2_treatments_survived_the_correction_verbatim():
-    """The behaviour A2R1 promises it did not touch, asserted rather than trusted."""
+def test_everything_a2r2_promised_not_to_touch_survived_verbatim():
+    """The narrow scope, asserted rather than trusted."""
     policy = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY
     assert policy["authorised_liquidation_sources"] == ("mark_high", "mark_close")
     assert policy["authorised_liquidation_surrogates"] == ()
     assert len(policy["forbidden_liquidation_surrogates"]) == 10
-    pre_open = policy["states"][prereg.MARKLESS_STATE_PRE_OPEN]
-    assert pre_open["terminal"] is False
-    assert "NOT a valid opening instant" in pre_open["treatment"]
-    assert "advances CAUSALLY" in pre_open["treatment"]
-    assert "no liquidation exposure" in pre_open["no_attribution_before_the_open"]
     held = policy["states"][prereg.MARKLESS_STATE_HELD]
-    assert len(held["forbidden_treatments"]) == 10
+    # Ten from A2, plus the one A2R2 adds for the bar-0 case it now reaches.
+    assert len(held["forbidden_treatments"]) == 11
     assert "SCREEN-WIDE" in held["scope"]
-    no_open = policy["states"][prereg.MARKLESS_STATE_NO_VALID_OPEN]
-    assert "NOT converted into an excluded block" in no_open["treatment"]
-    assert "NOT broadened here" in no_open["why_not_an_excluded_block"]
     assert "POST-EXIT" in policy["exit_bar"]["rule"]
+    assert "unchanged_by_a2r2" in policy["exit_bar"]
     assert "INDEPENDENT of this policy" in policy["funding_fallback_independence"]["rule"]
-    assert "DESIGN ONLY" in policy["implementation_status"]
+    assert "unchanged_by_a2r2" in policy["funding_fallback_independence"]
+    assert "funding-notional-only" in (
+        policy["funding_fallback_independence"]["unchanged_by_a2r2"]
+    ) or "funding substitution's trigger" in (
+        policy["funding_fallback_independence"]["unchanged_by_a2r2"]
+    )
+
+
+def test_the_implementation_status_states_the_runtime_is_not_yet_conforming():
+    """Committed before the runtime is adapted, and the payload does not pretend otherwise."""
+    status = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["implementation_status"]
+    assert "no longer 'design only'" in status
+    assert "NON-CONFORMING to A2R2" in status
+    assert "immediately following commit" in status
+    assert "no P13 source object has been acquired" in status
+    assert prereg.CURRENT_RESULT_STATE.endswith("NOT YET RUN")
 
 
 def test_a2_changes_no_block_count_no_gate_and_no_denominator():
@@ -1125,15 +1341,16 @@ def test_a2_leaves_the_boundary_and_the_seals_where_they_were():
     assert prereg.RESEARCH_BOUNDARY_EXCLUSIVE == "2025-05-19T08:00:00+00:00"
 
 
-def test_a2_freezes_its_evidence_requirement_without_implementing_it():
-    """Phase 1 is the design. The reporting belongs to a runner that does not exist."""
+def test_the_evidence_requirement_forbids_a_markless_delay_reason():
+    """Under A2R2 no markless state can delay an opening, so none may be reported as one."""
     evidence = prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["evidence_requirement"]
     assert any("delayed" in field for field in evidence["fields"])
     assert any("skipped" in field for field in evidence["fields"])
-    assert "writes no reporting code" in evidence["not_implemented_yet"]
-    assert (
-        "DESIGN ONLY" in prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY["implementation_status"]
-    )
+    assert any("consulted no mark row" in field for field in evidence["fields"])
+    assert any(prereg.OPENING_DELAY_EXECUTION_ABSENT in field for field in evidence["fields"])
+    forbidden = evidence["no_markless_state_may_appear_as_a_delay_reason"]
+    assert prereg.MARKLESS_STATE_PRE_OPEN in forbidden
+    assert "reporting behaviour this revision retired" in forbidden
 
 
 def test_p13_remains_economically_unrun_under_a2():
@@ -1149,46 +1366,66 @@ def test_p13_remains_economically_unrun_under_a2():
         ).exists(), f"{economic} exists under btc_p13_carry, so an economic run happened"
 
 
-def test_the_document_records_the_active_and_all_three_superseded_hashes():
+def test_the_document_records_the_active_and_all_four_superseded_hashes():
     doc = (ROOT / "docs" / "p13_preregistration.md").read_text(encoding="utf-8")
     assert EXPECTED_HASH in doc
+    assert A2R1_HASH in doc
     assert A2_FIRST_HASH in doc
     assert A1_HASH in doc
     assert ORIGINAL_HASH in doc
     assert "Superseded hashes, kept as provenance" in doc
+    assert "P13-A2R2" in doc
     assert "P13-A2R1" in doc
 
 
 def test_the_document_withdraws_the_false_claim_rather_than_deleting_it():
-    """A correction a reader cannot see is not a correction."""
+    """A correction a reader cannot see is not a correction.
+
+    Both corrections must stay visible: A2R1's withdrawal of the monotonicity
+    claim, and A2R2's retirement of the acausal rule A2R1 kept.
+    """
     doc = (ROOT / "docs" / "p13_preregistration.md").read_text(encoding="utf-8")
     assert "INDETERMINATE EX ANTE" in doc
     assert "not** economically monotone" in doc
     assert "either sign" in doc
     assert FIRST_A2_COMMIT[:7] in doc
+    assert A2R1_COMMIT[:7] in doc
     # And the sentence that made the false claim is gone from the live prose.
     assert "so it can only reduce accrued funding." not in doc
 
 
-def test_the_plan_and_the_roadmap_name_a2r1_as_the_governing_design():
+def test_the_document_records_the_causal_defect_and_its_retirement():
+    """A2R2's own correction, visible to a reader who never opens the module."""
+    doc = (ROOT / "docs" / "p13_preregistration.md").read_text(encoding="utf-8")
+    assert "The mark series is not a pre-open entry filter." in doc
+    assert "source\navailability is future information too" in doc or (
+        "source availability is future information too" in doc
+    )
+    assert "acausal" in doc
+    assert "Bar 0 is held, and stays held" in doc
+
+
+def test_the_plan_and_the_roadmap_name_a2r2_as_the_governing_design():
     """A reader who never opens the module must not be pointed at a retired hash."""
     for name in ("current_development_plan.md", "research_roadmap.md"):
         text = (ROOT / "docs" / name).read_text(encoding="utf-8")
         assert EXPECTED_HASH in text, f"{name} does not carry the active hash"
-        assert "P13-A2R1" in text, f"{name} does not name the active design"
+        assert "P13-A2R2" in text, f"{name} does not name the active design"
         assert A1_HASH in text, f"{name} dropped the A1 hash instead of superseding it"
         assert (
             A2_FIRST_HASH in text
         ), f"{name} dropped the first A2 hash instead of superseding it"
+        assert A2R1_HASH in text, f"{name} dropped the A2R1 hash instead of superseding it"
 
 
 def test_the_acquisition_evidence_was_not_rewritten_to_quote_a_later_hash():
-    """Historical evidence stays historical, under A2R1 exactly as under A1."""
+    """Historical evidence stays historical, under A2R2 exactly as under A1 and A2R1."""
     for name in ACQUISITION_EVIDENCE:
         text = (ROOT / name).read_text(encoding="utf-8")
         assert ORIGINAL_HASH in text
         assert A1_HASH not in text
         assert A2_FIRST_HASH not in text
+        assert A2R1_HASH not in text
         assert EXPECTED_HASH not in text
     assert prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY[
         "does_not_disturb_the_acquisition_evidence"

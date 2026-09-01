@@ -1,8 +1,8 @@
 # P13 — BTC structural funding/basis carry feasibility
 
-Status: **P13-A2R1 — preregistered, NOT YET RUN.** The active design is
-**P13-A2R1** (§8d),
-`sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0`.
+Status: **P13-A2R2 — preregistered, NOT YET RUN.** The active design is
+**P13-A2R2** (§8d),
+`sha256:cac2f318e525fb1f0e5892fdd16fcd5febb72853d1a1cfa9fd6c5d3868b7a092`.
 No P13 economic number exists, and
 [`nn/p13_preregistration.py`](../nn/p13_preregistration.py) says so in
 `CURRENT_RESULT_STATE` and in `ACTIVE_DESIGN`. This document is the
@@ -544,201 +544,196 @@ the evaluation side.
 
 ### 8d. Amendment A2 — mark-less periods, before and after a block opens
 
-**This is amendment A2, at revision A2R1, and it is not an original
+**This is amendment A2, at revision A2R2, and it is not an original
 preregistration rule.** It is `MARKLESS_LIQUIDATION_VALIDITY_POLICY` in
 [`nn/p13_preregistration.py`](../nn/p13_preregistration.py), inside the hashed
 payload, and **it moves the preregistration hash** — see §15.
 
-**Revision A2R1 corrects a false claim, and the correction is why the hash moved a
-second time.** The first committed A2 —
-`sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c`, commit
-`0d023ba`, still in history and not rewritten — asserted that the pre-open branch
-"can only shorten a block's exposure, which can only reduce accrued funding" and
-that no branch "can add a positive block, raise a mean, lift a worst block". An
-independent review identified that as **false**, before implementation and before
-acquisition. A2R1 withdraws it and replaces it with an explicit statement that the
-pre-open branch's economic direction is **indeterminate ex ante**. **No
-source-validity treatment changed** — only the justification did.
+**Revision A2R2 corrects a causal defect, and this time the BEHAVIOUR changed.**
+A2 and A2R1 both said that before opening, a candidate grid instant lacking the
+required liquidation mark is rejected and the opening search advances. That rule
+is **acausal**, and it is withdrawn.
 
-**Why it is needed.** §3 already records that `markPriceKlines` availability can
+A `markPriceKlines` row is timestamped by candle **open** `t`, but its high, its
+close, and *the fact that a completed row for that bar exists in the published
+archive at all* are established only after the bar completes. So the rule
+
+> at `t`, inspect whether the completed same-bar mark row exists; if it is
+> absent, retroactively decide not to open at `t`
+
+conditions the **entry instant** on information that does not exist at `t`. It
+reads no future *price value* — the offline implementation was careful about
+exactly that, and `instant_validity` reads presence only — but **source
+availability is future information too**. A2R1's own admissibility argument rests
+on the claim that the convention is "implementable by an operator standing at the
+opening instant". It was not. A2R2 removes the rule rather than softening the
+claim.
+
+The defect was found **before source acquisition, before any P13 economic
+observation, and before any historical funding, basis, PnL or gate result
+existed** — by reading the frozen text against the archive semantics §3 already
+declares, not by learning anything about the market.
+
+**Revision history.** A2 (`sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c`,
+commit `0d023ba`) asserted that the pre-open branch "can only shorten a block's
+exposure, which can only reduce accrued funding". That monotonicity claim is
+**false**, and A2R1 (`sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0`,
+commit `d40cfcf`) withdrew it, replacing it with **INDETERMINATE EX ANTE** —
+but kept A2's pre-open entry rule. A2R2 retires that rule. **A2R1's withdrawal is
+not reversed**: the monotonicity claim stays withdrawn. All three earlier commits
+remain in history, unrewritten.
+
+A2R1's arithmetic is preserved here because it is still the reason the first A2's
+claim was false. A Binance USD-M funding rate takes **either sign**, and this
+construction is *short* the perpetual — it receives on a positive rate and pays on
+a negative one — so a skipped interval may hold funding the block would have
+*received* (skipping it worsens the block) or funding it would have *paid*
+(skipping it improves it). And under §6's telescoping identity the hedged price PnL
+is `Q x (basis_at_entry − basis_at_exit)`, so a later open sets a different
+`basis_at_entry` and moves basis PnL either way. Shorter exposure is
+**not** economically monotone. A2R2 does not reinstate any of the withdrawn
+claims; it removes the branch they were about.
+
+**Why A2 was needed at all.** §3 records that `markPriceKlines` availability can
 differ by archive object and month: `MARK_PRICE_FALLBACK` is explicitly *per
 archive object, not all-or-nothing*, and the first published month for BTCUSDT is
-**unmeasured**. §8b-i then removed the unauthorised third liquidation tier, so the
-evaluator now refuses a **held** bar carrying neither a mark high nor a mark
-close. That refusal is enforcement of frozen source semantics. What remains
-unfrozen is what the **block runner** — which does not exist — must do with it,
-and the frozen text fails to settle it in two places that pull opposite ways:
+**unmeasured**. §8b-i removed the unauthorised third liquidation tier, so the
+evaluator refuses a **held** bar carrying neither a mark high nor a mark close.
+That refusal is enforcement of frozen source semantics. What was unfrozen is what
+the block runner must do with it — and §6 requires "spot, perpetual and *(where
+used)* mark observations" to be valid at the opening instant without saying
+whether the mark is "used" there. A2 resolved that ambiguity one way; **A2R2
+resolves it the other way, and that is the whole of the change.**
 
-- **Before a position exists.** §6 requires "spot, perpetual and *(where used)*
-  mark observations" to be valid at the opening instant, without saying whether
-  the mark is "used" there.
-- **After a position exists.** §10 authorises exclusion only for a block that
-  could not be **opened**; it refuses to drop a block that *was* opened; and
-  `NOT_EVALUABLE_MEANING` speaks to sources that could not be obtained at all.
-  None of the three reaches a block that opened and then met a bar whose required
-  risk quantity is not computable.
+**1. Authorised liquidation data — unchanged.** For a held bar the mark **high**
+is preferred where available and the mark **close** is the authorised fallback. If
+neither exists, no liquidation quantity is computable. There is no third tier, and
+no surrogate is ever substituted — not the spot close, not the spot high, not the
+perpetual *trade* close or high, not a REST value, not another venue, not a
+reconstructed or synthetic mark, not zero, not infinity, not anything else.
+`authorised_liquidation_surrogates` is the **empty tuple**, asserted by test.
 
-A run meeting that gap with the data in front of it would have to choose, and the
-choices are not equally flattering: excluding the affected block, or jumping the
-hole, keeps a screen evaluable by discarding exactly the periods where the venue's
-own risk series is missing. Because the rule can change **which historical
-observations enter a block**, it must be frozen before acquisition, and it must be
-an explicit hash-moving amendment rather than a clarification.
+**2. The opening decision — this is what A2R2 changed.** The opening decision at a
+candidate grid instant `t` may use **only quantities available at `t`**. For the
+two execution legs that is the spot **open** at `t` and the perpetual **open** at
+`t`, which must satisfy the already-frozen execution validity rules. The opening
+decision **must not** depend on the same-bar mark high, the same-bar mark close,
+whether the completed same-bar mark archive row will later exist, or any other
+fact observable only after `t`.
 
-**1. Authorised liquidation data.** For a held bar the mark **high** is preferred
-where available and the mark **close** is the authorised fallback. If neither
-exists, no liquidation quantity is computable. There is no third tier, and no
-surrogate is ever substituted for the governed liquidation touch — not the spot
-close, not the spot high, not the perpetual *trade* close or high, not a REST
-value, not another venue, not a reconstructed or synthetic mark, not zero, not
-infinity, not anything else. The machine-readable
-`authorised_liquidation_surrogates` is the **empty tuple**, and that is asserted
-by test.
+> **The mark series is not a pre-open entry filter.**
 
-**2. Before a block opens.** A grid instant at which the required liquidation mark
-is unavailable is **not a valid opening instant**. The block's opening search
-advances **causally** to the first valid executable instant at or after the
-calendar block boundary, provided it stays inside that same block, stays strictly
-before the research boundary, and satisfies every other preregistered validity
-requirement. This is **source-validity handling** — not block deletion, not block
-exclusion, and **not a new economic signal**; the block's calendar period is
-unchanged and only the first instant at which a valid position can exist inside it
-moves.
+An otherwise execution-valid opening is **never** delayed because the mark row for
+that same bar is absent from the historical archive. There is no forward search
+that fires on mark absence, and reinstating one would reinstate the look-ahead.
+The only thing that may still delay an opening is an **execution** source absence
+— a leg supplying no row, so no fill can be priced there — which is §6's own
+forward search, named `pre_open_execution_row_absent`, and **not** a markless
+state.
 
-No position exists across the skipped pre-open interval, so **nothing** may be
-attributed to the strategy over it: no liquidation exposure, no funding cash flow,
-no basis PnL, no fee, no slippage.
+*Why execution validity is left alone.* It is not the defect, and widening A2R2 to
+cover it would be the silent redesign a narrow amendment exists to avoid. The
+asymmetry is also principled: whether a fill can be had at `t` is something an
+operator standing at `t` observes directly, while the mark **archive** row's
+existence is a fact about a later publication — the venue's mark price itself
+exists continuously at `t` regardless. The residual approximation is disclosed
+rather than glossed: "no kline row was published for bar `t`" is the archive's
+report, not literally the operator's observation, and A2R2 keeps the frozen
+design's own proxy rather than substituting a new one.
 
-**The economic direction of a delayed open is INDETERMINATE EX ANTE, and A2R1
-says so rather than claiming conservatism it does not have.** The first committed
-A2 asserted that a later open "can only reduce accrued funding". It cannot, by
-arithmetic rather than by observation:
+**3. Bar 0 is held, and stays held.** The repaired holding window is unchanged:
+held bars are **0 .. N-1** and exit bar **N** is post-exit. The position opens at
+bar 0's **open**. Once bar 0 is complete, the held-bar liquidation rule applies to
+it exactly as it applies to every later held bar.
 
-- **Funding.** A Binance USD-M funding rate takes **either sign**, and this
-  construction is *short* the perpetual — it receives on a positive rate and pays
-  on a negative one. A skipped interval may hold funding the block would have
-  *received* (skipping it worsens the block) or funding it would have *paid*
-  (skipping it **improves** the block).
-- **Basis.** Under §6's telescoping identity the hedged price PnL is
-  `Q x (basis_at_entry − basis_at_exit)`. A later open sets a *different*
-  `basis_at_entry`, moving basis PnL in either direction.
-- **Fees and slippage** are unchanged in count: still exactly one open and one
-  close per block.
-
-Shorter exposure is **not** economically monotone, and nothing here claims it is.
-
-**3. After a block has opened.** Every held bar (bars 0 .. N-1) must have an
-authorised liquidation mark: **mark high, else mark close**. If a held bar has
-neither, the screen becomes
-**`P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE`**, and that outcome is
-**screen-wide and terminal** for the governed run. Explicitly forbidden: silently
-skipping the bar, jumping the missing period, closing before it, reopening after
-it, excluding only the affected block, converting it to `opened=False`, treating
-it as a zero return, recording it UNCLOSED or INVALID merely to preserve
-evaluability, altering the G1–G6 denominators, or continuing with five blocks.
+**4. After a block has opened — unchanged, and now reaching bar 0.** Every held
+bar must have an authorised liquidation mark: **mark high, else mark close**. If a
+held bar has neither — **including bar 0** — the screen becomes
+**`P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE`**, **screen-wide and
+terminal**. Explicitly forbidden: retroactively pretending the position did not
+open, delaying the entry, silently skipping the bar, jumping the missing period,
+closing before it, reopening after it, excluding the affected block, converting it
+to `opened=False`, treating it as a zero return, recording it UNCLOSED or INVALID
+merely to preserve evaluability, altering the G1–G6 denominators, or continuing
+with five blocks.
 
 The reason is **source insufficiency for a required risk quantity**, not an
-observed economic failure. Unlike the acquisition-time NOT EVALUABLE that preceded
-it, this state can be reached *after computation has begun* — so any block
-economics computed before the refusal fires are **not a result**: not written as
-primary evidence, not reported as a partial answer, and not admitted to any gate.
+observed economic failure. This state can be reached *after computation has begun*
+— so any block economics computed before the refusal fires are **not a result**:
+not written as primary evidence, not reported as a partial answer, not admitted to
+any gate.
 
-**4. If no valid opening instant exists.** If an entire calendar block has no valid
-opening instant because the required mark source never becomes available, the
-screen is **also NOT EVALUABLE**, terminally. It is **not** an excluded block. §10's
-excluded-block rule exists for a block the *construction* could not open — quantity
-flooring to zero, a leg below minimum notional, rows absent or invalid — and it is
-**not broadened** into a source-availability escape hatch, here or later.
+**5. "No valid open because of the mark" is no longer a state.** A block does
+**not** become NOT EVALUABLE merely because no pre-open candidate has a future
+completed mark row. Opening eligibility is decided from execution-time
+information; once the position opens, a missing authorised mark on its first or any
+later held bar produces the held-period terminal refusal instead. Nothing is lost:
+a block A2R1 would have terminated here has, by construction, at least one fillable
+instant and no instant carrying a mark, so under A2R2 it opens at that instant, that
+instant is bar 0 and therefore held, and the screen terminates **with the same
+label, through the branch that is causal**. §10's excluded-block rule is **not**
+broadened to cover the mark case, here or later.
 
-**5. Exit bar.** The repaired holding-window semantics are preserved: held bars are
-**0 .. N-1** and exit bar **N** is post-exit. A normal exit bar needs no mark *for
-liquidation*, because the position closes at that bar's **open**, before its
-post-open high or close exists — there is no intra-bar window at N the position was
-exposed through. Both execution legs' opens are still required under the existing
-execution validity rules; the exemption is from the liquidation mark and nothing
-else.
+**6. Exit bar — unchanged.** A normal exit at bar N's **open** requires execution
+validity but **no bar-N liquidation mark**, because the position closes before that
+bar's post-open high or close exists. Both legs' opens are still required.
 
-**6. The funding fallback stays independent.** `MARK_PRICE_FALLBACK` is not
-narrowed by A2. If a funding settlement at the close instant needs a notional base
-and no mark exists there, the spot candle **close** may still be substituted — for
-the **funding notional base alone**. The coupling is forbidden in both directions:
-a mark-less bar does not disable the funding fallback, and the funding fallback
-never authorises a liquidation touch.
+**7. Funding — unchanged.** Realised-settlement causality remains
+`open < settlement <= close` (§5), and `MARK_PRICE_FALLBACK` remains
+**funding-notional-only**. The coupling is forbidden in both directions: a mark-less
+bar does not disable the funding fallback, and the funding fallback never authorises
+a liquidation touch.
 
-**7. What A2 does not change.** Six calendar-year inference blocks; G1–G6; 4-of-6
+**8. What A2R2 does not change.** Six calendar-year inference blocks; G1–G6; 4-of-6
 breadth; the mean rule; the −0.02 floor; the settlement-count rule; the S1/S3 gate
-requirements; the 0.0025 effect-size threshold; the S2/S4 diagnostics; D1–D3;
-costs; leverage; venue; hedge ratio; the research boundary. A2 never adds a block
-to, removes one from, or reweights the denominators of G1 and G2 — its terminal
-branches stop the screen instead of editing a denominator. The exclusive research
-boundary remains `2025-05-19T08:00:00+00:00`; P4-HOLD remains retired and unread,
-Styx sealed, P8 unopened, and the causal opening search is bounded by the block
-*and* by that boundary, so it can never reach a sealed instant.
+requirements; the 0.0025 effect-size threshold; the S2/S4 diagnostics; D1–D3; costs;
+capital; hedge ratio; venue; leverage; the research boundary; the funding fallback;
+A1's UNCLOSED semantics; and the evidence ceiling. The exclusive research boundary
+remains `2025-05-19T08:00:00+00:00`; P4-HOLD remains retired and unread, Styx sealed,
+P8 unopened.
 
-**Direction of conservatism — not uniform across branches, and A2R1 stops
-pretending it is.**
+**Direction — two separate claims, because they have different strengths.**
 
-- The two **terminal** branches are genuinely fail-closed: each forfeits the whole
-  screen, `VIABLE` included, so neither can produce or improve a verdict.
-- The **pre-open** branch is **not** one-way. Its economic direction is
-  indeterminate ex ante, as above. It may improve or worsen funding PnL and may
-  improve or worsen basis PnL. **No monotonicity is claimed for it in either
-  direction.**
+- The **one live branch** is genuinely fail-closed: a held bar with no authorised
+  mark forfeits the whole screen, `VIABLE` included.
+- The **A2R2 correction itself** is one-way relative to A2R1, by arithmetic rather
+  than observation. The two designs choose different opening instants **only** when
+  A2R1's search would have skipped an execution-valid instant for want of a mark. In
+  exactly those cases A2R2 opens at that instant, that instant is bar 0 and therefore
+  held, its authorised mark is by construction absent, and the screen terminates NOT
+  EVALUABLE. Where A2R1 would not have skipped, the two open at the **same** instant
+  and produce identical economics. **Every outcome A2R2 changes, it changes to a
+  terminal refusal.**
 
-**So what makes it admissible?** Not that it is unfavourable — it may be
-favourable — but **when** and **on what** it was frozen. Three facts, each
-checkable from the repository:
+What is **not** claimed — and was falsely claimed by the first committed A2 — is
+that shorter or later exposure is economically monotone. That claim stays withdrawn,
+and the branch it described no longer exists.
 
-- **Timing.** Frozen before P13 acquisition and before any P13 economic
-  observation. No archive object fetched, no coverage probe run, no block opened,
-  no funding total, basis figure, return or gate condition computed.
-- **Trigger.** Fired only by whether a required archive row exists, never by any
-  quantity a run computes.
-- **Causality.** The opening search advances forward only, inside the same block
-  and strictly before the boundary, so an operator standing at the instant could
-  implement it.
-
-A rule whose economic direction was unknown to its author, which no observation
-informed, and which could not have been evaluated against a result that did not
-exist, cannot be a rescue of that result. That is a **weaker** argument than
-one-way conservatism, and it is the true one.
+**So what makes it admissible?** Four facts, each checkable from the repository:
+**timing** (frozen before acquisition and before any economic observation);
+**trigger** (the live branch fires only on whether an archive row exists, never on
+anything a run computes); **causality** — the ground A2R1 claimed and did not have,
+and A2R2 now does; and **direction** (every changed outcome is a forfeited verdict).
 
 **This correction strengthens nothing.** Any future P13 result remains
 `EXPLORATORY / ADAPTIVE HISTORICAL STRUCTURAL FEASIBILITY EVIDENCE` under §2.
-Withdrawing a false conservatism claim removes an overstatement; it adds no
-evidential weight, and no positive result becomes more credible because this text
-is now accurate.
+Removing a look-ahead makes the design honest about what it was always entitled to
+compute; it adds no evidential weight.
 
-**What A2R1 changed, and what it did not.** It changed the **justification only**.
-Every source-validity treatment is identical to the first committed A2: the
-authorised sources and their priority, the empty surrogate list, the pre-open
-causal search and its bounds, the no-attribution rule, both terminal
-`NOT EVALUABLE` branches and their forbidden treatments, the refusal to convert
-either into an excluded block, the exit-bar exemption, `MARK_PRICE_FALLBACK`'s
-independence, and the evidence requirement. Only the claimed economic direction
-moved — from a false claim to no claim. Because the false claim sat **inside the
-hashed payload**, the hash moves again; the first A2 hash is kept as provenance in
-§15, and commit `0d023ba` is left in history rather than rewritten.
+**Evidence the runner must carry**, in addition to §9's per-block fields: the reason
+a block's opening was delayed — which under A2R2 can only be an execution-source
+absence — the pre-open time and instant count skipped, the realised opening instant
+against the calendar boundary, and an explicit flag that the opening decision
+consulted no mark row. **No markless state may ever appear as a delay reason.**
 
-**Why this is source validity and not an economic rule.** The trigger is the
-*presence of an archive row* and nothing else. It is never fired by a return,
-funding total, basis level, drawdown or stress outcome — the same availability-only
-discipline `MARK_PRICE_FALLBACK.never_triggered_by` already imposes — and it is
-decidable from the source manifest before a single economic number exists.
-
-**When, and on what information.** Adopted **before any P13 economic observation of
-any kind**. No archive object has been fetched, no coverage probe has been run
-against Binance, no block opened, and no funding total, basis figure, return or
-gate condition computed. The mark archive's first published month for BTCUSDT
-remains unmeasured, which is exactly why the policy is written to be correct under
-*every* coverage outcome.
-
-**Evidence the runner must eventually carry**, in addition to §9's per-block
-fields: the reason a block's opening was delayed, the pre-open time and instant
-count skipped, and the realised opening instant against the calendar boundary.
-**This preregistration commit freezes the requirement and implements none of it.**
-`nn/p13_carry.py` is unchanged by A2, and no downloader, loader or block runner
-exists.
+**Implementation status, stated precisely.** Unlike A1 and A2, this revision is *not*
+design-only. The offline runtime exists: `nn/p13_alignment.py` and `nn/p13_sources.py`
+at `667e3599`, and the block runner, gate, stresses and evidence at `1d5a31eb` —
+both implementing A2R1, **including its pre-open mark filter**. At the instant this
+revision is committed that runtime is therefore **non-conforming to A2R2**, and the
+adaptation is the immediately following commit in the same chronology. No governed
+economic run may be performed under a non-conforming runtime, and none has been
+performed at all.
 
 **It does not disturb the acquisition evidence.**
 `artifacts/benchmark/btc_p13_carry/` was generated at `2b1b400e` under the original
@@ -948,13 +943,13 @@ close and emergency-flatten paths remain available under halt.
 
 ## 15. Preregistration hash
 
-The active design is **P13-A2R1**, and it is **NOT YET RUN**.
+The active design is **P13-A2R2**, and it is **NOT YET RUN**.
 
 ```text
-sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0
+sha256:cac2f318e525fb1f0e5892fdd16fcd5febb72853d1a1cfa9fd6c5d3868b7a092
 ```
 
-**Superseded hashes, kept as provenance.** All three are recorded as literals in
+**Superseded hashes, kept as provenance.** All four are recorded as literals in
 `SUPERSEDED_HASHES` in [`nn/p13_preregistration.py`](../nn/p13_preregistration.py)
 — inside the hashed payload, so that the claim "hash X is the active P13 design"
 is falsifiable from the module alone, and
@@ -966,6 +961,7 @@ that tuple.
 | original preregistration | `sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` | A1 (§8a) |
 | P13-A1 | `sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099` | A2 (§8d) |
 | P13-A2 | `sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c` | A2R1 (§8d) |
+| P13-A2R1 | `sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0` | A2R2 (§8d) |
 
 `sha256:1369c88…` was active for the original preregistration, committed and pushed
 at `939f38151cfa607e04c4d74846e081a8ab91ed49` before any attempt to obtain data.
@@ -978,11 +974,20 @@ active design.
 
 `sha256:86050b68…` was active for the **first committed A2**, at
 `0d023ba5a33bbcae55bb079146838f5f22959607`, until revision **A2R1** withdrew its
-false claim that a delayed pre-open "can only reduce accrued funding" (§8d). That
-commit is deliberately left in history rather than amended or rebased: it is the
-first committed A2 design, and the chronology must show both it and the correction.
-**A2's source-validity behaviour is not withdrawn** — A2R1 keeps every treatment
-unchanged — but the first A2 *hash* is retired.
+false claim that a delayed pre-open "can only reduce accrued funding" (§8d).
+
+`sha256:7064faee…` was active for **P13-A2R1**, at
+`d40cfcfbcb6e8048198f432eb2bb4ebf70c24b7c`, until revision **A2R2** retired the
+pre-open entry rule A2R1 had kept from A2. That rule decided the entry instant from
+whether a completed same-bar `markPriceKlines` row exists — a fact established only
+after the bar completes — which is **source-availability look-ahead** and
+contradicts A2R1's own causality claim (§8d). **A2R1's withdrawal of A2's false
+monotonicity claim is not reversed**; only the entry rule is. The offline runtime
+committed at `667e3599` and `1d5a31eb` implements A2R1 and is superseded with it.
+
+Every one of those commits is deliberately left in history rather than amended,
+rebased or squashed: the chronology — design, then correction, then correction of
+the correction, each before any economic number existed — is itself the evidence.
 
 They are recorded here as history, not as alternatives: **no P13 economic number,
 block, gate condition or decision was ever produced under any of them, and none may

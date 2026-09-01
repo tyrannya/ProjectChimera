@@ -1195,11 +1195,15 @@ FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR: dict[str, Any] = {
     ),
 }
 
-#: The three distinct states a missing liquidation mark can put a block in.
+#: The three distinct states a missing liquidation mark was once able to put a
+#: block in, and the ONE of them revision A2R2 leaves in force.
 #:
-#: Named as constants because a future block runner and this design must agree on
-#: the vocabulary, and because the whole point of A2 is that these three are NOT
-#: the same state and must never be collapsed into one "no mark" branch.
+#: Named as constants because the block runner and this design must agree on the
+#: vocabulary, and kept in full — including the two A2R2 retires — because a
+#: retired state name is how a reader recognises the behaviour that was
+#: withdrawn. Deleting them would make the correction invisible.
+#: :data:`MARKLESS_STATES_LIVE` and :data:`MARKLESS_STATES_RETIRED_BY_A2R2` say
+#: which is which without removing either.
 MARKLESS_STATE_PRE_OPEN = "pre_open_mark_absent"
 MARKLESS_STATE_HELD = "held_bar_mark_absent"
 MARKLESS_STATE_NO_VALID_OPEN = "no_valid_opening_instant_in_block"
@@ -1210,10 +1214,46 @@ MARKLESS_STATES: tuple[str, ...] = (
     MARKLESS_STATE_NO_VALID_OPEN,
 )
 
+#: The markless states A2R2 leaves in force. Exactly one: a HELD bar carrying no
+#: authorised liquidation mark, which is terminal and SCREEN-WIDE, and which
+#: under A2R2 includes bar 0.
+MARKLESS_STATES_LIVE: tuple[str, ...] = (MARKLESS_STATE_HELD,)
+
+#: The markless states A2R2 RETIRES. Both of them decide the OPENING INSTANT from
+#: whether a completed same-bar mark archive row will later exist, which is not a
+#: fact available at the opening instant. They remain nameable as provenance and
+#: may never be reinstated as behaviour.
+MARKLESS_STATES_RETIRED_BY_A2R2: tuple[str, ...] = (
+    MARKLESS_STATE_PRE_OPEN,
+    MARKLESS_STATE_NO_VALID_OPEN,
+)
+
+#: The ONLY reason an opening instant may be later than its calendar block
+#: boundary under A2R2: an EXECUTION source supplied no row, so no fill could be
+#: priced on both legs at that instant.
+#:
+#: **It is not a markless state, and the asymmetry is the whole of A2R2.** Whether
+#: a fill can be had at ``t`` is something an operator standing at ``t`` observes
+#: directly — they are in the market, looking at it. Whether the mark ARCHIVE will
+#: later carry a completed row stamped ``t`` is not: the venue's mark price exists
+#: continuously at ``t`` whether or not a ``markPriceKlines`` object is ever
+#: published for that hour, so the row's existence is an ARCHIVAL fact with no
+#: counterpart in the operator's information set.
+#:
+#: **The execution predicate is a PROXY, and that is disclosed rather than
+#: glossed.** "No kline row was published for bar ``t``" is not literally "an
+#: operator could not trade at ``t``"; it is the archive's report that the venue
+#: recorded no candle for that hour. The two agree in direction — no candle means
+#: no market to fill against — and the proxy is the one the frozen
+#: ``POSITION_LIFECYCLE.validity_definition`` already uses for both legs. A2R2
+#: does not redesign it, and narrows nothing beyond the mark.
+OPENING_DELAY_EXECUTION_ABSENT = "pre_open_execution_row_absent"
+
 #: What a mark-less period does to a block — settled before any number exists that
 #: could settle it.
 #:
-#: **This is amendment A2, and it is not an original preregistration rule.**
+#: **This is amendment A2, at revision A2R2, and it is not an original
+#: preregistration rule.**
 #:
 #: The frozen design already admits the fact that forces the question. The
 #: ``mark_price`` entry in :data:`DATA_SOURCES` records that the first published
@@ -1222,7 +1262,7 @@ MARKLESS_STATES: tuple[str, ...] = (
 #: months and absent for others is this design's own stated expectation rather than
 #: a surprise.
 #:
-#: **What the frozen text already settles, and A2 does not re-decide.**
+#: **What the frozen text already settles, and no revision of A2 re-decides.**
 #: ``MARK_PRICE_FALLBACK`` authorises the spot close as a substitute for the
 #: FUNDING NOTIONAL BASE. ``BASIS_DEFINITION.which_series_plays_which_role`` names
 #: the liquidation test as a SECOND, separate use of the mark series and does not
@@ -1232,60 +1272,53 @@ MARKLESS_STATES: tuple[str, ...] = (
 #: the hourly close otherwise", and to record which was used. Read together those
 #: already determine that a HELD bar carrying neither a mark high nor a mark close
 #: has NO authorised liquidation touch, which is why ``nn.p13_carry.Quote`` refuses
-#: one. That is deduction, and this amendment does not restate it as a choice.
+#: one. That is deduction, and no revision of A2 restates it as a choice.
 #:
-#: **What the frozen text does NOT settle** is what the block runner — which does
-#: not exist yet — must DO with that refusal, and it fails to settle it in two
-#: places that pull in opposite directions:
+#: **What A2 and A2R1 decided, and what A2R2 withdraws.** The question the frozen
+#: text left open is what happens BEFORE a position exists.
+#: ``POSITION_LIFECYCLE.open_instant`` requires "spot, perpetual and (where used)
+#: mark observations" to be present and valid at the opening instant and never
+#: says whether the mark is "used" there. A2 resolved that ambiguity by treating
+#: the mark as used: an instant whose mark row was absent was not an admissible
+#: opening instant, and the opening search advanced past it. A2R1 corrected A2's
+#: justification and kept that rule.
 #:
-#:   * BEFORE a position exists. ``POSITION_LIFECYCLE.open_instant`` requires
-#:     "spot, perpetual and (where used) mark observations" to be present and valid
-#:     at the opening instant. Whether the mark is "used" there is precisely the
-#:     ambiguity: it is not a fill price, and it IS the series every subsequent held
-#:     bar's risk check depends on.
-#:   * AFTER a position exists. ``VIABILITY_GATE.excluded_blocks`` authorises
-#:     exclusion only for a block that could not be OPENED; ``liquidated_blocks``
-#:     refuses to drop a block that was opened; ``NOT_EVALUABLE_MEANING`` speaks to
-#:     sources that could not be obtained at all. None of the three reaches a block
-#:     that opened and then met a bar whose required risk quantity is not
-#:     computable.
+#: **The rule is acausal, and that is why A2R2 removes it.** A ``markPriceKlines``
+#: row is stamped by candle OPEN ``t``, but its HIGH and CLOSE — and the fact that
+#: a completed row for that bar exists in the published archive at all — are
+#: established only after the bar completes. So the rule
 #:
-#: A run meeting that gap with the data in front of it would have to choose, and
-#: the available choices are not equally flattering: excluding the affected block,
-#: or jumping the hole, keeps a screen evaluable by discarding exactly the periods
-#: where the venue's own risk series is missing. That is the researcher degree of
-#: freedom this amendment removes.
+#:     at ``t``, inspect whether the completed same-bar mark row exists;
+#:     if it is absent, decide not to open at ``t``
 #:
-#: **Adopted before any P13 economic observation of any kind.** No archive object
-#: has been fetched, no block opened, no funding total, basis figure, return or gate
-#: condition computed, and no market data informed this rule. The only inputs were
-#: the shape of the frozen text and the coverage fact the design already declares.
+#: conditions the ENTRY INSTANT on information that does not exist at ``t``. It
+#: reads no future PRICE — A2R1's implementation was careful to read presence only
+#: and never a value — but SOURCE AVAILABILITY is future information too. A2R1's
+#: own ``admissibility_basis`` rests on the claim that the rule is "implementable
+#: by an operator standing at the instant". It is not, and A2R2 removes the rule
+#: rather than restating the claim.
 #:
-#: **The two TERMINAL branches are fail-closed, and the pre-open branch is
-#: economically INDETERMINATE — revision A2R1 corrects a false claim the first
-#: committed A2 made here.** That first version asserted the pre-open rule "can
-#: only SHORTEN a block's exposure, which can only reduce accrued funding" and that
-#: no branch "can add a positive block, raise a mean, lift a worst block". **That
-#: monotonicity claim is false**, by arithmetic rather than by observation: a
-#: skipped pre-open interval may contain funding of EITHER sign, and moving the
-#: opening instant moves ``basis_entry``, which enters block PnL through the
-#: telescoping identity in ``BASIS_DEFINITION.structural_price_pnl_identity`` in
-#: EITHER direction. Skipping an interval of negative funding, or entering at a
-#: wider basis, can therefore IMPROVE a block. Shorter exposure is not
-#: economically monotone.
+#: **Found before acquisition and before any P13 economic observation.** No
+#: archive object had been fetched, no coverage probe run, no block opened, and no
+#: funding total, basis figure, return or gate condition computed, when this defect
+#: was identified — by reading the frozen text against the archive semantics that
+#: same text declares. Nothing about the market informed it, and nothing could
+#: have: there is nothing to inform it with.
 #:
-#: What survives, and is the actual ground of admissibility: the rule was frozen
-#: BEFORE acquisition and before any P13 economic observation, and it is triggered
-#: ONLY by source validity. An ex-ante causal convention whose economic direction
-#: is unknown cannot be a rescue of a result nobody has seen. That is a different
-#: and weaker argument than one-way conservatism, and stating the weaker true one
-#: is the point of this revision.
-#:
-#: The two terminal branches remain genuinely fail-closed: each forfeits every
-#: verdict, ``VIABLE`` included, rather than producing or improving one.
+#: **Direction, stated exactly rather than generously.** A2R2 changes a block's
+#: outcome only where A2R1's opening search would have SKIPPED at least one
+#: execution-valid instant for want of a mark. In precisely those cases A2R2 opens
+#: at that instant; that instant is bar 0 and therefore a HELD bar; its authorised
+#: liquidation mark is by construction absent; and the screen terminates
+#: ``NOT EVALUABLE``. Where A2R1 would not have skipped for the mark, both designs
+#: choose the SAME opening instant and produce identical economics. So every
+#: outcome A2R2 changes, it changes to a terminal refusal that forfeits ``VIABLE``.
+#: That is a claim about two designs' outcomes, reached by arithmetic rather than
+#: by observation, and it is NOT a resurrection of the first A2's withdrawn claim
+#: that shorter exposure reduces accrued funding — which stays withdrawn.
 MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
     "amendment": "A2",
-    "revision": "A2R1",
+    "revision": "A2R2",
     "revision_history": (
         {
             "revision": "A2",
@@ -1304,47 +1337,152 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
         },
         {
             "revision": "A2R1",
+            "hash": "sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0",
+            "committed_at": "d40cfcfbcb6e8048198f432eb2bb4ebf70c24b7c",
+            "status": "SUPERSEDED",
+            "superseded_because": (
+                "it withdrew A2's false monotonicity claim but KEPT A2's pre-open rule, and "
+                "that rule uses SOURCE-AVAILABILITY LOOK-AHEAD. Refusing a candidate opening "
+                "instant because the completed same-bar markPriceKlines row is absent from "
+                "the archive conditions the ENTRY INSTANT on whether that row will later "
+                "exist. It reads no future PRICE, and the implementation committed at "
+                "667e3599 and 1d5a31eb was careful to read presence only — but presence is "
+                "itself a fact established after the bar completes. A2R1's own "
+                "admissibility_basis claims the rule is 'implementable by an operator "
+                "standing at the instant', which it is not. Identified before acquisition, "
+                "before any P13 economic observation and before any historical funding, "
+                "basis, PnL or gate result existed"
+            ),
+        },
+        {
+            "revision": "A2R2",
             "status": "ACTIVE",
             "what_changed": (
-                "the JUSTIFICATION ONLY. The false monotonicity claim is withdrawn and "
-                "replaced by an explicit statement that the pre-open branch's economic "
-                "direction is INDETERMINATE EX ANTE, with admissibility resting on ex-ante "
-                "timing, a source-only trigger and causal implementability instead"
+                "BEHAVIOUR this time, not only justification, and it is the ENTRY rule that "
+                "changed. The mark series is no longer a pre-open entry filter: the opening "
+                "decision uses execution-time information alone, the position opens at bar "
+                "0, bar 0 remains a HELD bar, and a bar 0 carrying neither mark HIGH nor "
+                "mark CLOSE terminates the screen exactly as any later held bar does. The "
+                "two markless states that could only fire before an open — "
+                "pre_open_mark_absent and no_valid_opening_instant_in_block — are RETIRED. "
+                "Every other treatment is carried through unchanged"
             ),
         },
     ),
-    "behaviour_unchanged_from_first_a2": (
-        "STATED because a hash movement should never hide a silent behaviour change. A2R1 "
-        "alters NO source-validity treatment. The authorised liquidation sources and their "
-        "priority, the empty authorised-surrogate list and the forbidden-surrogate list, the "
-        "pre-open causal search and its bounds, the prohibition on attributing anything to "
-        "the strategy before the valid open, the held-bar terminal NOT EVALUABLE and its "
-        "forbidden treatments, the no-valid-open terminal NOT EVALUABLE, the refusal to "
-        "convert either into an excluded block, the exit-bar exemption, the independence of "
-        "MARK_PRICE_FALLBACK, and the evidence requirement are all IDENTICAL to the first "
-        "committed A2. Only the claimed economic direction changed, and it changed from a "
-        "false claim to no claim"
-    ),
+    "causal_defect_corrected": {
+        "what_was_wrong": (
+            "A2 and A2R1 made the OPENING INSTANT depend on whether the completed same-bar "
+            "markPriceKlines row exists. The markPriceKlines row is timestamped by candle "
+            "OPEN t, while its HIGH, its CLOSE and the very fact that a completed row for "
+            "that bar was published are established only after the bar completes. Deciding "
+            "at t not to open at t because that row is absent is therefore "
+            "SOURCE-AVAILABILITY LOOK-AHEAD"
+        ),
+        "why_price_look_ahead_is_the_wrong_test": (
+            "STATED because the implementation passed the test it was given and still had "
+            "the defect. nn.p13_alignment.instant_validity reads PRESENCE ONLY and never "
+            "compares, thresholds or otherwise consults a mark high or close, so no future "
+            "PRICE VALUE could reach the entry decision. That guard was real and it was not "
+            "enough: availability is future information in its own right, and a rule that "
+            "conditions on it is acausal even though every number it reads is causal"
+        ),
+        "the_contradiction_it_removes": (
+            "A2R1's admissibility_basis rests on CAUSALITY — 'implementable by an operator "
+            "standing at the instant'. An operator standing at t cannot know whether Binance "
+            "will publish a completed mark candle stamped t, so A2R1's own stated ground did "
+            "not hold for its own rule. A2R2 makes the rule match the claim rather than "
+            "softening the claim to match the rule"
+        ),
+        "when_it_was_found": (
+            "before source acquisition, before any P13 economic observation, and before any "
+            "historical funding, basis, PnL or gate result existed. It was found by reading "
+            "the frozen text against the archive semantics DATA_SOURCES already declares — "
+            "'the candle OPEN; the candle is complete at open + 1h' — and not by any "
+            "observation of the market"
+        ),
+        "scope_of_the_correction": (
+            "NARROW AND NAMED: the removal of same-bar mark source-availability look-ahead "
+            "from the entry decision. A2R2 changes nothing else. It does not redesign "
+            "execution-source validity, does not touch the held-bar rule, the exit-bar "
+            "exemption, the funding fallback, the gate, the partition, the costs, the "
+            "capital, the hedge ratio, the venue, the leverage, the boundary or the "
+            "evidence ceiling"
+        ),
+    },
+    "opening_decision_information_set": {
+        "rule": (
+            "the opening decision at a candidate grid instant t may use ONLY quantities "
+            "available at t. For the two execution legs that is the spot OPEN at t and the "
+            "perpetual OPEN at t, which must satisfy the already-frozen execution validity "
+            "rules — POSITION_LIFECYCLE.validity_definition and EXECUTION_PRICE_POLICY, "
+            "neither of which A2R2 alters"
+        ),
+        "must_not_depend_on": (
+            "the same-bar mark HIGH",
+            "the same-bar mark CLOSE",
+            "whether the completed same-bar mark archive row will later exist",
+            "any other fact observable only after t",
+        ),
+        "the_mark_is_not_a_pre_open_entry_filter": (
+            "SAID IN THOSE WORDS so it cannot be softened later. An otherwise "
+            "execution-valid opening is NEVER delayed because the mark row for that same bar "
+            "is absent from the historical archive. There is no forward search that fires on "
+            "mark absence, and reinstating one would reinstate the look-ahead"
+        ),
+        "what_may_still_delay_an_opening": (
+            "an EXECUTION source absence, and nothing else. If a leg supplies no row at the "
+            "candidate instant, no fill can be priced there on both legs, and "
+            "POSITION_LIFECYCLE.open_instant's forward search — which is original frozen "
+            "text, not an A2R2 invention — advances to the first instant inside the same "
+            "block, strictly before the research boundary, at which both legs do. That "
+            "reason is named OPENING_DELAY_EXECUTION_ABSENT, whose value is "
+            "'pre_open_execution_row_absent', and it is NOT a markless state"
+        ),
+        "no_attribution_before_the_open": (
+            "CARRIED THROUGH FROM A2 UNCHANGED, because a delayed opening is still "
+            "possible — on EXECUTION grounds — and the rule about what may be attributed "
+            "across the skipped interval is not the rule A2R2 retired. No position exists "
+            "during the skipped pre-open interval, so NOTHING may be attributed to the "
+            "strategy across it: no liquidation exposure, no funding cash flow, no basis "
+            "PnL, no fee and no slippage. The block's holding period begins at the valid "
+            "opening instant, and the capital sits idle at zero yield before it, exactly as "
+            "VIABILITY_GATE.the_hurdle_is_zero_yield_cash already requires of idle capital"
+        ),
+        "why_the_execution_rule_is_left_alone": (
+            "because it is not the defect, and widening A2R2 to cover it would be exactly "
+            "the silent redesign a narrow amendment exists to avoid. The asymmetry is also "
+            "principled rather than convenient: whether a fill can be had at t is something "
+            "an operator standing at t observes directly, while the mark ARCHIVE row's "
+            "existence is an archival fact about a later publication — the venue's mark "
+            "price itself exists continuously at t regardless. The residual approximation is "
+            "disclosed at OPENING_DELAY_EXECUTION_ABSENT rather than hidden: 'no kline row "
+            "was published for bar t' is the archive's report, not literally the operator's "
+            "observation, and A2R2 keeps the frozen design's own proxy rather than "
+            "substituting a new one"
+        ),
+    },
     "amendment_status": (
-        "adopted after P13's environment-only NOT EVALUABLE closure and after the A1-era "
-        "evaluator repair that removed the unauthorised third liquidation tier, and BEFORE "
-        "any P13 economic observation exists. No archive object was fetched, no block was "
-        "opened, no return, funding total, basis figure or gate condition was computed, and "
-        "no market data informed this rule. It is a SOURCE-VALIDITY amendment, not an "
-        "original preregistration rule and not an economic one"
+        "adopted after P13's environment-only NOT EVALUABLE closure, after the A1-era "
+        "evaluator repair that removed the unauthorised third liquidation tier, after the "
+        "A2R1 offline implementation, and BEFORE any P13 economic observation exists. No "
+        "archive object was fetched, no block was opened, no return, funding total, basis "
+        "figure or gate condition was computed, and no market data informed this rule. It "
+        "is a CAUSALITY amendment to a source-validity rule, not an original "
+        "preregistration rule and not an economic one"
     ),
     "amendment_timing": (
         "BEFORE ANY P13 ECONOMIC OBSERVATION, and specifically before acquisition. The "
-        "timing is not a formality: this rule can change WHICH historical observations enter "
-        "a block, and a rule that selects observations is inadmissible once the observations "
+        "timing is not a formality: this rule changes WHICH historical observations enter a "
+        "block, and a rule that selects observations is inadmissible once the observations "
         "are visible. It is therefore an explicit hash-moving amendment rather than a "
         "clarification, even though it moves no threshold"
     ),
     "supersedes": (
-        "silence, in two distinct places. POSITION_LIFECYCLE.open_instant requires the mark "
-        "to be valid at the open '(where used)' without saying whether it is used there, and "
-        "no frozen rule reaches a block that OPENED and then met a held bar carrying no "
-        "authorised liquidation touch"
+        "A2's and A2R1's resolution of POSITION_LIFECYCLE.open_instant's '(where used)'. "
+        "That ambiguity is now resolved the other way: the mark is NOT used at the opening "
+        "instant. The rest of A2 stands, and the silence A2 originally filled — what an "
+        "opened block does when a held bar carries no authorised liquidation touch — stays "
+        "filled the same way"
     ),
     "what_the_original_text_already_determines": (
         "NOT re-decided here, and recorded so this amendment is not read as wider than it "
@@ -1357,13 +1495,17 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
         "  * BASIS_DEFINITION.which_series_plays_which_role keeps the liquidation test a "
         "SEPARATE use of the mark series, so the funding substitution does not reach it;\n"
         "  * therefore a HELD bar with neither mark series has no computable liquidation "
-        "quantity, and nn.p13_carry.Quote already refuses it."
+        "quantity, and nn.p13_carry.Quote already refuses it;\n"
+        "  * the forward opening search itself is POSITION_LIFECYCLE.open_instant's own, "
+        "bounded by the block and by the research boundary. A2R2 removes one reason for it "
+        "to advance; it does not invent the search."
     ),
     "scope": (
-        "SOURCE VALIDITY ONLY. A2 decides which historical instants the frozen design is "
-        "entitled to evaluate, and what happens when it is entitled to evaluate none. It "
-        "introduces no signal, no filter conditioned on anything economic, no threshold, no "
-        "parameter and no new instrument"
+        "SOURCE VALIDITY AND ITS CAUSALITY ONLY. A2 decides which historical instants the "
+        "frozen design is entitled to evaluate, and what happens when it is entitled to "
+        "evaluate none; A2R2 decides that the entitlement question may not be asked with "
+        "information from the future. It introduces no signal, no filter conditioned on "
+        "anything economic, no threshold, no parameter and no new instrument"
     ),
     "authorised_liquidation_sources": ("mark_high", "mark_close"),
     "source_priority": (
@@ -1397,78 +1539,75 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
         "design invented, and zero or infinity are fabricated numbers dressed as data. "
         "Refusing all of them is the same refusal nn.p13_carry.Quote already performs"
     ),
+    "live_states": (MARKLESS_STATE_HELD,),
+    "retired_states": (MARKLESS_STATE_PRE_OPEN, MARKLESS_STATE_NO_VALID_OPEN),
     "states": {
         MARKLESS_STATE_PRE_OPEN: {
+            "status": "RETIRED BY A2R2",
             "when": (
-                "a candidate opening grid instant inside a block at which the required "
-                "liquidation mark is unavailable, while NO position exists yet"
+                "UNDER A2 AND A2R1 ONLY: a candidate opening grid instant inside a block at "
+                "which the required liquidation mark was unavailable, while NO position "
+                "existed yet. Under A2R2 this state cannot arise, because the mark is not "
+                "consulted before the open at all"
             ),
             "treatment": (
-                "the instant is NOT a valid opening instant. The block's opening search "
-                "advances CAUSALLY to the first valid executable instant at or after the "
-                "calendar block boundary, provided it remains inside that same block, "
-                "remains strictly before the research boundary, and satisfies every other "
-                "preregistered validity requirement including "
-                "POSITION_LIFECYCLE.validity_definition and both execution legs' opens. This "
-                "is the forward search POSITION_LIFECYCLE.open_instant already describes, "
-                "with the mark's role in it made explicit"
+                "RETIRED. There is no such treatment under A2R2. An otherwise "
+                "execution-valid opening instant is NOT rejected, and the opening search is "
+                "NOT advanced, because the same-bar mark row is absent. The mark series is "
+                "not a pre-open entry filter"
             ),
             "terminal": False,
             "result_state": None,
-            "scope": "this block's opening instant only",
-            "no_attribution_before_the_open": (
-                "no position exists during the skipped pre-open interval, so NOTHING may be "
-                "attributed to the strategy across it: no liquidation exposure, no funding "
-                "cash flow, no basis PnL, no fee and no slippage. The block's holding period "
-                "begins at the valid opening instant, and the capital sits idle at zero "
-                "yield before it, exactly as VIABILITY_GATE.the_hurdle_is_zero_yield_cash "
-                "already requires of idle capital"
+            "scope": "none — this state has no live behaviour",
+            "retired_because": (
+                "it requires SOURCE-AVAILABILITY LOOK-AHEAD. Rejecting instant t because the "
+                "completed same-bar mark archive row is absent conditions the entry instant "
+                "on a fact established only after bar t completes. See "
+                "causal_defect_corrected"
             ),
-            "is_not": (
-                "not block deletion, not block exclusion, not a redefined block span, and "
-                "NOT a new economic signal. The block's calendar period is unchanged; only "
-                "the instant at which a valid position can first exist inside it moves"
+            "superseded_treatment": (
+                "PRESERVED VERBATIM AS PROVENANCE, because a withdrawn rule a reader cannot "
+                "see is a withdrawal a reader cannot check. A2 and A2R1 said: 'the instant "
+                "is NOT a valid opening instant. The block's opening search advances "
+                "CAUSALLY to the first valid executable instant at or after the calendar "
+                "block boundary, provided it remains inside that same block, remains "
+                "strictly before the research boundary, and satisfies every other "
+                "preregistered validity requirement including "
+                "POSITION_LIFECYCLE.validity_definition and both execution legs' opens.'"
             ),
-            "economic_direction": "INDETERMINATE EX ANTE",
-            "why_indeterminate": (
-                "CORRECTED IN A2R1, and the correction is arithmetic rather than empirical — "
-                "no market data was consulted to reach it. The first committed A2 claimed a "
-                "later open 'can only reduce the funding a block accrues'. It cannot: a "
-                "delayed open changes the ENTRY INSTANT, and the skipped interval is not "
-                "sign-constrained.\n"
-                "  * FUNDING. A Binance USD-M funding rate takes EITHER sign, and this "
-                "construction is SHORT the perpetual, so it RECEIVES on a positive rate and "
-                "PAYS on a negative one. A skipped interval may therefore contain funding "
-                "the block would have received (skipping it WORSENS the block) or funding "
-                "the block would have paid (skipping it IMPROVES the block). Nothing frozen "
-                "here fixes which.\n"
-                "  * BASIS. Under BASIS_DEFINITION.structural_price_pnl_identity the hedged "
-                "price PnL is Q x (basis_at_entry - basis_at_exit). A later open sets a "
-                "DIFFERENT basis_at_entry, so it moves basis PnL in EITHER direction; "
-                "entering at a wider basis raises it and entering at a narrower one lowers "
-                "it.\n"
-                "  * FEES AND SLIPPAGE are unchanged in count: the construction still "
-                "performs exactly one open and one close per block, so a delayed open does "
-                "not add or remove a round trip.\n"
-                "Shorter exposure is NOT economically monotone, and this design claims no "
-                "monotonicity for it in either direction"
+            "superseded_why_indeterminate": (
+                "PRESERVED AS PROVENANCE, because A2R1's arithmetic is why the first A2's "
+                "claim was false and that finding is NOT reversed by A2R2. A2R1 said: a "
+                "Binance USD-M funding rate takes EITHER sign, and this construction is "
+                "SHORT the perpetual, so it RECEIVES on a positive rate and PAYS on a "
+                "negative one; a skipped interval may therefore contain funding the block "
+                "would have received (skipping it WORSENS the block) or funding it would "
+                "have paid (skipping it IMPROVES the block). And under "
+                "BASIS_DEFINITION.structural_price_pnl_identity the hedged price PnL is "
+                "Q x (basis_at_entry - basis_at_exit), so a later open sets a DIFFERENT "
+                "basis_at_entry and moves basis PnL in EITHER direction. Shorter exposure "
+                "is NOT economically monotone"
             ),
-            "why_it_is_nonetheless_admissible": (
-                "NOT because it is unfavourable — it may be favourable — but because of WHEN "
-                "and ON WHAT it was frozen. It is an ex-ante, causal, source-validity "
-                "convention: adopted before acquisition and before any P13 economic "
-                "observation, triggered only by whether an archive row exists, and "
-                "implementable by an operator standing at the instant. A rule whose economic "
-                "direction was unknown to its author, and which no observation informed, "
-                "cannot have been selected to rescue a result nobody had seen. The "
-                "alternative it refuses — opening at an instant whose risk series is absent "
-                "— would buy exposure the design cannot audit"
+            "superseded_economic_direction": (
+                "A2 claimed the delayed open could only reduce accrued funding, which A2R1 "
+                "withdrew as FALSE and replaced with INDETERMINATE EX ANTE. Both statements "
+                "are now moot: the branch they described no longer exists. The withdrawal of "
+                "A2's monotonicity claim is NOT reinstated by A2R2 and remains withdrawn"
+            ),
+            "may_not_be_reinstated": (
+                "no later revision may restore a rule that advances the opening search "
+                "because a mark row is absent, under any name. Doing so would restore the "
+                "look-ahead this revision exists to remove"
             ),
         },
         MARKLESS_STATE_HELD: {
+            "status": "ACTIVE — the only live markless state under A2R2",
             "when": (
                 "a HELD bar — one of bars 0 .. N-1 of an OPENED block's holding window — "
-                "carrying neither a mark high nor a mark close"
+                "carrying neither a mark high nor a mark close. UNDER A2R2 THIS INCLUDES BAR "
+                "0: the position opens at bar 0's OPEN, and once bar 0 is complete the "
+                "held-bar liquidation rule applies to it exactly as it applies to every "
+                "later held bar"
             ),
             "treatment": (
                 "the historical screen TERMINATES. The required liquidation quantity for a "
@@ -1479,6 +1618,14 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
             "result_state": "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE",
             "scope": (
                 "SCREEN-WIDE and terminal for this governed run. Not per bar, not per block"
+            ),
+            "bar_zero_is_not_special": (
+                "ADDED BY A2R2, and it is the branch the correction lands on. A bar 0 with "
+                "no authorised mark terminates the screen. It does NOT retroactively mean "
+                "the position did not open, and the run may not respond by delaying the "
+                "entry, skipping the hour, closing before it, reopening after it, excluding "
+                "the block, zeroing the hour or continuing with five blocks. Every one of "
+                "those is a way of un-deciding an opening that was already causally decided"
             ),
             "forbidden_treatments": (
                 "silently skipping the bar",
@@ -1491,14 +1638,16 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
                 "recording the block UNCLOSED or INVALID merely to preserve evaluability",
                 "altering the G1-G6 denominators",
                 "continuing with five blocks",
+                "retroactively delaying the opening instant so the bar stops being held",
             ),
             "why_terminal_rather_than_local": (
                 "every local treatment is a selection rule that fires on source coverage and "
                 "lands on the result. Dropping the affected block removes precisely the "
                 "period whose risk series is missing from G2's mean and G3's worst-block "
                 "test; jumping the hole reports an exposure the run never audited; a zero "
-                "return is a number nobody measured. A2 refuses the whole screen instead, "
-                "which is the one treatment that cannot improve a verdict"
+                "return is a number nobody measured; and delaying the open to step over the "
+                "bar is the acausal rule A2R2 has just retired. A2 refuses the whole screen "
+                "instead, which is the one treatment that cannot improve a verdict"
             ),
             "what_it_is_not": (
                 "the reason is SOURCE INSUFFICIENCY FOR A REQUIRED RISK QUANTITY, not an "
@@ -1516,27 +1665,55 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
             ),
         },
         MARKLESS_STATE_NO_VALID_OPEN: {
+            "status": "RETIRED BY A2R2",
             "when": (
-                "an entire calendar block in which the causal opening search finds no valid "
-                "opening instant at all, because the required liquidation mark source never "
-                "becomes available inside that block before the research boundary"
+                "UNDER A2 AND A2R1 ONLY: an entire calendar block in which the causal "
+                "opening search found no valid opening instant at all, because the required "
+                "liquidation mark never became available inside that block before the "
+                "research boundary. Under A2R2 this state cannot arise, because mark "
+                "absence never removes a candidate opening instant"
             ),
             "treatment": (
-                "the historical screen TERMINATES. The block is not opened, and it is NOT "
-                "converted into an excluded block"
+                "RETIRED. A block does NOT become NOT EVALUABLE merely because no pre-open "
+                "candidate has a future completed mark row. Opening eligibility is decided "
+                "from execution-time information; once the position opens, a missing "
+                "authorised mark on its first or any later HELD bar produces the held-period "
+                "screen-wide NOT EVALUABLE of MARKLESS_STATE_HELD instead"
             ),
-            "terminal": True,
-            "result_state": "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE",
-            "scope": "SCREEN-WIDE and terminal for this governed run",
-            "why_not_an_excluded_block": (
+            "terminal": False,
+            "result_state": None,
+            "scope": "none — this state has no live behaviour",
+            "retired_because": (
+                "it is the block-level form of the same look-ahead: it asks whether ANY "
+                "candidate instant in the block will later carry a completed mark row, which "
+                "is a question about the whole block's future archive coverage asked at the "
+                "block's first instant"
+            ),
+            "what_replaces_it": (
+                "nothing is lost, and the outcome is unchanged in the case that mattered. A "
+                "block that A2R1 would have terminated here has, by construction, at least "
+                "one fillable instant and no instant carrying a mark. Under A2R2 it opens at "
+                "that first fillable instant, that instant is bar 0 and therefore held, its "
+                "mark is absent, and MARKLESS_STATE_HELD terminates the screen NOT EVALUABLE "
+                "— the same terminal label, reached through the branch that is causal"
+            ),
+            "the_excluded_block_rule_is_still_not_broadened": (
                 "VIABILITY_GATE.excluded_blocks exists for a block the CONSTRUCTION could "
                 "not open — a quantity flooring to zero at the step size, a leg below the "
-                "venue minimum notional, required rows absent or invalid. Reading it as "
-                "covering 'the mark archive was never published for this year' would turn a "
-                "source-availability fact into an escape hatch that drops whole years out of "
-                "G1's and G2's denominators, and it would drop exactly the years whose risk "
-                "series is missing. The existing excluded-block rule is NOT broadened here, "
-                "and it must not be broadened later"
+                "venue minimum notional, required rows absent or invalid at every candidate "
+                "instant. A2R2 does not broaden it, and retiring this state does not hand it "
+                "the mark case: a mark-less block is TERMINAL through the held-bar branch, "
+                "never excluded. A block with no execution rows anywhere is the "
+                "excluded-block rule's own case, exactly as before"
+            ),
+            "superseded_treatment": (
+                "PRESERVED VERBATIM AS PROVENANCE. A2 and A2R1 said: 'the historical screen "
+                "TERMINATES. The block is not opened, and it is NOT converted into an "
+                "excluded block.'"
+            ),
+            "may_not_be_reinstated": (
+                "no later revision may restore a rule that refuses to open a block because "
+                "its mark coverage is absent"
             ),
         },
     },
@@ -1560,6 +1737,10 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
             "consequence of a fill rule already frozen: a position closed at an open was "
             "never exposed to that bar's subsequent price action"
         ),
+        "unchanged_by_a2r2": (
+            "the exit-bar exemption is exactly as A2 and A2R1 had it. A2R2 touches the "
+            "ENTRY rule and nothing at the other end of the position"
+        ),
     },
     "funding_fallback_independence": {
         "rule": (
@@ -1577,26 +1758,40 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
             "perpetual mark spike"
         ),
         "reporting": (
-            "unchanged. MARK_PRICE_FALLBACK.reporting_granularity still requires the "
-            "substitution flag per block and a count of settlements that used the "
-            "substituted base, and the liquidation touch provenance remains a separate count "
-            "of liquidation TESTS by source"
+            "unchanged in kind and made exact by A2R2's runtime. "
+            "MARK_PRICE_FALLBACK.reporting_granularity requires the substitution flag per "
+            "block and a count of settlements that used the substituted base. That count is "
+            "PER BLOCK and counts only settlements ACTUALLY APPLIED to that block's "
+            "position under FUNDING_CAUSALITY's open < settlement <= close window; the "
+            "screen-wide figure is the exact sum of those, never a global total repeated "
+            "once per block. The liquidation touch provenance remains a separate count of "
+            "liquidation TESTS by source"
+        ),
+        "unchanged_by_a2r2": (
+            "the funding substitution's trigger, its authorised base, its forbidden "
+            "alternative and its independence from the liquidation test are exactly as A2 "
+            "and A2R1 had them"
         ),
     },
     "evidence_requirement": {
         "fields": (
-            "the reason a block's opening was delayed, named as one of MARKLESS_STATES",
+            "the reason a block's opening was delayed, which under A2R2 can only be an "
+            "EXECUTION-source absence and is reported as "
+            "'pre_open_execution_row_absent' (OPENING_DELAY_EXECUTION_ABSENT)",
             "the amount of pre-open time skipped inside the block, and the count of skipped "
             "grid instants",
             "the realised opening instant, against the calendar block boundary",
+            "an explicit statement that the opening decision consulted no mark row, reported "
+            "as a flag rather than left to be inferred from a zero count",
         ),
         "relationship_to_the_per_block_report": (
             "IN ADDITION to TEMPORAL_PARTITION.per_block_report_fields, which is unchanged"
         ),
-        "not_implemented_yet": (
-            "STATED so this commit is not read as more than it is. The preregistration "
-            "commit freezes the requirement; it writes no reporting code, no block runner, "
-            "no loader and no downloader, and none of those exists"
+        "no_markless_state_may_appear_as_a_delay_reason": (
+            "under A2R2 a delayed opening is never attributable to a markless state, because "
+            "no markless state can delay an opening. An artifact reporting "
+            "pre_open_mark_absent as the reason a block opened late is reporting behaviour "
+            "this revision retired"
         ),
     },
     "gate_structure_unchanged": (
@@ -1618,58 +1813,68 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
     ),
     "no_gate_denominator_change": (
         "A2 never adds a block to, removes a block from, or reweights the denominators of G1 "
-        "and G2. Its terminal branches stop the screen instead of editing a denominator, "
-        "which is exactly why they cannot be used to improve a verdict"
+        "and G2, and A2R2 does not either. Its one live branch stops the screen instead of "
+        "editing a denominator, which is exactly why it cannot be used to improve a verdict"
     ),
     "no_affected_block_exclusion": (
         "no block is ever excluded, dropped, shortened, split, re-dated or re-labelled "
         "BECAUSE its mark coverage is incomplete. Source coverage may terminate the screen; "
-        "it may never select which periods the screen reports"
+        "it may never select which periods the screen reports. Under A2R2 it may not select "
+        "when a block OPENS either"
     ),
     "direction_of_conservatism": (
-        "NOT UNIFORM ACROSS BRANCHES, and A2R1 says so rather than overclaiming.\n"
-        "  * The two TERMINAL branches — a held bar with no authorised mark, and a block "
-        "with no valid opening instant — are genuinely fail-closed. Each forfeits the whole "
-        "screen, VIABLE included, so neither can produce or improve a verdict.\n"
-        "  * The PRE-OPEN branch is NOT one-way. Its economic direction is INDETERMINATE EX "
-        "ANTE: see states.pre_open_mark_absent.why_indeterminate. It may improve or worsen "
-        "funding PnL, and it may improve or worsen basis PnL. No monotonicity is claimed for "
-        "it in either direction.\n"
-        "The first committed A2 asserted one-way conservatism for the whole policy. That was "
-        "wrong about the pre-open branch and is withdrawn here"
+        "STATED AS TWO SEPARATE CLAIMS, because they have different strengths and collapsing "
+        "them is how the first A2 went wrong.\n"
+        "  * THE ONE LIVE BRANCH is genuinely fail-closed. A held bar with no authorised "
+        "mark forfeits the whole screen, VIABLE included, so it can neither produce nor "
+        "improve a verdict.\n"
+        "  * THE A2R2 CORRECTION ITSELF is one-way relative to A2R1, and this is arithmetic "
+        "rather than observation. A2R2 and A2R1 choose DIFFERENT opening instants only when "
+        "A2R1's search would have skipped an execution-valid instant for want of a mark. In "
+        "exactly those cases A2R2 opens at that instant, that instant is bar 0 and therefore "
+        "HELD, its authorised mark is by construction absent, and the screen terminates NOT "
+        "EVALUABLE. Where A2R1 would not have skipped, the two designs open at the SAME "
+        "instant and produce identical economics. So every outcome A2R2 changes, it changes "
+        "to a terminal refusal.\n"
+        "What is NOT claimed, and was falsely claimed by the first committed A2: that "
+        "shorter or later exposure is economically monotone. That claim stays withdrawn, and "
+        "the branch it described no longer exists to make it about"
     ),
     "no_economic_monotonicity_is_claimed": (
         "stated as its own commitment so it cannot be lost in prose. This design does NOT "
-        "claim that the pre-open rule can only reduce accrued funding, cannot add a positive "
+        "claim that a delayed open can only reduce accrued funding, cannot add a positive "
         "block, cannot raise the mean of G2, cannot lift the worst block of G3, cannot "
         "improve any block, or is necessarily economically unfavourable. Every one of those "
         "claims is false, and each was asserted by the first committed A2 "
-        "(sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c) and is "
-        "withdrawn by A2R1"
+        "(sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c), was "
+        "withdrawn by A2R1 (sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a"
+        "21ca29f0), and is NOT reinstated by A2R2. A2R2's own direction claim is a different "
+        "and narrower one — about which outcomes differ between two designs, not about "
+        "whether exposure length is monotone — and it is set out in "
+        "direction_of_conservatism"
     ),
     "admissibility_basis": (
-        "the ground on which this amendment stands, now that one-way conservatism is not "
-        "available to it. Three facts, each checkable from the repository rather than "
-        "asserted:\n"
+        "four facts, each checkable from the repository rather than asserted:\n"
         "  * TIMING. Frozen before P13 source acquisition and before any P13 economic "
         "observation. No archive object has been fetched, no coverage probe run, no block "
         "opened, and no funding total, basis figure, return or gate condition computed.\n"
-        "  * TRIGGER. Fired only by whether a required archive row exists, never by any "
-        "quantity a run computes — see why_this_is_source_validity_not_an_economic_rule.\n"
-        "  * CAUSALITY. The opening search advances forward only, inside the same block and "
-        "strictly before the research boundary, so it is implementable by an operator "
-        "standing at the instant.\n"
-        "A rule whose economic direction was unknown to its author, which no observation "
-        "informed, and which could not have been evaluated against a result that did not "
-        "exist, cannot be a rescue of that result. That is a WEAKER argument than one-way "
-        "conservatism, and it is the true one"
+        "  * TRIGGER. The live branch fires only on whether a required archive row exists, "
+        "never on any quantity a run computes — see "
+        "why_this_is_source_validity_not_an_economic_rule.\n"
+        "  * CAUSALITY. This is the ground A2R1 claimed and did not have, and A2R2 now has: "
+        "the opening decision uses only information available at the opening instant. No "
+        "future price value and no future source-availability fact reaches it.\n"
+        "  * DIRECTION. Every outcome A2R2 changes relative to A2R1, it changes to a "
+        "terminal NOT EVALUABLE — see direction_of_conservatism. A correction that can only "
+        "forfeit verdicts cannot be a rescue of a result nobody has seen"
     ),
     "evidence_ceiling_unchanged": (
         "this correction does not strengthen anything. Any future P13 result remains "
         "EXPLORATORY / ADAPTIVE HISTORICAL STRUCTURAL FEASIBILITY EVIDENCE under "
-        "EVIDENCE_CEILING and HINDSIGHT_DISCLOSURE. Withdrawing a false conservatism claim "
-        "removes an overstatement; it adds no evidential weight, and no positive P13 result "
-        "becomes more credible because this text is now accurate"
+        "EVIDENCE_CEILING and HINDSIGHT_DISCLOSURE. Removing a look-ahead makes the design "
+        "honest about what it was always entitled to compute; it adds no evidential weight, "
+        "and no positive P13 result becomes more credible because the entry rule is now "
+        "causal"
     ),
     "why_this_is_source_validity_not_an_economic_rule": (
         "the trigger is the PRESENCE OF AN ARCHIVE ROW and nothing else. It is never fired "
@@ -1678,29 +1883,32 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
         "MARK_PRICE_FALLBACK.never_triggered_by already imposes on the funding substitution. "
         "A rule that fired on an economic observation would be a filter chosen against a "
         "result; this one is decidable from the source manifest before a single economic "
-        "number exists"
+        "number exists. A2R2 narrows WHEN that question may be asked — never before the "
+        "open — without changing what it is asked about"
     ),
     "not_chosen_from_data": (
         "no market observation of any kind was available when this was adopted, and none was "
         "consulted. P13's sources have never been obtained, no coverage probe has been run "
         "against Binance, and the mark archive's first published month for BTCUSDT remains "
         "unmeasured. The policy is written to be correct under EVERY coverage outcome "
-        "precisely because the actual coverage is unknown"
+        "precisely because the actual coverage is unknown — and A2R2 in particular was "
+        "reached by reading the frozen text's own archive semantics, not by learning "
+        "anything about the market"
     ),
     "relation_to_not_evaluable_meaning": (
         "NOT_EVALUABLE_MEANING is unchanged and is not rewritten. It describes the "
-        "acquisition-time case — sources that could not be obtained — and A2 adds two "
-        "further routes to the SAME terminal state, both of them source insufficiency rather "
-        "than economics. The one difference worth stating is that A2's held-bar route can be "
-        "reached after computation has begun, and "
+        "acquisition-time case — sources that could not be obtained — and A2 adds a further "
+        "route to the SAME terminal state, which is source insufficiency rather than "
+        "economics. Under A2R2 there is exactly ONE such route, the held-bar route, and it "
+        "can be reached after computation has begun; "
         "states.held_bar_mark_absent.partial_numbers_are_not_a_result governs that case "
         "explicitly"
     ),
     "boundaries_and_seals_unchanged": (
         "the exclusive research boundary remains 2025-05-19T08:00:00+00:00. P4-HOLD remains "
-        "retired and unread, Styx remains sealed, and P8 remains unopened. The causal "
-        "opening search introduced here is bounded by the block AND by that boundary, so it "
-        "can never reach a sealed or retired instant"
+        "retired and unread, Styx remains sealed, and P8 remains unopened. The opening "
+        "search is bounded by the block AND by that boundary, so it can never reach a sealed "
+        "or retired instant"
     ),
     "does_not_disturb_the_acquisition_evidence": (
         "the committed acquisition plan, refusal record and STATUS at "
@@ -1711,9 +1919,15 @@ MARKLESS_LIQUIDATION_VALIDITY_POLICY: dict[str, Any] = {
         "are recorded in SUPERSEDED_HASHES and in docs/p13_preregistration.md as provenance"
     ),
     "implementation_status": (
-        "DESIGN ONLY. This amendment is frozen before the runtime that will obey it exists. "
-        "nn/p13_carry.py is unchanged by it, no downloader, loader or block runner was "
-        "written with it, and P13 remains economically NOT YET RUN"
+        "STATED PRECISELY, because it is no longer 'design only' and pretending otherwise "
+        "would misstate the chronology. The offline runtime EXISTS: nn/p13_alignment.py and "
+        "nn/p13_sources.py were committed at 667e3599 and the block runner, gate, stresses "
+        "and evidence at 1d5a31eb, both implementing A2R1 — including A2R1's pre-open mark "
+        "filter. At the instant THIS revision is committed that runtime is therefore "
+        "NON-CONFORMING to A2R2, and the adaptation is the immediately following commit in "
+        "the same chronology. No governed economic run may be performed under a "
+        "non-conforming runtime, and none has been performed at all: P13 remains "
+        "economically NOT YET RUN, and no P13 source object has been acquired"
     ),
 }
 
@@ -2190,7 +2404,7 @@ TEST_REQUIREMENTS: tuple[str, ...] = (
 
 #: The design a future economic run is governed by. Named in the payload so the
 #: answer is machine-readable rather than inferred from a document.
-ACTIVE_DESIGN = "P13-A2R1"
+ACTIVE_DESIGN = "P13-A2R2"
 
 #: Every hash this preregistration has ever had, EXCEPT the active one, each
 #: marked SUPERSEDED.
@@ -2243,10 +2457,29 @@ SUPERSEDED_HASHES: tuple[dict[str, str], ...] = (
         "what_it_governs_now": (
             "historical provenance only, and it is retained rather than quietly dropped "
             "because it is the first committed A2 design and the chronology must show it. "
-            "A2's source-validity BEHAVIOUR is not withdrawn — A2R1 keeps every treatment "
-            "unchanged — but its claim that the pre-open branch 'can only reduce accrued "
-            "funding' was false and is withdrawn. No P13 economic run may claim this hash "
-            "as the active design"
+            "A2's source-validity BEHAVIOUR was not withdrawn by A2R1 — that revision kept "
+            "every treatment unchanged — but its claim that the pre-open branch 'can only "
+            "reduce accrued funding' was false and is withdrawn, and its pre-open ENTRY "
+            "rule was later retired by A2R2 for using source-availability look-ahead. No "
+            "P13 economic run may claim this hash as the active design"
+        ),
+    },
+    {
+        "design": "P13-A2R1",
+        "hash": "sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0",
+        "status": "SUPERSEDED",
+        "committed_at": "d40cfcfbcb6e8048198f432eb2bb4ebf70c24b7c",
+        "superseded_by": "A2R2",
+        "what_it_governs_now": (
+            "historical provenance only. A2R1's own correction — the withdrawal of A2's "
+            "false monotonicity claim — is NOT reversed and stays withdrawn. What A2R2 "
+            "retires is the pre-open ENTRY rule A2R1 inherited from A2 and kept: rejecting "
+            "a candidate opening instant because the completed same-bar markPriceKlines row "
+            "is absent conditions the entry instant on a fact established only after that "
+            "bar completes, which is SOURCE-AVAILABILITY LOOK-AHEAD and contradicts A2R1's "
+            "own causality claim. The offline runtime committed at 667e3599 and 1d5a31eb "
+            "implements this design and is superseded with it. No P13 economic run may "
+            "claim this hash as the active design"
         ),
     },
 )
@@ -2288,6 +2521,9 @@ def payload() -> dict[str, Any]:
         "forced_close_without_a_following_bar": FORCED_CLOSE_WITHOUT_A_FOLLOWING_BAR,
         "markless_liquidation_validity_policy": MARKLESS_LIQUIDATION_VALIDITY_POLICY,
         "markless_states": list(MARKLESS_STATES),
+        "markless_states_live": list(MARKLESS_STATES_LIVE),
+        "markless_states_retired_by_a2r2": list(MARKLESS_STATES_RETIRED_BY_A2R2),
+        "opening_delay_execution_absent": OPENING_DELAY_EXECUTION_ABSENT,
         "temporal_partition": TEMPORAL_PARTITION,
         "min_settlements_per_block": MIN_SETTLEMENTS_PER_BLOCK,
         "min_included_blocks": MIN_INCLUDED_BLOCKS,
