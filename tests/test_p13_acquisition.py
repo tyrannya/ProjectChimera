@@ -540,6 +540,103 @@ def test_every_object_name_matches_binances_published_grammar():
 
 
 # ---------------------------------------------------------------------------
+# The committed A2R2 acquisition evidence
+# ---------------------------------------------------------------------------
+
+REPO = Path(__file__).resolve().parents[1]
+A2R2_EVIDENCE_DIR = REPO / "artifacts" / "benchmark" / "btc_p13_a2r2_source_acquisition"
+A2R2_EVIDENCE_MANIFEST = REPO / "artifacts" / "btc_p13_a2r2_source_acquisition_SHA256SUMS.txt"
+
+#: Independently stated, in a test, rather than discovered from the directory or
+#: read out of the manifest — both of which change when someone deletes evidence,
+#: which is the event this has to survive. Scoped to THIS checkpoint's own
+#: acquisition output; the repository-wide evidence contract is not touched.
+A2R2_REQUIRED_EVIDENCE = (
+    "artifacts/benchmark/btc_p13_a2r2_source_acquisition/STATUS.md",
+    "artifacts/benchmark/btc_p13_a2r2_source_acquisition/acquisition_manifest.json",
+    "artifacts/benchmark/btc_p13_a2r2_source_acquisition/source_closure.json",
+)
+
+
+@pytest.mark.skipif(
+    not A2R2_EVIDENCE_MANIFEST.is_file(), reason="acquisition evidence not committed yet"
+)
+def test_the_committed_a2r2_evidence_is_exactly_what_its_manifest_covers():
+    """Deleting a file AND its manifest line must not pass unnoticed."""
+    listed = [
+        line.split("  ", 1)[1]
+        for line in A2R2_EVIDENCE_MANIFEST.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert sorted(listed) == sorted(A2R2_REQUIRED_EVIDENCE)
+    for name in A2R2_REQUIRED_EVIDENCE:
+        assert (REPO / name).is_file(), f"{name} is missing"
+    regenerated = acq.evidence_manifest_text(
+        [REPO / name for name in A2R2_REQUIRED_EVIDENCE], root=REPO
+    )
+    assert regenerated == A2R2_EVIDENCE_MANIFEST.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(
+    not A2R2_EVIDENCE_MANIFEST.is_file(), reason="acquisition evidence not committed yet"
+)
+def test_the_committed_manifest_uses_forward_slashes_only():
+    text = A2R2_EVIDENCE_MANIFEST.read_text(encoding="utf-8")
+    assert chr(92) not in text, "a backslash reached the committed evidence manifest"
+    for line in text.strip().splitlines():
+        digest, name = line.split("  ", 1)
+        assert len(digest) == 64
+        assert name.startswith("artifacts/")
+
+
+@pytest.mark.skipif(
+    not (A2R2_EVIDENCE_DIR / "acquisition_manifest.json").is_file(),
+    reason="acquisition evidence not committed yet",
+)
+def test_the_committed_acquisition_evidence_leaks_no_machine_local_path():
+    """A drive letter or home directory in committed evidence is not reproducible."""
+    import re
+
+    drive = re.compile(r"^[A-Za-z]:[\/]")
+    for name in ("acquisition_manifest.json", "source_closure.json"):
+        payload = json.loads((A2R2_EVIDENCE_DIR / name).read_text(encoding="utf-8"))
+        offenders: list[str] = []
+
+        def walk(node, trail=name):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    walk(value, f"{trail}.{key}")
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(value, f"{trail}[{index}]")
+            elif isinstance(node, str):
+                if drive.match(node) or node.startswith("/") or chr(92) in node:
+                    offenders.append(f"{trail} = {node[:60]!r}")
+
+        walk(payload)
+        assert offenders == [], f"machine-local paths in {name}: {offenders[:3]}"
+
+
+@pytest.mark.skipif(
+    not (A2R2_EVIDENCE_DIR / "acquisition_manifest.json").is_file(),
+    reason="acquisition evidence not committed yet",
+)
+def test_the_committed_acquisition_is_complete_and_governed_by_the_active_design():
+    manifest = json.loads(
+        (A2R2_EVIDENCE_DIR / "acquisition_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["complete"] is True
+    assert manifest["acquired_object_count"] == manifest["planned_object_count"] == 260
+    assert manifest["checksum_verified_count"] == 260
+    assert manifest["checksum_unverified_count"] == 0
+    assert manifest["active_design"] == "P13-A2R2"
+    assert manifest["preregistration_hash"] == prereg.preregistration_hash()
+    # Every published path distinct: the collision that once made 260 into 130.
+    paths = [record["archive_relative_path"] for record in manifest["objects"]]
+    assert len(set(paths)) == 260
+
+
+# ---------------------------------------------------------------------------
 # Source closure computes no economics
 # ---------------------------------------------------------------------------
 
