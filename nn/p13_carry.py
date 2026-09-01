@@ -104,15 +104,26 @@ NOMINAL_BAR_NS = 3_600_000_000_000
 
 #: Where an intra-bar liquidation touch came from, strongest first.
 #:
-#: Named rather than boolean because the frozen contract admits THREE distinct
-#: strengths, not two. ``MARGIN_AND_LIQUIDATION.what_the_simulation_cannot_
+#: Named rather than boolean because ``Quote.liquidation_touch`` really does have
+#: three tiers, and they are not equally strong.
+#:
+#: The first two are frozen: ``MARGIN_AND_LIQUIDATION.what_the_simulation_cannot_
 #: determine`` requires testing "against the hourly HIGH of the mark series where
-#: available and the hourly close otherwise, and to RECORD which was used"; and
-#: ``MARK_PRICE_FALLBACK`` separately allows the mark series ITSELF to be
-#: substituted by the Binance spot close for a month whose ``markPriceKlines``
-#: object was never published. A mark close and a spot close are therefore not
-#: the same fallback, and collapsing them would let the weakest check report
-#: itself as the middle one.
+#: available and the hourly close otherwise, and to RECORD which was used".
+#:
+#: **The third is not, and saying so is the point of naming it separately.**
+#: ``Quote.liquidation_touch`` falls back once more, to the SPOT close, when no
+#: mark series is present at all. ``MARK_PRICE_FALLBACK`` authorises a spot
+#: substitution only "as the funding notional base", and
+#: ``BASIS_DEFINITION.which_series_plays_which_role`` lists the liquidation test
+#: as a SEPARATE use of the mark series without extending the substitution to it.
+#: So the frozen text does not authorise a spot-close liquidation touch, and it is
+#: anti-conservative — a spot close cannot see a perpetual mark spike. That
+#: fallback predates this module's repair and is left in place rather than
+#: changed, because removing it would decide an economic question the frozen text
+#: does not settle; what changes is that it can no longer happen invisibly.
+#: Counting it as its own tier is what lets a reviewer see whether any block ever
+#: relied on it, and decide whether it needs an explicit amendment before a run.
 TOUCH_MARK_HIGH = "mark_high"
 TOUCH_MARK_CLOSE = "mark_close"
 TOUCH_SPOT_CLOSE = "spot_close"
@@ -424,14 +435,25 @@ class CarryPosition:
         """SHORT mark-to-market: gains as the perpetual falls."""
         return (self.perp_entry - perp_price) * self.quantity
 
-    def equity(self, quote: Quote) -> Decimal:
-        """Total portfolio equity. Both legs, one denominator."""
+    def equity_at(self, spot_price: Decimal, perp_price: Decimal) -> Decimal:
+        """Total portfolio equity marked at two given prices. Both legs, one pool.
+
+        Split out from :meth:`equity` because the holding period BEGINS at an
+        instant whose only knowable prices are the FILLS, not a candle close: at
+        the entry instant this returns exactly ``total_capital - entry fees -
+        entry slippage``, which is the equity invariant the accounting controls
+        assert.
+        """
         return (
             self.free_cash
-            + self.quantity * quote.spot
+            + self.quantity * spot_price
             + self.perp_margin
-            + self.unrealised_perp(quote.perp)
+            + (self.perp_entry - perp_price) * self.quantity
         )
+
+    def equity(self, quote: Quote) -> Decimal:
+        """Total portfolio equity at ``quote``'s CLOSES — the end-of-bar mark."""
+        return self.equity_at(quote.spot, quote.perp)
 
 
 def open_carry(
@@ -703,14 +725,19 @@ class BlockResult:
     #: liquidated. Reported so the attribution window is auditable from the
     #: artifact rather than inferred from the code.
     held_bars: int = 0
-    #: Adjacent quote pairs spaced further apart than one nominal bar, and the
-    #: largest such spacing. A hole in the hourly grid is a fact about the block's
-    #: sources: the frozen ``SOURCE_FREEZE_FIELDS`` already requires "gaps
-    #: detected" of the acquisition, and recording it here as well means a
-    #: multi-hour jump — including one a forced close filled across — cannot look
-    #: identical to an ordinary +1h transition in the evidence.
+    #: How many adjacent quote pairs are spaced further apart than one nominal
+    #: bar, and — separately — the LARGEST adjacent spacing observed, gap or not.
+    #: The second is deliberately not called a "max gap": on a contiguous block it
+    #: is one nominal bar, and a field that reported a non-zero "gap" beside a gap
+    #: count of zero would be a contradiction sitting in the evidence.
+    #:
+    #: A hole in the hourly grid is a fact about the block's sources — the frozen
+    #: ``SOURCE_FREEZE_FIELDS`` already requires "gaps detected" of the
+    #: acquisition — and recording it here too means a multi-hour jump, including
+    #: one a forced close filled across, cannot look identical to an ordinary +1h
+    #: transition.
     quote_gap_count: int = 0
-    max_quote_gap_ns: int = 0
+    max_quote_step_ns: int = 0
 
     @property
     def net_funding(self) -> Decimal:
@@ -749,7 +776,7 @@ def unclosed_block_result(
     liquidation_touch_provenance: LiquidationTouchProvenance | None = None,
     held_bars: int = 0,
     quote_gap_count: int = 0,
-    max_quote_gap_ns: int = 0,
+    max_quote_step_ns: int = 0,
 ) -> BlockResult:
     """Amendment A1's encoding of an UNCLOSED block — ONE definition, BOTH causes.
 
@@ -806,7 +833,7 @@ def unclosed_block_result(
         ),
         held_bars=held_bars,
         quote_gap_count=quote_gap_count,
-        max_quote_gap_ns=max_quote_gap_ns,
+        max_quote_step_ns=max_quote_step_ns,
     )
 
 
@@ -858,7 +885,7 @@ def evaluate_block(
     it". An operator cannot transact at a hole. ``quotes`` is therefore the series
     of VALID observations and the following bar is the next element of it; the gap
     it may span is measured and reported (:attr:`BlockResult.quote_gap_count`,
-    :attr:`BlockResult.max_quote_gap_ns`, :attr:`BlockResult.forced_close_gap_ns`)
+    :attr:`BlockResult.max_quote_step_ns`, :attr:`BlockResult.forced_close_gap_ns`)
     so a multi-hour jump can never look like an ordinary +1h transition.
 
     **Amendment A1 and what corrected attribution does to it.** A1 makes an
@@ -963,7 +990,7 @@ def evaluate_block(
         liquidation_touch_provenance=LiquidationTouchProvenance(),
         held_bars=0,
         quote_gap_count=gap_count,
-        max_quote_gap_ns=max_gap,
+        max_quote_step_ns=max_gap,
     )
     if len(quotes) < 2:
         return BlockResult(**{**empty.__dict__, "reason": "fewer than two quotes in block"})
@@ -979,9 +1006,40 @@ def evaluate_block(
         key=lambda s: s.instant_ns,
     )
 
-    worst = ZERO
+    # Deduplicated by settlement instant, per FUNDING_SEMANTICS.application: "a
+    # redelivered or duplicated archive row changes nothing". That sentence is
+    # about a row delivered TWICE, and two rows at one instant carrying DIFFERENT
+    # rates are not that — they are the ambiguity
+    # POSITION_LIFECYCLE.validity_definition calls invalid: "no duplicate row
+    # makes the instant ambiguous. Anything else is invalid and fails closed".
+    # Collapsing them silently let the CALLER'S LIST ORDER pick which rate the
+    # payoff variable took, which is the defect R4 removed from the quote path
+    # and which survived here.
+    pending: dict[int, FundingSettlement] = {}
+    for settlement in due:
+        seen = pending.get(settlement.instant_ns)
+        if seen is not None and (
+            seen.rate != settlement.rate or seen.mark_price != settlement.mark_price
+        ):
+            raise CarryError(
+                f"two funding settlements at {settlement.instant_ns} disagree: "
+                f"rate {seen.rate} / mark {seen.mark_price} against rate {settlement.rate} "
+                f"/ mark {settlement.mark_price}. A redelivered IDENTICAL row is "
+                "deduplicated and changes nothing; a CONTRADICTORY one makes the instant "
+                "ambiguous and is INVALID rather than resolved by whichever row the caller "
+                "listed last."
+            )
+        pending[settlement.instant_ns] = settlement
+
+    # The excursion is measured "over the HOLDING PERIOD"
+    # (VIABILITY_GATE.maximum_adverse_excursion), which BEGINS at the entry
+    # instant — so it is seeded there rather than at a floor of zero. Seeding at
+    # ZERO made an opened block able to report an excursion of exactly 0, which
+    # the frozen definition cannot produce: equity at the entry instant is
+    # capital minus the two legs' entry frictions, so every opened block's
+    # excursion is strictly negative whenever any friction is charged.
+    worst = position.equity_at(entry.spot_fill, entry.perp_fill) - allocation.total_capital
     settled_count = 0
-    pending = {s.instant_ns: s for s in due}
     traded_quantity = position.quantity
     trigger_index: int | None = None
     touches: dict[str, int] = {name: 0 for name in TOUCH_SOURCES}
@@ -1059,7 +1117,7 @@ def evaluate_block(
                 liquidation_touch_provenance=provenance,
                 held_bars=held_bars,
                 quote_gap_count=gap_count,
-                max_quote_gap_ns=max_gap,
+                max_quote_step_ns=max_gap,
             )
         exit_quote = quotes[trigger_index + 1]
         forced_close_instant = exit_quote.instant_ns
@@ -1071,6 +1129,15 @@ def evaluate_block(
         position, exit_quote, costs, forfeit_perp_margin=liquidated and isolated
     )
     net_pnl = final_equity - allocation.total_capital
+    # The CLOSE INSTANT is inside the holding period — VIABILITY_GATE.block_net_pnl
+    # is "equity AT THE BLOCK'S CLOSE minus total_starting_capital" — so the
+    # realised close is an excursion sample like any other, and including it is
+    # what makes `max_adverse_excursion <= net_return` hold identically rather
+    # than by luck. Without it a block could report a drawdown shallower than the
+    # loss it actually finished with, and a funding payment settling exactly at
+    # the close instant (the frozen boundary tie rule applies it) reached the
+    # result while never reaching the drawdown.
+    worst = min(worst, net_pnl)
     return BlockResult(
         label=label,
         opened=True,
@@ -1100,5 +1167,5 @@ def evaluate_block(
         liquidation_touch_provenance=provenance,
         held_bars=held_bars,
         quote_gap_count=gap_count,
-        max_quote_gap_ns=max_gap,
+        max_quote_step_ns=max_gap,
     )

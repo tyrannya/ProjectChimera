@@ -462,6 +462,55 @@ only these three:
 Nothing here was chosen from data. No P13 economic observation exists, and none
 informed this.
 
+### 8b-i. Two things an independent review of the repair raised, recorded rather than settled
+
+**The spot-close liquidation touch is not authorised by the frozen text, and this
+document does not pretend otherwise.** `nn/p13_carry.py::Quote.liquidation_touch`
+falls back twice: to the mark **close** when no hourly mark high is published, and
+then to the **spot** close when no mark series is present at all. Only the first
+fallback is frozen — §8's "the hourly **high** of the mark series ... where
+available ... recording which was used". `MARK_PRICE_FALLBACK` authorises a spot
+substitution *"as the funding notional base"*, and `BASIS_DEFINITION` lists the
+liquidation test as a **separate** use of the mark series without extending the
+substitution to it. So the third tier is unauthorised, and it is
+anti-conservative: a spot close cannot see a perpetual mark spike.
+
+It predates this repair and is **left in place**, because removing it would
+decide an economic question the frozen text does not settle — which is exactly
+the kind of decision §8b declines to make silently. What the repair changes is
+that it can no longer happen invisibly: the touch provenance counts it as its own
+tier, so a reviewer can see whether any block ever relied on it. **If a future run
+would rely on it, that needs an explicit pre-economic amendment before the run,
+not a decision taken with a number in view.**
+
+Note also that `MARK_PRICE_FALLBACK.reporting_granularity` asks for a count of
+**settlements** that used the substituted notional base. The touch provenance
+counts **liquidation tests**, which is a different fact about a different use of
+the series. Both are wanted; only the second exists today, and the first belongs
+to the funding path the block runner will build.
+
+**The A1 reachability change is verdict-relaxing, and that is worth saying
+plainly.** §8b records that the liquidation route into A1 is now unreachable. A1's
+own `direction_of_conservatism` says the rule "can only remove a verdict, never
+produce or improve one" — so removing its reachability can only make `VIABLE`
+*easier* to obtain, and the hashed `reachability` note asserting the case is
+reachable under S4 is now false. This document is not hashed, so recording the
+correction here does not move the preregistration hash, and A1's text is not
+edited.
+
+The argument that the change is nevertheless **forced rather than chosen**: a
+liquidation test *at* instant `t_N` is not implementable from the preregistered
+sources. Every price a test at `t_N` could use — the bar's high, its mark close,
+its spot close — is a post-open fact about a bar the position closed at the open
+of, and no mark **open** exists in any preregistered source. §8's own
+`liquidation_check` is evaluated "while the position is open", and the position is
+not held through bar `N`. So there is no causal test to perform at `t_N`, and its
+absence is a consequence of the fill rule rather than a second decision.
+
+That argument is recorded here so a reviewer can reject it. **If it is rejected,
+the correct remedy is an explicit pre-economic amendment moving the hash — not a
+silent restoration of the old window, which was acausal in the other direction.**
+
 ### 8c. "Following bar" when the grid has a hole
 
 Recorded because a future run needs it settled and the frozen text does settle

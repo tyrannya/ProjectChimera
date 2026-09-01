@@ -921,12 +921,17 @@ def test_a_delayed_settlement_does_not_become_visible_at_an_earlier_quote():
 
     assert delayed.settlements == 0 and delayed.funding_paid == ZERO
     assert on_time.settlements == 1 and on_time.funding_paid == D("5.000")
-    # The equity path itself, not merely the totals: the excursion at the trigger
-    # bar cannot contain a payment that had not happened.
-    assert delayed.max_adverse_excursion_pnl == ZERO
-    assert on_time.max_adverse_excursion_pnl == D("-5.000")
-    # The same fact on the block return's own base: 5.000 of 1,000 is 0.005.
-    assert on_time.max_adverse_excursion == D("-0.005")
+    # The equity path itself, not merely the totals. Both blocks liquidate and
+    # both lose the same 5 of basis at the forced close, so the ONLY thing that
+    # can separate their excursions is the 5 of funding — and it separates them
+    # exactly, which is what makes this a measurement of the payment rather than
+    # of anything else.
+    assert delayed.net_pnl == D("-5") and delayed.max_adverse_excursion_pnl == D("-5")
+    assert on_time.net_pnl == D("-10") and on_time.max_adverse_excursion_pnl == D("-10")
+    assert on_time.max_adverse_excursion_pnl - delayed.max_adverse_excursion_pnl == D("-5")
+    # The same facts on the block return's own base: of 1,000 of capital.
+    assert delayed.max_adverse_excursion == D("-0.005")
+    assert on_time.max_adverse_excursion == D("-0.01")
     assert delayed.net_pnl != on_time.net_pnl
 
 
@@ -1619,18 +1624,24 @@ def test_a_settlement_at_the_close_instant_survives_the_corrected_window():
 # ---------------------------------------------------------------------------
 
 
-def test_a_contiguous_hourly_block_records_no_gap():
+def test_a_contiguous_hourly_block_records_no_gap_and_a_one_bar_step():
+    """The two fields say different things, and the names now say which.
+
+    Zero gaps, and a largest ADJACENT SPACING of one nominal bar. The spacing is
+    not a gap, which is why it is no longer called one: a non-zero "max gap"
+    beside a gap count of zero would be a contradiction sitting in the evidence.
+    """
     result = _run([bar(i * HOUR, "100", "100") for i in range(5)])
     assert result.quote_gap_count == 0
-    assert result.max_quote_gap_ns == NOMINAL_BAR_NS
+    assert result.max_quote_step_ns == NOMINAL_BAR_NS
 
 
 def test_a_hole_in_the_grid_is_detected_and_its_duration_recorded():
     quotes = [bar(0, "100", "100"), bar(HOUR, "100", "100"), bar(6 * HOUR, "100", "100")]
     result = _run(quotes)
     assert result.quote_gap_count == 1
-    assert result.max_quote_gap_ns == 5 * HOUR
-    assert result.max_quote_gap_ns > NOMINAL_BAR_NS
+    assert result.max_quote_step_ns == 5 * HOUR
+    assert result.max_quote_step_ns > NOMINAL_BAR_NS
 
 
 def test_a_multi_hour_jump_does_not_look_identical_to_a_normal_transition():
@@ -1642,11 +1653,11 @@ def test_a_multi_hour_jump_does_not_look_identical_to_a_normal_transition():
     # Same economics, by construction — the fills and marks are the same prices.
     assert contiguous.net_pnl == gapped.net_pnl == D("-10")
     # And distinguishable anyway, which is the point.
-    assert (contiguous.quote_gap_count, contiguous.max_quote_gap_ns) != (
+    assert (contiguous.quote_gap_count, contiguous.max_quote_step_ns) != (
         gapped.quote_gap_count,
-        gapped.max_quote_gap_ns,
+        gapped.max_quote_step_ns,
     )
-    assert gapped.quote_gap_count == 1 and gapped.max_quote_gap_ns == 8 * HOUR
+    assert gapped.quote_gap_count == 1 and gapped.max_quote_step_ns == 8 * HOUR
 
 
 def test_a_forced_close_that_fills_across_a_gap_records_how_far_it_reached():
@@ -1725,11 +1736,10 @@ def test_the_excursion_is_reported_on_the_same_base_as_the_block_return():
     # an excursion of -200 against 1,000 of capital, so -0.2 as a fraction.
     assert result.max_adverse_excursion_pnl == D("-200")
     assert result.max_adverse_excursion == D("-0.2")
-    # And the pair holds the same relationship net_pnl / net_return does.
+    # And the pair holds the same relationship net_pnl / net_return does — stated
+    # as hand-derived literals on both halves rather than by dividing one of them
+    # by the capital base, which would only restate the production line.
     assert result.net_pnl == D("-10") and result.net_return == D("-0.01")
-    assert result.max_adverse_excursion == (
-        result.max_adverse_excursion_pnl / CAPITAL.total_capital
-    )
 
 
 def test_the_excursion_fraction_is_scale_free():
@@ -1756,3 +1766,211 @@ def test_the_excursion_fraction_is_scale_free():
     )
     assert small.max_adverse_excursion_pnl != big.max_adverse_excursion_pnl
     assert small.max_adverse_excursion == big.max_adverse_excursion == D("-0.2")
+
+
+# ---------------------------------------------------------------------------
+# The excursion covers the WHOLE holding period, ends included
+# ---------------------------------------------------------------------------
+#
+# VIABILITY_GATE.maximum_adverse_excursion: "the most negative value of
+# (equity_t - total_starting_capital) OVER THE HOLDING PERIOD". The holding
+# period starts at the entry instant and ends at the close instant, and
+# VIABILITY_GATE.block_net_pnl defines the block return as "equity AT THE
+# BLOCK'S CLOSE minus total_starting_capital". So the close is one of the points
+# the excursion ranges over, and `max_adverse_excursion <= net_return` is not an
+# observation about these witnesses — it is an identity the definition forces.
+#
+# Sampling only the held bars' CLOSES broke it at both ends: the entry instant
+# was never marked (so an opened block could report an excursion of exactly zero
+# while having already paid its entry frictions), and the close instant was never
+# marked (so a funding payment settling exactly at the close — which the frozen
+# boundary tie rule DOES apply — reached the block return without ever reaching
+# the drawdown).
+#
+# These witnesses run at REAL frictions on purpose. Every other excursion test in
+# this file uses FREE, and in a zero-cost world entry equity equals capital
+# exactly, so the whole defect class is invisible to them by construction.
+# ---------------------------------------------------------------------------
+
+
+def _run_real(quotes, settlements=(), isolated=False):
+    return evaluate_block(
+        "b",
+        quotes,
+        list(settlements),
+        CAPITAL,
+        REAL,
+        VENUE,
+        min_settlements=0,
+        isolated=isolated,
+    )
+
+
+# Hand-traced at the frozen rates, capital 1,000 split 500/500, price 100 flat:
+#   Q = step_floor(min(500/100.15, 500/100.10)) = step_floor(4.99251...) = 4.992
+#   notional per leg      4.992 x 100 = 499.20
+#   entry frictions       499.20 x (0.001 + 0.0005) spot  = 0.7488
+#                       + 499.20 x (0.0005 + 0.0005) perp = 0.4992   -> 1.2480
+#   exit frictions        the same again                             -> 1.2480
+#   equity at entry       1000 - 1.2480 = 998.7520
+#   equity at close       1000 - 2.4960 = 997.5040
+ENTRY_FRICTION = D("1.2480")
+ROUND_TRIP = D("2.4960")
+
+
+def test_a_flat_block_at_real_frictions_has_a_hand_traced_excursion():
+    result = _run_real([bar(0, "100", "100"), bar(HOUR, "100", "100")])
+    assert result.quantity == D("4.992")
+    assert result.fees + result.slippage == ROUND_TRIP
+    assert result.net_pnl == -ROUND_TRIP
+    # The deepest point IS the close here, because nothing else moved.
+    assert result.max_adverse_excursion_pnl == -ROUND_TRIP
+    assert result.max_adverse_excursion == -ROUND_TRIP / CAPITAL.total_capital
+
+
+def test_an_opened_block_cannot_report_a_zero_excursion_once_frictions_are_charged():
+    """Equity at the entry instant is capital minus the two legs' entry frictions.
+
+    That is the equity invariant asserted elsewhere in this file, so an opened
+    block's excursion is strictly negative whenever any friction is charged, and
+    a reported zero is not a shallow drawdown — it is a missing measurement.
+    """
+    result = _run_real([bar(0, "100", "100"), bar(HOUR, "100", "100")])
+    assert result.opened
+    assert result.max_adverse_excursion_pnl < ZERO
+    assert result.max_adverse_excursion_pnl <= -ENTRY_FRICTION
+
+
+def test_a_settlement_at_the_close_instant_reaches_the_excursion():
+    """It reaches the block return, so it must reach the drawdown too.
+
+    The frozen boundary tie rule applies a settlement whose instant EQUALS the
+    close. The held-bar loop stops one bar earlier, so this payment lands after
+    the last bar sample — and before this repair it was charged to the result
+    while leaving the reported drawdown untouched.
+    """
+    # 4.992 BTC at a mark of 100 is 499.20 of notional; a -0.01 rate makes the
+    # SHORT pay 4.9920, on top of the 2.4960 round trip.
+    at_close = FundingSettlement(HOUR, D("-0.01"), D("100"))
+    result = _run_real([bar(0, "100", "100"), bar(HOUR, "100", "100")], [at_close])
+    assert result.settlements == 1
+    assert result.funding_paid == D("4.99200")
+    assert result.net_pnl == -(ROUND_TRIP + D("4.99200"))
+    assert result.max_adverse_excursion_pnl == result.net_pnl
+
+    # The negative control: the same payment one nanosecond later is not this
+    # position's, and then it is in neither number.
+    after = FundingSettlement(HOUR + 1, D("-0.01"), D("100"))
+    clean = _run_real([bar(0, "100", "100"), bar(HOUR, "100", "100")], [after])
+    assert clean.settlements == 0
+    assert clean.net_pnl == -ROUND_TRIP
+    assert clean.max_adverse_excursion_pnl == -ROUND_TRIP
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_the_excursion_is_never_shallower_than_the_block_return(isolated):
+    """The identity the frozen definition forces, over every shape and both models.
+
+    Not a property of these prices: the close is inside the holding period, so a
+    block cannot finish worse than its own worst point. A violation means the
+    excursion is not ranging over the period the design says it ranges over.
+    """
+    paths = [
+        ["100", "100", "100"],
+        ["100", "120", "90"],
+        ["100", "90", "140"],
+        ["100", "101", "99"],
+        ["100", "100"],
+        ["100", "105", "95", "115", "85"],
+    ]
+    for path in paths:
+        for skew in ("100", "103", "97"):
+            quotes = [
+                bar(i * HOUR, price, skew if i == 0 else price) for i, price in enumerate(path)
+            ]
+            result = _run_real(quotes, isolated=isolated)
+            if not result.opened or result.unclosed:
+                continue
+            assert result.max_adverse_excursion <= result.net_return, (
+                f"path={path} skew={skew}: drawdown {result.max_adverse_excursion} is "
+                f"shallower than the realised return {result.net_return}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Two funding rows at one instant that disagree
+# ---------------------------------------------------------------------------
+#
+# FUNDING_SEMANTICS.application deduplicates "a redelivered or duplicated archive
+# row" — a row delivered TWICE. Two rows at one instant carrying DIFFERENT rates
+# are not that; they are exactly what POSITION_LIFECYCLE.validity_definition
+# calls invalid: "no duplicate row makes the instant ambiguous. Anything else is
+# invalid and fails closed."
+#
+# Collapsing them by last-writer-wins let the CALLER'S LIST ORDER choose which
+# rate the payoff variable took — the same defect R4 removed from the quote path.
+# ---------------------------------------------------------------------------
+
+
+def test_two_settlements_at_one_instant_that_disagree_are_refused():
+    positive = FundingSettlement(HOUR, D("0.001"), D("100"))
+    negative = FundingSettlement(HOUR, D("-0.001"), D("100"))
+    for order in ([positive, negative], [negative, positive]):
+        with pytest.raises(CarryError, match="ambiguous"):
+            _run(_settled_series(), order)
+
+
+def test_settlements_at_one_instant_that_disagree_only_on_the_mark_are_refused():
+    """The notional base is as decision-relevant as the rate."""
+    one = FundingSettlement(HOUR, D("0.001"), D("100"))
+    other = FundingSettlement(HOUR, D("0.001"), D("200"))
+    with pytest.raises(CarryError, match="ambiguous"):
+        _run(_settled_series(), [one, other])
+
+
+def test_an_identical_redelivered_row_is_still_silently_deduplicated():
+    """The frozen sentence this must NOT break: a duplicate row changes nothing."""
+    once = FundingSettlement(HOUR, D("0.001"), D("100"))
+    twin = FundingSettlement(HOUR, D("0.001"), D("100"))
+    plain = _run(_settled_series(), [once])
+    doubled = _run(_settled_series(), [once, twin, once])
+    assert plain.settlements == doubled.settlements == 1
+    assert plain.funding_received == doubled.funding_received == D("0.500")
+    assert plain.net_pnl == doubled.net_pnl
+
+
+def test_the_entry_instant_is_the_excursions_first_sample():
+    """A block that finishes UP still had a worst point, and it is the entry.
+
+    Hand-traced. Entry fills 100 spot / 102 perp, exit fills 100/100, and the
+    entry bar closes at a basis of 0 so the short is already ahead by the time
+    that bar ends:
+
+      Q = step_floor(min(500/100.15, 500/(102 x 1.001))) = step_floor(4.8971...)
+        = 4.897
+      spot notional 489.70,  perp notional 4.897 x 102 = 499.494 = margin
+      entry frictions  489.70 x 0.0015 + 499.494 x 0.0010 = 1.234044
+      equity at entry  1000 - 1.234044        -> excursion -1.234044
+      equity at bar 0's close  +8.559956      (the short is up 2 x 4.897)
+      basis PnL 4.897 x (2 - 0) = 9.794, exit frictions 1.224250
+      net PnL  9.794 - 1.234044 - 1.224250 = 7.335706  -> finishes UP
+
+    Every sample except the entry is positive, so the entry instant is the only
+    thing standing between this block and a reported drawdown of zero — which is
+    what a floor of zero used to report, for a position that had already paid
+    1.234044 of frictions the moment it opened.
+    """
+    quotes = [
+        bar(0, "100", "102", spot_close="100", perp_close="100"),
+        bar(HOUR, "100", "100"),
+    ]
+    result = _run_real(quotes)
+
+    assert result.quantity == D("4.897")
+    assert result.net_pnl == D("7.335706")
+    assert result.net_pnl > ZERO
+    assert result.max_adverse_excursion_pnl == D("-1.234044")
+    assert result.max_adverse_excursion_pnl == -(result.fees + result.slippage - D("1.224250"))
+    assert result.max_adverse_excursion == D("-1.234044") / CAPITAL.total_capital
+    # The claim stated as the thing that would break: a zero floor reports 0 here.
+    assert result.max_adverse_excursion_pnl != ZERO
