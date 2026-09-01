@@ -72,12 +72,19 @@ def quote(instant: int, spot: str, perp: str, mark: str | None = None) -> Quote:
     an hour later without anyone deciding to. A witness written in a flat world is
     entitled to open == close, so it states both rather than inheriting one, and
     every hand-traced number below is unchanged by the difference.
+
+    The mark series DEFAULTS to the flat world's price rather than to absence. A
+    held bar without a mark is not a valid bar under the frozen design — the
+    liquidation test is defined on the mark series and nothing else — so absence
+    is the exceptional case and the F1 section states it outright rather than
+    letting it be the silent default here. The default equals the close, so the
+    number the liquidation test reads is exactly the number it read before.
     """
     return Quote(
         instant_ns=instant,
         spot=D(spot),
         perp=D(perp),
-        mark=D(mark) if mark is not None else None,
+        mark=D(mark if mark is not None else spot),
         spot_open=D(spot),
         perp_open=D(perp),
     )
@@ -488,8 +495,17 @@ def test_orders_fill_at_the_candle_open_not_its_close():
 
 
 def test_the_basis_identity_holds_on_transacted_prices_when_open_differs_from_close():
+    # Bar 0 is HELD, so it carries a mark; the mark equals its own close, which is
+    # the number the liquidation test read here before there was a mark at all.
+    # The EXIT bar deliberately carries none: the position closed at its open and
+    # its liquidation is never tested, so requiring one there would be wrong.
     entry = Quote(
-        instant_ns=0, spot=D("111"), perp=D("113"), spot_open=D("100"), perp_open=D("101")
+        instant_ns=0,
+        spot=D("111"),
+        perp=D("113"),
+        spot_open=D("100"),
+        perp_open=D("101"),
+        mark=D("111"),
     )
     exit_ = Quote(
         instant_ns=1, spot=D("300"), perp=D("300"), spot_open=D("200"), perp_open=D("200")
@@ -770,6 +786,7 @@ def test_no_liquidation_trigger_can_leave_a_block_unclosed(length, isolated):
                     perp=D("100"),
                     spot_open=D("100"),
                     perp_open=D("100"),
+                    mark=D("100"),
                     mark_high=D(PREDICATE_SPIKE) if index == spike_at else None,
                 )
             )
@@ -1065,15 +1082,41 @@ def bar(
     come from the closes. Keeping them distinct is what lets one bar carry an
     ordinary fill and a catastrophic close, which is the shape every window
     question below turns on.
+
+    The mark CLOSE defaults to this bar's own close, for the reason `quote` gives:
+    a held bar that carries no mark at all is refused by the liquidation test, so
+    a witness about the holding window, funding or the excursion should not be
+    silently making that separate claim. `markless` below is how a test says the
+    mark series is absent, and it says so on purpose.
     """
+    close = spot_close if spot_close is not None else spot_open
     return Quote(
         instant_ns=instant,
-        spot=D(spot_close if spot_close is not None else spot_open),
+        spot=D(close),
         perp=D(perp_close if perp_close is not None else perp_open),
         spot_open=D(spot_open),
         perp_open=D(perp_open),
-        mark=D(mark) if mark is not None else None,
+        mark=D(mark if mark is not None else close),
         mark_high=D(mark_high) if mark_high is not None else None,
+    )
+
+
+def markless(instant: int, spot_open: str, perp_open: str, **kwargs) -> Quote:
+    """A witness bar carrying NO mark series of any kind — neither high nor close.
+
+    This is the shape a month with no published `markPriceKlines` object produces,
+    and under the frozen design it is the shape the liquidation test must REFUSE
+    rather than approximate from a series it was never given.
+    """
+    built = bar(instant, spot_open, perp_open, **kwargs)
+    return Quote(
+        instant_ns=built.instant_ns,
+        spot=built.spot,
+        perp=built.perp,
+        spot_open=built.spot_open,
+        perp_open=built.perp_open,
+        mark=None,
+        mark_high=None,
     )
 
 
@@ -1419,25 +1462,31 @@ def test_a_block_that_fell_back_to_the_mark_close_records_that_fallback():
     assert not provenance.all_mark_high
 
 
-def test_a_block_that_fell_back_to_the_spot_close_records_the_weaker_provenance():
-    """MARK_PRICE_FALLBACK's case, and it must not be filed as a mark close."""
-    result = _run(_three_bars())
-    provenance = result.liquidation_touch_provenance
-    assert provenance.as_dict() == {
-        TOUCH_MARK_HIGH: 0,
-        TOUCH_MARK_CLOSE: 0,
-        TOUCH_SPOT_CLOSE: 2,
-    }
-    assert provenance.used_a_weaker_fallback
-    assert not provenance.all_mark_high
+def test_a_block_with_no_mark_series_at_all_is_refused_rather_than_filed_as_spot():
+    """MARK_PRICE_FALLBACK's month, and the engine must REFUSE it, not record it.
+
+    This test previously asserted the opposite — that such a block evaluated
+    successfully and recorded a `spot_close` provenance. That was F1: the frozen
+    design authorises the spot substitution as the FUNDING NOTIONAL BASE only, so
+    a spot-close liquidation test was a tier the design never granted, and
+    recording it truthfully still meant computing it.
+    """
+    with pytest.raises(CarryError, match="no mark series"):
+        _run([markless(i * HOUR, "100", "100") for i in range(3)])
 
 
 def test_changing_high_availability_changes_the_recorded_provenance():
-    """The discriminating claim: the record follows the data, not the code path."""
+    """The discriminating claim: the record follows the data, not the code path.
+
+    Two arms, not three. The third availability state — no mark series at all —
+    has no provenance to compare because it has no result: it is refused, which
+    the arm below asserts so the missing case is visible rather than dropped.
+    """
     strong = _run(_three_bars(mark="100", mark_high="100")).liquidation_touch_provenance
     middle = _run(_three_bars(mark="100")).liquidation_touch_provenance
-    weak = _run(_three_bars()).liquidation_touch_provenance
-    assert len({tuple(p.as_dict().items()) for p in (strong, middle, weak)}) == 3
+    assert strong.as_dict() != middle.as_dict()
+    with pytest.raises(CarryError, match="no mark series"):
+        _run([markless(i * HOUR, "100", "100") for i in range(3)])
 
 
 def test_a_block_that_mixes_sources_reports_every_one_of_them():
@@ -1500,11 +1549,15 @@ def test_the_touch_source_names_agree_with_the_value_the_touch_takes():
         close.liquidation_touch == D("120")
         and close.liquidation_touch_source == TOUCH_MARK_CLOSE
     )
-    spot = bar(0, "100", "100", spot_close="110")
-    assert (
-        spot.liquidation_touch == D("110")
-        and spot.liquidation_touch_source == TOUCH_SPOT_CLOSE
-    )
+    # The third branch is a REFUSAL, and both accessors must take it together: a
+    # name without a value behind it would let an artifact claim a bar was tested.
+    absent = markless(0, "100", "100", spot_close="110")
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch_source
+    # The vocabulary keeps its shape for already-written artifacts even though the
+    # third name is now unreachable from a successful evaluation.
     assert set(TOUCH_SOURCES) == {TOUCH_MARK_HIGH, TOUCH_MARK_CLOSE, TOUCH_SPOT_CLOSE}
 
 
@@ -1974,3 +2027,346 @@ def test_the_entry_instant_is_the_excursions_first_sample():
     assert result.max_adverse_excursion == D("-1.234044") / CAPITAL.total_capital
     # The claim stated as the thing that would break: a zero floor reports 0 here.
     assert result.max_adverse_excursion_pnl != ZERO
+
+
+# ---------------------------------------------------------------------------
+# F1 — the liquidation test has exactly two tiers, and spot is not one of them
+# ---------------------------------------------------------------------------
+#
+# MARGIN_AND_LIQUIDATION.what_the_simulation_cannot_determine fixes the ladder:
+# test "against the hourly HIGH of the mark series where available and the hourly
+# close otherwise, and to RECORD which was used". Two tiers, both on the MARK
+# series, and BASIS_DEFINITION.which_series_plays_which_role confirms the scope —
+# "the MARK series is used for two things only: the funding notional and the
+# liquidation test".
+#
+# MARK_PRICE_FALLBACK substitutes the spot close for exactly ONE of those two
+# uses. It is authorised "as the funding notional base", and the role table
+# extends it no further than "the funding notional at a settlement instant ...
+# under MARK_PRICE_FALLBACK it is the spot candle CLOSE". The liquidation test is
+# named separately in the same sentence and receives no such extension.
+#
+# The evaluator nevertheless carried a THIRD tier: given no mark series at all it
+# tested liquidation against the SPOT close. Unauthorised, and anti-conservative
+# in the one direction that matters — a spot close cannot see a perpetual mark
+# spike, so a hedge failure the mark series would have caught passed silently.
+#
+# The repair REFUSES instead. That is enforcement of the frozen text, not a new
+# decision: whether a mark-less month may be evaluated economically at all is a
+# question for a pre-economic amendment, and failing closed is precisely what
+# leaves that question open and visible rather than answering it by default.
+# ---------------------------------------------------------------------------
+
+
+class _SpotFallbackQuote(Quote):
+    """The F1 defect, kept executable on a subclass no production path builds.
+
+    These are the exact lines the repair removed. They live on here so the tests
+    below are provably DISCRIMINATING: without a mutant to run, "production
+    refuses" is an assertion that could pass for want of anything to catch.
+    """
+
+    @property
+    def liquidation_touch(self) -> Decimal:
+        if self.mark_high is not None:
+            return self.mark_high
+        return self.mark if self.mark is not None else self.spot
+
+    @property
+    def liquidation_touch_source(self) -> str:
+        if self.mark_high is not None:
+            return TOUCH_MARK_HIGH
+        return TOUCH_MARK_CLOSE if self.mark is not None else TOUCH_SPOT_CLOSE
+
+
+def _mutant_bars(count: int = 3) -> list[Quote]:
+    """``count`` mark-less bars that still carry the F1 fallback."""
+    return [
+        _SpotFallbackQuote(
+            instant_ns=i * HOUR,
+            spot=D("100"),
+            perp=D("100"),
+            spot_open=D("100"),
+            perp_open=D("100"),
+        )
+        for i in range(count)
+    ]
+
+
+# --- tier 1: the mark high, where the source provides it -------------------- #
+
+
+def test_tier_one_the_liquidation_touch_is_the_mark_high_when_it_exists():
+    """The strong tier, and it must beat both closes rather than tie with them."""
+    held = bar(0, "100", "100", spot_close="110", mark="120", mark_high="130")
+    assert held.liquidation_touch == D("130")
+    assert held.liquidation_touch_source == TOUCH_MARK_HIGH
+    assert held.liquidation_touch_is_high
+
+
+def test_tier_one_reaches_the_liquidation_model_on_both_margin_paths():
+    """A spike only the mark HIGH can see must fire under primary AND S4."""
+    position = open_carry(quote(0, "100", "100"), CAPITAL, FREE, VENUE)
+    spike = bar(HOUR, "100", "100", mark="100", mark_high=PREDICATE_SPIKE)
+    assert is_liquidated(position, spike, VENUE, isolated=True)
+    assert is_liquidated(position, spike, VENUE, isolated=False)
+
+
+# --- tier 2: the mark close, when the high is absent ------------------------ #
+
+
+def test_tier_two_the_liquidation_touch_is_the_mark_close_when_the_high_is_absent():
+    """The authorised fallback. It is weaker, and it is recorded as weaker."""
+    held = bar(0, "100", "100", spot_close="110", mark="120")
+    assert held.liquidation_touch == D("120")
+    assert held.liquidation_touch_source == TOUCH_MARK_CLOSE
+    assert not held.liquidation_touch_is_high
+
+
+def test_tier_two_uses_the_mark_close_and_not_the_spot_close_beside_it():
+    """The discriminating pair: spot and mark disagree, and the mark must win.
+
+    With both closes at 110 and the mark at 205, only the mark reaches the
+    isolated threshold of entry x (2 - mmr) = 199.6. A test reading the spot
+    close beside it would report no liquidation, which is the anti-conservative
+    direction and exactly what F1 permitted.
+    """
+    position = open_carry(quote(0, "100", "100"), CAPITAL, FREE, VENUE)
+    diverged = bar(HOUR, "100", "100", spot_close="110", perp_close="110", mark="205")
+    assert diverged.liquidation_touch == D("205")
+    assert diverged.spot == D("110")
+    assert is_liquidated(position, diverged, VENUE, isolated=True)
+
+
+# --- there is no tier 3 ----------------------------------------------------- #
+
+
+def test_a_held_bar_with_no_mark_series_refuses_rather_than_reading_spot():
+    """F1 itself. Both accessors refuse, and neither returns the spot close."""
+    absent = markless(0, "100", "100", spot_close="110")
+    assert absent.spot == D("110"), "the spot close is present, it is simply not eligible"
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch_source
+
+
+def test_the_refusal_names_the_frozen_clauses_it_is_enforcing():
+    """A fail-closed message that cannot be traced to the design is not evidence."""
+    with pytest.raises(CarryError) as raised:
+        markless(0, "100", "100").liquidation_touch
+    message = str(raised.value)
+    assert "MARK_PRICE_FALLBACK" in message
+    assert "FUNDING NOTIONAL BASE" in message
+    assert "BASIS_DEFINITION.which_series_plays_which_role" in message
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_neither_margin_path_can_consume_a_spot_close_liquidation(isolated):
+    """Requirement 5: the primary portfolio test and S4 both go through the mark.
+
+    ``is_liquidated`` reads one accessor for both models, so the refusal is not a
+    property of whichever branch a caller happens to take.
+    """
+    position = open_carry(quote(0, "100", "100"), CAPITAL, FREE, VENUE)
+    absent = markless(HOUR, "100", "100", spot_close=PREDICATE_SPIKE)
+    with pytest.raises(CarryError, match="no mark series"):
+        is_liquidated(position, absent, VENUE, isolated=isolated)
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_a_governed_evaluation_over_mark_less_bars_fails_closed(isolated):
+    """No BlockResult at all: not a zero, not a skip, not a silent spot test."""
+    with pytest.raises(CarryError, match="no mark series"):
+        _run([markless(i * HOUR, "100", "100") for i in range(3)], isolated=isolated)
+
+
+def test_the_refusal_is_not_converted_into_a_not_opened_result():
+    """R2's fail-open shape is the one this must not regress into.
+
+    A block that never opened returns a BlockResult carrying NOT_DETERMINABLE. A
+    mark-less HELD bar is a different failure entirely — the block DID open — so
+    it must raise rather than be filed as an unopened block with a reason string.
+    """
+    with pytest.raises(CarryError, match="no mark series"):
+        _run(
+            [
+                bar(0, "100", "100", mark="100"),
+                markless(HOUR, "100", "100"),
+                bar(2 * HOUR, "100", "100", mark="100"),
+            ]
+        )
+    # The control: the same shape with a mark on every held bar evaluates fine.
+    fine = _run([bar(i * HOUR, "100", "100", mark="100") for i in range(3)])
+    assert fine.opened and not fine.liquidated
+    assert fine.reason == "closed at block end"
+
+
+# --- the exit bar is not a held bar, and still needs nothing ---------------- #
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["portfolio", "isolated"])
+def test_a_mark_less_exit_bar_does_not_make_the_block_fail(isolated):
+    """Requirement 4, and the far edge of the R1 window restated as a data claim.
+
+    The position closes at bar N's OPEN, so bar N's liquidation is never tested
+    and its mark series is never read. Requiring one there would have quietly
+    widened the holding window R1 had just finished narrowing.
+    """
+    quotes = [
+        bar(0, "100", "100", mark="100"),
+        bar(HOUR, "100", "100", mark="100"),
+        markless(2 * HOUR, "100", "102"),
+    ]
+    result = _run(quotes, isolated=isolated)
+    assert result.opened and not result.liquidated
+    assert result.reason == "closed at block end"
+    assert result.held_bars == 2
+    # Filled at bar 2's open, basis 2: net = 5 x (0 - 2) = -10, as witness C.
+    assert result.net_pnl == D("-10")
+
+
+def test_only_the_held_bars_mark_matters_which_is_the_r1_window_exactly():
+    """The two-sided control: move the absence one bar earlier and it refuses."""
+    ok = _run(
+        [
+            bar(0, "100", "100", mark="100"),
+            bar(HOUR, "100", "100", mark="100"),
+            markless(2 * HOUR, "100", "100"),
+        ]
+    )
+    assert ok.opened and ok.held_bars == 2
+    with pytest.raises(CarryError, match="no mark series"):
+        _run(
+            [
+                bar(0, "100", "100", mark="100"),
+                markless(HOUR, "100", "100"),
+                bar(2 * HOUR, "100", "100", mark="100"),
+            ]
+        )
+
+
+def test_bar_zero_is_still_a_held_bar_and_still_needs_its_mark():
+    """The near edge. R1 put bar 0 inside the window, so it carries a mark too."""
+    with pytest.raises(CarryError, match="no mark series"):
+        _run(
+            [
+                markless(0, "100", "100"),
+                bar(HOUR, "100", "100", mark="100"),
+                bar(2 * HOUR, "100", "100", mark="100"),
+            ]
+        )
+
+
+# --- the provenance vocabulary is unreachable, not deleted ------------------ #
+
+
+def test_no_successful_block_can_record_a_spot_close_touch():
+    """Requirement 6, swept over shapes rather than asserted on one.
+
+    Every combination of availability that CAN produce a result is run, and none
+    may file a ``spot_close``. The combination that cannot produce a result is
+    covered by the fail-closed tests above.
+    """
+    shapes = [
+        _three_bars(mark="100", mark_high="100"),
+        _three_bars(mark="100"),
+        [
+            bar(0, "100", "100", mark="100", mark_high="100"),
+            bar(HOUR, "100", "100", mark="100"),
+            markless(2 * HOUR, "100", "100"),
+        ],
+        [
+            bar(0, "100", "100", mark="100"),
+            bar(HOUR, "100", "100", mark="100", mark_high=PREDICATE_SPIKE),
+            bar(2 * HOUR, "100", "100", mark="100"),
+        ],
+    ]
+    for quotes in shapes:
+        provenance = _run(quotes).liquidation_touch_provenance
+        assert provenance.as_dict()[TOUCH_SPOT_CLOSE] == 0
+        assert provenance.tested == sum(provenance.as_dict().values())
+
+
+def test_the_spot_close_name_survives_for_artifacts_that_already_used_it():
+    """Retained vocabulary, so an already-frozen record stays readable.
+
+    Deleting the name would make a historical artifact unreadable and would hide
+    that the mark-less month is still an open pre-economic question.
+    """
+    assert TOUCH_SPOT_CLOSE == "spot_close"
+    assert TOUCH_SOURCES == (TOUCH_MARK_HIGH, TOUCH_MARK_CLOSE, TOUCH_SPOT_CLOSE)
+    assert LiquidationTouchProvenance(spot_close=2).as_dict()[TOUCH_SPOT_CLOSE] == 2
+
+
+# --- the mutation test ------------------------------------------------------ #
+
+
+def test_the_spot_close_fallback_mutant_is_killed():
+    """Requirement 7: put ``return self.spot`` back and this test goes red.
+
+    The first half is the assertion that does the killing. The second half runs
+    the mutant to show the first half discriminates: it demonstrates that the
+    removed line really did return the spot close and file it as such.
+    """
+    absent = markless(0, "100", "100", spot_close="110")
+    with pytest.raises(CarryError, match="no mark series"):
+        absent.liquidation_touch
+
+    mutant = _SpotFallbackQuote(
+        instant_ns=0,
+        spot=D("110"),
+        perp=D("110"),
+        spot_open=D("100"),
+        perp_open=D("100"),
+    )
+    assert mutant.liquidation_touch == D("110")
+    assert mutant.liquidation_touch_source == TOUCH_SPOT_CLOSE
+
+
+def test_the_mutant_reproduces_f1_end_to_end_beside_the_repaired_engine():
+    """The reviewer's finding, kept executable next to its repair.
+
+    With the fallback present a mark-less block evaluated SUCCESSFULLY and filed
+    two spot-close liquidation tests. That is the behaviour the frozen design
+    does not authorise, and the repaired engine refuses the very same input.
+    """
+    defective = _run(_mutant_bars(3))
+    assert defective.opened
+    assert defective.liquidation_touch_provenance.as_dict()[TOUCH_SPOT_CLOSE] == 2
+
+    with pytest.raises(CarryError, match="no mark series"):
+        _run([markless(i * HOUR, "100", "100") for i in range(3)])
+
+
+# --- what the repair must NOT have touched ---------------------------------- #
+
+
+def test_the_funding_mark_fallback_to_spot_is_untouched():
+    """Requirement 9. MARK_PRICE_FALLBACK's authorised use is still authorised.
+
+    The repair narrows the LIQUIDATION test only. Funding still takes its notional
+    base from whatever the caller supplies, which under MARK_PRICE_FALLBACK is the
+    spot close: the one substitution the frozen design actually grants.
+
+    By hand: Q = 5.000, base 100, rate +1e-4, and a SHORT RECEIVES when the rate
+    is positive, so the flow is 5 x 100 x 1e-4 = +0.05.
+    """
+    quotes = [bar(i * HOUR, "100", "100", mark="100") for i in range(3)]
+    spot_based_notional = FundingSettlement(HOUR, D("0.0001"), D("100"))
+    result = _run(quotes, settlements=[spot_based_notional])
+    assert result.settlements == 1
+    assert result.funding_received == D("0.05")
+    assert result.funding_paid == ZERO
+
+
+def test_the_funding_base_is_independent_of_the_liquidation_series():
+    """The two uses of the mark series are separable, and stay separable.
+
+    A block whose bars carry a mark of 205 funds off a settlement base of 100. If
+    the repair had coupled the liquidation series to the funding base, this would
+    fund off 205 and the number below would be 0.1025 instead.
+    """
+    quotes = [bar(i * HOUR, "100", "100", mark="205") for i in range(3)]
+    result = _run(quotes, settlements=[FundingSettlement(HOUR, D("0.0001"), D("100"))])
+    assert result.funding_received == D("0.05")

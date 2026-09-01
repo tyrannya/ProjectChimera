@@ -104,32 +104,37 @@ NOMINAL_BAR_NS = 3_600_000_000_000
 
 #: Where an intra-bar liquidation touch came from, strongest first.
 #:
-#: Named rather than boolean because ``Quote.liquidation_touch`` really does have
-#: three tiers, and they are not equally strong.
+#: Named rather than boolean because the two AUTHORISED tiers are not equally
+#: strong. ``MARGIN_AND_LIQUIDATION.what_the_simulation_cannot_determine``
+#: requires testing "against the hourly HIGH of the mark series where available
+#: and the hourly close otherwise, and to RECORD which was used", so the record
+#: has to distinguish them.
 #:
-#: The first two are frozen: ``MARGIN_AND_LIQUIDATION.what_the_simulation_cannot_
-#: determine`` requires testing "against the hourly HIGH of the mark series where
-#: available and the hourly close otherwise, and to RECORD which was used".
-#:
-#: **The third is not, and saying so is the point of naming it separately.**
-#: ``Quote.liquidation_touch`` falls back once more, to the SPOT close, when no
-#: mark series is present at all. ``MARK_PRICE_FALLBACK`` authorises a spot
-#: substitution only "as the funding notional base", and
+#: **There is no authorised third tier, and that is why one is named here.**
+#: ``Quote.liquidation_touch`` used to fall back once more, to the SPOT close,
+#: when no mark series was present at all. ``MARK_PRICE_FALLBACK`` authorises a
+#: spot substitution only "as the funding notional base", and
 #: ``BASIS_DEFINITION.which_series_plays_which_role`` lists the liquidation test
 #: as a SEPARATE use of the mark series without extending the substitution to it.
-#: So the frozen text does not authorise a spot-close liquidation touch, and it is
-#: anti-conservative — a spot close cannot see a perpetual mark spike. That
-#: fallback predates this module's repair and is left in place rather than
-#: changed, because removing it would decide an economic question the frozen text
-#: does not settle; what changes is that it can no longer happen invisibly.
-#: Counting it as its own tier is what lets a reviewer see whether any block ever
-#: relied on it, and decide whether it needs an explicit amendment before a run.
+#: The frozen text therefore does not authorise a spot-close liquidation touch,
+#: and it is anti-conservative — a spot close cannot see a perpetual mark spike.
+#: The accessor now REFUSES instead, so a mark-less held bar fails closed rather
+#: than being tested against a series the design never gave it.
+#:
+#: ``TOUCH_SPOT_CLOSE`` survives as vocabulary only. It is retained so the
+#: provenance record keeps a stable shape and an already-written artifact stays
+#: readable, and it is UNREACHABLE from a successful evaluation under the active
+#: design: nothing can produce it without the refusal firing first. Whether a
+#: mark-less month may be evaluated economically at all is a question for a
+#: pre-economic amendment, and deleting the name would hide that the question
+#: exists.
 TOUCH_MARK_HIGH = "mark_high"
 TOUCH_MARK_CLOSE = "mark_close"
 TOUCH_SPOT_CLOSE = "spot_close"
 
 #: Strongest first. The order is part of the contract: an artifact reader ranks
-#: coverage by it, and a future event ledger copies these names verbatim.
+#: coverage by it, and a future event ledger copies these names verbatim. The
+#: third name is carried for shape, never produced — see above.
 TOUCH_SOURCES: tuple[str, ...] = (TOUCH_MARK_HIGH, TOUCH_MARK_CLOSE, TOUCH_SPOT_CLOSE)
 
 
@@ -293,18 +298,40 @@ class Quote:
             if value is not None and value <= ZERO:
                 raise CarryError(f"non-positive {name} at {self.instant_ns}: {value}")
 
+    def _no_mark_series(self) -> "CarryError":
+        """The refusal both liquidation accessors raise, built in ONE place.
+
+        Two accessors answer one question — which series the touch came from, and
+        what it was worth — so they must refuse on exactly the same condition. A
+        second copy of this message is a second chance for the name and the
+        number to disagree about whether a bar is testable at all.
+        """
+        return CarryError(
+            f"no mark series at {self.instant_ns}: the liquidation test takes the mark "
+            "HIGH where available and the mark CLOSE otherwise, and this bar carries "
+            "neither. MARK_PRICE_FALLBACK authorises the spot close as the FUNDING "
+            "NOTIONAL BASE alone, and BASIS_DEFINITION.which_series_plays_which_role "
+            "keeps the liquidation test a SEPARATE use of the mark series without "
+            "extending that substitution to it. Testing liquidation against the spot "
+            "close would therefore be unauthorised, and it is anti-conservative: a spot "
+            "close cannot see a perpetual mark spike. A held bar without a mark is "
+            "INVALID rather than testable."
+        )
+
     @property
     def liquidation_touch(self) -> Decimal:
         """The most adverse mark this bar can be shown to have reached.
 
         Adverse for a SHORT means HIGH, so the conservative test uses the mark
-        high where the source provides it and falls back to the mark close, then
-        the spot close. The fallback is recorded rather than assumed, so the
-        check is never quietly weaker than it claims to be.
+        high where the source provides it and falls back to the mark close. There
+        is no third tier. A bar carrying neither is REFUSED, because the only
+        series left is one the frozen design never authorised for this test.
         """
         if self.mark_high is not None:
             return self.mark_high
-        return self.mark if self.mark is not None else self.spot
+        if self.mark is None:
+            raise self._no_mark_series()
+        return self.mark
 
     @property
     def liquidation_touch_is_high(self) -> bool:
@@ -316,17 +343,21 @@ class Quote:
         """WHICH series :attr:`liquidation_touch` came from, as a recordable name.
 
         The boolean above answers "was the strong touch available"; it cannot
-        distinguish the two fallbacks from each other, and they are not equally
-        weak. A mark CLOSE is the venue's own notional price with the intra-bar
-        extreme missing; a SPOT close is a different series standing in for the
-        mark entirely, under ``MARK_PRICE_FALLBACK``, for a month whose
-        ``markPriceKlines`` object was never published. Persisting one name per
-        test is what lets a later event ledger state coverage without
+        say which of the two authorised series answered when it was not, and a
+        mark CLOSE — the venue's own notional price with the intra-bar extreme
+        missing — is a materially weaker test than a mark HIGH. Persisting one
+        name per test is what lets a later event ledger state coverage without
         reinterpreting a flag.
+
+        Refuses on exactly the condition :attr:`liquidation_touch` refuses on, so
+        a recorded name always has a value behind it and no artifact can claim a
+        bar was tested against a series that was not there.
         """
         if self.mark_high is not None:
             return TOUCH_MARK_HIGH
-        return TOUCH_MARK_CLOSE if self.mark is not None else TOUCH_SPOT_CLOSE
+        if self.mark is None:
+            raise self._no_mark_series()
+        return TOUCH_MARK_CLOSE
 
     @property
     def has_execution_opens(self) -> bool:
