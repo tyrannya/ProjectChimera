@@ -306,7 +306,6 @@ def download(symbol: str, cache_dir: Path, out: Path | None, timeout: int, quiet
         symbol=symbol,
         plan_digest=plan["plan_digest"],
         planned_count=plan["object_count"],
-        cache_dir=str(cache_dir),
         active_design=prereg.ACTIVE_DESIGN,
         preregistration_hash=prereg.preregistration_hash(),
         span_start_inclusive=plan["span_start_inclusive"],

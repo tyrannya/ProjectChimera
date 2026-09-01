@@ -103,11 +103,14 @@ def load_acquired_sources(manifest: dict[str, Any], cache_dir: Path) -> LoadedSo
     for record in manifest["objects"]:
         field = record["field"]
         name = record["object_name"]
-        path = cache_dir / name
+        # Located by the PUBLISHER's path, never by the object name: three of the
+        # four families share a filename, so a name lookup would read one family's
+        # bytes for all three and describe a source set that does not exist.
+        path = cache_dir.joinpath(*record["archive_relative_path"].split("/"))
         if not path.is_file():
             raise ClosureError(
-                f"{name} is named by the manifest and absent from {cache_dir}. The closure "
-                "describes bytes, not records of bytes."
+                f"{record['archive_relative_path']} is named by the manifest and absent "
+                f"from {cache_dir}. The closure describes bytes, not records of bytes."
             )
         raw = path.read_bytes()
         member_name, payload = extract_single_member(raw)

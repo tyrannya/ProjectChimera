@@ -16,6 +16,7 @@ import ast
 import hashlib
 import inspect
 import json
+from pathlib import Path
 
 import pytest
 
@@ -187,8 +188,9 @@ def test_a_cached_object_is_reused_but_re_verified(tmp_path):
     assert len(fetch.served) == 2, "a cached object was re-downloaded"
     assert again.checksum_state == CHECKSUM_VERIFIED
 
-    # Corrupt the cache and the SAME call must now refuse.
-    (tmp_path / planned.object_name).write_bytes(_object("OTHER.csv"))
+    # Corrupt the cache and the SAME call must now refuse. The file lives under
+    # the PUBLISHER's path, not under a bare filename.
+    acq.cache_location(tmp_path, planned).write_bytes(_object("OTHER.csv"))
     with pytest.raises(SourceError, match="does not match"):
         acq.acquire_object(planned, tmp_path, fetch=fetch)
 
@@ -212,8 +214,8 @@ def test_an_unobtainable_object_stops_the_acquisition(tmp_path):
     assert "2 object(s) were acquired" in message
     assert "NOT complete" in message
     # And what was already obtained is preserved rather than rolled back.
-    assert (tmp_path / planned[0].object_name).is_file()
-    assert (tmp_path / planned[1].object_name).is_file()
+    assert acq.cache_location(tmp_path, planned[0]).is_file()
+    assert acq.cache_location(tmp_path, planned[1]).is_file()
 
 
 def test_the_acquirer_never_reaches_for_an_object_outside_the_plan(tmp_path):
@@ -239,7 +241,6 @@ def _manifest(tmp_path, count: int = 4) -> dict:
         symbol="BTCUSDT",
         plan_digest=plan["plan_digest"],
         planned_count=count,
-        cache_dir=str(tmp_path),
         active_design=prereg.ACTIVE_DESIGN,
         preregistration_hash=prereg.preregistration_hash(),
         span_start_inclusive=plan["span_start_inclusive"],
@@ -278,9 +279,20 @@ def test_the_manifest_digest_is_deterministic_across_runs(tmp_path):
     first = _manifest(tmp_path / "a")
     second = _manifest(tmp_path / "b")
     assert first["manifest_digest"] == second["manifest_digest"]
-    assert first["cache_dir"] != second["cache_dir"]
-    # And the digest MOVES when the bytes do.
-    assert json.dumps(first, sort_keys=True) != json.dumps(second, sort_keys=True)
+    # Two DIFFERENT cache directories, and the digest does not notice — because no
+    # machine-local path is part of it, or of the manifest at all.
+    assert "cache_dir" not in first and "cache_dir" not in second
+    # The one field deliberately excluded from the digest is the wall clock.
+    assert all("acquired_at" in record for record in first["objects"])
+    stripped = json.dumps(
+        [{k: v for k, v in r.items() if k != "acquired_at"} for r in first["objects"]],
+        sort_keys=True,
+    )
+    other = json.dumps(
+        [{k: v for k, v in r.items() if k != "acquired_at"} for r in second["objects"]],
+        sort_keys=True,
+    )
+    assert stripped == other
 
 
 def test_the_manifest_states_that_it_is_not_a_result(tmp_path):
@@ -290,6 +302,201 @@ def test_the_manifest_states_that_it_is_not_a_result(tmp_path):
     assert disclaimer.startswith("a result.")
     assert "No P13 return" in disclaimer
     assert "none may be inferred from it" in disclaimer
+
+
+# ---------------------------------------------------------------------------
+# Object IDENTITY is the publisher's path, not the object's name
+# ---------------------------------------------------------------------------
+
+
+def test_three_families_share_one_object_name_and_differ_only_by_path():
+    """The fact the cache design has to survive, asserted before the behaviour.
+
+    Binance names spot klines, USD-M perpetual klines and USD-M markPriceKlines
+    identically. If this ever stops being true the collision guards below stop
+    testing anything, and this test says so out loud.
+    """
+    for period in ("2020-01", "2021-07", "2025-05"):
+        names = {
+            _planned(field, period).object_name
+            for field in ("spot_price", "perpetual_price", "mark_price")
+        }
+        paths = {
+            _planned(field, period).path
+            for field in ("spot_price", "perpetual_price", "mark_price")
+        }
+        assert len(names) == 1, "the families no longer share a filename"
+        assert len(paths) == 3, "the families must differ by published path"
+
+
+def test_the_cache_keys_on_the_published_path_so_families_cannot_collide(tmp_path):
+    """**Regression guard.** A name-keyed cache silently acquired ONE family.
+
+    With reuse enabled, the second and third families found the first family's
+    file already present, skipped their own download entirely, verified the first
+    family's bytes against the first family's companion — and passed. The manifest
+    then recorded three families that were one family repeated three times.
+
+    Here the three published objects carry DIFFERENT bytes. A cache that collapses
+    them returns identical digests; a correct one returns three distinct ones and
+    fetches three times.
+    """
+    period = "2021-07"
+    families = ("spot_price", "perpetual_price", "mark_price")
+    objects = {}
+    planned = {}
+    for index, field in enumerate(families):
+        item = _planned(field, period)
+        planned[field] = item
+        # Distinct content per family, so a collision is visible as a digest.
+        objects[item.path] = zip_bytes(
+            f"{item.object_name[:-4]}.csv", _payload(count=index + 1)
+        )
+
+    class PathKeyedArchive(FakeArchive):
+        """Serves by published PATH, which is what a real archive does."""
+
+        def __call__(self, url: str) -> bytes:
+            self.served.append(url)
+            path = url.split("data.binance.vision/", 1)[1]
+            if path.endswith(".CHECKSUM"):
+                target = path[: -len(".CHECKSUM")]
+                raw = self.objects[target]
+                name = target.rsplit("/", 1)[-1]
+                return f"{hashlib.sha256(raw).hexdigest()}  {name}\n".encode()
+            return self.objects[path]
+
+    fetch = PathKeyedArchive(objects)
+    acquired = [
+        acq.acquire_object(planned[field], tmp_path, fetch=fetch) for field in families
+    ]
+
+    digests = {obj.archive_sha256 for obj in acquired}
+    assert len(digests) == 3, "three published objects collapsed onto one cache file"
+    assert len({obj.archive_relative_path for obj in acquired}) == 3
+    assert len({obj.object_name for obj in acquired}) == 1, "the premise changed"
+    # Every family was actually FETCHED — six requests, not two.
+    assert len(fetch.served) == 6, "a family was never downloaded at all"
+    # And each landed at its own place on disk.
+    for field in families:
+        assert acq.cache_location(tmp_path, planned[field]).is_file()
+
+
+def test_a_manifest_holding_two_records_for_one_published_path_is_refused(tmp_path):
+    """Belt and braces: even if a cache collided, the manifest would not ship."""
+    planned = _planned("spot_price", "2021-07")
+    fetch = FakeArchive({planned.object_name: _object()})
+    one = acq.acquire_object(planned, tmp_path, fetch=fetch)
+    plan = plan_payload()
+    with pytest.raises(acq.AcquisitionError, match="more than once"):
+        acq.acquisition_manifest(
+            [one, one],
+            symbol="BTCUSDT",
+            plan_digest=plan["plan_digest"],
+            planned_count=2,
+            active_design=prereg.ACTIVE_DESIGN,
+            preregistration_hash=prereg.preregistration_hash(),
+            span_start_inclusive=plan["span_start_inclusive"],
+            span_end_exclusive=plan["span_end_exclusive"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Canonical, platform-independent paths in committed evidence
+# ---------------------------------------------------------------------------
+
+
+def test_a_windows_style_path_serialises_as_forward_slash_repo_relative_text(tmp_path):
+    """``str()`` on a Windows Path renders backslashes; the evidence must not."""
+    root = tmp_path
+    nested = root / "artifacts" / "benchmark" / "btc_p13_a2r2_source_acquisition"
+    nested.mkdir(parents=True)
+    target = nested / "acquisition_manifest.json"
+    target.write_text("{}", encoding="utf-8")
+
+    rendered = acq.posix_repo_relative(target, root)
+    assert rendered == (
+        "artifacts/benchmark/btc_p13_a2r2_source_acquisition/acquisition_manifest.json"
+    )
+    assert "\\" not in rendered
+    # The same file reached through a backslash-spelled path renders identically.
+    spelled = Path(str(target).replace("/", "\\")) if "\\" in str(target) else target
+    assert acq.posix_repo_relative(spelled, root) == rendered
+
+
+def test_the_evidence_manifest_is_identical_across_separator_conventions(tmp_path):
+    """Determinism: how a path was SPELLED must not change the bytes written."""
+    root = tmp_path
+    nested = root / "artifacts" / "benchmark" / "btc_p13_a2r2_source_acquisition"
+    nested.mkdir(parents=True)
+    files = []
+    for name in ("acquisition_manifest.json", "source_closure.json", "STATUS.md"):
+        path = nested / name
+        path.write_text(f"content of {name}", encoding="utf-8")
+        files.append(path)
+
+    forward = acq.evidence_manifest_text(files, root=root)
+    backward = acq.evidence_manifest_text(
+        [Path(str(f).replace("/", "\\")) for f in files], root=root
+    )
+    assert forward == backward
+    # Shuffling the input order must not move a byte either: the manifest sorts.
+    assert acq.evidence_manifest_text(list(reversed(files)), root=root) == forward
+    for line in forward.strip().splitlines():
+        digest, name = line.split("  ", 1)
+        assert len(digest) == 64
+        assert name.startswith("artifacts/benchmark/")
+        assert "\\" not in name
+
+
+def test_a_path_outside_the_repository_is_refused_rather_than_recorded(tmp_path):
+    outside = tmp_path.parent / "elsewhere.json"
+    outside.write_text("{}", encoding="utf-8")
+    with pytest.raises(acq.AcquisitionError, match="outside"):
+        acq.posix_repo_relative(outside, tmp_path)
+
+
+def test_no_absolute_or_machine_local_path_reaches_the_manifest(tmp_path):
+    """The cache lives on some machine; the evidence must not say which."""
+    import re
+
+    manifest = _manifest(tmp_path)
+    assert "cache_dir" not in manifest
+    assert "cache_location_is_not_recorded" in manifest
+
+    drive = re.compile(r"^[A-Za-z]:[\\/]")
+    offenders: list[tuple[str, str]] = []
+
+    def walk(node, trail="manifest"):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                assert key != "cache_path", f"{trail}: a cache path reached the evidence"
+                walk(value, f"{trail}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{trail}[{index}]")
+        elif isinstance(node, str):
+            if drive.match(node) or node.startswith("/") or "\\" in node:
+                offenders.append((trail, node))
+
+    walk(manifest)
+    assert offenders == [], f"machine-local paths in the manifest: {offenders[:3]}"
+
+    # And the identity that IS recorded is the publisher's own path.
+    for record in manifest["objects"]:
+        identity = record["archive_relative_path"]
+        assert identity.startswith("data/")
+        assert identity.endswith(".zip")
+        assert "\\" not in identity
+        assert record["url"].endswith(identity)
+
+
+def test_the_manifest_records_the_published_path_as_each_objects_identity(tmp_path):
+    manifest = _manifest(tmp_path, count=4)
+    identities = [record["archive_relative_path"] for record in manifest["objects"]]
+    assert len(set(identities)) == len(identities)
+    for record in manifest["objects"]:
+        assert record["archive_relative_path"].rsplit("/", 1)[-1] == record["object_name"]
 
 
 # ---------------------------------------------------------------------------

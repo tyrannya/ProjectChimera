@@ -35,8 +35,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--cache-dir",
         type=Path,
-        default=None,
-        help="where the acquired archives live; defaults to the manifest's own cache_dir",
+        required=True,
+        help=(
+            "where the acquired archives live. REQUIRED: the manifest deliberately "
+            "records no machine-local path, so the cache location is supplied here as "
+            "local state rather than read out of committed evidence"
+        ),
     )
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
@@ -48,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
             "closure over a partial source set would describe a universe the frozen "
             "design did not specify."
         )
-    cache_dir = args.cache_dir or Path(manifest["cache_dir"])
+    cache_dir = args.cache_dir
 
     loaded = load_acquired_sources(manifest, cache_dir)
     payload = closure_payload(loaded, manifest=manifest, provenance=source_provenance())
