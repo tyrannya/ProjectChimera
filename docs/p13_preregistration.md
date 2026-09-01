@@ -462,26 +462,24 @@ only these three:
 Nothing here was chosen from data. No P13 economic observation exists, and none
 informed this.
 
-### 8b-i. Two things an independent review of the repair raised, recorded rather than settled
+### 8b-i. Independent-review findings after the F1 remediation
 
-**The spot-close liquidation touch is not authorised by the frozen text, and this
-document does not pretend otherwise.** `nn/p13_carry.py::Quote.liquidation_touch`
-falls back twice: to the mark **close** when no hourly mark high is published, and
-then to the **spot** close when no mark series is present at all. Only the first
-fallback is frozen — §8's "the hourly **high** of the mark series ... where
-available ... recording which was used". `MARK_PRICE_FALLBACK` authorises a spot
-substitution *"as the funding notional base"*, and `BASIS_DEFINITION` lists the
-liquidation test as a **separate** use of the mark series without extending the
-substitution to it. So the third tier is unauthorised, and it is
-anti-conservative: a spot close cannot see a perpetual mark spike.
+**The spot-close liquidation touch is not authorised by the frozen text, and the
+evaluator now refuses it.** The final independent review of head `f2f00de` identified
+the third liquidation tier as a hard pre-run blocker, and commit `62730b6` corrected
+it. `nn/p13_carry.py::Quote.liquidation_touch` and
+`Quote.liquidation_touch_source` now have exactly two authorised tiers: the mark
+**high** where available, otherwise the mark **close**. If a held bar carries
+neither, both accessors fail closed with `CarryError`; the spot close is not used
+for liquidation.
 
-It predates this repair and is **left in place**, because removing it would
-decide an economic question the frozen text does not settle — which is exactly
-the kind of decision §8b declines to make silently. What the repair changes is
-that it can no longer happen invisibly: the touch provenance counts it as its own
-tier, so a reviewer can see whether any block ever relied on it. **If a future run
-would rely on it, that needs an explicit pre-economic amendment before the run,
-not a decision taken with a number in view.**
+This is enforcement of already-frozen source semantics, not a new scientific
+choice, so the active preregistration hash does not move. `TOUCH_SPOT_CLOSE`
+remains compatibility vocabulary only and is unreachable from a successful
+governed evaluation. A separate scientific question remains unresolved: whether
+a mark-less month may be dropped, degraded, or reported separately. Any such
+treatment requires an explicit pre-economic, hash-moving amendment before an
+economic run.
 
 Note also that `MARK_PRICE_FALLBACK.reporting_granularity` asks for a count of
 **settlements** that used the substituted notional base. The touch provenance
