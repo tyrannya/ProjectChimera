@@ -172,14 +172,14 @@ def evaluate_gate(
 
     ``terminal`` is the source-insufficiency refusal from :mod:`nn.p13_blocks`,
     passed in so this function can REFUSE rather than be trusted not to be called.
-    A2R1 requires that a terminal NOT EVALUABLE bypass gate computation entirely,
+    A2 requires that a terminal NOT EVALUABLE bypass gate computation entirely,
     and the only way to require that of a caller is to make the alternative an
     exception.
     """
     if terminal is not None:
         raise GateError(
             "the screen terminated NOT EVALUABLE on source insufficiency, so there is "
-            "nothing to gate. A2R1 makes that outcome terminal and screen-wide, and any "
+            "nothing to gate. A2 makes that outcome terminal and screen-wide, and any "
             "block economics computed before it fired are NOT a result: they do not enter "
             "G1-G6 and are not reported as a partial answer. NOT EVALUABLE is not NOT "
             "VIABLE and must never be presented as one."

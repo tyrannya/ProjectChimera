@@ -9,14 +9,14 @@ is the schema they will fill, exercised against synthetic fixtures.
 ``ACTIVE_DESIGN`` and the active preregistration hash, recomputed from
 :mod:`nn.p13_preregistration` at call time rather than pasted. And
 :func:`assert_governing_hash` refuses any hash the module itself lists as
-SUPERSEDED, so a run cannot claim the original design, P13-A1 or the first
-committed P13-A2 as the design it was governed by. That check is cheap and the
+SUPERSEDED, so a run cannot claim the original design, P13-A1, the first
+committed P13-A2 or P13-A2R1 as the design it was governed by. That check is cheap and the
 failure it prevents is not: an artifact quoting a retired hash is an artifact
 whose rules a reader would reconstruct wrongly.
 
 **NOT EVALUABLE is a first-class outcome here, not a missing field.** A terminated
 screen produces evidence with the refusal, the state, the instant and the missing
-sources — and NO block results, because A2R1 requires that numbers computed before
+sources — and NO block results, because A2 requires that numbers computed before
 the refusal never be reported as a partial answer.
 """
 
@@ -192,6 +192,9 @@ def _block_dict(result: BlockResult) -> dict[str, Any]:
         "unclosed": result.unclosed,
         "thin_sample": result.thin_sample,
         "held_bars": result.held_bars,
+        # MARK_PRICE_FALLBACK.reporting_granularity asks for the substitution
+        # "per block AND as a count of settlements". This is the per-block half.
+        "funding_notional_substituted_settlements": result.mark_substituted_settlements,
         "quote_gap_count": result.quote_gap_count,
         "max_quote_step_ns": result.max_quote_step_ns,
         "liquidation_touch_provenance": result.liquidation_touch_provenance.as_dict(),
@@ -229,7 +232,7 @@ class ScreenEvidence:
             payload["gate"] = None
             payload["stresses"] = None
             payload["partial_results_withheld"] = (
-                "A2R1 requires that any block economics computed before the terminal "
+                "A2 requires that any block economics computed before the terminal "
                 "refusal are NOT a result: not written as primary evidence, not reported "
                 "as a partial answer, and not admitted to G1-G6. None are reported here."
             )
@@ -253,10 +256,22 @@ class ScreenEvidence:
             "D3_offset_partition": [_block_dict(result) for result in self.offset_partition],
         }
         payload["funding_notional_fallback"] = {
+            # An EXACT sum, which it was not before. Each block now reports the
+            # settlements ITS OWN position was charged on a substituted base;
+            # this used to add up one screen-wide total repeated once per block,
+            # multiplying the real figure by the number of blocks.
             "settlements_on_substituted_base": sum(
                 run.mark_substituted_settlements for run in self.screen.blocks
             ),
             "authorised_for": "the FUNDING NOTIONAL BASE only, never for liquidation",
+            "counted_as": (
+                "settlements ACTUALLY APPLIED to a block's position under "
+                "FUNDING_CAUSALITY's open < settlement <= close window, summed over "
+                "blocks. A settlement offered to a block but never charged to it — "
+                "before its open, after its close, or after a liquidation trigger "
+                "stopped the accrual — is not counted, and no settlement is counted "
+                "twice."
+            ),
         }
         return payload
 

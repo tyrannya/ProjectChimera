@@ -48,7 +48,8 @@ from nn.p13_screen import (
     frozen_venue,
     run_offline_screen,
 )
-from tests.p13_synthetic import block, funding_row, ns, world
+from nn.p13_blocks import CalendarBlock
+from tests.p13_synthetic import HOUR, block, funding_row, ns, world
 
 SPOT = Decimal("30000")
 PERP = Decimal("30030")
@@ -165,6 +166,199 @@ def test_the_evidence_reports_how_many_settlements_used_the_substituted_base():
     fallback = payload["funding_notional_fallback"]
     assert fallback["settlements_on_substituted_base"] == 1
     assert "never for liquidation" in fallback["authorised_for"]
+
+
+# ---------------------------------------------------------------------------
+# The funding-fallback count is PER BLOCK, and the sum of per-block counts is
+# the screen-wide figure. It used to be one global number handed identically to
+# every block, which the evidence layer then summed.
+# ---------------------------------------------------------------------------
+
+BLOCK_HOURS = 12
+
+
+def _six_blocks() -> list[CalendarBlock]:
+    """Six adjacent 12-hour blocks over one synthetic month."""
+    start = ns("2021-03-01T00:00:00+00:00")
+    return [
+        CalendarBlock(
+            label=f"synthetic-{index}",
+            start_ns=start + index * BLOCK_HOURS * HOUR,
+            end_exclusive_ns=start + (index + 1) * BLOCK_HOURS * HOUR,
+        )
+        for index in range(6)
+    ]
+
+
+def _substituted_counts(aligned, blocks):
+    """The per-block counts and the screen-wide figure the evidence reports."""
+    outcome = run_offline_screen(aligned, min_settlements=0, blocks=blocks)
+    assert outcome.screen.evaluable, outcome.screen.terminal
+    per_block = [run.mark_substituted_settlements for run in outcome.screen.blocks]
+    reported = outcome.evidence.as_dict()["funding_notional_fallback"][
+        "settlements_on_substituted_base"
+    ]
+    return per_block, reported, outcome
+
+
+def test_one_substituted_settlement_across_six_blocks_is_reported_once():
+    """**The B2 headline.** One substituted settlement must report as 1, not as 6.
+
+    The screen-wide count was a single global total passed into every block; the
+    evidence layer sums the per-block counts, so a single substitution came out
+    multiplied by the number of blocks.
+    """
+    blocks = _six_blocks()
+    aligned = world(
+        hours=6 * BLOCK_HOURS,
+        funding=(funding_row(3, "0.0001"),),
+        published_mark_periods=(),
+    )
+    per_block, reported, _ = _substituted_counts(aligned, blocks)
+    assert reported == 1, f"one substituted settlement reported as {reported}"
+    assert per_block == [1, 0, 0, 0, 0, 0]
+    assert sum(per_block) == reported
+
+
+def test_different_per_block_counts_aggregate_exactly():
+    """Three substitutions spread unevenly must sum to three, block by block."""
+    blocks = _six_blocks()
+    aligned = world(
+        hours=6 * BLOCK_HOURS,
+        funding=(
+            funding_row(3, "0.0001"),
+            funding_row(15, "0.0001"),
+            funding_row(16, "0.0001"),
+        ),
+        published_mark_periods=(),
+    )
+    per_block, reported, _ = _substituted_counts(aligned, blocks)
+    assert per_block == [1, 2, 0, 0, 0, 0]
+    assert reported == 3 == sum(per_block)
+
+
+def test_no_settlement_is_counted_when_the_mark_object_was_published():
+    """The count is of SUBSTITUTED bases, not of settlements."""
+    blocks = _six_blocks()
+    aligned = world(
+        hours=6 * BLOCK_HOURS,
+        funding=(funding_row(3, "0.0001"), funding_row(15, "0.0001")),
+    )
+    per_block, reported, outcome = _substituted_counts(aligned, blocks)
+    assert reported == 0
+    assert per_block == [0] * 6
+    # The settlements were still applied — only their base was the venue's own.
+    assert sum(run.result.settlements for run in outcome.screen.blocks) == 2
+
+
+def test_a_settlement_before_the_open_instant_is_not_counted():
+    """It is not this position's cash flow, so it is not this block's substitution."""
+    blocks = _six_blocks()
+    # The PERP leg is the one withheld: removing spot would also remove the candle
+    # MARK_PRICE_FALLBACK prices the notional on, and the test would fail for a
+    # reason that has nothing to do with counting.
+    aligned = world(
+        hours=6 * BLOCK_HOURS,
+        missing_perp=[0, 1],
+        funding=(funding_row(1, "0.0001"),),
+        published_mark_periods=(),
+    )
+    per_block, reported, outcome = _substituted_counts(aligned, blocks)
+    assert outcome.screen.blocks[0].opening.opened_at_ns == blocks[0].start_ns + 2 * HOUR
+    assert outcome.screen.blocks[0].result.settlements == 0
+    assert reported == 0
+    assert per_block == [0] * 6
+
+
+def test_a_settlement_after_the_close_instant_is_not_counted():
+    """``open < settlement <= close`` is the window, and the count obeys it."""
+    from nn.p13_sources import FundingRow
+
+    blocks = _six_blocks()
+    start = ns("2021-03-01T00:00:00+00:00")
+    # The intended close is the block's LAST grid instant, hour 11. This lands
+    # half an hour after it: still inside the calendar block, but after the close.
+    after_close = FundingRow(instant_ns=start + 11 * HOUR + HOUR // 2, rate=Decimal("0.0001"))
+    aligned = world(hours=6 * BLOCK_HOURS, funding=(after_close,), published_mark_periods=())
+    per_block, reported, outcome = _substituted_counts(aligned, blocks)
+    assert (
+        outcome.screen.blocks[0].settlements_priced == 1
+    ), "the settlement should be OFFERED to the block by calendar span"
+    assert (
+        outcome.screen.blocks[0].result.settlements == 0
+    ), "but it must not be CHARGED, because it falls after the close instant"
+    assert reported == 0
+    assert per_block == [0] * 6
+
+
+def test_a_block_that_never_opened_reports_no_substituted_settlements():
+    """An excluded block charged nothing to any position, so it contributes zero."""
+    blocks = _six_blocks()
+    # No rows at all in the final block's span: it cannot be opened by the
+    # CONSTRUCTION, which is VIABILITY_GATE.excluded_blocks' own case.
+    aligned = world(
+        hours=5 * BLOCK_HOURS,
+        funding=(funding_row(3, "0.0001"),),
+        published_mark_periods=(),
+    )
+    outcome = run_offline_screen(aligned, min_settlements=0, blocks=blocks)
+    assert outcome.screen.evaluable
+    excluded = outcome.screen.blocks[-1]
+    assert excluded.result.opened is False
+    assert excluded.mark_substituted_settlements == 0
+    reported = outcome.evidence.as_dict()["funding_notional_fallback"][
+        "settlements_on_substituted_base"
+    ]
+    assert reported == 1
+
+
+def test_the_reporting_fix_changes_no_funding_economics():
+    """The count is REPORTING. The money is unchanged by how it is counted.
+
+    Funding on a substituted base is still ``rate x base x quantity`` on the
+    SPOT close, computed here rather than taken from the engine.
+    """
+    blocks = _six_blocks()
+    aligned = world(
+        hours=6 * BLOCK_HOURS,
+        funding=(funding_row(3, "0.0001"),),
+        published_mark_periods=(),
+    )
+    per_block, reported, outcome = _substituted_counts(aligned, blocks)
+    first = outcome.screen.blocks[0]
+    assert reported == 1
+
+    # SHORT the perpetual: a POSITIVE rate is RECEIVED.
+    expected = Decimal("0.0001") * SPOT * first.result.quantity
+    assert first.result.funding_received == expected
+    assert first.result.funding_paid == 0
+
+    # And the same world with the mark object published charges on the MARK close
+    # instead — a different base, the same arithmetic, and a count of zero.
+    published = world(hours=6 * BLOCK_HOURS, funding=(funding_row(3, "0.0001"),))
+    _, unsubstituted_count, other = _substituted_counts(published, blocks)
+    assert unsubstituted_count == 0
+    assert other.screen.blocks[0].result.funding_received == (
+        Decimal("0.0001") * MARK * other.screen.blocks[0].result.quantity
+    )
+
+
+def test_every_block_reports_its_own_substitution_count_in_the_evidence():
+    """MARK_PRICE_FALLBACK asks for the flag PER BLOCK as well as the total."""
+    blocks = _six_blocks()
+    aligned = world(
+        hours=6 * BLOCK_HOURS,
+        funding=(funding_row(3, "0.0001"), funding_row(15, "0.0001")),
+        published_mark_periods=(),
+    )
+    outcome = run_offline_screen(aligned, min_settlements=0, blocks=blocks)
+    payload = outcome.evidence.as_dict()
+    counts = [entry["funding_notional_substituted_settlements"] for entry in payload["blocks"]]
+    assert counts == [1, 1, 0, 0, 0, 0]
+    assert (
+        sum(counts) == payload["funding_notional_fallback"]["settlements_on_substituted_base"]
+    )
+    assert "ACTUALLY APPLIED" in payload["funding_notional_fallback"]["counted_as"]
 
 
 # ---------------------------------------------------------------------------

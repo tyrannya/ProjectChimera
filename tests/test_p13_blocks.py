@@ -1,4 +1,4 @@
-"""Behavioural witnesses for amendment A2R1's three source-validity states.
+"""Behavioural witnesses for amendment A2R2's source-validity semantics.
 
 Every test here is a synthetic world in which the rule under test either fires or
 does not, and the assertion is about what the runtime DID — an instant it opened
@@ -40,6 +40,7 @@ from nn.p13_preregistration import (
     MARKLESS_STATE_HELD,
     MARKLESS_STATE_NO_VALID_OPEN,
     MARKLESS_STATE_PRE_OPEN,
+    OPENING_DELAY_EXECUTION_ABSENT,
     RESULT_STATES,
     TEMPORAL_PARTITION,
 )
@@ -164,15 +165,38 @@ def test_a_missing_mark_on_the_exit_bar_alone_does_not_stop_a_normal_close():
     assert run.result.liquidation_touch_provenance.tested == hours - 1
 
 
-def test_bar_zero_is_held_so_its_mark_is_required_to_open_there():
-    """Witness 18. The repaired window makes the entry bar a held bar."""
+def test_bar_zero_is_held_and_its_missing_mark_terminates_rather_than_delaying():
+    """**The critical A2R2 witness.** Bar 0 is held; its mark is checked THERE.
+
+    Execution rows exist at bar 0 and the mark row does not. Under A2 and A2R1 the
+    opening search advanced past bar 0 — a decision that required knowing whether
+    a completed mark row for bar 0 would ever be published, which is not knowable
+    at bar 0. Under A2R2 the runtime opens at bar 0 anyway, and then terminates
+    because bar 0 is a HELD bar whose liquidation quantity is not computable.
+
+    Both halves matter: opening THERE, and terminating for THAT reason.
+    """
     aligned = world(hours=8, missing_mark=[0])
+    start = ns("2021-03-01T00:00:00+00:00")
+
     opening = find_opening_instant(aligned, block(hours=8))
-    assert opening.opened_at_ns == ns("2021-03-01T00:00:00+00:00") + HOUR
-    assert opening.delayed
-    # And with the mark present at bar 0 it opens there, so the difference is the
-    # mark and nothing else.
-    assert not find_opening_instant(world(hours=8), block(hours=8)).delayed
+    assert opening.opened_at_ns == start, "the mark moved the entry instant"
+    assert not opening.delayed
+    assert opening.reason is None
+
+    with pytest.raises(SourceInsufficiency) as raised:
+        _run(aligned, block(hours=8))
+    assert raised.value.state == MARKLESS_STATE_HELD
+    assert raised.value.instant_ns == start
+    assert raised.value.result_state == NOT_EVALUABLE
+    assert MARK in raised.value.missing
+
+    # And with the mark present at bar 0 the same world opens at the same instant
+    # and does NOT terminate — so the mark changed the OUTCOME without ever having
+    # changed the ENTRY.
+    intact = _run(world(hours=8), block(hours=8))
+    assert intact.opening.opened_at_ns == start
+    assert intact.result.opened
 
 
 def test_the_held_window_is_bars_zero_to_n_minus_one():
@@ -188,40 +212,86 @@ def test_the_held_window_is_bars_zero_to_n_minus_one():
 
 
 # ---------------------------------------------------------------------------
-# 5-7. The pre-open search
+# 5-7. The pre-open search, under A2R2
 # ---------------------------------------------------------------------------
 
 
-def test_a_missing_mark_at_the_first_candidate_advances_the_opening_search():
-    """Witness 5."""
-    aligned = world(hours=8, missing_mark=[0])
+def test_the_mark_can_never_move_the_chosen_entry_instant():
+    """**A2R2 witness 2**, as a comparison rather than a single assertion.
+
+    Four worlds whose execution rows are identical and whose mark coverage differs
+    in every way a test can arrange: complete, absent at the boundary, absent for
+    a run of hours, absent entirely. The opening instant must be the same in all
+    four, because the mark is no longer an input to that decision.
+    """
+    blk = block(hours=10)
+    coverage = (
+        (),
+        (0,),
+        (0, 1, 2),
+        range(10),
+    )
+    chosen = {
+        find_opening_instant(world(hours=10, missing_mark=missing), blk).opened_at_ns
+        for missing in coverage
+    }
+    assert chosen == {blk.start_ns}, (
+        "mark coverage moved the opening instant, so the retired pre-open mark "
+        "filter is back"
+    )
+
+
+def test_only_an_absent_execution_row_delays_an_opening():
+    """**A2R2 witness**: the one surviving delay reason, and it is named as such."""
+    aligned = world(hours=8, missing_spot=[0])
     run = _run(aligned, block(hours=8))
     assert run.opening.delayed
     assert run.opening.opened_at_ns == run.block.start_ns + HOUR
     assert run.opening.skipped_instants == 1
-    assert run.opening.skipped_for_mark == 1
-    assert run.opening.reason == MARKLESS_STATE_PRE_OPEN
+    assert run.opening.reason == OPENING_DELAY_EXECUTION_ABSENT
     assert run.opening.skipped_ns == HOUR
+    # A markless state may never be reported as a delay reason again.
+    assert run.opening.reason not in (
+        MARKLESS_STATE_PRE_OPEN,
+        MARKLESS_STATE_NO_VALID_OPEN,
+    )
+
+
+def test_the_evidence_states_that_the_opening_consulted_no_mark():
+    """Reported as a flag, not left to be inferred from the absence of a count."""
+    run = _run(world(hours=8, missing_spot=[0]), block(hours=8))
+    emitted = run.opening.as_dict()
+    assert emitted["opening_consulted_mark"] is False
+    assert emitted["reason"] == OPENING_DELAY_EXECUTION_ABSENT
+    assert (
+        "skipped_for_mark" not in emitted
+    ), "a mark-shaped skip count implies the opening search still consults the mark"
 
 
 def test_several_invalid_pre_open_instants_select_the_first_valid_one():
-    """Witness 6. Forward, causal, and it stops at the FIRST admissible instant."""
-    aligned = world(hours=10, missing_mark=[0, 1, 2], missing_spot=[3])
+    """Witness 6. Forward, causal, and it stops at the FIRST fillable instant."""
+    aligned = world(hours=10, missing_spot=[0, 1, 2], missing_perp=[3])
     run = _run(aligned, block(hours=10))
     assert run.opening.opened_at_ns == run.block.start_ns + 4 * HOUR
     assert run.opening.skipped_instants == 4
-    # Three were skipped with the mark as the binding constraint; the fourth was
-    # not fillable at all, and the two counts are kept apart.
-    assert run.opening.skipped_for_mark == 3
+    assert run.opening.reason == OPENING_DELAY_EXECUTION_ABSENT
 
 
-def test_a_block_with_no_valid_opening_instant_terminates_and_is_not_excluded():
-    """Witness 7, and mutation guard: this must NOT become an excluded block."""
+def test_a_block_whose_mark_never_appears_terminates_through_the_held_bar_branch():
+    """Witness 7 under A2R2, and mutation guard: still NOT an excluded block.
+
+    A2R1 refused to open this block at all and terminated with
+    ``no_valid_opening_instant_in_block``. A2R2 retires that state: the block opens
+    at its first fillable instant, that instant is bar 0 and therefore held, and
+    the screen terminates with the SAME label through the branch that is causal.
+    """
     aligned = world(hours=8, missing_mark=range(8))
     with pytest.raises(SourceInsufficiency) as raised:
         _run(aligned, block(hours=8))
     failure = raised.value
-    assert failure.state == MARKLESS_STATE_NO_VALID_OPEN
+    assert failure.state == MARKLESS_STATE_HELD
+    assert failure.state != MARKLESS_STATE_NO_VALID_OPEN
+    assert failure.instant_ns == ns("2021-03-01T00:00:00+00:00")
     assert failure.result_state == NOT_EVALUABLE
     screen = _screen(aligned, [block(hours=8)])
     assert not screen.evaluable
@@ -263,7 +333,7 @@ def test_nothing_is_attributed_to_the_strategy_before_the_valid_open():
         ),
     )
     delayed = _run(
-        world(hours=10, missing_mark=[0, 1]), block(hours=10), settlements=settlements
+        world(hours=10, missing_spot=[0, 1]), block(hours=10), settlements=settlements
     )
     assert delayed.opening.opened_at_ns == delayed.block.start_ns + 2 * HOUR
 
@@ -292,7 +362,7 @@ def _return_with_skipped_funding(rate: str) -> tuple[Decimal, Decimal]:
     )
     prompt = _run(world(hours=10), block(hours=10), settlements=settlements)
     delayed = _run(
-        world(hours=10, missing_mark=[0, 1]), block(hours=10), settlements=settlements
+        world(hours=10, missing_spot=[0, 1]), block(hours=10), settlements=settlements
     )
     assert delayed.opening.delayed and not prompt.opening.delayed
     assert prompt.result.settlements == 1 and delayed.result.settlements == 0
@@ -309,9 +379,12 @@ def test_skipping_negative_funding_improves_the_block():
     """Witness 10, and the proof no monotonicity assumption leaked into the runtime.
 
     The first committed A2 claimed a delayed open "can only reduce accrued
-    funding". A2R1 withdrew that as false. This is the synthetic counter-example:
-    the short PAYS on a negative rate, so an hour skipped before the open is an
-    hour of payment avoided, and the delayed block finishes AHEAD.
+    funding". A2R1 withdrew that as false and A2R2 does not reinstate it. This is
+    the synthetic counter-example: the short PAYS on a negative rate, so an hour
+    skipped before the open is an hour of payment avoided, and the delayed block
+    finishes AHEAD. Under A2R2 the delay is caused by an absent EXECUTION row
+    rather than an absent mark, and the arithmetic is identical — which is exactly
+    why no monotonicity is claimed for a delayed open of any cause.
     """
     prompt, delayed = _return_with_skipped_funding("-0.0005")
     assert delayed > prompt
@@ -319,7 +392,7 @@ def test_skipping_negative_funding_improves_the_block():
 
 def test_the_runtime_states_the_pre_open_direction_as_indeterminate():
     """The evidence must not imply a direction the design explicitly disclaims."""
-    run = _run(world(hours=8, missing_mark=[0]), block(hours=8))
+    run = _run(world(hours=8, missing_spot=[0]), block(hours=8))
     assert run.opening.as_dict()["economic_direction"] == "INDETERMINATE EX ANTE"
 
 
@@ -335,10 +408,10 @@ def test_the_opening_instant_does_not_depend_on_what_the_mark_says():
     value ever reached the admissibility decision, the chosen opening instant
     could differ; it must not.
     """
-    quiet = world(hours=12, missing_mark=[0, 1])
+    quiet = world(hours=12, missing_spot=[0, 1])
     violent = world(
         hours=12,
-        missing_mark=[0, 1],
+        missing_spot=[0, 1],
         mark_high={index: Decimal("999999") for index in range(12)},
     )
     assert (
@@ -574,7 +647,43 @@ def test_mutation_treating_a_terminal_block_as_excluded_would_break_this():
     screen = _screen(aligned, [block(hours=8)])
     assert screen.blocks == ()
     assert screen.terminal is not None
-    assert screen.terminal.state == MARKLESS_STATE_NO_VALID_OPEN
+    assert screen.terminal.state == MARKLESS_STATE_HELD
+
+
+def test_mutation_restoring_the_pre_open_mark_filter_would_break_this():
+    """**The named behavioural test A2R2 requires.**
+
+    If anyone restores ``mark absence -> advance entry``, this fails: the runtime
+    would open at hour 1 instead of hour 0, and it would stop terminating.
+
+    It is stated as two independent assertions because the retired rule had two
+    observable consequences, and a partial restoration must not slip through by
+    breaking only one of them.
+    """
+    start = ns("2021-03-01T00:00:00+00:00")
+    aligned = world(hours=8, missing_mark=[0])
+
+    # 1. The entry instant does not move.
+    assert find_opening_instant(aligned, block(hours=8)).opened_at_ns == start
+
+    # 2. The screen terminates rather than quietly evaluating a later-opened block.
+    screen = _screen(aligned, [block(hours=8)])
+    assert not screen.evaluable
+    assert screen.terminal.state == MARKLESS_STATE_HELD
+    assert screen.terminal.instant_ns == start
+
+
+def test_mutation_reinstating_a_retired_markless_state_would_break_this():
+    """The two retired states must never be produced by this runtime again."""
+    for missing in ([0], [0, 1], range(8)):
+        aligned = world(hours=8, missing_mark=missing)
+        with pytest.raises(SourceInsufficiency) as raised:
+            _run(aligned, block(hours=8))
+        assert raised.value.state == MARKLESS_STATE_HELD
+        assert raised.value.state not in (
+            MARKLESS_STATE_PRE_OPEN,
+            MARKLESS_STATE_NO_VALID_OPEN,
+        )
 
 
 def test_mutation_jumping_the_hole_would_break_this():

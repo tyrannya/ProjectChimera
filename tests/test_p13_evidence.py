@@ -92,7 +92,12 @@ def coverage_problems(root: Path) -> list[str]:
     # cannot disagree about which suffixes matter.
     directory = root / PRIMARY_DIR
     present = {
-        str(path.relative_to(root))
+        # POSIX separators, because REQUIRED_EVIDENCE and the manifest both use
+        # them. ``str()`` renders a backslash on Windows, so every committed
+        # evidence file matched nothing and the scan reported the whole
+        # directory as undeclared AND uncovered — a defect that made this
+        # safety net vacuously loud rather than silently absent.
+        path.relative_to(root).as_posix()
         for path in sorted(directory.rglob("*"))
         if path.is_file() and path.suffix in EVIDENCE_SUFFIXES
     }

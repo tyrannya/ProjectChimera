@@ -1,32 +1,44 @@
-"""The six-calendar-block runner, and amendment A2R1's three source-validity states.
+"""The six-calendar-block runner, under amendment **A2R2**.
 
 :mod:`nn.p13_carry` evaluates ONE block given a quote series. This module decides
-which quote series a block has — which is where every rule in
-``MARKLESS_LIQUIDATION_VALIDITY_POLICY`` actually bites, because the frozen
-distinction between "advance the opening search" and "terminate the screen" is a
-distinction about WHEN an invalid instant is met, not about what it looks like.
+which quote series a block has — which is where ``MARKLESS_LIQUIDATION_VALIDITY_
+POLICY`` actually bites, because the frozen distinction between "when may a
+position open" and "when must the screen stop" is a distinction about WHEN an
+invalid instant is met, not about what it looks like.
 
-Three states, named by the frozen design and reproduced here as behaviour:
+**What A2R2 changed here, and why.** A2 and A2R1 made the opening search reject a
+candidate instant whose same-bar mark row was absent. That is acausal: a
+``markPriceKlines`` row is stamped by candle OPEN ``t``, but the fact that a
+completed row for that bar exists in the published archive at all is established
+only AFTER the bar completes. Deciding at ``t`` not to open at ``t`` because that
+row is absent therefore conditions the ENTRY INSTANT on information that does not
+exist at ``t`` — SOURCE-AVAILABILITY LOOK-AHEAD. It read no future PRICE, and the
+old implementation was careful about that, but availability is future information
+in its own right. A2R2 removes the rule, and this module implements the removal.
 
-``pre_open_mark_absent``
-    An instant with no authorised liquidation mark, met BEFORE a position exists,
-    is not an admissible opening instant. The search advances causally to the
-    first instant that is, inside the same calendar block and strictly before the
-    research boundary. Nothing is attributed to the strategy across the skipped
-    interval, which this module guarantees the only way that can be guaranteed:
-    the block's quote series BEGINS at the valid open, so there is no earlier bar
-    for any accrual, fee, touch or excursion to attach to.
+So there is now ONE live source-validity state and one live delay reason:
 
-``held_bar_mark_absent``
-    The same absence met AFTER the position is open is TERMINAL and SCREEN-WIDE:
-    ``P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE``. It is not skipped,
-    not jumped, not closed before, not reopened after, and the affected block is
-    not excluded.
+``held_bar_mark_absent`` — the only live markless state
+    A HELD bar carrying neither a mark high nor a mark close is TERMINAL and
+    SCREEN-WIDE: ``P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE``. It is
+    not skipped, not jumped, not closed before, not reopened after, the affected
+    block is not excluded, and — the A2R2 addition — the opening instant is NOT
+    moved backwards or forwards to make the bar stop being held. **This includes
+    bar 0**, which is where the correction lands: the position opens at bar 0's
+    OPEN, so bar 0 is held, so bar 0 needs its mark like every other held bar.
 
-``no_valid_opening_instant_in_block``
-    A block whose opening search never finds an admissible instant BECAUSE the
-    mark is absent is the same terminal outcome, and explicitly NOT an excluded
-    block.
+``pre_open_execution_row_absent`` — the only live delay reason
+    A leg supplying no row means no fill can be priced at that instant on both
+    legs, so the opening search advances — which is ``POSITION_LIFECYCLE
+    .open_instant``'s own forward search, not an A2R2 invention. Nothing is
+    attributed to the strategy across the skipped interval, which this module
+    guarantees the only way that can be guaranteed: the block's quote series
+    BEGINS at the valid open, so there is no earlier bar for any accrual, fee,
+    touch or excursion to attach to.
+
+``pre_open_mark_absent`` and ``no_valid_opening_instant_in_block`` are RETIRED by
+A2R2 and are not reachable from any code path below. Their names survive in the
+preregistration as provenance; this module must never produce either.
 
 **What counts as a held bar, and why this module reads it the way it does.**
 ``MARGIN_AND_LIQUIDATION.liquidation_check`` requires its inequality "evaluated at
@@ -49,7 +61,7 @@ not make. It is flagged for review rather than buried.
 
 **Object availability is never consulted here.** The funding notional's per-object
 fallback lives in :mod:`nn.p13_alignment` and is not reachable from any code path
-below. A2R1 authorises no liquidation surrogate, so there is nothing for this
+below. A2 authorises no liquidation surrogate, so there is nothing for this
 module to fall back to and no flag that could turn one on.
 """
 
@@ -60,7 +72,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Iterable, Sequence
 
-from nn.p13_alignment import MARK, AlignedSources, grid_instants
+from nn.p13_alignment import AlignedSources, grid_instants
 from nn.p13_carry import (
     NOMINAL_BAR_NS,
     TOUCH_SOURCES,
@@ -80,8 +92,8 @@ from nn.p13_carry import (
 )
 from nn.p13_preregistration import (
     MARKLESS_STATE_HELD,
-    MARKLESS_STATE_NO_VALID_OPEN,
-    MARKLESS_STATE_PRE_OPEN,
+    MARKLESS_STATES_RETIRED_BY_A2R2,
+    OPENING_DELAY_EXECUTION_ABSENT,
     RESULT_STATES,
     TEMPORAL_PARTITION,
 )
@@ -104,11 +116,19 @@ __all__ = [
     "NoValidExit",
 ]
 
-#: The one terminal label A2R1's two source-insufficiency branches produce, taken
+#: The one terminal label A2R2's single source-insufficiency branch produces, taken
 #: from the frozen ``RESULT_STATES`` rather than spelled again. A literal here
 #: could drift from the design; an index into the frozen tuple cannot.
 NOT_EVALUABLE = "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT EVALUABLE"
 assert NOT_EVALUABLE in RESULT_STATES, "the terminal label is not a declared result state"
+
+#: The one markless state this module may still produce. Asserted against the
+#: frozen design rather than assumed, so that reinstating a retired state here
+#: fails at import rather than in an artifact: A2R2 retires the two that could
+#: only fire BEFORE an open, and both of them decided the entry instant from a
+#: fact established after the bar completed.
+assert MARKLESS_STATE_HELD not in MARKLESS_STATES_RETIRED_BY_A2R2
+assert OPENING_DELAY_EXECUTION_ABSENT not in MARKLESS_STATES_RETIRED_BY_A2R2
 
 
 class BlockError(RuntimeError):
@@ -231,13 +251,20 @@ class OpeningSearch:
     calendar_start_ns: int
     opened_at_ns: int
     skipped_instants: int
-    #: Why the first candidate was not admissible. ``None`` when the block opened
-    #: at its calendar boundary and nothing was skipped.
+    #: Why the first candidate was not admissible. Under A2R2 this can only ever
+    #: be ``OPENING_DELAY_EXECUTION_ABSENT`` — a leg supplied no row — and it is
+    #: ``None`` when the block opened at its calendar boundary. A markless state
+    #: may never appear here; ``MARKLESS_LIQUIDATION_VALIDITY_POLICY
+    #: .evidence_requirement`` says so in terms.
     reason: str | None
-    #: How many of the skipped instants were skipped with the mark as the binding
-    #: constraint — an instant that could have been filled but could not have been
-    #: risk-tested. Reported separately because it is the count A2R1 is about.
-    skipped_for_mark: int
+
+    #: **Always False, and reported rather than inferred.** The frozen evidence
+    #: requirement asks for "an explicit statement that the opening decision
+    #: consulted no mark row, reported as a flag rather than left to be inferred
+    #: from a zero count" — because a zero count is equally consistent with "the
+    #: mark was consulted and never bound" and with "the mark was never consulted",
+    #: and only the second is A2R2.
+    OPENING_CONSULTED_MARK = False
 
     @property
     def skipped_ns(self) -> int:
@@ -254,11 +281,16 @@ class OpeningSearch:
             "opened_at_ns": self.opened_at_ns,
             "delayed": self.delayed,
             "skipped_instants": self.skipped_instants,
-            "skipped_for_mark": self.skipped_for_mark,
             "skipped_ns": self.skipped_ns,
             "reason": self.reason,
+            # A2R2's evidence requirement, emitted as a fact rather than left to
+            # be deduced from the absence of a mark-shaped field.
+            "opening_consulted_mark": self.OPENING_CONSULTED_MARK,
             # Stated in the evidence itself so no reader has to infer it, and so
-            # nothing downstream can quietly assume the opposite.
+            # nothing downstream can quietly assume the opposite. An opening
+            # delayed for an ABSENT EXECUTION ROW moves basis_at_entry and the
+            # accrual window exactly as the retired mark rule would have, and
+            # neither direction is claimed.
             "economic_direction": "INDETERMINATE EX ANTE",
         }
 
@@ -279,11 +311,28 @@ class BlockRun:
     block: CalendarBlock
     opening: OpeningSearch
     result: BlockResult
+    #: How many settlements fell inside this block's CALENDAR span and were
+    #: therefore offered to it. Not the same number as the one below, and
+    #: deliberately kept apart from it: a block is offered every settlement in its
+    #: year and CHARGED only those inside ``open < settlement <= close``, minus
+    #: any after a liquidation trigger.
     settlements_priced: int
-    mark_substituted_settlements: int
     held_instants: int
     quotes: tuple[Quote, ...] = ()
     settlements: tuple[FundingSettlement, ...] = ()
+
+    @property
+    def mark_substituted_settlements(self) -> int:
+        """Settlements this block ACTUALLY APPLIED on a substituted notional base.
+
+        Read from the accounting result rather than injected, which is the whole
+        of the repair. It used to be a screen-wide total handed identically to
+        every block, so a screen with ONE substituted settlement reported six —
+        the evidence layer sums the per-block figures, and summing one global
+        number six times multiplies it by the block count. Now each block reports
+        what its own position was charged, and the sum is exact by construction.
+        """
+        return self.result.mark_substituted_settlements
 
 
 @dataclass(frozen=True)
@@ -291,7 +340,7 @@ class ScreenRun:
     """Every block, or nothing at all.
 
     On a terminal source insufficiency :attr:`blocks` is EMPTY. That is not
-    tidiness: A2R1 requires that "any block economics computed before the refusal
+    tidiness: A2 requires that "any block economics computed before the refusal
     fires are NOT a result ... not written as primary evidence, not reported as a
     partial answer, and do not enter any gate". An object that carried the
     survivors would be one lazy caller away from averaging them.
@@ -317,28 +366,32 @@ class ScreenRun:
 
 
 def find_opening_instant(aligned: AlignedSources, block: CalendarBlock) -> OpeningSearch:
-    """The first admissible opening instant at or after the block boundary.
+    """The first EXECUTION-VALID instant at or after the block boundary — **A2R2**.
 
     Forward only, inside this block only, strictly before the research boundary
-    only. An admissible instant is one that is valid FOR HOLDING — both legs
-    priceable and the liquidation mark present — because bar 0 is a held bar under
-    the repaired window, so opening at an instant with no authorised touch would
-    buy an hour of exposure the design cannot test.
+    only. An admissible instant is one at which BOTH LEGS supply a row, so a fill
+    can be priced at their opens. That is the whole predicate.
 
-    The decision reads PRESENCE ONLY. Nothing here compares a price, so no numeric
-    fact about how a candle turned out can move the opening instant.
+    **The mark is not consulted, and that is the amendment.** A2 and A2R1 required
+    the liquidation mark here too, on the reasoning that bar 0 is a held bar. Bar 0
+    *is* a held bar — that has not changed — but the mark row's EXISTENCE is
+    established only after bar 0 completes, so requiring it at the opening instant
+    decided the entry from a fact unavailable there. A2R2 retires that rule: the
+    position opens at the first fillable instant, and bar 0's mark is checked when
+    bar 0 is evaluated as a held bar, in :func:`build_quotes`. If it is missing
+    there, the SCREEN terminates — the entry does not move.
 
-    Two different failures, kept apart because the frozen design keeps them apart:
+    The decision reads PRESENCE ONLY, and now only the presence of the two
+    execution rows. Nothing here compares a price, and nothing here asks a question
+    whose answer arrives after ``t``.
 
-    * if no instant is admissible and the MARK is implicated at some instant that
-      was otherwise fillable, that is A2R1's ``no_valid_opening_instant_in_block``
-      and the screen terminates NOT EVALUABLE;
-    * if no instant even has both legs, nothing about the mark has been
-      established, and the block is one ``VIABILITY_GATE.excluded_blocks`` already
-      covers — "required source rows absent or invalid at every candidate
-      instant". That is signalled by raising :class:`BlockError`, and A2R1's
-      terminal branch is deliberately NOT reached, because A2R1 says in terms that
-      the excluded-block rule is not broadened and this is the case it still owns.
+    One failure remains, and it is not A2R2's: a block at which NO instant supplies
+    both legs could not be OPENED by the CONSTRUCTION, which is the case
+    ``VIABILITY_GATE.excluded_blocks`` already owns — "required source rows absent
+    or invalid at every candidate instant". That is signalled by raising
+    :class:`BlockError`, and it is NOT a source-insufficiency refusal: nothing
+    about the mark has been established, and the excluded-block rule is not
+    broadened by A2R2 any more than it was by A2.
     """
     instants = list(
         grid_instants(block.start_ns, min(block.end_exclusive_ns, RESEARCH_BOUNDARY_NS))
@@ -350,49 +403,30 @@ def find_opening_instant(aligned: AlignedSources, block: CalendarBlock) -> Openi
     candidates = instants[:-1]
 
     skipped = 0
-    skipped_for_mark = 0
     first_reason: str | None = None
-    fillable_seen = False
     for instant in candidates:
         validity = aligned.instant_validity(instant)
-        if validity.valid_for_holding:
+        if validity.valid_for_opening:
             return OpeningSearch(
                 block_label=block.label,
                 calendar_start_ns=block.start_ns,
                 opened_at_ns=instant,
                 skipped_instants=skipped,
                 reason=first_reason,
-                skipped_for_mark=skipped_for_mark,
             )
-        if validity.has_execution:
-            fillable_seen = True
-            skipped_for_mark += 1
-            if first_reason is None:
-                first_reason = MARKLESS_STATE_PRE_OPEN
-        elif first_reason is None:
-            first_reason = MARKLESS_STATE_PRE_OPEN
+        # The ONLY reason an opening may be delayed under A2R2. It is named from
+        # the frozen constant rather than spelled here, so a markless state cannot
+        # be substituted into this field by an edit that looks harmless.
+        if first_reason is None:
+            first_reason = OPENING_DELAY_EXECUTION_ABSENT
         skipped += 1
 
-    if fillable_seen:
-        raise SourceInsufficiency(
-            MARKLESS_STATE_NO_VALID_OPEN,
-            block.label,
-            (
-                f"block {block.label} has no valid opening instant: every candidate instant "
-                "either lacks a leg or lacks the authorised liquidation mark, and at least "
-                "one instant was fillable but could not be risk-tested. A2R1 makes this "
-                "terminal and SCREEN-WIDE, and explicitly NOT an excluded block: the "
-                "excluded-block rule exists for a block the CONSTRUCTION could not open, "
-                "and broadening it into a source-availability escape hatch would drop "
-                "exactly the periods whose risk series is missing."
-            ),
-            missing=(MARK,),
-        )
     raise BlockError(
         f"block {block.label} has no instant at which both legs supply a row, so the "
         "position could not be opened for a reason VIABILITY_GATE.excluded_blocks already "
-        "covers. Nothing has been established about the mark, so A2R1's terminal branch is "
-        "not reached."
+        "covers. Nothing has been established about the mark: under A2R2 the mark is never "
+        "consulted before an open, so this refusal cannot be a mark-coverage refusal "
+        "wearing a construction refusal's clothes."
     )
 
 
@@ -429,10 +463,16 @@ def build_quotes(
 ) -> tuple[Quote, ...]:
     """Every quote from the open to the exit, with no hour permitted to be missing.
 
-    Each HELD hour must be valid for holding. The first one that is not raises
-    A2R1's terminal :class:`SourceInsufficiency` — it is not skipped, and the
-    series is not closed early to route around it, because both would report a
-    holding period the liquidation model never audited.
+    Each HELD hour must be valid for holding, and **the first held hour is bar 0**
+    — the opening instant itself. Under A2R2 the opening search no longer
+    guarantees bar 0 carries a mark, so this is where a mark-less bar 0 is caught,
+    and it is caught as what it is: a held bar the liquidation model cannot audit.
+
+    The first held hour that is not valid raises the terminal
+    :class:`SourceInsufficiency` — it is not skipped, the series is not closed
+    early to route around it, and the OPENING INSTANT IS NOT MOVED to make the bar
+    stop being held. All three would report a holding period the liquidation model
+    never audited, and the third is precisely the acausal rule A2R2 retired.
 
     The EXIT hour is checked for execution validity only. That exemption is
     ``MARKLESS_LIQUIDATION_VALIDITY_POLICY.exit_bar``: the position closes at that
@@ -455,12 +495,15 @@ def build_quotes(
                     f"{instant}, and that hour is missing {list(validity.missing)}. "
                     "MARGIN_AND_LIQUIDATION.liquidation_check requires its inequality "
                     "evaluated at EVERY hourly grid instant while the position is open, and "
-                    "A2R1 authorises exactly two sources for it — the mark HIGH, else the "
+                    "A2 authorises exactly two sources for it — the mark HIGH, else the "
                     "mark CLOSE — with no spot, perpetual, REST, cross-venue, reconstructed "
                     "or zero surrogate. The required risk quantity is therefore not "
                     "computable for an hour the position was genuinely exposed through, so "
                     "the SCREEN terminates NOT EVALUABLE. This is source insufficiency, not "
-                    "an observed economic failure."
+                    "an observed economic failure. If this is bar 0, the opening instant is "
+                    "still NOT moved: A2R2 retired the rule that would have moved it, "
+                    "because the mark row's existence is not knowable at the opening "
+                    "instant."
                 ),
                 instant_ns=instant,
                 missing=validity.missing,
@@ -502,13 +545,12 @@ def run_block(
     venue: Venue,
     min_settlements: int,
     settlements: Sequence[FundingSettlement],
-    mark_substituted: int = 0,
     isolated: bool = False,
 ) -> BlockRun:
     """Assemble one block and hand it to the accounting engine.
 
     Raises :class:`SourceInsufficiency` — never returns a degraded result — when
-    A2R1's terminal branches fire, so a caller cannot accidentally treat a
+    A2R2's terminal branch fires, so a caller cannot accidentally treat a
     terminated block as a measured one.
     """
     opening = find_opening_instant(aligned, block)
@@ -528,7 +570,6 @@ def run_block(
             venue=venue,
             min_settlements=min_settlements,
             settlements=within,
-            mark_substituted=mark_substituted,
             isolated=isolated,
         )
     result = evaluate_block(
@@ -546,7 +587,6 @@ def run_block(
         opening=opening,
         result=result,
         settlements_priced=len(within),
-        mark_substituted_settlements=mark_substituted,
         held_instants=len(quotes) - 1,
         quotes=quotes,
         settlements=within,
@@ -563,7 +603,6 @@ def _unclosed_run(
     venue: Venue,
     min_settlements: int,
     settlements: Sequence[FundingSettlement],
-    mark_substituted: int,
     isolated: bool,
 ) -> BlockRun:
     """Amendment A1's UNCLOSED block, accrued over the bars that WERE held.
@@ -596,11 +635,16 @@ def _unclosed_run(
     worst = position.equity_at(entry.spot_fill, entry.perp_fill) - allocation.total_capital
     touches: dict[str, int] = {name: 0 for name in TOUCH_SOURCES}
     settled = 0
+    # Only what was ACCRUED before the terminal held horizon. An UNCLOSED block
+    # stops here, so settlements it never reached are neither applied nor counted.
+    substituted = 0
     liquidated_at: int | None = None
     for quote in quotes:
         for instant in sorted(k for k in list(due) if k <= quote.instant_ns):
-            apply_funding(position, due.pop(instant))
+            settlement = due.pop(instant)
+            apply_funding(position, settlement)
             settled += 1
+            substituted += settlement.notional_substituted
         worst = min(worst, position.equity(quote) - allocation.total_capital)
         touches[quote.liquidation_touch_source] += 1
         if is_liquidated(position, quote, venue, isolated):
@@ -628,13 +672,13 @@ def _unclosed_run(
         liquidation_instant_ns=liquidated_at,
         liquidation_touch_provenance=LiquidationTouchProvenance(**touches),
         held_bars=len(quotes),
+        mark_substituted_settlements=substituted,
     )
     return BlockRun(
         block=block,
         opening=opening,
         result=result,
         settlements_priced=len(settlements),
-        mark_substituted_settlements=mark_substituted,
         held_instants=len(quotes),
         quotes=(),
         settlements=tuple(settlements),
@@ -650,13 +694,12 @@ def run_screen(
     min_settlements: int,
     settlements: Sequence[FundingSettlement],
     blocks: Iterable[CalendarBlock] | None = None,
-    mark_substituted: int = 0,
     isolated: bool = False,
 ) -> ScreenRun:
     """Every block in chronological order, or a terminal refusal and nothing else.
 
     A terminal :class:`SourceInsufficiency` anywhere discards every block already
-    computed. That is A2R1's ``partial_numbers_are_not_a_result`` implemented
+    computed. That is A2's ``partial_numbers_are_not_a_result`` implemented
     rather than promised: the returned :class:`ScreenRun` carries no blocks at
     all, so there is nothing for a gate to read even if one forgot to check
     :attr:`ScreenRun.evaluable`.
@@ -679,7 +722,6 @@ def run_screen(
                 venue=venue,
                 min_settlements=min_settlements,
                 settlements=settlements,
-                mark_substituted=mark_substituted,
                 isolated=isolated,
             )
         except SourceInsufficiency as terminal:
@@ -730,14 +772,15 @@ def _excluded_run(block: CalendarBlock, reason: str) -> BlockRun:
         opened_at_ns=block.start_ns,
         skipped_instants=0,
         reason=None,
-        skipped_for_mark=0,
     )
+    # ``empty`` carries mark_substituted_settlements=0 by construction: a block
+    # that never opened charged no settlement to any position, so it contributes
+    # nothing to the screen-wide substitution total.
     return BlockRun(
         block=block,
         opening=opening,
         result=empty,
         settlements_priced=0,
-        mark_substituted_settlements=0,
         held_instants=0,
     )
 

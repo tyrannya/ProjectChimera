@@ -12,14 +12,20 @@ from decimal import Decimal
 import pytest
 
 from nn.p13_sources import (
+    CHECKSUM_NOT_SUPPLIED,
+    CHECKSUM_STATES,
+    CHECKSUM_UNVERIFIED,
+    CHECKSUM_VERIFIED,
     KLINE_COLUMNS,
     RESEARCH_BOUNDARY_NS,
+    ObjectProvenance,
     SourceError,
     extract_single_member,
     period_bounds,
     read_funding_object,
     read_kline_object,
     straddles_boundary,
+    verify_published_checksum,
 )
 from tests.p13_synthetic import kline_csv, kline_row_fields, ms, ns, zip_bytes
 
@@ -308,6 +314,223 @@ def test_an_unverified_checksum_is_reported_as_unverified_not_as_matched():
     table = _read(_klines(2))
     assert table.provenance.published_checksum is None
     assert table.provenance.as_dict()["checksum_verified"] is False
+    assert table.provenance.checksum_state == CHECKSUM_NOT_SUPPLIED
+
+
+# ---------------------------------------------------------------------------
+# BOTH digests, and a checksum state that cannot claim what it did not check
+# ---------------------------------------------------------------------------
+
+
+def _object(count: int = 3, member: str = "BTCUSDT-1h-2021-03.csv"):
+    """One published object and its single member, as bytes."""
+    payload = _klines(count)
+    return zip_bytes(member, payload), payload, member
+
+
+def test_the_archive_and_member_digests_are_both_recorded_and_are_different():
+    """SOURCE_FREEZE_FIELDS requires both, and they attest to different bytes."""
+    raw, payload, member = _object()
+    table = read_kline_object(
+        payload,
+        field="spot_price",
+        object_name="BTCUSDT-1h-2021-03.zip",
+        period=PERIOD,
+        raw_object=raw,
+        member_name=member,
+    )
+    provenance = table.provenance
+    # Recomputed here, independently of the module under test.
+    assert provenance.sha256 == hashlib.sha256(raw).hexdigest()
+    assert provenance.byte_size == len(raw)
+    assert provenance.member_sha256 == hashlib.sha256(payload).hexdigest()
+    assert provenance.member_byte_size == len(payload)
+    assert provenance.member_name == member
+    # A zip frames and compresses its member, so the two digests are of different
+    # bytes and must differ. Their SIZES are not asserted to differ: compression
+    # can coincidentally land on the payload's own length, and it does here.
+    assert provenance.sha256 != provenance.member_sha256
+
+
+def test_the_evidence_serialises_both_digests_without_conflating_them():
+    raw, payload, member = _object()
+    table = read_kline_object(
+        payload,
+        field="spot_price",
+        object_name="BTCUSDT-1h-2021-03.zip",
+        period=PERIOD,
+        raw_object=raw,
+        member_name=member,
+    )
+    emitted = table.provenance.as_dict()
+    assert emitted["archive_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert emitted["member_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert emitted["archive_byte_size"] == len(raw)
+    assert emitted["member_byte_size"] == len(payload)
+    assert emitted["member_name"] == member
+    assert emitted["archive_sha256"] != emitted["member_sha256"]
+
+
+def test_a_member_parsed_without_its_archive_records_no_archive_digest():
+    """The member digest must never stand in for the publisher-checkable one."""
+    _, payload, _ = _object()
+    table = _read(payload)
+    assert table.provenance.sha256 is None
+    assert table.provenance.byte_size is None
+    assert table.provenance.member_sha256 == hashlib.sha256(payload).hexdigest()
+
+
+def test_a_matching_published_checksum_is_verified_by_an_actual_comparison():
+    raw, payload, member = _object()
+    table = read_kline_object(
+        payload,
+        field="spot_price",
+        object_name="BTCUSDT-1h-2021-03.zip",
+        period=PERIOD,
+        raw_object=raw,
+        member_name=member,
+        published_checksum=hashlib.sha256(raw).hexdigest(),
+    )
+    assert table.provenance.checksum_state == CHECKSUM_VERIFIED
+    assert table.provenance.checksum_verified is True
+    assert table.provenance.as_dict()["checksum_verified"] is True
+
+
+def test_binances_published_companion_format_is_parsed_not_rejected():
+    """Binance publishes ``<digest>  <filename>``, not a bare digest."""
+    raw, payload, member = _object()
+    companion = hashlib.sha256(raw).hexdigest() + "  BTCUSDT-1h-2021-03.zip\n"
+    table = read_kline_object(
+        payload,
+        field="spot_price",
+        object_name="BTCUSDT-1h-2021-03.zip",
+        period=PERIOD,
+        raw_object=raw,
+        member_name=member,
+        published_checksum=companion,
+    )
+    assert table.provenance.checksum_state == CHECKSUM_VERIFIED
+
+
+def test_a_deliberate_checksum_mismatch_is_a_refusal_not_a_flag():
+    """The whole point: a disagreeing object is not read at all."""
+    raw, payload, member = _object()
+    with pytest.raises(SourceError, match="does not match"):
+        read_kline_object(
+            payload,
+            field="spot_price",
+            object_name="BTCUSDT-1h-2021-03.zip",
+            period=PERIOD,
+            raw_object=raw,
+            member_name=member,
+            published_checksum="0" * 64,
+        )
+
+
+def test_a_checksum_supplied_without_the_archive_bytes_is_not_called_verified():
+    """The state that used to be reported as verified merely for existing."""
+    _, payload, _ = _object()
+    table = read_kline_object(
+        payload,
+        field="spot_price",
+        object_name="BTCUSDT-1h-2021-03.zip",
+        period=PERIOD,
+        published_checksum="0" * 64,
+    )
+    assert table.provenance.published_checksum is not None
+    assert table.provenance.checksum_state == CHECKSUM_UNVERIFIED
+    assert table.provenance.checksum_verified is False
+    assert table.provenance.as_dict()["checksum_verified"] is False
+
+
+def test_the_four_checksum_facts_are_distinguishable():
+    """Absent, supplied-but-unchecked, matched and mismatched are four states."""
+    assert len(set(CHECKSUM_STATES)) == 4
+    raw, _, _ = _object()
+    digest = hashlib.sha256(raw).hexdigest()
+    assert verify_published_checksum(raw, None) == CHECKSUM_NOT_SUPPLIED
+    assert verify_published_checksum(None, digest) == CHECKSUM_UNVERIFIED
+    assert verify_published_checksum(raw, digest) == CHECKSUM_VERIFIED
+    with pytest.raises(SourceError, match="REFUSAL"):
+        verify_published_checksum(raw, "1" * 64)
+
+
+def test_provenance_cannot_be_constructed_claiming_a_verification_it_lacks():
+    """The state is re-derived by the constructor, so it cannot simply be typed in."""
+    common = dict(
+        field="spot_price",
+        object_name="BTCUSDT-1h-2021-03.zip",
+        period=PERIOD,
+        member_sha256="ab" * 32,
+        member_byte_size=10,
+        resolved_epoch_unit="ms",
+        rows_read=1,
+        rows_dropped_at_boundary=0,
+        first_instant_ns=1,
+        last_instant_ns=1,
+    )
+    # Verified, but the digests disagree.
+    with pytest.raises(SourceError, match="differ"):
+        ObjectProvenance(
+            byte_size=10,
+            sha256="aa" * 32,
+            published_checksum="bb" * 32,
+            checksum_state=CHECKSUM_VERIFIED,
+            **common,
+        )
+    # Verified, with no archive digest to have verified against.
+    with pytest.raises(SourceError, match="requires the whole-object digest"):
+        ObjectProvenance(
+            byte_size=None,
+            sha256=None,
+            published_checksum="bb" * 32,
+            checksum_state=CHECKSUM_VERIFIED,
+            **common,
+        )
+    # Verified, with no published checksum at all.
+    with pytest.raises(SourceError, match="claims a published checksum"):
+        ObjectProvenance(
+            byte_size=10,
+            sha256="aa" * 32,
+            published_checksum=None,
+            checksum_state=CHECKSUM_VERIFIED,
+            **common,
+        )
+    # A mismatch is a refusal and may never be recorded as provenance.
+    with pytest.raises(SourceError, match="REFUSAL"):
+        ObjectProvenance(
+            byte_size=10,
+            sha256="aa" * 32,
+            published_checksum="aa" * 32,
+            checksum_state="mismatch_refused",
+            **common,
+        )
+    # And the honest construction is accepted, case-insensitively.
+    ok = ObjectProvenance(
+        byte_size=10,
+        sha256="aa" * 32,
+        published_checksum="AA" * 32,
+        checksum_state=CHECKSUM_VERIFIED,
+        **common,
+    )
+    assert ok.checksum_verified is True
+
+
+def test_the_funding_reader_records_both_digests_and_verifies_too():
+    payload = b"1614556800000,0.0001\n"
+    raw = zip_bytes("BTCUSDT-fundingRate-2021-03.csv", payload)
+    table = read_funding_object(
+        payload,
+        object_name="BTCUSDT-fundingRate-2021-03.zip",
+        period=PERIOD,
+        raw_object=raw,
+        member_name="BTCUSDT-fundingRate-2021-03.csv",
+        published_checksum=hashlib.sha256(raw).hexdigest(),
+    )
+    assert table.provenance.checksum_state == CHECKSUM_VERIFIED
+    assert table.provenance.sha256 == hashlib.sha256(raw).hexdigest()
+    assert table.provenance.member_sha256 == hashlib.sha256(payload).hexdigest()
+    assert table.provenance.sha256 != table.provenance.member_sha256
 
 
 def test_period_bounds_are_the_objects_own_utc_month():

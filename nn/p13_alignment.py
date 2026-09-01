@@ -2,8 +2,8 @@
 
 The accounting engine takes :class:`~nn.p13_carry.Quote` and
 :class:`~nn.p13_carry.FundingSettlement`. This module is what turns four
-independently published archives into those, and it is where amendment **A2R1**'s
-source-validity vocabulary actually lives.
+independently published archives into those, and it is where amendment **A2**'s
+source-validity vocabulary actually lives, at revision **A2R2**.
 
 **Nothing is ever forward-filled.** A missing hour stays missing. Carrying the
 previous candle forward would manufacture an observation the venue never
@@ -19,35 +19,46 @@ and that phrasing is the frozen design's own
   FILL needs, at either end of the position.
 * :func:`liquidation_validity` — a mark row present. This is what a HELD BAR
   needs, because ``MARGIN_AND_LIQUIDATION.liquidation_check`` evaluates its
-  inequality "at every hourly grid instant while the position is open" and A2R1
+  inequality "at every hourly grid instant while the position is open" and A2
   gives that check exactly two authorised sources, the mark HIGH and the mark
   CLOSE.
 
-An OPENING instant needs both: it is a fill, and it is also bar 0, which the
-repaired holding window makes a held bar. A NORMAL EXIT instant needs only the
-first, because ``MARKLESS_LIQUIDATION_VALIDITY_POLICY.exit_bar`` records that the
-position closes at that bar's OPEN, before its post-open high or close exists.
+An OPENING instant needs only the FIRST — this is **amendment A2R2**, and it is
+the one thing about this module that changed. A NORMAL EXIT instant likewise needs
+only the first, because ``MARKLESS_LIQUIDATION_VALIDITY_POLICY.exit_bar`` records
+that the position closes at that bar's OPEN, before its post-open high or close
+exists. Bar 0 is still a HELD bar and still needs its mark; what changed is WHEN
+that is asked, not whether.
 
-**The look-ahead guard.** A2R1's pre-open rule decides admissibility from
-*whether a required row exists*, never from what the row says. That distinction is
-enforced structurally here: :func:`instant_validity` reads presence only. It never
-compares, thresholds or otherwise consults a mark high, a mark close, a spot close
-or a perpetual close. The frozen ``POSITION_LIFECYCLE.validity_definition``
-already defines an instant's validity as "the row is present in every required
-source, every preregistered field is present, every price is strictly positive,
-and no duplicate row makes the instant ambiguous" — the last three of which
-:mod:`nn.p13_sources` has already applied by withholding unusable rows, so by the
-time an instant reaches this module the only question left is presence. Applying
-that one frozen sentence to the mark exactly as it already applies to spot and
-perpetual introduces no new convention; it removes an inconsistency in which the
-mark alone was treated as optional.
+**Why the mark left the opening predicate.** A2 and A2R1 rejected a candidate
+opening instant whose mark row was absent. Reading presence rather than a value
+was not enough to make that causal. A ``markPriceKlines`` row is stamped by candle
+OPEN ``t``, but the fact that a completed row for that bar exists in the published
+archive at all is established only AFTER the bar completes — so "at ``t``, refuse
+to open because the same-bar mark row is absent" conditions the entry instant on
+information that does not exist at ``t``. That is SOURCE-AVAILABILITY LOOK-AHEAD,
+and A2R2 removes it. :attr:`InstantValidity.valid_for_opening` is therefore
+execution-only, and the mark is checked when bar 0 is EVALUATED as a held bar,
+where its absence terminates the screen instead of moving the entry.
+
+**The value guard is still here and still necessary.** :func:`instant_validity`
+reads presence only: it never compares, thresholds or otherwise consults a mark
+high, a mark close, a spot close or a perpetual close, so no numeric fact about how
+a candle turned out can reach any decision. A2R2 does not weaken that; it adds the
+second, stricter requirement that the ENTRY decision not read the mark's presence
+either. The frozen ``POSITION_LIFECYCLE.validity_definition`` still supplies the
+execution predicate — "the row is present in every required source, every
+preregistered field is present, every price is strictly positive, and no duplicate
+row makes the instant ambiguous" — the last three of which :mod:`nn.p13_sources`
+has already applied by withholding unusable rows.
 
 **Object availability is a funding concept and only a funding concept.**
 ``MARK_PRICE_FALLBACK`` is explicitly "PER ARCHIVE OBJECT, not all-or-nothing", so
 :attr:`AlignedSources.published_mark_periods` exists and drives the funding
-notional substitution. It is never consulted by the liquidation path, because
-A2R1 authorises no liquidation surrogate of any kind. The two mechanisms share no
-code and no state on purpose.
+notional substitution. It is never consulted by the liquidation path, because A2
+authorises no liquidation surrogate of any kind, and it is never consulted by the
+OPENING path either, because A2R2 lets nothing about the mark reach the entry
+decision. The three mechanisms share no code and no state on purpose.
 """
 
 from __future__ import annotations
@@ -109,9 +120,11 @@ def grid_instants(start_ns: int, end_exclusive_ns: int) -> Iterator[int]:
 class InstantValidity:
     """Whether one grid instant is usable, and for what.
 
-    Two independent answers rather than one boolean, because A2R1 asks two
-    different questions at two different points in a block's life and collapsing
-    them would make the exit-bar exemption impossible to express.
+    Three answers rather than one boolean, because the frozen design asks three
+    different questions at three different points in a block's life — may a position
+    OPEN here, was it HELD through here, may it CLOSE here — and collapsing them
+    would make both the exit-bar exemption and A2R2's opening rule impossible to
+    express.
     """
 
     instant_ns: int
@@ -132,9 +145,30 @@ class InstantValidity:
     def valid_for_holding(self) -> bool:
         """Usable as a HELD bar: priceable and testable.
 
-        This is the predicate the opening search uses, because bar 0 is held.
+        Bar 0 is a held bar, so this is what bar 0 must satisfy — but it is NOT
+        what the OPENING SEARCH may test, because at the opening instant the
+        answer is not yet knowable. See :attr:`valid_for_opening`.
         """
         return self.has_execution and self.has_liquidation_mark
+
+    @property
+    def valid_for_opening(self) -> bool:
+        """Usable as an OPENING instant: priceable, and nothing else — **A2R2**.
+
+        Named separately from :attr:`valid_for_exit` even though the two are the
+        same predicate, because they answer different frozen questions and a
+        single shared name would make the A2R2 rule invisible at the call site.
+
+        **The mark is deliberately absent from this.** A2R2 retires the rule that
+        rejected an opening instant whose same-bar mark row was missing: the mark
+        row is stamped by candle OPEN ``t`` but its existence is established only
+        after the bar completes, so conditioning the ENTRY on it is
+        source-availability look-ahead. Bar 0 still needs its mark — as a HELD
+        bar, checked once the bar is complete, by :func:`nn.p13_blocks.build_quotes`
+        — and a bar 0 that lacks one terminates the screen rather than moving the
+        entry.
+        """
+        return self.has_execution
 
     @property
     def valid_for_exit(self) -> bool:
@@ -230,7 +264,8 @@ class AlignedSources:
     def quote(self, instant_ns: int, *, require_mark: bool = True) -> Quote:
         """The :class:`~nn.p13_carry.Quote` at ``instant_ns``, or refuse.
 
-        ``require_mark=False`` is the EXIT-BAR case and nothing else. It does not
+        ``require_mark=False`` is the EXIT-BAR case and nothing else — NOT the
+        opening case, which is a HELD bar and needs its mark like any other. It does not
         weaken the liquidation ladder: a quote built without a mark simply has no
         authorised touch, and :class:`~nn.p13_carry.Quote` itself raises if
         anything ever asks it for one. The exemption is therefore enforced by the
@@ -245,7 +280,7 @@ class AlignedSources:
         if require_mark and not validity.has_liquidation_mark:
             raise AlignmentError(
                 f"instant {instant_ns} carries no mark row, so the frozen liquidation test "
-                "has neither of its two authorised sources. A2R1 authorises the mark HIGH "
+                "has neither of its two authorised sources. A2 authorises the mark HIGH "
                 "and the mark CLOSE and NOTHING else, so no quote is built here rather than "
                 "one that would be tested against a series the design never gave it."
             )
@@ -330,7 +365,15 @@ class AlignedSources:
             bases.append(base)
             settlements.append(
                 FundingSettlement(
-                    instant_ns=row.instant_ns, rate=row.rate, mark_price=base.price
+                    instant_ns=row.instant_ns,
+                    rate=row.rate,
+                    mark_price=base.price,
+                    # The substitution travels WITH the settlement, so the count
+                    # of settlements charged on a substituted base is taken by
+                    # the evaluator that knows which were actually charged.
+                    # Deciding it here AND counting it there would be two places
+                    # deciding one thing.
+                    notional_substituted=base.source != MARK,
                 )
             )
         return tuple(settlements), tuple(bases)

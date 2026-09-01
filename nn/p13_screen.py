@@ -10,8 +10,8 @@ built from LOCAL bytes. Acquisition is a later chronology step. Running this
 against real Binance history is a later chronology step again, and neither has
 happened.
 
-**Order of operations, and why it is this order.** Blocks first, because A2R1's
-terminal branches live there and must be able to stop everything. Stresses next,
+**Order of operations, and why it is this order.** Blocks first, because A2's
+terminal branch lives there and must be able to stop everything. Stresses next,
 over the series the base screen already assembled, so no stress can move an
 opening instant. The gate last, and only if the screen is evaluable —
 :func:`~nn.p13_gate.evaluate_gate` refuses a terminated screen rather than
@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Sequence
 
-from nn.p13_alignment import MARK, AlignedSources
+from nn.p13_alignment import AlignedSources
 from nn.p13_blocks import (
     BlockError,
     CalendarBlock,
@@ -156,8 +156,14 @@ def run_offline_screen(
     costs = costs or frozen_costs()
     venue = venue or frozen_venue()
 
-    settlements, bases = aligned.settlements(aligned.funding)
-    substituted = sum(1 for base in bases if base.source != MARK)
+    # The bases are DISCARDED here on purpose. Each settlement already carries
+    # whether MARK_PRICE_FALLBACK substituted its notional base, and the count of
+    # settlements charged on a substituted base is taken PER BLOCK by the
+    # evaluator that knows which settlements each block actually applied. This
+    # function used to compute one screen-wide total and hand the same number to
+    # every block, which the evidence layer then SUMMED — reporting a single
+    # substituted settlement six times over.
+    settlements, _bases = aligned.settlements(aligned.funding)
 
     screen = run_screen(
         aligned,
@@ -167,11 +173,10 @@ def run_offline_screen(
         min_settlements=min_settlements,
         settlements=settlements,
         blocks=blocks,
-        mark_substituted=substituted,
     )
     if not screen.evaluable:
         # Terminal. No stresses, no diagnostics, no gate, and no blocks — every
-        # one of which would be a number computed under a screen that A2R1 has
+        # one of which would be a number computed under a screen that A2 has
         # already said produced no result.
         return ScreenOutcome(
             screen=screen,
@@ -199,7 +204,6 @@ def run_offline_screen(
         venue=venue,
         min_settlements=min_settlements,
         settlements=settlements,
-        substituted=substituted,
     )
     evidence = ScreenEvidence(
         screen=screen,
@@ -220,7 +224,6 @@ def _offset_partition_results(
     venue: Venue,
     min_settlements: int,
     settlements: Sequence,
-    substituted: int,
 ) -> tuple:
     """D3, run over the offset blocks and never allowed to move the verdict.
 
@@ -240,7 +243,6 @@ def _offset_partition_results(
             min_settlements=min_settlements,
             settlements=settlements,
             blocks=offset_partition(),
-            mark_substituted=substituted,
         )
     except (SourceInsufficiency, BlockError):
         return ()

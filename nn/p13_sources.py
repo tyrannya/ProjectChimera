@@ -64,6 +64,12 @@ from nn.trade_aggregates import TradeAggregationError, resolve_epoch_unit
 
 __all__ = [
     "SourceError",
+    "CHECKSUM_NOT_SUPPLIED",
+    "CHECKSUM_UNVERIFIED",
+    "CHECKSUM_VERIFIED",
+    "CHECKSUM_MISMATCH",
+    "CHECKSUM_STATES",
+    "verify_published_checksum",
     "KLINE_COLUMNS",
     "KlineRow",
     "FundingRow",
@@ -82,6 +88,79 @@ __all__ = [
 
 class SourceError(RuntimeError):
     """An archive object cannot be read into honest rows under the frozen rules."""
+
+
+# ---------------------------------------------------------------------------
+# Checksum verification state
+# ---------------------------------------------------------------------------
+#
+# FOUR distinct facts, because they were previously collapsed into one boolean
+# computed as ``published_checksum is not None`` — which reports "verified" for an
+# object whose publisher digest was recorded and never compared with anything.
+# That is the failure mode a checksum exists to prevent, reproduced by the field
+# that claims to prevent it.
+
+#: No publisher checksum was supplied for this object.
+CHECKSUM_NOT_SUPPLIED = "no_publisher_checksum_supplied"
+
+#: A publisher checksum was supplied, but the bytes it should be compared against
+#: were not, so NO comparison was performed. This is not a failure and it is not a
+#: pass; it is the honest answer when a member is parsed without its archive.
+CHECKSUM_UNVERIFIED = "supplied_not_verified"
+
+#: A publisher checksum was supplied AND an equality check against the
+#: independently recomputed digest of the received bytes succeeded.
+CHECKSUM_VERIFIED = "verified_match"
+
+#: A publisher checksum was supplied and DISAGREED with the received bytes. It is
+#: never stored on a provenance record, because a mismatch is a REFUSAL — the
+#: object does not become evidence with a flag set. The name exists so the refusal
+#: has one.
+CHECKSUM_MISMATCH = "mismatch_refused"
+
+CHECKSUM_STATES: tuple[str, ...] = (
+    CHECKSUM_NOT_SUPPLIED,
+    CHECKSUM_UNVERIFIED,
+    CHECKSUM_VERIFIED,
+    CHECKSUM_MISMATCH,
+)
+
+
+def verify_published_checksum(raw_object: bytes | None, published: str | None) -> str:
+    """Compare a publisher digest against the bytes actually received, or refuse.
+
+    Returns the state that ACTUALLY holds. It never returns
+    :data:`CHECKSUM_VERIFIED` without having performed the equality check, and it
+    never returns at all on a mismatch — an object whose bytes disagree with its
+    publisher's digest is not read, because everything downstream would then be
+    describing bytes nobody vouched for.
+
+    ``published`` is accepted in either the bare-hex form or Binance's published
+    ``<digest>  <filename>`` companion form, and the comparison is
+    case-insensitive because hex digests are.
+    """
+    if published is None:
+        return CHECKSUM_NOT_SUPPLIED
+    expected = published.strip().split()[0].lower() if published.strip() else ""
+    if not expected:
+        raise SourceError(
+            "a published checksum was supplied but is empty. An empty digest cannot be "
+            "compared, and treating it as absent would silently downgrade a verification "
+            "the caller asked for."
+        )
+    if raw_object is None:
+        return CHECKSUM_UNVERIFIED
+    actual = hashlib.sha256(raw_object).hexdigest()
+    if actual != expected:
+        raise SourceError(
+            f"published checksum {expected} does not match the sha256 of the received "
+            f"bytes {actual}. A mismatch is a REFUSAL: the object is not read, not "
+            "recorded with a flag, and not repaired. Either the archive was revised — see "
+            "ARCHIVE_REVISION_POLICY, which requires a revision event to be reported "
+            "rather than silently accepted or silently rejected — or the bytes are "
+            "corrupt, and neither is something a loader may decide on its own."
+        )
+    return CHECKSUM_VERIFIED
 
 
 #: The research boundary in integer UTC nanoseconds, resolved from the frozen
@@ -167,8 +246,19 @@ class ObjectProvenance:
     field: str
     object_name: str
     period: str
-    byte_size: int
-    sha256: str
+    #: The size in bytes of the WHOLE PUBLISHED OBJECT — the zip — and ``None``
+    #: when the caller supplied only the extracted member. It is not the member's
+    #: size; that is :attr:`member_byte_size`.
+    byte_size: int | None
+    #: sha256 of the WHOLE PUBLISHED OBJECT, which is the digest Binance's
+    #: ``.CHECKSUM`` companion carries and therefore the only one a publisher
+    #: comparison can use. ``None`` when the archive bytes were not supplied.
+    #:
+    #: It used to fall back to the MEMBER's digest when the archive was absent,
+    #: which silently produced a manifest whose "sha256" could not be checked
+    #: against the publisher and gave no hint that it was a different quantity.
+    #: The two digests are now separate fields and neither stands in for the other.
+    sha256: str | None
     resolved_epoch_unit: str
     rows_read: int
     rows_dropped_at_boundary: int
@@ -188,19 +278,85 @@ class ObjectProvenance:
     #: the funding path only. The frozen design resolves a repeated funding row in
     #: the accounting engine, so this loader counts them and passes them through.
     repeated_instants: int = 0
+    #: The name of the single CSV member inside the published object, exactly as
+    #: the archive carries it. ``SOURCE_FREEZE_FIELDS`` asks for the member to be
+    #: identified and not merely counted.
+    member_name: str | None = None
+    #: sha256 of the EXTRACTED MEMBER — the CSV bytes the rows were actually
+    #: parsed from. ``SOURCE_FREEZE_FIELDS`` requires BOTH this and the
+    #: whole-object digest; only this one attests to what was READ, and only the
+    #: whole-object one can be checked against the publisher.
+    member_sha256: str = ""
+    #: The extracted member's size in bytes, kept beside its digest for the same
+    #: reason the archive's is kept beside the archive's.
+    member_byte_size: int = 0
     #: Binance's own published digest for this object, when the acquisition
-    #: supplied one. ``None`` here means "not checked", never "checked and
-    #: matched" — the distinction matters because the acquisition stage that
-    #: fetches and verifies these objects has not run.
+    #: supplied one.
     published_checksum: str | None = None
+    #: WHICH of the four checksum facts actually holds — see
+    #: :data:`CHECKSUM_STATES`. This replaces a boolean computed as
+    #: ``published_checksum is not None``, which reported "verified" for any
+    #: object that merely carried a digest string, whether or not anything had
+    #: ever been compared with it.
+    #:
+    #: :meth:`__post_init__` refuses to construct a record claiming
+    #: :data:`CHECKSUM_VERIFIED` unless the published digest and the recomputed
+    #: archive digest are actually EQUAL, so the state cannot be set to "verified"
+    #: by an edit that does not also make it true.
+    checksum_state: str = CHECKSUM_NOT_SUPPLIED
+
+    def __post_init__(self) -> None:
+        if self.checksum_state not in CHECKSUM_STATES:
+            raise SourceError(f"{self.checksum_state!r} is not one of {CHECKSUM_STATES}")
+        if self.checksum_state == CHECKSUM_MISMATCH:
+            raise SourceError(
+                "a checksum mismatch is a REFUSAL, not a provenance record. An object "
+                "whose bytes disagree with its publisher's digest is not read at all, so "
+                "no provenance describing it may exist."
+            )
+        if self.checksum_state == CHECKSUM_NOT_SUPPLIED and self.published_checksum:
+            raise SourceError(
+                "a published checksum was supplied, so the state cannot be "
+                f"{CHECKSUM_NOT_SUPPLIED!r}"
+            )
+        if self.checksum_state in (CHECKSUM_UNVERIFIED, CHECKSUM_VERIFIED) and not (
+            self.published_checksum
+        ):
+            raise SourceError(
+                f"state {self.checksum_state!r} claims a published checksum, and none is "
+                "recorded"
+            )
+        if self.checksum_state == CHECKSUM_VERIFIED:
+            # The equality check, performed HERE as well as at verification time.
+            # A state that can be typed into a constructor is a state that can be
+            # wrong; one the constructor re-derives cannot be.
+            if self.sha256 is None:
+                raise SourceError(
+                    "a verified checksum requires the whole-object digest it was verified "
+                    "against, and none is recorded"
+                )
+            expected = self.published_checksum.strip().split()[0].lower()
+            if expected != self.sha256.lower():
+                raise SourceError(
+                    f"provenance claims {CHECKSUM_VERIFIED!r} but the published checksum "
+                    f"{expected} and the recomputed archive digest {self.sha256} differ"
+                )
+
+    @property
+    def checksum_verified(self) -> bool:
+        """True ONLY for a digest that was actually compared and actually matched."""
+        return self.checksum_state == CHECKSUM_VERIFIED
 
     def as_dict(self) -> dict[str, object]:
         return {
             "field": self.field,
             "object": self.object_name,
             "period": self.period,
-            "byte_size": self.byte_size,
-            "sha256": self.sha256,
+            "archive_byte_size": self.byte_size,
+            "archive_sha256": self.sha256,
+            "member_name": self.member_name,
+            "member_sha256": self.member_sha256,
+            "member_byte_size": self.member_byte_size,
             "resolved_epoch_unit": self.resolved_epoch_unit,
             "rows_read": self.rows_read,
             "rows_dropped_at_boundary": self.rows_dropped_at_boundary,
@@ -210,7 +366,10 @@ class ObjectProvenance:
             "non_positive_instants": self.non_positive_instants,
             "repeated_instants": self.repeated_instants,
             "published_checksum": self.published_checksum,
-            "checksum_verified": self.published_checksum is not None,
+            "checksum_state": self.checksum_state,
+            # Derived from the state rather than from the mere presence of a
+            # digest string, which is what it used to be.
+            "checksum_verified": self.checksum_verified,
         }
 
 
@@ -397,14 +556,22 @@ def read_kline_object(
     period: str,
     published_checksum: str | None = None,
     raw_object: bytes | None = None,
+    member_name: str | None = None,
 ) -> KlineTable:
     """Parse one ``klines`` or ``markPriceKlines`` CSV member into typed rows.
 
-    ``payload`` is the extracted CSV; ``raw_object`` is the whole published object
-    whose sha256 the provenance should record. They differ because the digest that
-    is checkable against Binance's ``.CHECKSUM`` is the digest of the ZIP, not of
-    the member inside it, and recording the wrong one would produce a manifest
-    that cannot be verified against the publisher.
+    ``payload`` is the extracted CSV; ``raw_object`` is the whole published object.
+    BOTH digests are recorded, because ``SOURCE_FREEZE_FIELDS`` requires both and
+    they attest to different things: the ZIP's digest is the one checkable against
+    Binance's ``.CHECKSUM``, and the member's is the one that attests to the bytes
+    the rows were actually parsed from. Neither stands in for the other — the
+    archive digest is ``None`` when no archive was supplied rather than quietly
+    becoming the member's.
+
+    ``published_checksum`` is COMPARED, not merely recorded. Supplied together with
+    ``raw_object`` it is checked for equality against the recomputed digest and a
+    disagreement raises; supplied without it, the provenance records
+    ``supplied_not_verified`` rather than claiming a check that did not happen.
 
     Rows are returned in INSTANT order, and two kinds of unusable row are
     WITHHELD rather than repaired — each becoming an instant this object does not
@@ -478,13 +645,19 @@ def read_kline_object(
         KlineRow(instant_ns=instant, open=o, high=h, low=low, close=c)
         for instant, o, h, low, c in kept
     )
-    digest_source = raw_object if raw_object is not None else payload
+    # The verification happens BEFORE the provenance is built, so a mismatch
+    # raises instead of being recorded. Both digests are computed independently
+    # and neither substitutes for the other.
+    state = verify_published_checksum(raw_object, published_checksum)
     provenance = ObjectProvenance(
         field=field,
         object_name=object_name,
         period=period,
-        byte_size=len(digest_source),
-        sha256=hashlib.sha256(digest_source).hexdigest(),
+        byte_size=len(raw_object) if raw_object is not None else None,
+        sha256=(hashlib.sha256(raw_object).hexdigest() if raw_object is not None else None),
+        member_name=member_name,
+        member_sha256=hashlib.sha256(payload).hexdigest(),
+        member_byte_size=len(payload),
         resolved_epoch_unit=unit,
         rows_read=len(rows),
         rows_dropped_at_boundary=dropped,
@@ -493,6 +666,7 @@ def read_kline_object(
         ambiguous_instants=withheld_ambiguous,
         non_positive_instants=withheld_non_positive,
         published_checksum=published_checksum,
+        checksum_state=state,
     )
     return KlineTable(provenance=provenance, rows=rows)
 
@@ -534,6 +708,7 @@ def read_funding_object(
     period: str,
     published_checksum: str | None = None,
     raw_object: bytes | None = None,
+    member_name: str | None = None,
 ) -> FundingTable:
     """Parse one ``fundingRate`` CSV member under the FROZEN column policy.
 
@@ -606,13 +781,16 @@ def read_funding_object(
     # decides — and two places that decide one thing are two places that can come
     # to disagree.
     repeated = len(rows) - len({row.instant_ns for row in rows})
-    digest_source = raw_object if raw_object is not None else payload
+    state = verify_published_checksum(raw_object, published_checksum)
     provenance = ObjectProvenance(
         field="funding_settlement",
         object_name=object_name,
         period=period,
-        byte_size=len(digest_source),
-        sha256=hashlib.sha256(digest_source).hexdigest(),
+        byte_size=len(raw_object) if raw_object is not None else None,
+        sha256=(hashlib.sha256(raw_object).hexdigest() if raw_object is not None else None),
+        member_name=member_name,
+        member_sha256=hashlib.sha256(payload).hexdigest(),
+        member_byte_size=len(payload),
         resolved_epoch_unit=unit,
         rows_read=len(rows),
         rows_dropped_at_boundary=dropped,
@@ -620,6 +798,7 @@ def read_funding_object(
         last_instant_ns=rows[-1].instant_ns if rows else None,
         repeated_instants=repeated,
         published_checksum=published_checksum,
+        checksum_state=state,
     )
     return FundingTable(provenance=provenance, rows=rows)
 
