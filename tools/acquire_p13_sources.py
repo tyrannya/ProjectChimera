@@ -1,6 +1,6 @@
 """Plan, and attempt, the P13 source acquisition — and record what happened.
 
-Two modes, and the split is the point.
+Three modes, and the split is the point.
 
 ``--plan`` is **networkless**. Every object P13 needs is computed from the frozen
 preregistration and a calendar, so the plan can be reviewed, committed and
@@ -16,6 +16,19 @@ readable refusal record naming exactly which host refused and why — because "t
 data could not be obtained" is a claim that needs evidence like any other, and
 NOT EVALUABLE is a real research outcome rather than an error to be worked
 around.
+
+``--download`` actually fetches the planned objects and their published
+``.CHECKSUM`` companions, verifies every one against the digest Binance publishes
+for it, extracts the single CSV member, and writes an acquisition manifest. It
+**stops at the first failure**: a month that cannot be obtained is not skipped,
+not marked optional and not substituted from anywhere else, because a screen
+assembled from whatever happened to be reachable is a screen over a universe the
+frozen design did not specify. The verification and manifest logic lives in
+:mod:`nn.p13_acquisition` so it can be tested without a network.
+
+Raw archives are written to a CACHE OUTSIDE the repository. They are market data
+and are not committed; what is committed is the manifest that pins their exact
+identities and digests.
 
 Nothing here reads P4-HOLD or Styx: the plan stops at the preregistered research
 boundary, and :func:`plan_objects` refuses to emit an object whose period begins
@@ -38,6 +51,12 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from nn import p13_preregistration as prereg
+from nn.p13_acquisition import (
+    AcquisitionError,
+    acquire_all,
+    acquisition_manifest,
+    assert_allowed_url,
+)
 
 #: Binance's own path grammar, read from `binance/binance-public-data`
 #: `python/utility.py::get_path` rather than guessed. Spot and futures differ
@@ -66,6 +85,17 @@ class PlannedObject:
     path: str
     url: str
     checksum_url: str
+
+    @property
+    def object_name(self) -> str:
+        """The published object's filename, derived rather than stored.
+
+        A PROPERTY and not a field, deliberately: ``plan_payload`` hashes
+        ``asdict`` of these records, and the committed acquisition plan quotes
+        that digest. Adding a field would move a digest that describes an object
+        list which has not changed.
+        """
+        return self.path.rsplit("/", 1)[-1]
 
 
 def _months(start: str, end_exclusive: str) -> Iterator[tuple[int, int]]:
@@ -230,19 +260,105 @@ def refusal_record(probes: list[dict[str, Any]], symbol: str, note: str) -> dict
     }
 
 
+def fetch_bytes(url: str, timeout: int = 60) -> bytes:
+    """Fetch ONE public archive object, from the one permitted host.
+
+    The host check runs on every call rather than once at the top of a loop, so a
+    URL assembled anywhere — a redirect followed by hand, a hard-coded mirror, a
+    future edit — cannot reach the network without passing it. No credential, no
+    header and no query string is added: these are public objects, and an
+    authenticated request would be a different source.
+    """
+    assert_allowed_url(url)
+    request = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        return response.read()
+
+
+def download(symbol: str, cache_dir: Path, out: Path | None, timeout: int, quiet: bool) -> int:
+    """Acquire every planned object, verify it, and write the manifest.
+
+    Returns 0 on a COMPLETE acquisition and 2 on a refusal. There is no partial
+    success: an incomplete acquisition writes no manifest, because a manifest is a
+    statement that the frozen source set was obtained.
+    """
+    planned = plan_objects(symbol)
+    plan = plan_payload(symbol)
+
+    def report(index: int, total: int, obj) -> None:
+        if quiet or index % 20 and index != total:
+            return
+        print(f"  {index}/{total}  {obj.field} {obj.period}", file=sys.stderr)
+
+    try:
+        acquired = acquire_all(
+            planned,
+            cache_dir,
+            fetch=lambda url: fetch_bytes(url, timeout),
+            progress=report,
+        )
+    except AcquisitionError as refusal:
+        print(f"P13 ACQUISITION REFUSED: {refusal}", file=sys.stderr)
+        return 2
+
+    manifest = acquisition_manifest(
+        acquired,
+        symbol=symbol,
+        plan_digest=plan["plan_digest"],
+        planned_count=plan["object_count"],
+        active_design=prereg.ACTIVE_DESIGN,
+        preregistration_hash=prereg.preregistration_hash(),
+        span_start_inclusive=plan["span_start_inclusive"],
+        span_end_exclusive=plan["span_end_exclusive"],
+        provenance=source_provenance(),
+    )
+    if not manifest["complete"]:  # pragma: no cover - acquire_all raises first
+        print("P13 ACQUISITION INCOMPLETE; no manifest written", file=sys.stderr)
+        return 2
+
+    text = json.dumps(manifest, indent=2)
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text + "\n", encoding="utf-8")
+        print(f"manifest written to {out}", file=sys.stderr)
+    else:
+        print(text)
+    print(
+        f"acquired and checksum-verified {manifest['acquired_object_count']} of "
+        f"{manifest['planned_object_count']} objects, "
+        f"{manifest['total_archive_bytes']} archive bytes",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--plan", action="store_true", help="networkless: print the plan")
     parser.add_argument(
         "--acquire", action="store_true", help="probe the archive host and fail closed"
     )
+    parser.add_argument(
+        "--download",
+        action="store_true",
+        help="fetch and checksum-verify every planned object; stops at the first failure",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="where raw archives are cached; required with --download and never committed",
+    )
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--out", type=Path, default=None, help="where to write the record")
-    parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
-    if not (args.plan or args.acquire):
-        parser.error("choose --plan (networkless) or --acquire")
+    if not (args.plan or args.acquire or args.download):
+        parser.error("choose --plan (networkless), --acquire or --download")
+    if args.download and args.cache_dir is None:
+        parser.error("--download requires --cache-dir")
 
     if args.plan:
         payload = plan_payload(args.symbol)
@@ -253,6 +369,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(text)
         return 0
+
+    if args.download:
+        return download(args.symbol, args.cache_dir, args.out, args.timeout, args.quiet)
 
     # --acquire: one probe per distinct source family, not per object. A host that
     # refuses the family refuses every month of it, and hammering it to prove that

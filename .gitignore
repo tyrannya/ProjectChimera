@@ -117,6 +117,8 @@ ray_results/
 # Without these a fresh clone has the claim and not the thing it rests on.
 !artifacts/benchmark/btc_p13_carry/*
 !artifacts/btc_p13_SHA256SUMS.txt
+!artifacts/benchmark/btc_p13_a2r2_source_acquisition/*
+!artifacts/btc_p13_a2r2_source_acquisition_SHA256SUMS.txt
 
 # Frozen P6 primary evidence and its decision record. Fifteen cells — five
 # clocks times three model families — plus the decision that applies the frozen

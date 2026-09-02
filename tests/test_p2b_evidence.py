@@ -559,6 +559,11 @@ def test_the_repository_has_the_manifests_these_tests_think_it_has():
     """
     assert MANIFESTS == (
         "btc_p13_SHA256SUMS.txt",
+        # P13-A2R2's source acquisition: 260 published Binance objects, each
+        # checksum-verified, described but not committed. A separate manifest from
+        # btc_p13_SHA256SUMS.txt because it covers a separate directory generated
+        # under a different design, and the earlier one is frozen.
+        "btc_p13_a2r2_source_acquisition_SHA256SUMS.txt",
         "btc_p2a_SHA256SUMS.txt",
         "btc_p2b_SHA256SUMS.txt",
         "btc_p2b_ablation_SHA256SUMS.txt",
