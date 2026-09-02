@@ -136,6 +136,12 @@ CHECKPOINTS: tuple[Checkpoint, ...] = (
         "artifacts/benchmark/btc_p13_decision/decision.json",
         preregistration="docs/p13_preregistration.md",
     ),
+    Checkpoint(
+        "P14",
+        "btc_p14_native_tradeflow_screen",
+        "artifacts/benchmark/btc_p14_decision/decision.json",
+        preregistration="docs/p14_preregistration.md",
+    ),
 )
 
 #: The documents a reader meets before any artifact. Each must carry the block.
@@ -157,6 +163,7 @@ FRONT_DOOR_DOCUMENTS: tuple[str, ...] = (
     "docs/p7_preregistration.md",
     "docs/p8_preregistration.md",
     "docs/p13_preregistration.md",
+    "docs/p14_preregistration.md",
 )
 
 

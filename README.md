@@ -298,6 +298,7 @@ for the full post-audit disclosures.
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 | `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
+| `P14` | `btc_p14_native_tradeflow_screen` | **preregistered** |
 
 <!-- research-state:end -->
 

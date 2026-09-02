@@ -44,6 +44,7 @@ P6_QUESTION = "btc_p6_multiclock_specialist_screen"
 P7_QUESTION = "btc_p7_cross_timeframe_consensus"
 P6EXT_QUESTION = "btc_p6ext_swing_clock_specialist_screen"
 P13_QUESTION = "btc_p13_structural_carry_feasibility"
+P14_QUESTION = "btc_p14_native_tradeflow_screen"
 
 #: P13's only committed artifact. It carries the acquisition refusal and the
 #: networkless plan behind a NOT EVALUABLE determination, not an economic
@@ -53,6 +54,11 @@ CURRENT_P13 = "benchmark/btc_p13_carry"
 #: replacement: btc_p13_carry records an environment-only refusal under the
 #: ORIGINAL design and keeps that hash, and is deliberately not rewritten.
 CURRENT_P13_A2R2_ACQUISITION = "benchmark/btc_p13_a2r2_source_acquisition"
+
+#: P14 is preregistered and not opened. Its only artifact is the source
+#: preflight that ran before the design was frozen; there is no cell and no
+#: aggregate, because nothing has been computed.
+CURRENT_P14_SOURCE_PREFLIGHT = "benchmark/btc_p14_source_preflight"
 
 #: Generations produced after the reporting-integrity metric-semantics fix,
 #: whose `sharpe`/`max_drawdown` are directly comparable across runs.
@@ -68,6 +74,7 @@ POST_CORRECTION_GENERATIONS = {
     "P6-EXT",
     "P7",
     "P13",
+    "P14",
 }
 
 #: The current generation's aggregate for the baseline research question.
@@ -444,6 +451,7 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
         P7_QUESTION: "P7",
         P6EXT_QUESTION: "P6-EXT",
         P13_QUESTION: "P13",
+        P14_QUESTION: "P14",
     }
 
     def paths_for(question: str) -> set[str]:
@@ -460,6 +468,8 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
         CURRENT_P13,
         CURRENT_P13_A2R2_ACQUISITION,
     }
+    # P14 likewise: a source preflight and nothing else, because it is not opened.
+    assert paths_for(P14_QUESTION) == {CURRENT_P14_SOURCE_PREFLIGHT}
     assert paths_for(P4_QUESTION) == {CURRENT_P4, *CURRENT_P4_SOURCE_RUNS}
     assert paths_for(P5_QUESTION) == {CURRENT_P5, *CURRENT_P5_SOURCE_RUNS}
     assert paths_for(P6_QUESTION) == {CURRENT_P6, *CURRENT_P6_SOURCE_RUNS}

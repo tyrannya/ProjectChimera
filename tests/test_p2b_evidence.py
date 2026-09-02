@@ -564,6 +564,10 @@ def test_the_repository_has_the_manifests_these_tests_think_it_has():
         # btc_p13_SHA256SUMS.txt because it covers a separate directory generated
         # under a different design, and the earlier one is frozen.
         "btc_p13_a2r2_source_acquisition_SHA256SUMS.txt",
+        # P14's source preflight: 65 published Binance objects, each
+        # checksum-verified, described but not committed. Source validity only;
+        # no predictive or economic quantity is covered by it.
+        "btc_p14_source_preflight_SHA256SUMS.txt",
         "btc_p2a_SHA256SUMS.txt",
         "btc_p2b_SHA256SUMS.txt",
         "btc_p2b_ablation_SHA256SUMS.txt",

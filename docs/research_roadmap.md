@@ -48,6 +48,7 @@ committed and its evidence is not.
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 | `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
+| `P14` | `btc_p14_native_tradeflow_screen` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -93,6 +94,13 @@ These are part of the results, not softening added afterwards.
 
 ### Not opened, and staying that way
 
+- **`P14`** — preregistered, **not opened**. The next checkpoint, selected by the
+  second decision review: whether signed trade-flow imbalance at its native
+  1-minute resolution carries causal directional information, and only then
+  whether it survives 20 bps. Its design is committed and hashed at
+  [`p14_preregistration.md`](p14_preregistration.md) and **no P14 statistic
+  exists**. Its source preflight ran *before* the design was frozen and returned
+  **PASS**.
 - **`P8`** — preregistered, **not opened**. Its eligibility precondition is
   unchanged: it needs at least two eligible trading modes, and there are none.
   Nothing here relaxes that condition.
@@ -104,9 +112,13 @@ These are part of the results, not softening added afterwards.
 
 ### Next
 
-**NEXT: SELECT AND PREREGISTER THE NEXT SCIENTIFIC CHECKPOINT.** No candidate is
-chosen here; see "NEXT: select and preregister the next scientific checkpoint"
-below.
+**NEXT: `P14` IS PREREGISTERED AND NOT OPENED.** The second decision review
+selected **native 1-minute signed trade-flow imbalance**, external-replication-
+first, over a futures-native transfer of the legacy directional models. The
+selection, the case against the alternative, and what P14 asks are under
+"`P14` — native 1-minute trade flow: preregistered, not opened" below. The next
+chronology step is an **independent audit of that preregistration**, not an
+implementation and not a first result.
 
 ---
 
@@ -818,29 +830,124 @@ A2R2 terminates — so every outcome it changes, it changes to a forfeited verdi
 Found before acquisition and before any P13 economic observation; commit `d40cfcf`
 stays in history unrewritten.
 
-### NEXT: select and preregister the next scientific checkpoint
+### `P14` — native 1-minute trade flow: preregistered, not opened
 
-**This is the current project state, and it is deliberately not resolved here.**
-The structural carry axis is spent as a source question. `P13` is not reopened,
-not redesigned against the data that arrived, and not run; its own stopping rule
-forbids re-specifying it against whatever data happens to be reachable.
+**The structural carry axis stays spent.** `P13` is not reopened, not redesigned
+against the data that arrived, and not run; its own stopping rule forbids
+re-specifying it against whatever data happens to be reachable. What follows it is
+a different question.
 
-What has to happen next, in a separate session, is the mandatory decision review
-in [`current_development_plan.md`](current_development_plan.md) — specifically its
-question 16, *which single next checkpoint has the highest information value* —
-followed by a preregistration committed and pushed before the first number it
-governs. No candidate is chosen here, no hypothesis is designed here, and nothing
-below under "Future axes" is scheduled by being listed.
+**The second decision review has been performed** — the one
+[`current_development_plan.md`](current_development_plan.md) requires once the
+structural screen closes — and it answered question 16 with **`P14`**. It received
+no economic input from `P13`, because `P13` returned no number.
 
-Two things the selection should carry with it. `P13` supplies **no economic
-input** to that choice — it returned no number — but it does supply one
-operational lesson: a frozen design can be defeated by the coverage of its own
-preregistered sources, so a future checkpoint should establish source
-sufficiency **before** freezing rather than after. And the choice should weigh
-**finite research budget and multiple-testing discipline** explicitly: the four
-outer blocks have now been read many times, `P13` consumed a checkpoint's effort
-without spending any of that evidence, and the programme has no unlimited number
-of independent questions left in this dataset.
+#### What P14 asks
+
+> Does mechanically defined signed trade-flow imbalance, measured on one closed
+> Binance spot BTCUSDT 1-minute bar, carry causal directional information about
+> the next 1-minute bar beyond a no-information floor — and, only if it does, does
+> that information survive the frozen 20 bps round-trip cost model?
+
+Preregistered in full at [`p14_preregistration.md`](p14_preregistration.md),
+committed and pushed **before any P14 statistic exists**.
+
+**The cell it reads is empty.** `P3` folded the same trade tape into *hourly*
+sufficient statistics under the 1h/6h programme, and its closure above says in as
+many words that it did not test short-horizon trade flow at its own clock. `P6`
+fitted specialists on 1m bars and gave them only the fourteen OHLCV columns. So
+the programme has measured {1h} × {trade flow} and {fast clocks} × {OHLCV14}, and
+never their intersection.
+
+**One column, no constant to search.**
+`tfi_ratio = (2·taker_buy_base − volume) / volume` on the closed bar: aggressive
+buying minus aggressive selling over total volume, bounded in `[-1, +1]`, with no
+window, no clip and no z-score. The direction is fixed in advance — positive flow
+is predicted to precede a positive return — and flipping it afterwards is forbidden.
+
+**External-replication-first, and honest about what that buys.** The mechanism,
+the interval and the sign come from Silantyev (2019), *Digital Finance* 1(1–4),
+191–218 — trade flow imbalance explaining **contemporaneous** price change in a
+BTC market. Its full text is paywalled and was **not read**; no number from it is
+a target, and the algebra above is frozen as ProjectChimera's own definition
+rather than quoted. Its claim is contemporaneous and P14's primary question is
+causal, so the anchor is used as a **control on the construction** and can never
+make P14 positive.
+
+**Three stages, and the design can tell three different failures apart.** A
+mechanism-presence control that can only forfeit; a model-free causal gate against
+each fold's best constant-direction rule; and an economic screen reachable *only*
+through that gate, under `P6`'s viability conditions imported verbatim, with a
+30-trade-per-fold activity floor fixed in advance because `P7` realised 13 trades
+across four folds. "No information", "information that costs eat" and "information
+that survives costs" are three findings, not one.
+
+#### Why not the futures-native transfer
+
+The other serious candidate was to move the legacy directional machinery from
+spot BTCUSDT to the USD-M perpetual — the *instrument* axis. It was not selected,
+for reasons recorded in full in the development plan and summarised here:
+
+- **its source contract repeats `P13` exactly.** Realistic liquidation accounting
+  on a perpetual needs Binance's **mark** price, and a cheap preflight found the
+  192 missing mark *hours* `P13` measured at 1h reproduce as **11,520 missing
+  minutes** at 1m, in whole-day blocks, the longest run four days — while the
+  perpetual's own `klines` are complete on the same months. Freezing a design
+  already known to be undefendable on its own sources is the mistake `P13` taught;
+- **the instrument gap is an execution gap and is already closed operationally**
+  by `Futures Execution v1`. Establish an edge, then execute it on the instrument
+  that can hold it — not the reverse;
+- **the legacy inventory does not support the transfer it appears to promise.**
+  `MTST` has been fitted exactly once in this repository — `v4`, `1h`,
+  `seq_len 64`. `P2a` did not retrain it and `P6` excluded it, so "MTST at every
+  P6 clock" would be a new architecture experiment, not a replication.
+
+The instrument axis is **not deleted**. It stays a candidate for a later
+checkpoint, after an edge exists and with a mark-price source contract whose
+sufficiency is established first.
+
+#### The source preflight, run before the design was frozen
+
+That ordering is the one operational lesson `P13` supplied, and it is now the
+programme's practice. Evidence:
+[`../artifacts/benchmark/btc_p14_source_preflight/`](../artifacts/benchmark/btc_p14_source_preflight/).
+
+**Verdict: PASS.** 65 monthly objects, 2020-01 through 2025-05, every one fetched
+with its published `.CHECKSUM` companion and independently re-hashed —
+**65 of 65 verified, 0 unverified, 0 mismatches**, 142,054,937 archive bytes. 12
+columns throughout with no schema change; 60 millisecond months and 5 microsecond
+months, the same split `multiclock_v1` §2.1 recorded independently; zero
+duplicate, malformed, non-finite or off-grid rows, and **zero rows where
+`taker_buy_base > volume`**.
+
+**The load-bearing line.** The archives hold **2,827,755** rows before the
+boundary and the committed 1m price grid holds **exactly 2,827,755**. Every bar of
+the price grid is one row of these archives and the taker split is present on
+every one, so the information family **has no gap surface of its own** — it cannot
+be missing where the price grid is present. The 2,325 missing minutes are
+Binance's own outages: **15 intervals, longest 5h54m on 2020-02-19, last on
+2023-03-24** — the same 15 discontinuities §5 of `multiclock_v1` enumerates,
+reproduced from an independent acquisition.
+
+**The sign convention is proved, not assumed.** On three days fixed before the
+check ran — one per timestamp era — the daily `aggTrades` archive and the daily 1m
+kline archive were both fetched, both checksum-verified and compared minute by
+minute. Summing `aggTrades` quantity where `is_buyer_maker` is **false**
+reproduces `taker_buy_base_asset_volume` on **4,320 of 4,320** minutes to float64
+summation noise. That is an identity, and it is why the signal is read from the
+kline archive rather than by re-streaming 3.4 billion trades.
+
+#### The ceiling, which is lower than any checkpoint before it
+
+These are the same four burned blocks `v4`, `P2a`, `P2b`, `P2c`, `P3`, `P4`, `P5`,
+`P6`, `P6-EXT` and `P7` have read. **No P14 result is confirmatory.** A positive
+P14 is a **candidate** and would still have to survive a frozen architecture,
+sustained genuinely-future paper validation, a mature-system freeze and a separate
+decision about the hindsight-era-capped Styx before any separately authorised very
+small live allocation could be discussed. A negative needs no discounting.
+
+Nothing below under "Future axes" is scheduled by being listed, and `P14` does not
+schedule any of it either.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 

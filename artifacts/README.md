@@ -220,6 +220,7 @@ repository can declare a checkpoint unrun while its aggregate is committed here.
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 | `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
+| `P14` | `btc_p14_native_tradeflow_screen` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -349,6 +350,7 @@ one that shares its `research question`.
 | `benchmark/btc_p6ext_4h_lightgbm` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `benchmark/btc_p13_carry` | P13 | `btc_p13_structural_carry_feasibility` | CURRENT | `tools.acquire_p13_sources` | itself (the acquisition record and its plan) | **yes** | current |
 | `benchmark/btc_p13_a2r2_source_acquisition` | P13 | `btc_p13_structural_carry_feasibility` | CURRENT | `tools.acquire_p13_sources --download` and `tools.close_p13_sources` | itself (the 260-object acquisition manifest and the source closure over it) | **yes** | source metadata only; no economic quantity is computed or implied |
+| `benchmark/btc_p14_source_preflight` | P14 | `btc_p14_native_tradeflow_screen` | CURRENT | a source-validity preflight run before the P14 design was frozen | itself (the 65-object preflight manifest and its aggTrades cross-check) | **yes** | source metadata only; no predictive or economic quantity is computed or implied |
 | `benchmark/btc_p6ext_4h_xgboost` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `benchmark/btc_p6ext_1d_logistic_regression` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |
 | `benchmark/btc_p6ext_1d_lightgbm` | P6-EXT | `btc_p6ext_swing_clock_specialist_screen` | CURRENT | `nn.p6` | itself (one cell) | n/a | current |

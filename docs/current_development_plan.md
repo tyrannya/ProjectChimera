@@ -24,6 +24,7 @@ The audit's conclusions have been consolidated into this document; [`current_dev
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
 | `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
 | `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
+| `P14` | `btc_p14_native_tradeflow_screen` | **preregistered** |
 
 <!-- research-state:end -->
 
@@ -42,7 +43,8 @@ This section is authoritative for a developer arriving without prior conversatio
 - The futures path remains dry-run only. The committed paper artifact is an engineering smoke, not sustained paper validation.
 - `P4-HOLD` is retired and unread; Styx is sealed; live trading is disabled.
 - **The independent post-merge audit has been performed** and returned *COHERENT WITH REQUIRED REPAIRS*. It reopened no verdict. Its required historical disclosures are recorded under "Post-audit historical disclosures" below and are part of the record from here on.
-- **The mandatory decision review has been performed.** The selected next research axis is **structural / non-directional alpha**: a preregistered BTC spot/perpetual delta-hedged funding/basis carry feasibility screen.
+- **The mandatory decision review has been performed twice.** Its first pass selected **structural / non-directional alpha** — the preregistered BTC spot/perpetual delta-hedged funding/basis carry screen, `P13`. Its **second pass, after P13 closed on source validity**, selected **native short-horizon trade flow**, and that is `P14`. See "Second decision review — performed, and it selected P14" below.
+- **P14 is preregistered and NOT OPENED.** No signal has been computed, no fold scored and no P14 number exists. Its source preflight ran **before** the design was frozen and returned **PASS**.
 - **P13's economic screen was NEVER RUN, and P13's sources are now formally CLOSED.** Two separate facts. The economic state is `P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT YET RUN`. The source-validity disposition is **`P13 SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE`**: all 260 preregistered archive objects were acquired and verified, and they are internally incomplete inside the windows the frozen **P13-A2R2** design must audit. See "P13 — SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE" below. This is a **source-validity** closure. It is **not** a negative economic result, **not** evidence about whether BTC carry pays, and **not** a failed gate.
 
 **Do now**
@@ -50,7 +52,8 @@ This section is authoritative for a developer arriving without prior conversatio
 1. Treat the directional chain as having reached a valid scientific boundary: P8 was not opened because its preregistered eligibility precondition failed.
 2. Carry the post-audit historical disclosures below into any description of P6, P7 or Styx. They are not optional colour.
 3. **The structural carry axis is spent as a source question and is closed.** Egress was obtained, the acquisition completed 260/260, the runtime was adapted to A2R2, and the frozen design turned out not to be evaluable on its own preregistered sources. Do not re-open it, do not re-preregister it, and do not re-specify it against the data that arrived — its own stopping rule forbids that.
-4. **Select and preregister the next scientific checkpoint.** That selection is a separate, fresh piece of work and is deliberately not made here; see "Current one-line roadmap" below and [`research_roadmap.md`](research_roadmap.md). Because P13 closed on source validity rather than on economics, the mandatory decision review below is the right instrument, and its question 16 — which single next checkpoint has the highest information value — is the one that has to be answered.
+4. **The next scientific checkpoint has been selected and preregistered: it is `P14`.** The second decision review answered question 16 and chose **native 1-minute signed trade-flow imbalance**, external-replication-first, over a futures-native transfer of the legacy directional models. The reasoning, and the case against the alternative, are under "Second decision review — performed, and it selected P14" below. The contract is frozen and hashed at [`p14_preregistration.md`](p14_preregistration.md); its source preflight is at [`artifacts/benchmark/btc_p14_source_preflight/`](../artifacts/benchmark/btc_p14_source_preflight/).
+5. **Do not implement or run P14 in the task that preregistered it.** The next chronology step is an independent audit of this preregistration, and only after that an implementation of the evaluator. No P14 statistic may be computed before then.
 
 **Do not do now**
 
@@ -62,8 +65,13 @@ This section is authoritative for a developer arriving without prior conversatio
 - do not enable authenticated/live order routing or increase leverage;
 - do not run the P13 economic screen against these sources, and do not read the P13 closure as carry evidence in either direction;
 - do not resolve P13's open execution-gap question now that the coverage is visible, and do not create an `A2R3`; do not substitute a venue, mirror or REST endpoint, interpolate a missing row, or relax the frozen source set, boundary, costs, leverage or gates to make the screen runnable.
+- do not compute any P14 statistic — not the mechanism-presence control, not the causal gate, not a trade — before the preregistration has been independently audited;
+- do not implement a P14 evaluator, a `tradeflow` module or a P14 artifact directory in the task that preregistered it;
+- do not open the instrument axis inside P14: modelling or trading the USD-M perpetual is a separate checkpoint and mixing it in would change the instrument and the information set at once.
 
-**The axis chosen by the review: structural / non-directional alpha**
+**The axis chosen by the FIRST review: structural / non-directional alpha**
+
+This is the historical record of the first pass, which selected `P13`. The second pass, which selected `P14`, is under "Second decision review — performed, and it selected P14" below.
 
 The review selected a preregistered **BTC spot/perpetual delta-hedged funding/basis carry feasibility screen** as the single next checkpoint. The reasoning:
 
@@ -71,7 +79,7 @@ The review selected a preregistered **BTC spot/perpetual delta-hedged funding/ba
 - funding/basis carry asks a question whose payoff mechanism is not "predict the next BTC direction", so it is genuinely orthogonal to everything P2a–P8 measured;
 - **P4 does not answer it.** P4 used funding, open interest and basis as *predictive information* for directional trading. A hedged carry position uses funding and basis as the *payoff mechanism itself*. Those are different hypotheses and a negative P4 does not bear on this one.
 
-The remaining candidates stay in the roadmap and are **not** deleted — they are simply not next:
+The remaining candidates stayed in the roadmap and were **not** deleted. The second review then selected one of them — native short-horizon trade flow — and the rest are still not next:
 
 - external replication + cost-aware abstention / prediction-to-trade gating;
 - target/horizon redesign;
@@ -83,6 +91,98 @@ The remaining candidates stay in the roadmap and are **not** deleted — they ar
 One research question at a time. Do not mix structural carry with directional feature or model rescue in the same checkpoint.
 
 Only after a coherent alpha architecture exists should the project proceed through sustained paper validation → mature-system freeze → Styx → very small live allocation.
+
+## Second decision review — performed, and it selected P14
+
+The mandatory review was run a second time, as "Mandatory post-P6/P7/P8-boundary
+decision review" below requires once the structural screen closed. It received
+**no economic input from P13**, which returned no number, and it therefore
+answered question 16 on the merits of the remaining candidates.
+
+**Two candidates were taken seriously and exactly one was selected.**
+
+| | **A — futures-native legacy-model transfer** | **B — native 1m trade flow (selected)** |
+| --- | --- | --- |
+| what changes | the instrument: spot BTCUSDT → USD-M BTCUSDT perpetual, modelling and trading the perp | the information: signed trade flow at its native 1-minute resolution |
+| orthogonality | low — the perp and spot are the same asset, arbitraged continuously; P4's own predeclared `drv_basis` clip of ±0.02 is this repository's prior on how far they separate | high — {1m} × {trade flow} is an empty cell: `P3` read {1h} × {trade flow}, `P6` read {1m} × {OHLCV14} |
+| axis isolation | poor — one change bundles a near-identical price series, a different fee schedule, funding cashflows and margin/liquidation semantics, and a differing result is not attributable to any of them | good — same venue, same symbol, same clock, same four folds, same cost model; only the information changes |
+| search surface | up to 4 model families × 7 clocks on the four burned blocks | one signal, one clock, one horizon, one sign, one gate |
+| source risk | **measured, and it is P13's failure mode again** | **structurally eliminated** |
+| information value of a negative | reproduces `P6` on a near-identical price series | closes the gap `P3`'s own closure left explicitly open |
+| information value of a positive | uninterpretable: a knife-edge flip driven by basis-sized price differences on blocks read nine times | the first external replication under this repository's machinery — decision-review question 11 |
+| prospective-paper value | slow — 1h/4h/1d clocks accumulate future evidence over months | fast — a 1-minute clock accumulates genuinely-future observations in weeks, which is what the audit says is the only real confirmation |
+
+### Why Candidate A was not selected
+
+Three reasons, in order of weight.
+
+1. **Its source contract repeats P13 exactly.** A futures-native design at ≤1x
+   still has a reachable liquidation boundary — a short at exactly 1x liquidates
+   around a +99% move, and this document does not claim otherwise — so realistic
+   accounting needs Binance's **mark** price, because Binance liquidates on mark
+   and not on the traded price. A cheap preflight in the selecting session found
+   that the 192 missing mark **hours** P13 measured at the 1h granularity
+   reproduce as **11,520 missing minutes** at 1m, in whole-day blocks, the
+   longest run **four days** — while the perpetual's own `klines` are complete on
+   the same months. Two of those holes fall inside fold 0's inner block. So the
+   design would be frozen already knowing its own sources cannot audit every hour
+   it holds through, which is the precise mistake P13 taught. The alternatives —
+   substituting trade price for mark, or bounding the gap with a manufactured
+   surrogate — are the treatments `P13`'s `forbidden_treatments` refuses, and
+   "trade price is conservative relative to mark" is not provable in general.
+2. **The instrument gap is an execution gap, and it is already closed
+   operationally.** Every economic number from `v4` onward prices a synthetic
+   long/short spot instrument whose SHORT leg spot cannot express. That is real,
+   and it is exactly why `Futures Execution v1` was built — dry-run, isolated
+   margin, 1x, first-class LONG and SHORT. Spending a research checkpoint to
+   re-answer `P6` on the perp buys accounting realism for a signal with no
+   established edge to execute. The right order is to establish an edge and then
+   execute it on the instrument that can hold it.
+3. **The legacy inventory does not support the transfer it appears to promise.**
+   `MTST` has been fitted exactly once in this repository's history — `v4`, the
+   `1h` clock, `seq_len 64`, six-hour horizon. `P2a` did **not** retrain it
+   (`mtst_retrained: false`); it scored MTST's own flattened windows with simple
+   models. `P6` excluded it outright. So "replicate MTST at every P6 clock" would
+   not be a transfer of a legacy contract — it would be a new architecture
+   experiment at six clocks MTST has never seen, on blocks already read nine
+   times.
+
+**Candidate A is not deleted.** The instrument axis is a real and open question,
+and it stays in the roadmap as a candidate for a later checkpoint — after an edge
+exists, and with a mark-price source contract whose sufficiency is established
+first.
+
+### What P14 is, in one paragraph
+
+Whether the *sign* of aggressive trade flow on one closed Binance spot BTCUSDT
+1-minute bar predicts the next 1-minute bar, and only if it does, whether that
+survives the same 20 bps round trip every checkpoint since `v4` has paid. The
+signal is **one column with no window and no tunable constant**:
+`tfi_ratio = (2·taker_buy_base − volume) / volume`. The mechanism, the interval
+and the sign are fixed by an external anchor — Silantyev (2019), *Digital
+Finance* — used as a **control on the construction**, never as evidence about the
+causal question, because the anchor's claim is contemporaneous and P14's is not.
+Three stages: a mechanism-presence control that can only forfeit, a model-free
+causal gate against each fold's best constant-direction rule, and an economic
+screen reachable only through that gate, under `P6`'s viability conditions
+imported verbatim.
+
+### The two lessons this checkpoint applies rather than records
+
+- **P13's lesson: establish source sufficiency before freezing.** The preflight
+  ran first, and it returned **PASS** — 65 of 65 objects checksum-verified, 12
+  columns throughout, zero malformed/duplicate/off-grid rows, zero rows where
+  `taker_buy_base > volume`, and **2,827,755 rows before the boundary against a
+  committed 1m price grid of exactly 2,827,755**. The information family lives on
+  the same rows as the price grid, so it *cannot* be missing where the grid is
+  present. The sign convention was proved against Binance's own `aggTrades` tape
+  on 4,320 of 4,320 minutes across both timestamp eras.
+- **P7's lesson: fix a minimum effective trade count in a new preregistration,
+  before new evidence.** P14 fixes 30 realised outer trades per fold; a fold below
+  it makes the economic stage `INSUFFICIENT_ACTIVITY`, which is not a pass.
+
+**The evidence ceiling is unchanged and is worse, not better, than P13's.** These
+are the same four burned blocks. A positive P14 is a candidate and nothing more.
 
 ## P13 — SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE
 
@@ -633,10 +733,14 @@ Initial live operation remains conservative: isolated futures semantics, low lev
 27. **P7's better-than-mean-constituent behaviour is descriptive only.** The preregistered fold-wise-best verdict remains negative.
 28. **"Frozen evidence is never rewritten" is era-dependent.** Distinguish immutable primary economic evidence, regenerable derived reports, disclosed historical exceptions, and post-closure repairs that changed no economic outcome.
 29. **"No live route" is two distinct claims, and they are not interchangeable.** The `chimera.futures` chain has **no authenticated live order path at all**. Separately, the legacy Freqtrade spot pathway *is* live-capable in principle and is deliberately double-gated (`ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK` **and** `--mode live`), with every committed config pinned to `dry_run: true`. Never collapse these into a repository-wide claim that no live-capable code exists. Nothing in current evidence authorises enabling either path.
-30. **The next research mechanism is structural carry**, chosen by the completed decision review. Do not mix it with directional feature or model rescue in the same checkpoint.
+30. **The next research mechanism is native 1m signed trade flow (`P14`)**, chosen by the second decision review after the structural carry axis closed on source validity. One research question at a time: do not mix it with a directional feature or model rescue, and do not open the instrument axis inside it.
 31. **P13 is closed on SOURCE VALIDITY and was never economically evaluated.** Its economic state is `NOT YET RUN`; its source-validity disposition is `P13 SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE`. Neither is carry evidence in either direction, and P13 is never described as an economically positive or negative checkpoint. The load-bearing reason is narrow and already frozen: 192 held-window hours carry neither an authorised mark high nor an authorised mark close, and A2R2 authorises no substitute. The separate question of whether every post-open **execution**-source absence receives the same terminal treatment (31 further held hours) stays **unresolved and non-load-bearing**, and may not be settled now that the coverage is known.
 32. **A P13 rule the frozen text left genuinely open is resolved by an explicit amendment, before any economic number, in the direction that cannot flatter a verdict.** Amendment A1 is the pattern: it moved the preregistration hash rather than pretending otherwise, kept the superseded hash visible, left the evidence generated under the old hash alone, and chose the treatment that forfeits `VIABLE` outright. A rule resolved after a number exists, or in the direction that helps, is not an amendment but selection.
+33. **`P14` is preregistered and NOT OPENED, and its source preflight ran before its design was frozen.** No P14 statistic exists. The preflight is a source-validity record and carries no predictive or economic quantity. The ordering — sufficiency first, freeze second — is now the programme's practice and is the one operational lesson `P13` supplied.
+34. **`P14`'s external anchor is a control on the construction, never evidence about its answer.** Silantyev (2019) claims a *contemporaneous* relation; `P14`'s primary question is *causal*. The mechanism-presence control can only forfeit the checkpoint, never make it positive, and its full text was not read, so no number from it is a target.
+35. **`P14`'s sign is fixed in advance and may not be flipped.** Positive trade flow is predicted to precede a positive return. Discovering afterwards that the opposite sign would have worked is not a result.
+36. **The instrument axis is deferred, not deleted.** Modelling and trading the USD-M perpetual instead of spot remains a real open question. It was weighed against `P14` and not selected: its mark-price source contract reproduces `P13`'s failure mode at the 1m granularity, and the execution gap it addresses is already closed operationally by Futures Execution v1. It returns as a candidate once an edge exists and once a mark-price source contract's sufficiency is established first.
 
 ## Current one-line roadmap
 
-**Merged P5 baseline → P6/P6-EXT specialists answered negative → P7 consensus-v1 answered negative → P8 preregistered but NOT OPENED → independent audit returned COHERENT WITH REQUIRED REPAIRS → disclosures + positive-control tests + pandas-2.x constraint merged → decision review selected structural carry → preregister ONE exploratory BTC spot/perpetual delta-hedged funding/basis carry feasibility screen → attempt it and close it NOT EVALUABLE on egress, with no economics computed → independent external audit returned COHERENT WITH REQUIRED REPAIRS → repairs + pre-economic amendments A1/A2/A2R1/A2R2 → obtain egress, build the runtime and acquire all 260 sources (verified) → close P13 on SOURCE VALIDITY, `FUTURE GOVERNED SCREEN NOT EVALUABLE`, with the economic screen still never run and no economics computed → **NEXT: select and preregister the next scientific checkpoint, in a fresh session** → independent audit → if warranted, build a structural dry-run path and freeze a prospective paper protocol before future data arrives → sustained future paper → mature-system freeze → carefully decide whether the hindsight-era-capped Styx adds value → only then consider a separately authorised very small live allocation.**
+**Merged P5 baseline → P6/P6-EXT specialists answered negative → P7 consensus-v1 answered negative → P8 preregistered but NOT OPENED → independent audit returned COHERENT WITH REQUIRED REPAIRS → disclosures + positive-control tests + pandas-2.x constraint merged → decision review selected structural carry → preregister ONE exploratory BTC spot/perpetual delta-hedged funding/basis carry feasibility screen → attempt it and close it NOT EVALUABLE on egress, with no economics computed → independent external audit returned COHERENT WITH REQUIRED REPAIRS → repairs + pre-economic amendments A1/A2/A2R1/A2R2 → obtain egress, build the runtime and acquire all 260 sources (verified) → close P13 on SOURCE VALIDITY, `FUTURE GOVERNED SCREEN NOT EVALUABLE`, with the economic screen still never run and no economics computed → second decision review selects native 1m signed trade flow over the futures-native transfer → run P14's source preflight FIRST and pass it → preregister `P14`, committed and pushed before any statistic exists → **NEXT: independent audit of the P14 preregistration, in a fresh session** → then implement the evaluator → then the first governed P14 statistic → if warranted, build a structural dry-run path and freeze a prospective paper protocol before future data arrives → sustained future paper → mature-system freeze → carefully decide whether the hindsight-era-capped Styx adds value → only then consider a separately authorised very small live allocation.**
