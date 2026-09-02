@@ -53,6 +53,63 @@ committed and its evidence is not.
 
 ---
 
+## Where every checkpoint stands
+
+The table above is generated from the artifact tree and says only whether
+evidence exists. This is the human companion to it: what each closed checkpoint
+concluded, and — just as important — what it did **not** conclude. Full entries
+are under "Answered" and "What runs next" below.
+
+### Closed
+
+| checkpoint | what it concluded |
+| --- | --- |
+| `v4` / P1 | baseline OHLCV14 MTST — **no deployable economic alpha** |
+| `P2a` | model-family benchmark — the model family is not what binds |
+| `P2b` | causal market structure (`smc_v1`) — **no robust incremental value** |
+| `P2c` | classical chart structure — **no robust incremental value** |
+| `P3` | hourly microstructure / trade flow — **no robust incremental value under the tested information set** |
+| `P4` | derivatives directional features — **screened out at Stage 1** |
+| `P5` | causal higher-timeframe append — **negative** |
+| `P6` / `P6-EXT` | frozen XGBoost native-clock specialists — **failed the viability gate** on every clock |
+| `P7` | cross-timeframe consensus-v1 — **negative** against its preregistered oracle benchmark |
+| `P13` | structural spot/perp carry — **CLOSED AS SOURCE-NOT-EVALUABLE under frozen A2R2.** The economic screen was **never run** |
+
+### Scope limits that travel with those answers
+
+These are part of the results, not softening added afterwards.
+
+- **`P4` does not establish that funding arbitrage or carry is useless.** It read
+  funding, open interest and basis as *predictive information* for a directional
+  model. Carry uses them as the *payoff mechanism itself*. Different hypotheses.
+- **`P3` does not establish that native L1/L2 or trade-flow data is useless.** It
+  tested one hourly aggregation of `aggTrades` at the 1h clock, which is not a
+  test of short-horizon microstructure at its own clock.
+- **`P13` is not negative carry evidence, and not positive carry evidence.** It
+  produced no economic number of any kind. It is a statement about whether the
+  preregistered sources can support the frozen design, and they cannot.
+- **`P6`'s negative is deciding-family-specific** and **`P7`'s is rule-specific**;
+  both are recorded in full under "Answered".
+
+### Not opened, and staying that way
+
+- **`P8`** — preregistered, **not opened**. Its eligibility precondition is
+  unchanged: it needs at least two eligible trading modes, and there are none.
+  Nothing here relaxes that condition.
+- **`P4-HOLD`** — retired and **unread**. It is not a spare validation set.
+- **Styx** — **sealed**, with the hindsight-era ceiling recorded under "Standing
+  constraints".
+- **Aegis remains the sole risk authority.**
+- **No real money.** No live allocation, and no tiny-live allocation either.
+
+### Next
+
+**NEXT: SELECT AND PREREGISTER THE NEXT SCIENTIFIC CHECKPOINT.** No candidate is
+chosen here; see "NEXT: select and preregister the next scientific checkpoint"
+below.
+
+---
+
 ## Answered
 
 ### v4 — is an MTST Transformer on OHLCV14 economically viable?
@@ -593,15 +650,21 @@ family on the same hourly bars. Five negative information-set answers in a row
 is the signal to change axis, and the interval between checkpoints was spent on
 the machinery a future strategy will need whatever the research says.
 
-**The clock axis has since been spent too, and the axis after it has been
-chosen.** The two checkpoints this section opened — `P6` and `P7` — have both
+**The clock axis has since been spent too, the axis after it was chosen, and
+that axis has now closed as well — on source validity, without producing a
+number.** The two checkpoints this section opened — `P6` and `P7` — have both
 run and both answered negative, and `P6-EXT` closed the two slow clocks with
 them; they are recorded above under "Answered". `P8` was preregistered and left
 unopened because no mode is eligible. The independent post-merge audit then
 returned *COHERENT WITH REQUIRED REPAIRS*, and the mandatory decision review in
 [`current_development_plan.md`](current_development_plan.md) selected the next
 axis: **structural, non-directional alpha**, as a preregistered BTC
-spot/perpetual delta-hedged funding/basis carry feasibility screen.
+spot/perpetual delta-hedged funding/basis carry feasibility screen. That screen
+is `P13`. Its sources were acquired in full and then found insufficient to audit
+the hours the frozen design must hold through, so it is closed
+**`P13 SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE`** and its economic
+screen was **never run**. The section below records that, and the section after
+it records what the programme's next state actually is.
 
 That is a change of *mechanism*, not of feature family. Everything from `P2a`
 to `P8` asked some version of "what predicts the next move"; this asks whether a
@@ -611,68 +674,126 @@ open interest and basis as *information* for a directional model, whereas a
 hedged carry position uses funding and basis as the *payoff mechanism itself*.
 A negative `P4` says nothing about this question.
 
-Two limits are part of that choice rather than caveats bolted onto it. The
+Two limits were part of that choice rather than caveats bolted onto it. The
 historical funding record was already public knowledge when the screen was
-designed, so any result is **exploratory and adaptive**, never confirmatory. And
-the reserved axes below — `P9` through `P12` — are not cancelled by this choice;
-they are not next.
+designed, so any result would have been **exploratory and adaptive**, never
+confirmatory — and in the event there was no result to label. And the reserved
+axes below — `P9` through `P12` — were not cancelled by that choice. They are
+still not scheduled: which checkpoint comes next is an open decision, not an
+inheritance.
 
-### P13 — structural funding/basis carry: preregistered, **not evaluable**
+### P13 — structural funding/basis carry: **SOURCE CLOSURE, not evaluable**
 
 The screen is designed, frozen, hashed and pushed at
 [`p13_preregistration.md`](p13_preregistration.md) — before any attempt to obtain
 data, which is the strongest pre-commitment this programme has managed, since
 there was no result available to fit the design to.
 
-It has **not run**, and the reason is not scientific. All four preregistered
-Binance source families were probed and all four refused: `data.binance.vision`
-answers `403` to `CONNECT` under the execution environment's organisation egress
-policy. The repository holds no substitute — across the entire git object
-database, all branches and all history, no funding rate, perpetual price, mark
-price or premium series has ever been committed.
+**Two states, and they are not the same state.**
 
-So `P13` stays **`preregistered`**, not `answered`: a committed design and no
-evidence, which is exactly what that state means. **NOT EVALUABLE is not a
-negative result** — no return, funding total, basis figure or gate decision was
-computed, and the viability gate was never evaluated. Nothing was substituted to
-manufacture one: not another venue, not a REST endpoint, not a reconstructed
-series, and not a relaxation of the frozen source set.
+| | |
+| --- | --- |
+| economic screen | `P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT YET RUN` — **never run** |
+| source-validity disposition | **`P13 SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE`** |
+
+`P13` therefore stays **`preregistered`** in the generated table above rather than
+`answered`: that table reports whether an *economic* aggregate exists, and none
+does. What closed is the separate question of whether the preregistered sources
+can support a governed run of the frozen design. They cannot.
+
+**The sources were obtained.** Egress was reached and the acquisition ran to
+completion: **all 260 planned Binance public archive objects were fetched and
+verified** against their published `.CHECKSUM` companions — 260 of 260 verified,
+0 unverified, 0 mismatches — spanning **65 months, 2020-01 through 2025-05**,
+across `spot_price`, `perpetual_price`, `mark_price` and `funding_settlement`.
+The exclusive research boundary is unchanged at `2025-05-19T08:00:00+00:00`. The
+raw archives are **not committed**; the evidence names them by published path and
+digest, at
+[`../artifacts/benchmark/btc_p13_a2r2_source_acquisition/`](../artifacts/benchmark/btc_p13_a2r2_source_acquisition/).
+
+**And they are internally incomplete.** Against a reference grid of **47,168**
+hours: `perpetual_price` is missing **0** hours, `spot_price` **31**, and
+`mark_price` **192** — whole days absent from months whose object *was*
+published. Under A2R2 every block opens at its calendar boundary consulting no
+mark row, and inside the resulting holding windows **223 required rows are
+missing**: the 192 mark rows and the 31 execution rows, all of them held. Blocks
+**2024** and **2025-partial** are completely covered; 2020–2023 are not.
+
+**The load-bearing reason, narrowly.** §8d.4 of the frozen design requires every
+held bar to carry an authorised liquidation mark — **mark high, else mark
+close** — and §8d.1 fixes the authorised surrogate set as the **empty tuple**. So
+when a held bar requires a liquidation mark and neither authorised **mark HIGH**
+nor **mark CLOSE** exists, the design has no authorised substitute and the screen
+is not evaluable. The **192 held-window mark gaps are independently sufficient**
+to prevent a future governed screen, and they trigger the rule literally rather
+than by extension. Nothing is rescued: the periods are not dropped, the holes not
+jumped, the entry not delayed past them, no block excluded, no mark manufactured.
+
+**One question is left open on purpose.** The 31 held **execution**-source gaps
+are the case A2R2 does not describe literally — the runner applies the terminal
+treatment to a held bar missing *any* required source, while A2R2's text is about
+a bar carrying neither a mark high nor a mark close. Whether every post-open
+execution-source absence gets that same terminal treatment is a preregistration
+question, and it **stays unresolved**: the coverage is now visible, so deciding it
+here would be choosing a rule against a known outcome. **No `A2R3` is created.**
+It is **non-load-bearing** for the disposition — the mark gaps already settle
+that — and it must be settled explicitly, by an independent reviewer, before any
+future governed run.
+
+**What this is not.** It is not an economic result. No funding total, basis
+figure, net PnL, block return, Sharpe, drawdown, block performance, `G1`–`G6`
+evaluation or `S1`–`S4` / `D1`–`D3` economic output was computed, and none may be
+inferred. **It is not evidence that BTC carry is unprofitable, and not evidence
+that it is profitable** — `P13` is neither an economically positive nor an
+economically negative checkpoint and must never be cited as either. It is not a
+failed gate, not a backtest result and not a governed decision. Nothing was
+substituted to manufacture one: not another venue, not a REST endpoint, not a
+mirror, not a reconstructed series, not an interpolated row, and not a relaxation
+of the frozen source set.
+
+**The earlier NOT EVALUABLE is a different finding and stays distinct.**
+[`../artifacts/benchmark/btc_p13_carry/`](../artifacts/benchmark/btc_p13_carry/)
+was generated at `2b1b400e` under the **original** design, when
+`data.binance.vision` answered `403` to `CONNECT` under that execution
+environment's egress policy and nothing could be fetched at all. It keeps the
+original hash, is not regenerated, and is not superseded by the closure above.
 
 **Which design a future run is governed by**, stated here because the wrong
 answer would invalidate the run before it started. The active design is
 **P13-A2R2**, `sha256:cac2f318e525fb1f0e5892fdd16fcd5febb72853d1a1cfa9fd6c5d3868b7a092`,
-and it is **NOT YET RUN**. Four superseded hashes are **historical provenance
-only** and must not govern new economic evidence: **P13-A2R1**
-`sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0`, the first
-committed **P13-A2**
+and its economic screen is **NOT YET RUN**. Four superseded hashes are
+**historical provenance only** and must not govern new economic evidence:
+**P13-A2R1** `sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0`,
+the first committed **P13-A2**
 `sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c`, **P13-A1**
 `sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099`, and the
 original `sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767`,
-which is the design the committed acquisition evidence was generated under.
+which is the design the `btc_p13_carry` evidence was generated under.
 All are recorded as literals in `SUPERSEDED_HASHES` inside the hashed payload,
 so a run quoting one is quoting a design the module itself marks retired.
 
-**Design-complete is not implementation-complete.** The offline runtime now
-exists — the loader and causal alignment at `667e3599`, and the block runner,
-gate, stresses and evidence at `1d5a31eb` — but it was written against A2R1 and
-must be adapted to A2R2 before it may govern anything. What is still missing is
-the acquisition itself: no P13 source object has been fetched, so there is no
-end-to-end path from an archive object to a gate decision. Freezing the design
-early bought a question that cannot be reshaped by a result, not a screen that is
-ready to run. It did not buy freedom from every
+**Design-complete was not implementation-complete, and implementation was not
+enough either.** The offline runtime exists — the loader and causal alignment at
+`667e3599`, the block runner, gate, stresses and evidence at `1d5a31eb`, and the
+adaptation from A2R1 to A2R2 at `d77e7f8` — and the acquisition and source
+closure at `77cd30e`. Freezing the design early bought a question that cannot be
+reshaped by a result; building the runtime and fetching every source then
+established that this particular question cannot be answered from these
+particular archives. Both are outcomes worth having and neither is an economic
+one. It did not buy freedom from every
 further *design* decision either: **amendment A1** (§8a of
 [`p13_preregistration.md`](p13_preregistration.md)) resolved a micro-rule the
 frozen text named but left open — what a liquidation triggered on a block's final
-bar does to the gate — after the NOT EVALUABLE closure and before any economic
-observation, in the only direction that cannot flatter a verdict. **Amendment A2**
-(§8d) then settled a second one: how a mark-less period is treated before a block
-opens versus after it has opened. Before the open, the causal opening search
-advances inside the same block; after the open, a held bar with no authorised
-liquidation mark terminates the screen **NOT EVALUABLE**, screen-wide, rather than
-dropping the affected block or jumping the hole. It is a **source-validity**
-amendment — triggered by the presence of an archive row, never by anything a run
-computes — frozen before acquisition because it can change which historical
-observations enter a block.
+bar does to the gate — after the environment-era NOT EVALUABLE closure and before
+any economic observation, in the only direction that cannot flatter a verdict.
+**Amendment A2** (§8d) then settled a second one: how a mark-less period is
+treated before a block opens versus after it has opened. After the open, a held
+bar with no authorised liquidation mark terminates the screen **NOT EVALUABLE**,
+screen-wide, rather than dropping the affected block or jumping the hole — which
+is the rule that now carries this closure. It is a **source-validity** amendment
+— triggered by the presence of an archive row, never by anything a run computes —
+frozen before acquisition because it can change which historical observations
+enter a block.
 Revision **A2R1** then withdrew a false claim inside that hashed payload: the
 first committed A2 said a delayed pre-open “can only reduce accrued
 funding”, which is wrong, since funding takes either sign against a short
@@ -696,6 +817,30 @@ skipped an execution-valid instant for want of a mark, and in exactly those case
 A2R2 terminates — so every outcome it changes, it changes to a forfeited verdict.
 Found before acquisition and before any P13 economic observation; commit `d40cfcf`
 stays in history unrewritten.
+
+### NEXT: select and preregister the next scientific checkpoint
+
+**This is the current project state, and it is deliberately not resolved here.**
+The structural carry axis is spent as a source question. `P13` is not reopened,
+not redesigned against the data that arrived, and not run; its own stopping rule
+forbids re-specifying it against whatever data happens to be reachable.
+
+What has to happen next, in a separate session, is the mandatory decision review
+in [`current_development_plan.md`](current_development_plan.md) — specifically its
+question 16, *which single next checkpoint has the highest information value* —
+followed by a preregistration committed and pushed before the first number it
+governs. No candidate is chosen here, no hypothesis is designed here, and nothing
+below under "Future axes" is scheduled by being listed.
+
+Two things the selection should carry with it. `P13` supplies **no economic
+input** to that choice — it returned no number — but it does supply one
+operational lesson: a frozen design can be defeated by the coverage of its own
+preregistered sources, so a future checkpoint should establish source
+sufficiency **before** freezing rather than after. And the choice should weigh
+**finite research budget and multiple-testing discipline** explicitly: the four
+outer blocks have now been read many times, `P13` consumed a checkpoint's effort
+without spending any of that evidence, and the programme has no unlimited number
+of independent questions left in this dataset.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 

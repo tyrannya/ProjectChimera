@@ -1,13 +1,20 @@
 # P13 — BTC structural funding/basis carry feasibility
 
-Status: **P13-A2R2 — preregistered, NOT YET RUN.** The active design is
-**P13-A2R2** (§8d),
+Status: **P13-A2R2 — preregistered, NOT YET RUN, and CLOSED ON SOURCE VALIDITY.**
+The active design is **P13-A2R2** (§8d),
 `sha256:cac2f318e525fb1f0e5892fdd16fcd5febb72853d1a1cfa9fd6c5d3868b7a092`.
 No P13 economic number exists, and
 [`nn/p13_preregistration.py`](../nn/p13_preregistration.py) says so in
 `CURRENT_RESULT_STATE` and in `ACTIVE_DESIGN`. This document is the
 human-readable half of that module; the module is authoritative, and where the
 two disagree the module wins.
+
+**Read §16 before attempting a run.** All 260 preregistered sources were
+acquired and verified, and they are internally incomplete inside the windows
+this design must audit: **`P13 SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT
+EVALUABLE`**. That is a statement about sources, not about carry — the economic
+screen was never run, and this checkpoint is neither an economically positive
+nor an economically negative result.
 
 Machine-readable design: [`nn/p13_preregistration.py`](../nn/p13_preregistration.py)
 Accounting engine: [`nn/p13_carry.py`](../nn/p13_carry.py)
@@ -1005,3 +1012,97 @@ python -c "from nn.p13_preregistration import preregistration_hash; print(prereg
 Any change to a decision-relevant constant moves this hash, and
 `tests/test_p13_preregistration.py` pins the constants individually so a moved
 threshold is a test failure rather than an edit.
+
+## 16. Source closure — the frozen design is not evaluable on its own sources
+
+**This is a RECORD, not an amendment.** It changes no rule, resolves no open
+question, and **does not move the preregistration hash**. It reports what the
+committed source evidence says about whether the design in §§1–15 can be run at
+all. §8b is the precedent for this kind of entry: a fact about the frozen design
+rather than a change to it.
+
+### 16.1 The disposition
+
+```text
+P13 SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE
+```
+
+and, separately and unchanged:
+
+```text
+CURRENT_RESULT_STATE = "P13 ALWAYS-ON ANNUAL SPOT/PERP CARRY: NOT YET RUN"
+```
+
+The economic screen **was never run**. `run_offline_screen`, `run_screen` and
+`evaluate_block` were never called over this history, no block was opened, and no
+funding, basis, PnL, block return, gate condition or decision was computed. The
+disposition above is about **sources**, not economics.
+
+### 16.2 What the sources are
+
+All **260** planned archive objects were acquired from `data.binance.vision` and
+verified against their published `.CHECKSUM` companions — **260 of 260 verified,
+0 unverified, 0 mismatches** — spanning **65 months, 2020-01 through 2025-05**,
+across `spot_price`, `perpetual_price`, `mark_price` and `funding_settlement`. The
+exclusive research boundary is unchanged at **`2025-05-19T08:00:00+00:00`** and
+the rows at or after it were truncated at load. The raw archives are **not
+committed**. Evidence, frozen under
+`artifacts/btc_p13_a2r2_source_acquisition_SHA256SUMS.txt`:
+[`../artifacts/benchmark/btc_p13_a2r2_source_acquisition/`](../artifacts/benchmark/btc_p13_a2r2_source_acquisition/).
+
+Against a reference grid of **47,168** hours: `perpetual_price` is missing **0**
+hours, `spot_price` **31**, `mark_price` **192**. Under A2R2 every block opens at
+its calendar boundary consulting no mark row, and inside the resulting holding
+windows **223 required rows are missing** — the 192 mark rows and the 31 execution
+rows. Blocks **2024** and **2025-partial** are completely covered; 2020–2023 are
+not.
+
+### 16.3 The load-bearing reason, narrowly
+
+§8d.4 requires every held bar to carry an authorised liquidation mark — **mark
+high, else mark close** — and §8d.1 fixes `authorised_liquidation_surrogates` as
+the **empty tuple**. So when a held bar requires a liquidation mark and neither
+authorised **mark HIGH** nor **mark CLOSE** exists, this design has no authorised
+substitute and the screen is not evaluable.
+
+**The 192 held-window mark gaps are independently sufficient** to prevent a future
+governed screen under P13-A2R2. They trigger §8d.4 *literally* — a held bar
+carrying neither a mark high nor a mark close — rather than by any extension of
+it, so the disposition rests only on the rule as frozen.
+
+Nothing is rescued and nothing is skipped: the affected periods are not dropped,
+the holes are not jumped, the entry is not delayed past them, no block is
+excluded, and no surrogate mark is substituted. §8d's `forbidden_treatments` names
+each of those and refuses it.
+
+### 16.4 The execution-gap question stays open
+
+The 31 held **execution**-source gaps are not settled here. §8d's
+`held_bar_mark_absent` is written about a bar "carrying neither a mark high nor a
+mark close", while the block runner applies the terminal treatment to a held bar
+missing *any* required source. Whether every post-open execution-source absence
+receives that same terminal treatment is a preregistration question.
+
+It is **deliberately not answered now, in either direction.** The coverage is
+visible, so choosing a reading at this point would be choosing a rule against a
+known outcome — precisely what §12 and the A1/A2 pattern exist to prevent. **No
+`A2R3` is created**, and no reading is adopted by implication.
+
+It is **non-load-bearing** for the disposition in §16.1: the mark gaps settle that
+on their own, whichever way the execution-gap question is eventually answered. It
+must still be settled explicitly, by an independent reviewer, before any future
+governed run of this design.
+
+### 16.5 What this closure is not
+
+It is not an economic result and carries no economic content. It is **not**
+evidence that BTC spot/perpetual carry is unprofitable, and not evidence that it
+is profitable. It is not a failed `G1`–`G6` screen, not a `NOT VIABLE` verdict,
+not an `INVALID` verdict, not a backtest result and not a governed decision. P13
+is neither an economically positive nor an economically negative checkpoint, and
+the §2 evidence ceiling is untouched because no evidence was produced.
+
+It does not disturb `artifacts/benchmark/btc_p13_carry/`, which was generated at
+`2b1b400e` under the original design as a record of sources that could not be
+*reached* at all. That is a different finding under a different hash; it is not
+regenerated, not rewritten and not superseded by this section.
