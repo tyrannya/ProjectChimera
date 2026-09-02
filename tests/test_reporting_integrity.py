@@ -49,6 +49,10 @@ P13_QUESTION = "btc_p13_structural_carry_feasibility"
 #: networkless plan behind a NOT EVALUABLE determination, not an economic
 #: result — the checkpoint produced no fit, no block and no decision aggregate.
 CURRENT_P13 = "benchmark/btc_p13_carry"
+#: P13-A2R2's source acquisition. A SECOND P13 directory rather than a
+#: replacement: btc_p13_carry records an environment-only refusal under the
+#: ORIGINAL design and keeps that hash, and is deliberately not rewritten.
+CURRENT_P13_A2R2_ACQUISITION = "benchmark/btc_p13_a2r2_source_acquisition"
 
 #: Generations produced after the reporting-integrity metric-semantics fix,
 #: whose `sharpe`/`max_drawdown` are directly comparable across runs.
@@ -452,7 +456,10 @@ def test_the_index_names_exactly_one_current_generation_per_research_question():
     assert paths_for(P3_QUESTION) == {CURRENT_P3, *CURRENT_P3_SOURCE_RUNS}
     # P13 has one artifact and no source runs: nothing was fitted, so there is
     # no cell for an aggregate to be built from.
-    assert paths_for(P13_QUESTION) == {CURRENT_P13}
+    assert paths_for(P13_QUESTION) == {
+        CURRENT_P13,
+        CURRENT_P13_A2R2_ACQUISITION,
+    }
     assert paths_for(P4_QUESTION) == {CURRENT_P4, *CURRENT_P4_SOURCE_RUNS}
     assert paths_for(P5_QUESTION) == {CURRENT_P5, *CURRENT_P5_SOURCE_RUNS}
     assert paths_for(P6_QUESTION) == {CURRENT_P6, *CURRENT_P6_SOURCE_RUNS}
