@@ -1430,3 +1430,115 @@ def test_the_acquisition_evidence_was_not_rewritten_to_quote_a_later_hash():
     assert prereg.MARKLESS_LIQUIDATION_VALIDITY_POLICY[
         "does_not_disturb_the_acquisition_evidence"
     ].startswith("the committed acquisition plan")
+
+
+# ---------------------------------------------------------------------------
+# The source closure — a source-validity disposition, never an economic one
+# ---------------------------------------------------------------------------
+
+#: Every front-door document a reader meets before the P13 evidence.
+CLOSURE_DOCUMENTS = (
+    "docs/p13_preregistration.md",
+    "docs/current_development_plan.md",
+    "docs/research_roadmap.md",
+)
+
+#: The exact disposition wording. It appears verbatim or it does not appear.
+SOURCE_CLOSURE = "P13 SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE"
+
+
+def _plain(path) -> str:
+    """A document as a reader reads it: no emphasis or code markers, no wrapping.
+
+    These files are hard-wrapped prose, so a sentence the reader sees as one
+    line is several in the source. Asserting on the raw text would pin the
+    line breaks rather than the claim.
+    """
+    text = path.read_text(encoding="utf-8")
+    for marker in ("*", "`"):
+        text = text.replace(marker, "")
+    return " ".join(text.split()).lower()
+
+
+def test_no_economic_artifact_exists_under_either_p13_directory():
+    """The acquisition directory is source metadata, and must stay that way.
+
+    ``test_p13_remains_economically_unrun_under_a2`` guards ``btc_p13_carry``;
+    A2R2's acquisition added a second directory that needs the same tripwire.
+    """
+    for directory in ("btc_p13_carry", "btc_p13_a2r2_source_acquisition"):
+        block_dir = ROOT / "artifacts" / "benchmark" / directory
+        for economic in ("blocks.json", "gate.json", "decision.json", "events.jsonl"):
+            assert not (
+                block_dir / economic
+            ).exists(), f"{economic} exists under {directory}, so an economic run happened"
+    assert not (ROOT / "artifacts" / "benchmark" / "btc_p13_decision").exists()
+
+
+def test_every_front_door_document_records_the_source_closure():
+    """A reader must not meet the design without learning it cannot be run."""
+    for name in CLOSURE_DOCUMENTS:
+        plain = _plain(ROOT / name)
+        assert SOURCE_CLOSURE.lower() in plain, f"{name} does not record the source closure"
+        # And the economic state it must never be confused with.
+        assert prereg.CURRENT_RESULT_STATE.lower() in plain, (
+            f"{name} records the closure without the NOT YET RUN economic state, "
+            "which is the confusion the closure exists to prevent"
+        )
+
+
+def test_the_closure_is_carried_by_the_mark_gaps_alone():
+    """The load-bearing fact is 192 held-window mark gaps, not the 223 total.
+
+    The mark gaps trigger the frozen rule literally; the 31 execution gaps are an
+    extension of it whose reading is deliberately unsettled. If a document ever
+    rests the disposition on the total, the open question silently became
+    load-bearing.
+    """
+    for name in CLOSURE_DOCUMENTS:
+        plain = _plain(ROOT / name)
+        assert (
+            "192" in plain and "31" in plain and "223" in plain
+        ), f"{name} does not carry the committed coverage counts"
+        assert (
+            "independently sufficient" in plain
+        ), f"{name} does not say the mark gaps alone carry the disposition"
+
+
+def test_the_execution_gap_question_is_left_open_and_no_a2r3_exists():
+    """Settling it now would be choosing a rule against a known outcome."""
+    assert prereg.ACTIVE_DESIGN == "P13-A2R2"
+    assert "A2R3" not in prereg.ACTIVE_DESIGN
+    for name in CLOSURE_DOCUMENTS:
+        plain = _plain(ROOT / name)
+        assert (
+            "non-load-bearing" in plain
+        ), f"{name} does not record the execution-gap question as non-load-bearing"
+        assert "a2r3 is created" in plain, f"{name} does not record that no A2R3 was created"
+
+
+def test_the_closure_is_never_stated_as_an_economic_result():
+    """P13 is neither an economically positive nor an economically negative
+    checkpoint, and the documents have to say so rather than leave it to tone."""
+    for name in CLOSURE_DOCUMENTS:
+        plain = _plain(ROOT / name)
+        assert (
+            "not an economic result" in plain
+        ), f"{name} does not disclaim an economic reading of the closure"
+        assert (
+            "economically positive nor an economically negative" in plain
+        ), f"{name} does not refuse both economic readings explicitly"
+    # And the module still reports no economic state at all.
+    assert prereg.CURRENT_RESULT_STATE.endswith("NOT YET RUN")
+    assert prereg.CURRENT_RESULT_STATE not in prereg.RESULT_STATES
+
+
+def test_section_16_declares_itself_a_record_rather_than_an_amendment():
+    """It reports on the frozen design; it does not change it, so the hash holds."""
+    doc = (ROOT / "docs" / "p13_preregistration.md").read_text(encoding="utf-8")
+    assert "## 16. Source closure" in doc
+    assert "This is a RECORD, not an amendment." in doc
+    assert "does not move the preregistration hash" in doc
+    # The claim the sentence above makes, checked rather than trusted.
+    assert EXPECTED_HASH == prereg.preregistration_hash()
+    assert EXPECTED_HASH not in {h["hash"] for h in prereg.SUPERSEDED_HASHES}
