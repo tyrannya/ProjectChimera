@@ -16,7 +16,8 @@ import ast
 import hashlib
 import inspect
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -28,6 +29,10 @@ from tools.acquire_p13_sources import plan_objects, plan_payload
 
 PERIOD = "2021-03"
 START = "2021-03-01T00:00:00+00:00"
+
+#: Spelled as a code point so no test in this file has to escape one, and so a
+#: reader cannot mistake an escaped backslash in a literal for a doubled one.
+BACKSLASH = chr(92)
 
 
 def _payload(count: int = 3) -> bytes:
@@ -406,8 +411,32 @@ def test_a_manifest_holding_two_records_for_one_published_path_is_refused(tmp_pa
 # ---------------------------------------------------------------------------
 
 
-def test_a_windows_style_path_serialises_as_forward_slash_repo_relative_text(tmp_path):
-    """``str()`` on a Windows Path renders backslashes; the evidence must not."""
+def test_a_windows_spelling_renders_with_forward_slashes_at_the_string_boundary():
+    """The rendering claim, checked where a Windows spelling actually means one.
+
+    ``PureWindowsPath`` interprets backslashes as separators on EVERY platform,
+    which a plain ``Path`` does not: on POSIX a backslash is an ordinary filename
+    character, so ``Path("a\\b")`` is one file called ``a\\b`` rather than ``b``
+    inside ``a``. This asserts the mechanism the canonicaliser relies on —
+    ``as_posix()`` — without fabricating a filesystem object that does not exist.
+    """
+    windows = PureWindowsPath(
+        r"artifacts\benchmark\btc_p13_a2r2_source_acquisition\acquisition_manifest.json"
+    )
+    assert windows.as_posix() == (
+        "artifacts/benchmark/btc_p13_a2r2_source_acquisition/acquisition_manifest.json"
+    )
+    assert BACKSLASH not in windows.as_posix()
+    # And the same relative path spelled POSIX-style renders identically, so the
+    # canonical form does not depend on how it was written down.
+    posix = PurePosixPath(
+        "artifacts/benchmark/btc_p13_a2r2_source_acquisition/acquisition_manifest.json"
+    )
+    assert posix.as_posix() == windows.as_posix()
+
+
+def test_posix_repo_relative_renders_a_real_file_with_forward_slashes(tmp_path):
+    """The production canonicaliser, on a real nested file, on this platform."""
     root = tmp_path
     nested = root / "artifacts" / "benchmark" / "btc_p13_a2r2_source_acquisition"
     nested.mkdir(parents=True)
@@ -418,14 +447,61 @@ def test_a_windows_style_path_serialises_as_forward_slash_repo_relative_text(tmp
     assert rendered == (
         "artifacts/benchmark/btc_p13_a2r2_source_acquisition/acquisition_manifest.json"
     )
-    assert "\\" not in rendered
-    # The same file reached through a backslash-spelled path renders identically.
-    spelled = Path(str(target).replace("/", "\\")) if "\\" in str(target) else target
-    assert acq.posix_repo_relative(spelled, root) == rendered
+    assert BACKSLASH not in rendered
+    # ``str()`` on the same Path is what the canonicaliser exists to avoid; on
+    # Windows it renders separators this must never emit.
+    assert os.sep in str(target)
 
 
-def test_the_evidence_manifest_is_identical_across_separator_conventions(tmp_path):
-    """Determinism: how a path was SPELLED must not change the bytes written."""
+def test_natively_equivalent_spellings_of_one_file_render_identically(tmp_path):
+    """Filesystem identity: same file, several legal spellings, one rendering.
+
+    ``os.path.join`` uses the PLATFORM separator, so on Windows this genuinely
+    feeds a backslash-spelled path through the canonicaliser and on POSIX a
+    forward-slash one. Both are real paths to the real file, which is the
+    difference between this and the witness it replaces.
+    """
+    root = tmp_path
+    nested = root / "artifacts" / "benchmark" / "btc_p13_a2r2_source_acquisition"
+    nested.mkdir(parents=True)
+    target = nested / "acquisition_manifest.json"
+    target.write_text("{}", encoding="utf-8")
+
+    expected = acq.posix_repo_relative(target, root)
+    spellings = [
+        target,
+        Path(
+            os.path.join(
+                str(root),
+                "artifacts",
+                "benchmark",
+                "btc_p13_a2r2_source_acquisition",
+                "acquisition_manifest.json",
+            )
+        ),
+        root
+        / "artifacts"
+        / "."
+        / "benchmark"
+        / "btc_p13_a2r2_source_acquisition"
+        / "acquisition_manifest.json",
+        nested / ".." / "btc_p13_a2r2_source_acquisition" / "acquisition_manifest.json",
+    ]
+    for spelling in spellings:
+        assert spelling.resolve() == target.resolve(), "the spelling names another file"
+        assert acq.posix_repo_relative(spelling, root) == expected
+        assert BACKSLASH not in acq.posix_repo_relative(spelling, root)
+
+
+def test_the_evidence_manifest_is_identical_however_its_inputs_were_spelled(tmp_path):
+    """Determinism: how a path was SPELLED must not change the bytes written.
+
+    The spellings are all NATIVELY valid on the platform running the test —
+    ``os.path.join`` supplies the platform separator, so on Windows this really is
+    a backslash-spelled input — and every one denotes the same file. A synthetic
+    Windows spelling on POSIX would denote a DIFFERENT file, which is why the
+    earlier version of this witness failed on Ubuntu and was right to.
+    """
     root = tmp_path
     nested = root / "artifacts" / "benchmark" / "btc_p13_a2r2_source_acquisition"
     nested.mkdir(parents=True)
@@ -435,18 +511,32 @@ def test_the_evidence_manifest_is_identical_across_separator_conventions(tmp_pat
         path.write_text(f"content of {name}", encoding="utf-8")
         files.append(path)
 
-    forward = acq.evidence_manifest_text(files, root=root)
-    backward = acq.evidence_manifest_text(
-        [Path(str(f).replace("/", "\\")) for f in files], root=root
-    )
-    assert forward == backward
+    canonical = acq.evidence_manifest_text(files, root=root)
+
+    native = [
+        Path(
+            os.path.join(
+                str(root), "artifacts", "benchmark", "btc_p13_a2r2_source_acquisition", f.name
+            )
+        )
+        for f in files
+    ]
+    assert acq.evidence_manifest_text(native, root=root) == canonical
+
+    detoured = [nested / ".." / nested.name / f.name for f in files]
+    assert acq.evidence_manifest_text(detoured, root=root) == canonical
+
     # Shuffling the input order must not move a byte either: the manifest sorts.
-    assert acq.evidence_manifest_text(list(reversed(files)), root=root) == forward
-    for line in forward.strip().splitlines():
+    assert acq.evidence_manifest_text(list(reversed(files)), root=root) == canonical
+
+    # And the emitted text is forward-slashed on EVERY platform, which is the
+    # property the committed manifest depends on.
+    assert BACKSLASH not in canonical
+    for line in canonical.strip().splitlines():
         digest, name = line.split("  ", 1)
         assert len(digest) == 64
         assert name.startswith("artifacts/benchmark/")
-        assert "\\" not in name
+        assert BACKSLASH not in name
 
 
 def test_a_path_outside_the_repository_is_refused_rather_than_recorded(tmp_path):
