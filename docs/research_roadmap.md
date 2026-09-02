@@ -640,23 +640,62 @@ series, and not a relaxation of the frozen source set.
 
 **Which design a future run is governed by**, stated here because the wrong
 answer would invalidate the run before it started. The active design is
-**P13-A1**, `sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099`,
-and it is **NOT YET RUN**. The original
-`sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767` is
-**historical provenance only** — it is the design the committed acquisition
-evidence was generated under, and it must not govern new economic evidence.
+**P13-A2R2**, `sha256:cac2f318e525fb1f0e5892fdd16fcd5febb72853d1a1cfa9fd6c5d3868b7a092`,
+and it is **NOT YET RUN**. Four superseded hashes are **historical provenance
+only** and must not govern new economic evidence: **P13-A2R1**
+`sha256:7064faeeb049809fa1c9037559023a6e9b54b0e18d6d964605696f7a21ca29f0`, the first
+committed **P13-A2**
+`sha256:86050b6897143cd0abfa2106ee6cc37baaf3c637e396b23f30bdeeb935fbfe6c`, **P13-A1**
+`sha256:4397109858249c6923b72418d756a3e8504c7cb7abed15deebf300c252f4b099`, and the
+original `sha256:1369c8828767c04e5b0609fc0125947c91f1cb5f15e977804ff1d1d70fd68767`,
+which is the design the committed acquisition evidence was generated under.
+All are recorded as literals in `SUPERSEDED_HASHES` inside the hashed payload,
+so a run quoting one is quoting a design the module itself marks retired.
 
-**Design-complete is not implementation-complete.** The next step is egress and
-the remaining machinery — the accounting core and the networkless plan exist; the
-downloader, loader, block runner, gate, stress runners, event ledger and decision
-writer do not, so there is no end-to-end path from an archive object to a gate
-decision. Freezing the design early bought a question that cannot be reshaped by
-a result, not a screen that is ready to run. It did not buy freedom from every
+**Design-complete is not implementation-complete.** The offline runtime now
+exists — the loader and causal alignment at `667e3599`, and the block runner,
+gate, stresses and evidence at `1d5a31eb` — but it was written against A2R1 and
+must be adapted to A2R2 before it may govern anything. What is still missing is
+the acquisition itself: no P13 source object has been fetched, so there is no
+end-to-end path from an archive object to a gate decision. Freezing the design
+early bought a question that cannot be reshaped by a result, not a screen that is
+ready to run. It did not buy freedom from every
 further *design* decision either: **amendment A1** (§8a of
 [`p13_preregistration.md`](p13_preregistration.md)) resolved a micro-rule the
 frozen text named but left open — what a liquidation triggered on a block's final
 bar does to the gate — after the NOT EVALUABLE closure and before any economic
-observation, in the only direction that cannot flatter a verdict.
+observation, in the only direction that cannot flatter a verdict. **Amendment A2**
+(§8d) then settled a second one: how a mark-less period is treated before a block
+opens versus after it has opened. Before the open, the causal opening search
+advances inside the same block; after the open, a held bar with no authorised
+liquidation mark terminates the screen **NOT EVALUABLE**, screen-wide, rather than
+dropping the affected block or jumping the hole. It is a **source-validity**
+amendment — triggered by the presence of an archive row, never by anything a run
+computes — frozen before acquisition because it can change which historical
+observations enter a block.
+Revision **A2R1** then withdrew a false claim inside that hashed payload: the
+first committed A2 said a delayed pre-open “can only reduce accrued
+funding”, which is wrong, since funding takes either sign against a short
+perpetual and a later open also moves `basis_at_entry`. A2R1 states instead that
+the pre-open branch is **economically indeterminate ex ante**; no treatment
+changed, and commit `0d023ba` stays in history unrewritten.
+
+Revision **A2R2** then corrected the **causality** of the rule A2R1 had kept. A
+`markPriceKlines` row is stamped by candle *open* `t`, but its high, its close and
+the fact that a completed row exists at all are established only after the bar
+completes — so rejecting `t` as an opening instant because that row is absent
+conditions the entry instant on future information. It reads no future *price*,
+and the implementation was careful about that, but **source availability is future
+information too**, and A2R1's own admissibility rested on the rule being
+implementable by an operator standing at the instant. It was not. **A2R2 removes
+the rule.** The mark series is no longer a pre-open entry filter; bar 0 is opened
+at and remains held; and a bar 0 with neither mark high nor mark close terminates
+the screen NOT EVALUABLE exactly as any later held bar does. The correction is
+one-way relative to A2R1 — the two designs differ only where A2R1 would have
+skipped an execution-valid instant for want of a mark, and in exactly those cases
+A2R2 terminates — so every outcome it changes, it changes to a forfeited verdict.
+Found before acquisition and before any P13 economic observation; commit `d40cfcf`
+stays in history unrewritten.
 
 ### Futures Execution v1 — engineering, not a checkpoint
 

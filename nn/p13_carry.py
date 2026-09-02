@@ -234,6 +234,19 @@ class FundingSettlement:
     instant_ns: int
     rate: Decimal
     mark_price: Decimal
+    #: Whether ``MARK_PRICE_FALLBACK`` substituted the SPOT close for THIS
+    #: settlement's notional base, because the month's ``markPriceKlines`` OBJECT
+    #: was unpublished.
+    #:
+    #: Carried ON the settlement rather than counted beside it, because only this
+    #: evaluator knows which settlements a block ACTUALLY applied: the accrual
+    #: window is ``open < settlement <= close``, and a liquidation stops it
+    #: mid-window. A count assembled anywhere else is a count of settlements that
+    #: were OFFERED to a block, not of settlements that were CHARGED to its
+    #: position — and ``MARK_PRICE_FALLBACK.reporting_granularity`` asks for the
+    #: second one, so "a reader can see exactly how much of the funding total
+    #: rests on the approximation".
+    notional_substituted: bool = False
 
     #: Far outside any legitimate 8-hourly BTCUSDT settlement. A corruption and
     #: unit detector, not a claim about the venue's funding cap: a rate handed
@@ -756,6 +769,11 @@ class BlockResult:
     #: liquidated. Reported so the attribution window is auditable from the
     #: artifact rather than inferred from the code.
     held_bars: int = 0
+    #: How many of the settlements this block ACTUALLY APPLIED were charged on a
+    #: SUBSTITUTED notional base. Counted here, by the only code that knows which
+    #: settlements were applied, so that a screen-wide figure is the exact SUM of
+    #: per-block figures rather than one global number repeated once per block.
+    mark_substituted_settlements: int = 0
     #: How many adjacent quote pairs are spaced further apart than one nominal
     #: bar, and — separately — the LARGEST adjacent spacing observed, gap or not.
     #: The second is deliberately not called a "max gap": on a contiguous block it
@@ -806,6 +824,7 @@ def unclosed_block_result(
     liquidation_instant_ns: int | None = None,
     liquidation_touch_provenance: LiquidationTouchProvenance | None = None,
     held_bars: int = 0,
+    mark_substituted_settlements: int = 0,
     quote_gap_count: int = 0,
     max_quote_step_ns: int = 0,
 ) -> BlockResult:
@@ -863,6 +882,7 @@ def unclosed_block_result(
             liquidation_touch_provenance or LiquidationTouchProvenance()
         ),
         held_bars=held_bars,
+        mark_substituted_settlements=mark_substituted_settlements,
         quote_gap_count=quote_gap_count,
         max_quote_step_ns=max_quote_step_ns,
     )
@@ -1071,6 +1091,11 @@ def evaluate_block(
     # excursion is strictly negative whenever any friction is charged.
     worst = position.equity_at(entry.spot_fill, entry.perp_fill) - allocation.total_capital
     settled_count = 0
+    # Counted as settlements are APPLIED, never from the offered list: a block
+    # liquidated mid-window never pays the settlements after its trigger, and
+    # reporting those as charged would overstate how much of the funding total
+    # rests on MARK_PRICE_FALLBACK's approximation.
+    substituted_count = 0
     traded_quantity = position.quantity
     trigger_index: int | None = None
     touches: dict[str, int] = {name: 0 for name in TOUCH_SOURCES}
@@ -1080,8 +1105,10 @@ def evaluate_block(
     # any of the rest of it happens.
     for index, quote in enumerate(quotes[:-1]):
         for instant in sorted(k for k in pending if k <= quote.instant_ns):
-            apply_funding(position, pending.pop(instant))
+            settlement = pending.pop(instant)
+            apply_funding(position, settlement)
             settled_count += 1
+            substituted_count += settlement.notional_substituted
         worst = min(worst, position.equity(quote) - allocation.total_capital)
         touches[quote.liquidation_touch_source] += 1
         if is_liquidated(position, quote, venue, isolated):
@@ -1102,8 +1129,10 @@ def evaluate_block(
         # are applied here rather than dropped. They cannot reach the excursion
         # above, because that is measured over marks the position lived through.
         for instant in sorted(pending):
-            apply_funding(position, pending.pop(instant))
+            settlement = pending.pop(instant)
+            apply_funding(position, settlement)
             settled_count += 1
+            substituted_count += settlement.notional_substituted
         exit_quote = final
     else:
         # MARGIN_AND_LIQUIDATION.forced_close_price: the trigger is detected from
@@ -1147,6 +1176,7 @@ def evaluate_block(
                 liquidation_instant_ns=liquidation_instant,
                 liquidation_touch_provenance=provenance,
                 held_bars=held_bars,
+                mark_substituted_settlements=substituted_count,
                 quote_gap_count=gap_count,
                 max_quote_step_ns=max_gap,
             )
@@ -1197,6 +1227,7 @@ def evaluate_block(
         forced_close_instant_ns=forced_close_instant,
         liquidation_touch_provenance=provenance,
         held_bars=held_bars,
+        mark_substituted_settlements=substituted_count,
         quote_gap_count=gap_count,
         max_quote_step_ns=max_gap,
     )
