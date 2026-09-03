@@ -74,6 +74,7 @@ from chimera.recorder.health import (
     RecorderHealth,
     initial_health,
 )
+from chimera.recorder.incremental import IncrementalNormalizer
 from chimera.recorder.normalize import MinuteNormalizer, RecorderNormalizeError
 from chimera.recorder.rest import (
     FUNDING_CATCHUP_INTERVAL_S,
@@ -245,6 +246,14 @@ class RecorderService:
             for stream in contract.streams
         }
         self.normalizer = MinuteNormalizer(self.root, contract)
+        #: The path the service actually renders through. It folds the open day
+        #: from a cursor instead of re-reading it, and falls back to
+        #: ``self.normalizer`` — the authoritative full rebuild — whenever its
+        #: cache cannot be vouched for. Both write the day through the same
+        #: writer, so a fallback costs time and changes no value.
+        self.incremental = IncrementalNormalizer(
+            self.root, contract, normalizer=self.normalizer
+        )
         self.health: RecorderHealth = initial_health(contract, source_revision=source_revision)
         self.heartbeat = HeartbeatWriter(self.root, wall_ns=wall_ns)
         self.clients: tuple[StreamClient, ...] = (
@@ -351,6 +360,7 @@ class RecorderService:
         """
         recovery = _Recovery()
         self.bind_contract()
+        self._sync()
         now_ns = self._wall_ns()
         today = utc_day(now_ns)
         self._current_day = today
@@ -365,18 +375,30 @@ class RecorderService:
             recovery.tails[stream] = repaired
             if repaired:
                 recovery.notes += (f"{stream}: repaired {repaired} torn record(s)",)
-            last = self._last_canonical_ns(stream)
+        # The latest instant per stream, from the normalize cache where there is
+        # one. Reading it by parsing every record is what made a restart cost
+        # minutes on a busy day, and the cache already holds the maximum over
+        # everything it has folded, so only the unfolded tail is looked at.
+        cached: dict[str, int] = {}
+        for market in self.contract.market_keys():
+            cached.update(self.incremental.peek_last_canonical(market, today))
+        for stream in self.sinks:
+            last = cached.get(stream)
+            if last is None:
+                last = self._last_canonical_ns(stream)
             recovery.last_canonical_ns[stream] = last
             if last is not None:
                 self.health.stream(stream).last_event_ns = last
         for market in self.contract.market_keys():
-            try:
-                report = self.normalizer.build_day(market, today)
-            except RecorderNormalizeError as exc:
-                recovery.notes += (f"{market} {today} not normalized: {exc}",)
-                continue
-            recovery.normalized += (f"{market}/{today}",)
-            self._remember_normalized(market, today, len(report.missing))
+            # The same renderer the running service uses: incremental where the
+            # cache allows it, the authoritative rebuild where it does not. A
+            # restart that rendered through a different path than the run would
+            # be a restart that could disagree with itself.
+            if self._normalize(market, today):
+                recovery.normalized += (f"{market}/{today}",)
+                status = self.incremental.status.get((market, today))
+                if status is not None and status.rebuilt:
+                    recovery.notes += (f"{market} {today}: {status.reason}",)
         self.health.open_day = today
         self.health.normalized_day = today
         self.recovery = recovery
@@ -810,17 +832,28 @@ class RecorderService:
                 for market in self.contract.market_keys():
                     await self.fill_kline_gap(market)
         await asyncio.to_thread(self._freeze_due)
+        # Raw first, always. A cursor may only ever claim material the raw files
+        # already hold durably, so the fsync happens before anything folds.
+        self._sync()
         for market in self.contract.market_keys():
             await asyncio.to_thread(self._normalize, market, today)
         self.health.normalized_day = today
 
-    def _normalize(self, market: str, day: str) -> None:
+    def _normalize(self, market: str, day: str) -> bool:
+        """Render one day, incrementally where the cache allows it.
+
+        Reads the raw files and writes the normalized ones; it touches no
+        stream's health beyond the missing-minute count, so a stream halted by a
+        storage failure stays halted and is not revived by having its day
+        rendered. Returns whether the day was written.
+        """
         try:
-            report = self.normalizer.build_day(market, day)
+            report = self.incremental.build_day(market, day, provenance=self._provenance())
         except RecorderNormalizeError as exc:
             self._note(f"{market} {day} not normalized: {exc}")
-            return
+            return False
         self._remember_normalized(market, day, len(report.missing))
+        return True
 
     def _remember_normalized(self, market: str, day: str, missing: int) -> None:
         label = f"{market}/{day}"

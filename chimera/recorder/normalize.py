@@ -853,7 +853,7 @@ class MinuteNormalizer:
         marks = self._read(mark_stream, day, sources) if mark_stream else []
         books = self._read(book_stream, day, sources) if book_stream else []
 
-        records, missing, conflicts, tallies = build_minutes(
+        built = build_minutes(
             market=market,
             day=day,
             klines=klines,
@@ -863,6 +863,34 @@ class MinuteNormalizer:
             books=books,
             book_stream=book_stream,
         )
+        return self.write_day(market, day, built, provenance=provenance, sources=sources)
+
+    def write_day(
+        self,
+        market: str,
+        day: str,
+        built: tuple[Sequence[MinuteRecord], Sequence[int], Sequence[int], Mapping[str, Any]],
+        *,
+        provenance: Mapping[str, Any] | None = None,
+        sources: Sequence[str] | None = None,
+    ) -> DayReport:
+        """Write the table, the digest and the metadata for one aggregated day.
+
+        Split out of :meth:`build_day` so that a caller which aggregated the day
+        some other way — the incremental normalizer folds it from a cursor —
+        writes it through exactly this code. Two writers would be two chances to
+        disagree about a dtype, a digest or a metadata field.
+        """
+        require_day(day)
+        columns_for(market)
+        self.contract.market(market)
+        if self.is_frozen(market, day):
+            raise RecorderNormalizeError(
+                f"{self.sha256_path(market, day)} exists, so {market} {day} is frozen. A "
+                "frozen day is never rewritten; a correction is a new file, and the "
+                "reconciliation report says which version was used"
+            )
+        records, missing, conflicts, tallies = built
         frame = minute_frame(records, market=market)
 
         parquet = self.parquet_path(market, day)
@@ -880,7 +908,7 @@ class MinuteNormalizer:
             streams=tallies,
             parquet_path=parquet.relative_to(self.root).as_posix(),
             parquet_sha256=parquet_sha,
-            source_paths=sorted(sources),
+            source_paths=sorted(sources or ()),
             provenance=provenance,
         )
         write_json_atomic(self.meta_path(market, day), document)

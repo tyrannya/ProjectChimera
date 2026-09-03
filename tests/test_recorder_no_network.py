@@ -68,6 +68,12 @@ OFFLINE_CORE: tuple[str, ...] = (
     "__init__.py",
     "contract.py",
     "events.py",
+    # The incremental normalizer folds a day from a cursor instead of re-reading
+    # it. It opens nothing, reads no clock and is a pure function of the raw
+    # files, so it is held to the offline core's rules rather than the live
+    # layer's weaker ones — which is also the strongest available statement that
+    # a performance cache cannot reach a network.
+    "incremental.py",
     "normalize.py",
     "sink.py",
 )
