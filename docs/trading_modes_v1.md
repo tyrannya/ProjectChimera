@@ -89,9 +89,12 @@ to measure it would preregister it first.
 ## 4. No automatic selection
 
 Choosing automatically *between* eligible modes is a research question — `P8`,
-[preregistered](p8_preregistration.md) and **not opened**. `chimera.modes` has no
-`AUTO` value and `decide_mode` takes an operator's standing declaration, so a
-scaffold cannot quietly run an unopened checkpoint in production.
+[preregistered](p8_preregistration.md) and **not opened**, and since 2026-09-03
+**withdrawn as moot** because its eligibility precondition cannot be met.
+`chimera.modes` has no `AUTO` value and `decide_mode` takes an operator's
+standing declaration, so a scaffold cannot quietly run an unopened checkpoint in
+production. Nothing changes here as a result of the withdrawal: there was no
+router before it and there is none after it.
 
 **Forbidden as a selection input, permanently:** recent realised PnL, outer-fold
 performance, backtest rank, post-hoc best timeframe or horizon, or any knowledge

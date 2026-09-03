@@ -2,8 +2,10 @@
 
 Most of this file is the usual preregistration coherence check. The tests that
 matter are the ones asserting **P8 has not been opened**: no router module, no P8
-artifact, no P8 number anywhere, and a research state that says `unrun` or
-`preregistered` and never `answered`.
+artifact, no P8 number anywhere, and a research state that says `unrun`,
+`preregistered` or `withdrawn` and never `answered`. It is `withdrawn` since
+2026-09-03: the precondition cannot be met, so the checkpoint was closed without
+ever being opened, which is a non-result and not an answer.
 
 A preregistration is a commitment, and the cheapest way for one to rot is for
 somebody to quietly satisfy it. These tests are what makes "NOT OPENED" a
@@ -71,9 +73,21 @@ def test_no_p8_artifact_exists():
 
 
 def test_the_research_state_never_calls_p8_answered():
-    from nn.research_state import checkpoint_states
+    """P8 produced nothing, so no state implying a result may be reachable.
 
-    assert checkpoint_states(REPO)["P8"] in {"unrun", "preregistered"}
+    `withdrawn` joined the vocabulary on 2026-09-03, when P8 was withdrawn as
+    moot: its precondition needs two eligible modes, and producing a second one
+    would mean refitting clocks P6 and P6-EXT screened out, which section 11
+    forbids. That is still not an answer — it is a checkpoint closed without
+    ever being opened — so the assertion this test was written for is unchanged.
+    """
+    from nn.research_state import ANSWERED, WITHDRAWN, checkpoint_states
+
+    state = checkpoint_states(REPO)["P8"]
+    assert state != ANSWERED
+    assert state in {"unrun", "preregistered", WITHDRAWN}
+    # And the fact S0 recorded, so that quietly un-withdrawing it fails here.
+    assert state == WITHDRAWN
 
 
 def test_there_is_no_auto_mode_to_route_into():

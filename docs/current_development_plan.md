@@ -1,6 +1,29 @@
 # ProjectChimera — current development plan
 
-Status: **working development plan after P6/P6-EXT/P7 and the independent Fable 5 post-merge audit of `main` at `a72f94e021be61df2851b746d9d3ee741df09d0d`.** This document is intentionally **not** a research preregistration. It records the intended system direction and the order in which future questions should be formalised. Exact horizons, targets, model families, weighting rules and success criteria still have to be preregistered before the corresponding research run.
+> ## SUPERSEDED AS A ROADMAP, 2026-09-03. DO NOT PLAN FROM THIS FILE.
+>
+> On 2026-09-03 the owner adopted the Fable 5.1 replacement roadmap. **The
+> active roadmap is [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md)**,
+> expanded into engineering packages in
+> [`proposed_demo_implementation_master_plan.md`](proposed_demo_implementation_master_plan.md)
+> and produced by the audit in
+> [`fable_5_1_full_project_strategic_audit.md`](fable_5_1_full_project_strategic_audit.md).
+>
+> This file remains authoritative for exactly two things: **the closed
+> checkpoints' findings and scope limits**, and **the standing constraints**,
+> which are updated below and carry the adoption. Everything else here —
+> "Development sequence", "Later research axes", "Mandatory post-P6/P7/P8-boundary
+> decision review", "Current one-line roadmap" — is the **retired** roadmap,
+> preserved as the record of how the programme reached the decision. A fresh
+> session must not start work from it.
+>
+> The retired direction, in one line: keep selecting the next historical
+> checkpoint on the four outer blocks. The adopted direction, in one line:
+> record prospective data on the Binance USD-M BTCUSDT perpetual, freeze a small
+> menu of rules, and run one preregistered forward campaign. **The next task is
+> PR-04** — the offline recorder contract, events, sink and normalizer.
+
+Status: **SUPERSEDED as a roadmap on 2026-09-03; retained for closed-checkpoint findings and standing constraints.** Written as the working development plan after P6/P6-EXT/P7 and the independent Fable 5 post-merge audit of `main` at `a72f94e021be61df2851b746d9d3ee741df09d0d`. This document is intentionally **not** a research preregistration. It records the intended system direction and the order in which future questions should be formalised. Exact horizons, targets, model families, weighting rules and success criteria still have to be preregistered before the corresponding research run.
 
 The audit's conclusions have been consolidated into this document; [`current_development_plan_post_audit.md`](current_development_plan_post_audit.md) remains the fuller record of how each was reached and is not superseded.
 
@@ -22,8 +45,9 @@ The audit's conclusions have been consolidated into this document; [`current_dev
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
-| `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **withdrawn** |
 | `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
+| `P14` | `btc_p14_native_tradeflow_screen` | **declined** |
 
 <!-- research-state:end -->
 
@@ -31,13 +55,44 @@ The audit's conclusions have been consolidated into this document; [`current_dev
 
 This section is authoritative for a developer arriving without prior conversation context.
 
+**The roadmap changed on 2026-09-03.** Read the banner at the top of this file,
+then read [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md).
+The state below is current; the *direction* it used to point at is retired.
+
 **Current state**
 
+- **The Fable 5.1 replacement roadmap is ADOPTED.** The active stage sequence is
+  **S0 → S1 → S2 → S3 → S4 → S5 → S6**. S0 (this adoption) is complete; nothing
+  in S1 onward has started. The next deciding scientific programme is
+  **prospective-first**: a preregistered forward campaign (PVC-1) on data that
+  has not yet occurred, not another reading of the four historical outer blocks.
+- **No further deciding use of the four outer blocks** (2023-03-04 to
+  2025-05-19). Ten checkpoints have read them. They remain descriptive context
+  and supporting engineering data; they may not decide a checkpoint again.
+- **The primary future modelled and executed directional instrument is the
+  Binance USD-M BTCUSDT perpetual.** Binance spot BTCUSDT is the hedge leg of
+  the carry position, the price control and a supporting data source. The
+  instrument modelled is now the instrument executed.
 - P1/v4 through P5 are closed historical research.
 - **P6 is answered, negative under its preregistered deciding family (XGBoost):** none of `1m`, `5m`, `15m`, `30m`, `1h` cleared the 3-of-4 viability gate.
 - **P6-EXT is answered, negative:** neither `4h` nor `1d` is viable, so `SWING` is currently `NOT_ELIGIBLE`.
 - **P7 is answered, negative for the exact preregistered consensus-v1 rules:** neither scalping nor day-trading consensus added robust value beyond the fold-wise best constituent.
-- **P8 is preregistered but NOT OPENED:** it requires at least two eligible modes and there are none.
+- **P8 is WITHDRAWN AS MOOT and was NEVER OPENED.** Its opening condition — at
+  least two eligible trading modes — cannot be met without refitting clocks that
+  P6 and P6-EXT screened out, which its own rules forbid. **This is not a
+  result.** P8 produced no number, no fit and no verdict; it is not negative, not
+  positive and not a failure. Its design stays committed and readable at
+  [`p8_preregistration.md`](p8_preregistration.md), and the withdrawal is
+  recorded in the generated state table as `withdrawn`.
+- **P14 is DECLINED and was NEVER OPENED.** It was preregistered on the branch
+  `claude/p14-native-tradeflow-prereg` at
+  `36cdae48877b1d5fa88b2664c127b5307a917751` (PR #67), frozen before any
+  statistic existed, and then **declined before opening** on the evidence of the
+  independent Fable 5.1 audit and this adoption. **No predictive or economic
+  outcome was ever generated** — no signal value, no fold score, no trade, no
+  PnL. Its correct meaning is **DESIGN DECLINED BEFORE OPENING / NO RESULT**,
+  never "answered" and never "negative". PR #67 is closed without merging; the
+  branch is retained as historical design evidence and is not deleted.
 - The trading-mode controller exists and therefore returns **FLAT** under current committed evidence.
 - The futures path remains dry-run only. The committed paper artifact is an engineering smoke, not sustained paper validation.
 - `P4-HOLD` is retired and unread; Styx is sealed; live trading is disabled.
@@ -47,23 +102,40 @@ This section is authoritative for a developer arriving without prior conversatio
 
 **Do now**
 
-1. Treat the directional chain as having reached a valid scientific boundary: P8 was not opened because its preregistered eligibility precondition failed.
-2. Carry the post-audit historical disclosures below into any description of P6, P7 or Styx. They are not optional colour.
-3. **The structural carry axis is spent as a source question and is closed.** Egress was obtained, the acquisition completed 260/260, the runtime was adapted to A2R2, and the frozen design turned out not to be evaluable on its own preregistered sources. Do not re-open it, do not re-preregister it, and do not re-specify it against the data that arrived — its own stopping rule forbids that.
-4. **Select and preregister the next scientific checkpoint.** That selection is a separate, fresh piece of work and is deliberately not made here; see "Current one-line roadmap" below and [`research_roadmap.md`](research_roadmap.md). Because P13 closed on source validity rather than on economics, the mandatory decision review below is the right instrument, and its question 16 — which single next checkpoint has the highest information value — is the one that has to be answered.
+1. **Work the adopted roadmap, not this file's retired one.** Read
+   [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md)
+   for the stages and the finite budget, and
+   [`proposed_demo_implementation_master_plan.md`](proposed_demo_implementation_master_plan.md)
+   section 14 for the PR packages.
+2. **The next exact task is PR-04:** the prospective recorder's contract,
+   events, sink and normalizer — **offline only, no network, no economic
+   quantity computed**. It is the first engineering task of stage S1.
+3. Treat the directional chain as having reached a valid scientific boundary,
+   and P8 as withdrawn rather than pending: its eligibility precondition cannot
+   be met without work its own rules forbid.
+4. Carry the post-audit historical disclosures below into any description of P6, P7 or Styx. They are not optional colour.
+5. **The structural carry axis is spent as a source question and is closed.** Egress was obtained, the acquisition completed 260/260, the runtime was adapted to A2R2, and the frozen design turned out not to be evaluable on its own preregistered sources. Do not re-open it, do not re-preregister it, and do not re-specify it against the data that arrived — its own stopping rule forbids that. The carry *mechanism* returns in the adopted roadmap as **R1 of PVC-1**, which is a new prospective design with its own preregistration and is not a re-specification of P13.
 
 **Do not do now**
 
+- do not select or preregister "the next historical checkpoint" — the adopted
+  roadmap replaces that step, and the mandatory decision review below is
+  retired along with it;
+- do not open P14, and do not compute any P14 statistic;
 - do not reinterpret P6 as proof that all short-timeframe model families fail: XGBoost was the preregistered deciding family, while secondary Logistic Regression / LightGBM cells on fast clocks are leads only and may justify a new preregistered checkpoint;
 - do not reinterpret P7 as proof that all cross-timeframe fusion is useless: it is evidence against this consensus-v1, with disclosed low-trade and staleness limitations;
 - do not retrofit a staleness bound, different vote threshold, different deciding model, target, horizon, cost gate or router rule into closed evidence;
-- do not open P8 on ineligible modes;
+- do not open P8: it is withdrawn as moot, and it was never openable on ineligible modes anyway;
 - do not read `P4-HOLD` or Styx;
 - do not enable authenticated/live order routing or increase leverage;
 - do not run the P13 economic screen against these sources, and do not read the P13 closure as carry evidence in either direction;
 - do not resolve P13's open execution-gap question now that the coverage is visible, and do not create an `A2R3`; do not substitute a venue, mirror or REST endpoint, interpolate a missing row, or relax the frozen source set, boundary, costs, leverage or gates to make the screen runnable.
 
-**The axis chosen by the review: structural / non-directional alpha**
+**The axis chosen by the review: structural / non-directional alpha** *(RETIRED
+2026-09-03 — kept as the record of the decision the adopted roadmap replaced.
+The carry mechanism survives as PVC-1's R1, prospectively and under a new
+preregistration; the "select the next historical checkpoint" procedure does
+not.)*
 
 The review selected a preregistered **BTC spot/perpetual delta-hedged funding/basis carry feasibility screen** as the single next checkpoint. The reasoning:
 
@@ -217,7 +289,7 @@ The multi-clock architecture has now also been tested under its frozen P6/P7 con
 - **P6** — five independent native-timeframe specialists (`1m`, `5m`, `15m`, `30m`, `1h`): the preregistered XGBoost deciding family found **no clock viable**.
 - **P6-EXT** — `4h` and `1d`: **neither viable**, so `SWING` is `NOT_ELIGIBLE`.
 - **P7** — cross-timeframe consensus over frozen P6 predictions: **neither scalping nor day-trading consensus is supportive**.
-- **P8** — automatic mode router: **preregistered and not opened** because no mode is eligible.
+- **P8** — automatic mode router: **withdrawn as moot and never opened**, because no mode is eligible and none can become eligible without work its own rules forbid. It produced nothing.
 
 What has *not* happened is sustained futures paper validation. An engineering smoke of the whole chain exists and is labelled as one.
 
@@ -334,7 +406,7 @@ Under committed evidence every mode is `NOT_ELIGIBLE`, so the controller returns
 
 ### 6. Later research axes — choose one after the decision review
 
-P8 is preregistered and **not opened**. Its opening condition — at least two eligible modes — is unmet.
+P8 is preregistered, **never opened**, and **withdrawn as moot** since 2026-09-03. Its opening condition — at least two eligible modes — is unmet and cannot be met without refitting screened-out clocks. There is no `AUTO` mode and none is coming.
 
 If the specialist/consensus line remains insufficient, change one axis at a time. Candidate later questions include:
 
@@ -552,7 +624,17 @@ P7's negative result stays negative, but future consensus research should explic
 
 Do not add those rules to P7 after seeing its deltas. If revisited, they belong to a new preregistration.
 
-## Mandatory post-P6/P7/P8-boundary decision review — performed
+## Mandatory post-P6/P7/P8-boundary decision review — performed, and RETIRED
+
+> **RETIRED 2026-09-03.** This review's instrument — "choose the single next
+> historical checkpoint with the highest information value" — was retired by the
+> adopted roadmap, which spends no further deciding evidence on the four outer
+> blocks and moves the programme to a prospective campaign instead. The section
+> is kept because it is the record of how the structural-carry axis was chosen,
+> and because its questions 1 to 15 remain a good checklist for *designing* a
+> rule. **Its question 16 is not the current project action, and the "next
+> review is now due" paragraph below is no longer true.** The current project
+> action is stage S1, PR-04.
 
 **This review has been carried out**, with the independent external audit as its input, and it selected the structural carry axis recorded in START HERE. Question 14 was decisive: a structural, non-directional strategy is a more orthogonal and more testable source of edge than a ninth reading of the same four burned blocks. The questions are kept below because the *next* review — after the structural screen closes — asks them again against whatever the screen returns.
 
@@ -627,7 +709,7 @@ Initial live operation remains conservative: isolated futures semantics, low lev
 21. **Structural alpha remains a separate research branch.** Funding/basis arbitrage and market making are not evidence for directional ML, and vice versa.
 22. **Robustness analysis is diagnostic, not a tuning surface.**
 23. **Short green paper runs do not authorize promotion.** Forward-validation requirements are frozen before judging the campaign.
-24. **P8 remains NOT OPENED until its preregistered eligibility condition is genuinely met by future evidence.**
+24. **P8 is WITHDRAWN AS MOOT and was never opened.** Superseding the earlier "remains NOT OPENED until its eligibility condition is met": that condition — two eligible trading modes — cannot be met without refitting clocks P6 and P6-EXT screened out, which P8's own rules forbid, so waiting for it was waiting for something that cannot arrive. **Withdrawal is not a result.** P8 has no number, no fit and no verdict, and must never be described as answered, negative, positive, failed or inconclusive. Its committed design stays readable and is not deleted.
 25. **The August-2026 authorship date versus the 2025 data and seal dates is disclosed every time Styx or historical confirmation strength is described.** Styx carries a hindsight-era ceiling.
 26. **P6's dirty-tree fitting provenance is never silently upgraded to exact clean-checkout reproducibility.**
 27. **P7's better-than-mean-constituent behaviour is descriptive only.** The preregistered fold-wise-best verdict remains negative.
@@ -637,6 +719,22 @@ Initial live operation remains conservative: isolated futures semantics, low lev
 31. **P13 is closed on SOURCE VALIDITY and was never economically evaluated.** Its economic state is `NOT YET RUN`; its source-validity disposition is `P13 SOURCE CLOSURE: FUTURE GOVERNED SCREEN NOT EVALUABLE`. Neither is carry evidence in either direction, and P13 is never described as an economically positive or negative checkpoint. The load-bearing reason is narrow and already frozen: 192 held-window hours carry neither an authorised mark high nor an authorised mark close, and A2R2 authorises no substitute. The separate question of whether every post-open **execution**-source absence receives the same terminal treatment (31 further held hours) stays **unresolved and non-load-bearing**, and may not be settled now that the coverage is known.
 32. **A P13 rule the frozen text left genuinely open is resolved by an explicit amendment, before any economic number, in the direction that cannot flatter a verdict.** Amendment A1 is the pattern: it moved the preregistration hash rather than pretending otherwise, kept the superseded hash visible, left the evidence generated under the old hash alone, and chose the treatment that forfeits `VIABLE` outright. A rule resolved after a number exists, or in the direction that helps, is not an amendment but selection.
 
+### Adopted 2026-09-03 with the Fable 5.1 replacement roadmap
+
+These constraints were added by the owner decision recorded at the head of this file. Where one contradicts an earlier constraint, it says so explicitly and the later one governs.
+
+33. **The Fable 5.1 replacement roadmap is ADOPTED and is the authoritative plan.** [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md) is the roadmap; [`proposed_demo_implementation_master_plan.md`](proposed_demo_implementation_master_plan.md) is the engineering plan. The active stage sequence is **S0 → S1 → S2 → S3 → S4 → S5 → S6**. This file's "Development sequence", "Later research axes" and mandatory decision review are retired.
+34. **No further DECIDING use of the four historical outer blocks** (2023-03-04 to 2025-05-19). Ten checkpoints have read them; the budget for deciding evidence on them is spent and is zero. They remain descriptive context, engineering fixtures and the source of one-time frozen coefficients disclosed as such. No future checkpoint decides on them, and none may be split into more folds to manufacture independence.
+35. **The next deciding scientific programme is PROSPECTIVE-FIRST.** Evidence that decides comes from data that had not occurred when the rule was frozen. Prospective evidence outranks historical evidence for any promotion decision, and neither Styx nor `P4-HOLD` is ever described as prospective.
+36. **P14 is DECLINED and NOT OPENED — DESIGN DECLINED BEFORE OPENING / NO RESULT.** It was preregistered on branch `claude/p14-native-tradeflow-prereg` at `36cdae48877b1d5fa88b2664c127b5307a917751` and declined before opening, on information-value grounds, after the independent Fable 5.1 audit. **No P14 statistic, signal value, fold score, trade or PnL was ever computed.** P14 is never described as answered, negative, positive, failed or inconclusive; there is no result for any of those words to describe. The branch is retained as historical design evidence and is not deleted. See also constraint 24 for P8, whose withdrawal has the same character and the same prohibition.
+37. **The primary future modelled and executed directional instrument is the Binance USD-M BTCUSDT perpetual.** Binance spot BTCUSDT is the hedge leg of the carry position, the price control and a supporting data source. **The instrument modelled is the instrument executed** — this supersedes the earlier arrangement in which every economic number priced a SHORT leg that spot cannot hold. Constraint 20 still governs any cross-venue choice.
+38. **The research budget is FINITE and authoritative.** Section 6 of the adopted roadmap governs: zero deciding checkpoints on the four outer blocks; at most one new historical checkpoint on genuinely new data, and only after S5 is running; at most two prospective campaigns (PVC-1, PVC-2), six months each, at most three rules each; engineering before S5 capped at eight person-weeks, and exceeding the cap simplifies the plan rather than extending it. At the end of the budget the programme either freezes a candidate for a separately authorised very small live consideration or records "no deployable alpha under the current mandate" and closes or re-mandates. The kill and pivot criteria in section 24 of [`fable_5_1_full_project_strategic_audit.md`](fable_5_1_full_project_strategic_audit.md) are adopted unchanged.
+39. **Every future preregistration carries an effect-size floor, the minimum realised trade or settlement count that makes it detectable, a dependent-data test beside any fold or block count, a declared multiplicity budget, and a per-instrument cost model.** The flat 20 bps per-trade cost is retired. A checkpoint receives an independent review before it opens, with a minimum elapsed time between the preregistration and the first result. Section 5 of the adopted roadmap is the full list and governs.
+
+**Unchanged by the adoption, and restated because they are the ones most likely to be assumed away:** no real money is authorised (constraint 1); no leverage above 1x; Aegis is the sole risk authority (constraint 9); `P4-HOLD` is retired and unread (constraint 2); Styx is sealed and carries its hindsight-era ceiling (constraints 3 and 25); P13's historical economics are not run (constraint 31); negative results stay visible (constraint 11); and no frozen artifact, manifest, hash or preregistration is rewritten (constraint 13).
+
 ## Current one-line roadmap
 
-**Merged P5 baseline → P6/P6-EXT specialists answered negative → P7 consensus-v1 answered negative → P8 preregistered but NOT OPENED → independent audit returned COHERENT WITH REQUIRED REPAIRS → disclosures + positive-control tests + pandas-2.x constraint merged → decision review selected structural carry → preregister ONE exploratory BTC spot/perpetual delta-hedged funding/basis carry feasibility screen → attempt it and close it NOT EVALUABLE on egress, with no economics computed → independent external audit returned COHERENT WITH REQUIRED REPAIRS → repairs + pre-economic amendments A1/A2/A2R1/A2R2 → obtain egress, build the runtime and acquire all 260 sources (verified) → close P13 on SOURCE VALIDITY, `FUTURE GOVERNED SCREEN NOT EVALUABLE`, with the economic screen still never run and no economics computed → **NEXT: select and preregister the next scientific checkpoint, in a fresh session** → independent audit → if warranted, build a structural dry-run path and freeze a prospective paper protocol before future data arrives → sustained future paper → mature-system freeze → carefully decide whether the hindsight-era-capped Styx adds value → only then consider a separately authorised very small live allocation.**
+**Merged P5 baseline → P6/P6-EXT specialists answered negative → P7 consensus-v1 answered negative → P8 preregistered and never opened → independent audit returned COHERENT WITH REQUIRED REPAIRS → disclosures + positive-control tests + pandas-2.x constraint merged → decision review selected structural carry → preregister ONE exploratory BTC spot/perpetual delta-hedged funding/basis carry feasibility screen → attempt it and close it NOT EVALUABLE on egress, with no economics computed → independent external audit returned COHERENT WITH REQUIRED REPAIRS → repairs + pre-economic amendments A1/A2/A2R1/A2R2 → obtain egress, build the runtime and acquire all 260 sources (verified) → close P13 on SOURCE VALIDITY, `FUTURE GOVERNED SCREEN NOT EVALUABLE`, with the economic screen still never run and no economics computed → preregister P14 on a branch, then commission an independent Fable 5.1 strategic audit of the whole programme → **audit merged (PR #68) and its replacement roadmap ADOPTED (S0, 2026-09-03): P14 DECLINED BEFORE OPENING with no result ever generated, PR #67 closed unmerged, P8 WITHDRAWN AS MOOT, deciding use of the four outer blocks ended, the USD-M BTCUSDT perpetual made the primary modelled and executed instrument** → **NEXT: S1 — build the prospective recorder, starting with PR-04 (contract, events, sink, normalizer; offline only)** → 30-day coverage gate → S2 freeze a menu of at most three rules and preregister PVC-1, independently reviewed before the first scored day → S3 Minimum Viable Chimera (persisted Aegis, live-data simulated venue, two-leg carry position, decision log, replay parity) → S4 14-day soak and parity → S5 six-month prospective PVC-1 dry-run campaign → S6 closure and independent audit → either a separately authorised very small live consideration under a new contract with a hard capital cap, or a recorded "no deployable alpha under the current mandate". Styx and `P4-HOLD` are not on this path.**
+
+The retired one-line roadmap ended `NEXT: select and preregister the next scientific checkpoint, in a fresh session`. That step no longer exists: the adopted roadmap spends no further deciding evidence on the four outer blocks, so there is no next historical checkpoint to select.

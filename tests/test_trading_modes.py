@@ -230,9 +230,14 @@ def test_there_is_no_auto_mode_because_p8_is_not_opened():
     # The reason code exists so a caller asking for automatic routing can be
     # told why it is refused, rather than silently getting one.
     assert ReasonCode.AUTO_ROUTING_NOT_OPENED.value == "auto_routing_not_opened"
-    from nn.research_state import checkpoint_states
+    from nn.research_state import ANSWERED, WITHDRAWN, checkpoint_states
 
-    assert checkpoint_states(REPO)["P8"] in {"unrun", "preregistered"}
+    # `withdrawn` joined the vocabulary when P8 was withdrawn as moot on
+    # 2026-09-03. It is still not an answer: the checkpoint was closed without
+    # ever being opened, so there is no router and no number either way.
+    state = checkpoint_states(REPO)["P8"]
+    assert state != ANSWERED
+    assert state in {"unrun", "preregistered", WITHDRAWN}
 
 
 def test_an_eligible_mode_decides_through_the_shared_consensus():

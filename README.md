@@ -20,6 +20,20 @@ market data → validated dataset → features → leakage-safe training
 
 **LIVE TRADING: DISABLED BY DEFAULT.** See [Live trading protection](#live-trading-protection).
 
+> **Where the project is going, as of 2026-09-03.** The owner has adopted the
+> Fable 5.1 replacement roadmap:
+> [`docs/proposed_development_plan_post_fable_5_1_audit.md`](docs/proposed_development_plan_post_fable_5_1_audit.md),
+> expanded in
+> [`docs/proposed_demo_implementation_master_plan.md`](docs/proposed_demo_implementation_master_plan.md).
+> The next deciding evidence is a preregistered six-month **prospective**
+> dry-run campaign on data that has not yet occurred, on the Binance USD-M
+> BTCUSDT perpetual with spot BTCUSDT as the hedge leg — not another reading of
+> the four historical outer blocks, which are now closed to deciding use. The
+> active stages are S0 → S6; S0 is done and the next task is the offline
+> prospective recorder. `docs/current_development_plan.md` is **superseded as a
+> roadmap** and kept for its closed-checkpoint findings and standing
+> constraints. Nothing in the adopted plan authorises real money.
+
 ---
 
 ## What works today
@@ -275,8 +289,19 @@ reads; it does **not** make Styx prospective blind evidence, so any future Styx
 result carries a **hindsight-era ceiling** and is described as a one-shot
 historical evaluation. Second, the four outer blocks are **adaptive** and have
 now been read by every checkpoint from `P2a` onward; no result on them is
-confirmatory. See [`docs/current_development_plan.md`](docs/current_development_plan.md)
+confirmatory, and since 2026-09-03 they are closed to **deciding** use
+altogether. See [`docs/current_development_plan.md`](docs/current_development_plan.md)
 for the full post-audit disclosures.
+
+**Two of the states below mean a checkpoint ended without ever producing a
+number, and neither is a result.** `withdrawn` (`P8`) means the question became
+moot and the checkpoint was never opened. `declined` (`P14`) means the design
+was reviewed and refused before opening — `P14` was preregistered on the branch
+`claude/p14-native-tradeflow-prereg`, no statistic of any kind was ever
+computed, and PR #67 was closed without merging with the branch retained as
+historical design evidence. Neither checkpoint is answered, negative, positive,
+failed or inconclusive; there is no result for those words to describe, and CI
+rejects a front-door document that says otherwise.
 
 <!-- research-state:begin -->
 <!--
@@ -296,8 +321,9 @@ for the full post-audit disclosures.
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
-| `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **withdrawn** |
 | `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
+| `P14` | `btc_p14_native_tradeflow_screen` | **declined** |
 
 <!-- research-state:end -->
 
@@ -618,13 +644,16 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/p6_extension_preregistration.md](docs/p6_extension_preregistration.md) | Checkpoint P6-EXT, P6's design on the 4h and 1d clocks a SWING mode needs; closed as negative |
 | [docs/p7_preregistration.md](docs/p7_preregistration.md) | Checkpoint P7, preregistered after P6 closed and closed as negative: cross-timeframe consensus over the frozen specialists |
 | [docs/trading_modes_v1.md](docs/trading_modes_v1.md) | SCALPING, DAY_TRADING, SWING and FLAT as operating states, their eligibility rule, and what may never select a mode |
-| [docs/p8_preregistration.md](docs/p8_preregistration.md) | Checkpoint P8's committed design. P8 is **not opened**: no router exists and no P8 number exists |
+| [docs/p8_preregistration.md](docs/p8_preregistration.md) | Checkpoint P8's committed design. P8 was **never opened** and is **withdrawn as moot**: no router exists and no P8 number exists |
 | [docs/paper_operation_runbook.md](docs/paper_operation_runbook.md) | Running the dry-run paper chain, and the difference between a smoke and sustained paper validation |
-| [docs/current_development_plan.md](docs/current_development_plan.md) | What the programme is building next, and what each step may claim when it finishes |
+| [docs/proposed_development_plan_post_fable_5_1_audit.md](docs/proposed_development_plan_post_fable_5_1_audit.md) | **The adopted roadmap (2026-09-03).** Stages S0 to S6, the prospective campaign, the finite research budget. Start here for direction |
+| [docs/proposed_demo_implementation_master_plan.md](docs/proposed_demo_implementation_master_plan.md) | The adopted engineering plan: target architecture, the recorder, the demo runner, the 16-PR sequence, the test plan |
+| [docs/fable_5_1_full_project_strategic_audit.md](docs/fable_5_1_full_project_strategic_audit.md) | The independent audit that produced them. A historical record, not edited after the fact |
+| [docs/current_development_plan.md](docs/current_development_plan.md) | **Superseded as a roadmap.** Retained for the closed checkpoints' findings, the post-audit disclosures, and the standing constraints |
 | [docs/futures_execution_v1.md](docs/futures_execution_v1.md) | Futures Execution v1: dry-run-only USD-M perpetuals, LONG and SHORT, and the risk boundary that does not move |
 | [docs/futures_dry_run_validation.md](docs/futures_dry_run_validation.md) | The operational protocol Futures Execution v1 was validated against, frozen before it was evaluated |
 | [docs/research_reproduction.md](docs/research_reproduction.md) | Reproducing the research from a fresh clone, without the sealed block |
-| [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, and what is next |
+| [docs/research_roadmap.md](docs/research_roadmap.md) | What has been asked, what was answered, what was never opened, and what is next |
 
 ## Repository layout
 

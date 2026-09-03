@@ -4,6 +4,21 @@
 no router has been implemented, no P8 fit has been made, no P8 number exists, and
 nothing in this repository reports one.
 
+> **WITHDRAWN AS MOOT, 2026-09-03, and never opened.** The opening condition
+> below needs at least two eligible trading modes. `P6` and `P6-EXT` left none,
+> and the only route to a second is refitting clocks those checkpoints screened
+> out, which section 11 forbids. Waiting for the condition was waiting for
+> something that cannot arrive, so the checkpoint is withdrawn rather than left
+> pending.
+>
+> **The withdrawal is not a result.** P8 was never opened, so it is not
+> answered, not negative, not positive, not failed and not inconclusive. This
+> design is unchanged, its hash has not moved, and the document is not rewritten
+> — the note is a status line, not an amendment. Reopening would need a new
+> checkpoint with its own preregistration, and the adopted roadmap
+> ([`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md))
+> does not schedule one.
+
 `preregistration_hash` = `sha256:abbb76258980d557eb601855ea24834295ca54f74b037f3ef4926233faaa01dd`
 
 The machine-readable twin is [`nn/p8_preregistration.py`](../nn/p8_preregistration.py).
@@ -26,8 +41,9 @@ The machine-readable twin is [`nn/p8_preregistration.py`](../nn/p8_preregistrati
 | `P6` | `btc_p6_multiclock_specialist_screen` | **answered** |
 | `P6-EXT` | `btc_p6ext_swing_clock_specialist_screen` | **answered** |
 | `P7` | `btc_p7_cross_timeframe_consensus` | **answered** |
-| `P8` | `btc_p8_automatic_trading_mode_router` | **preregistered** |
+| `P8` | `btc_p8_automatic_trading_mode_router` | **withdrawn** |
 | `P13` | `btc_p13_structural_carry_feasibility` | **preregistered** |
+| `P14` | `btc_p14_native_tradeflow_screen` | **declined** |
 
 <!-- research-state:end -->
 
