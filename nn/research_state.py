@@ -21,6 +21,19 @@ old state, so :func:`unrun_claims` adds a narrow second net: a small, named list
 of ways to say "this checkpoint has no evidence", forbidden in a front-door
 document for a checkpoint that has some. It is deliberately about a class of
 claim rather than about a particular sentence.
+
+Two states cannot be derived this way, because no absence of evidence carries
+their meaning. A checkpoint whose question became moot and a checkpoint whose
+design was refused before it opened both leave exactly the artifact tree of a
+checkpoint that is merely waiting its turn, and reading them as "waiting" is
+wrong in a way that compounds: the programme keeps a decision on its list of
+things still to do. So ``withdrawn`` and ``declined`` are *declared* on the
+checkpoint, evidence still overrides them (:func:`terminal_contradictions`
+reports the contradiction rather than letting a declaration bury a number), and
+:func:`result_claims` is the mirror of :func:`unrun_claims`: a checkpoint that
+never produced a number may not be described in a front-door document as
+answered, negative, positive or failed. Those words all presuppose a statistic
+that does not exist.
 """
 
 from __future__ import annotations
@@ -33,6 +46,21 @@ from pathlib import Path
 ANSWERED = "answered"
 PREREGISTERED = "preregistered"
 UNRUN = "unrun"
+
+#: The two ways a checkpoint ends without ever producing a number. Both are
+#: decisions a person recorded, never facts about the artifact tree.
+#:
+#: ``withdrawn`` — the question became moot and the checkpoint was never opened.
+#: ``declined`` — the design was reviewed and refused before it was opened.
+#:
+#: Neither is an answer, a negative, a positive, a failure or an inconclusive
+#: result. Each means NO RESULT EXISTS, arrived at deliberately rather than by
+#: not having got round to it yet.
+WITHDRAWN = "withdrawn"
+DECLINED = "declined"
+
+#: The states that mean "closed, and no number was ever produced".
+TERMINAL_STATES: tuple[str, ...] = (WITHDRAWN, DECLINED)
 
 MARKER_BEGIN = "<!-- research-state:begin -->"
 MARKER_END = "<!-- research-state:end -->"
@@ -51,6 +79,31 @@ UNRUN_CLAIM_PATTERNS: tuple[str, ...] = (
     r"{cp}, unrun",
 )
 
+#: The mirror list: how a document may *not* describe a checkpoint that was
+#: closed without a result. Each entry asserts an outcome, which is the one
+#: thing ``withdrawn`` and ``declined`` make false — there is no statistic to be
+#: negative, positive, failed or inconclusive about. Kept literal and short for
+#: the same reason as the list above: this is a guard against a class of claim,
+#: not a style checker, and a pattern loose enough to swallow "its eligibility
+#: precondition failed" would forbid the truth along with the error.
+RESULT_CLAIM_PATTERNS: tuple[str, ...] = (
+    r"{cp} is answered",
+    r"{cp} was answered",
+    r"{cp} is negative",
+    r"{cp} was negative",
+    r"{cp} is positive",
+    r"{cp} was positive",
+    r"{cp} is inconclusive",
+    r"{cp} was inconclusive",
+    r"{cp} answered negative",
+    r"{cp} answered positive",
+    r"{cp} returned negative",
+    r"{cp} returned positive",
+    r"{cp} failed",
+    r"{cp} has failed",
+    r"{cp}'s (?:result|verdict|answer|number|finding)",
+)
+
 
 @dataclass(frozen=True)
 class Checkpoint:
@@ -64,6 +117,18 @@ class Checkpoint:
     evidence: str
     #: A committed preregistration, for a checkpoint designed before it runs.
     preregistration: str | None = None
+    #: ``WITHDRAWN`` or ``DECLINED`` when the checkpoint was closed by a recorded
+    #: decision instead of by evidence; ``None`` while it can still produce a
+    #: number. This is the only field here that is not a path, because it is the
+    #: only fact about a checkpoint that the repository cannot look up.
+    terminal: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.terminal is not None and self.terminal not in TERMINAL_STATES:
+            raise ValueError(
+                f"{self.name}: {self.terminal!r} is not a terminal state. "
+                f"Expected one of {TERMINAL_STATES}, or None."
+            )
 
 
 #: Every checkpoint this repository has asked, oldest first. A new checkpoint is
@@ -129,12 +194,30 @@ CHECKPOINTS: tuple[Checkpoint, ...] = (
         "btc_p8_automatic_trading_mode_router",
         "artifacts/benchmark/btc_p8_decision/decision.json",
         preregistration="docs/p8_preregistration.md",
+        # Withdrawn as moot, never opened. Its own eligibility precondition is
+        # two eligible trading modes; P6, P6-EXT and P7 left none, and the only
+        # route to a second one is refitting clocks those checkpoints screened
+        # out, which its rules forbid. The design stays committed and readable.
+        terminal=WITHDRAWN,
     ),
     Checkpoint(
         "P13",
         "btc_p13_structural_carry_feasibility",
         "artifacts/benchmark/btc_p13_decision/decision.json",
         preregistration="docs/p13_preregistration.md",
+    ),
+    Checkpoint(
+        "P14",
+        "btc_p14_native_tradeflow_screen",
+        "artifacts/benchmark/btc_p14_decision/decision.json",
+        # No `preregistration` path, and the omission is the accurate record
+        # rather than an oversight: P14 was preregistered on the branch
+        # `claude/p14-native-tradeflow-prereg` at
+        # `36cdae48877b1d5fa88b2664c127b5307a917751` (PR #67), which was closed
+        # without merging, so `docs/p14_preregistration.md` is not in this tree
+        # and naming it here would point a reader at a file that is not there.
+        # The branch is retained as historical design evidence.
+        terminal=DECLINED,
     ),
 )
 
@@ -149,6 +232,7 @@ FRONT_DOOR_DOCUMENTS: tuple[str, ...] = (
     "docs/research_roadmap.md",
     "docs/research_reproduction.md",
     "docs/current_development_plan.md",
+    "docs/proposed_development_plan_post_fable_5_1_audit.md",
     "docs/microstructure_v1.md",
     "docs/p4_preregistration.md",
     "docs/p5_preregistration.md",
@@ -167,14 +251,24 @@ class ResearchStateError(RuntimeError):
 def checkpoint_states(root: Path) -> dict[str, str]:
     """The state of every checkpoint, read from the artifact tree.
 
-    Evidence beats preregistration: a checkpoint that produced its aggregate is
-    ``answered`` whatever else is committed beside it.
+    Evidence beats everything: a checkpoint that produced its aggregate is
+    ``answered`` whatever else is committed or declared beside it. That ordering
+    is deliberate — a declaration is allowed to say a checkpoint was closed
+    without a number, and is never allowed to conceal one that exists. When the
+    two disagree, :func:`terminal_contradictions` says so.
+
+    A terminal declaration then beats a committed preregistration, because P8's
+    design being committed is exactly why it would otherwise read
+    ``preregistered`` forever: the file is still there, and it is still the
+    right file to read. What changed is that nobody is going to open it.
     """
     root = Path(root)
     states: dict[str, str] = {}
     for checkpoint in CHECKPOINTS:
         if (root / checkpoint.evidence).is_file():
             states[checkpoint.name] = ANSWERED
+        elif checkpoint.terminal is not None:
+            states[checkpoint.name] = checkpoint.terminal
         elif checkpoint.preregistration and (root / checkpoint.preregistration).is_file():
             states[checkpoint.name] = PREREGISTERED
         else:
@@ -227,12 +321,49 @@ def unrun_claims(text: str, states: dict[str, str]) -> list[str]:
     return found
 
 
+def result_claims(text: str, states: dict[str, str]) -> list[str]:
+    """Sentences claiming an outcome for a checkpoint that produced none."""
+    found: list[str] = []
+    for checkpoint in CHECKPOINTS:
+        if states[checkpoint.name] not in TERMINAL_STATES:
+            continue
+        for pattern in RESULT_CLAIM_PATTERNS:
+            expression = pattern.format(cp=re.escape(checkpoint.name))
+            for match in re.finditer(expression, text, flags=re.IGNORECASE):
+                found.append(match.group(0))
+    return found
+
+
+def terminal_contradictions(root: Path) -> list[str]:
+    """Checkpoints declared closed without a result that nevertheless have one.
+
+    The failure mode a declaration introduces: someone writes ``withdrawn`` on a
+    checkpoint and later the checkpoint produces an aggregate anyway. The block
+    would say ``answered`` — :func:`checkpoint_states` refuses to let a
+    declaration outrank evidence — and the declaration would sit in the source
+    quietly contradicting it. This is the second half of that guarantee.
+    """
+    root = Path(root)
+    problems: list[str] = []
+    for checkpoint in CHECKPOINTS:
+        if checkpoint.terminal is None:
+            continue
+        if (root / checkpoint.evidence).is_file():
+            problems.append(
+                f"{checkpoint.name}: declared {checkpoint.terminal} — closed with no "
+                f"result — but {checkpoint.evidence} exists. A checkpoint that "
+                "produced an aggregate was opened; remove the declaration and "
+                "record what it actually did."
+            )
+    return problems
+
+
 def verify(root: Path) -> list[str]:
     """Every disagreement between the documents and the evidence tree."""
     root = Path(root)
     states = checkpoint_states(root)
     expected = render_block(states)
-    problems: list[str] = []
+    problems: list[str] = terminal_contradictions(root)
     for name in FRONT_DOOR_DOCUMENTS:
         path = root / name
         if not path.is_file():
@@ -255,5 +386,11 @@ def verify(root: Path) -> list[str]:
         for claim in unrun_claims(text, states):
             problems.append(
                 f"{name}: says {claim!r} about a checkpoint whose evidence is committed"
+            )
+        for claim in result_claims(text, states):
+            problems.append(
+                f"{name}: says {claim!r} about a checkpoint that was closed without "
+                "ever producing a number. There is no result to be answered, "
+                "negative, positive or failed."
             )
     return problems

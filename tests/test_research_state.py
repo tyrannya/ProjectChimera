@@ -25,11 +25,15 @@ from nn.research_state import (
     ANSWERED,
     CHECKPOINTS,
     Checkpoint,
+    DECLINED,
     FRONT_DOOR_DOCUMENTS,
     UNRUN,
+    WITHDRAWN,
     checkpoint_states,
     existing_block,
     render_block,
+    result_claims,
+    terminal_contradictions,
     unrun_claims,
     verify,
 )
@@ -189,3 +193,160 @@ def test_the_same_claims_about_an_unrun_checkpoint_are_allowed(monkeypatch, tmp_
     states = checkpoint_states(root)
     assert states["P9"] == UNRUN
     assert unrun_claims("There is no P9 evidence and no P9 number exists.", states) == []
+
+
+# --- ending without a result -------------------------------------------------
+# `withdrawn` and `declined` are the two states no artifact tree can express. A
+# checkpoint nobody will ever open and a checkpoint waiting its turn leave the
+# same empty directory, so the difference has to be declared — and a declaration
+# is exactly the kind of thing that goes stale silently, which is what the tests
+# below are for.
+
+
+def test_p8_is_withdrawn_here_because_its_precondition_cannot_be_met():
+    """Never opened, and no longer pending: two eligible modes cannot happen."""
+    assert checkpoint_states(ROOT)["P8"] == WITHDRAWN
+    assert not (ROOT / "artifacts" / "benchmark" / "btc_p8_decision").exists()
+
+
+def test_p14_is_declined_here_and_its_design_is_not_in_this_tree():
+    """Declined before opening, on a branch that was closed without merging.
+
+    The missing `preregistration` path is the accurate record rather than an
+    omission: the design lives on `claude/p14-native-tradeflow-prereg`, so
+    naming a file here would point a reader at something that is not there.
+    """
+    assert checkpoint_states(ROOT)["P14"] == DECLINED
+    p14 = next(c for c in CHECKPOINTS if c.name == "P14")
+    assert p14.preregistration is None
+    assert not (ROOT / "docs" / "p14_preregistration.md").exists()
+    assert not (ROOT / "artifacts" / "benchmark" / "btc_p14_decision").exists()
+
+
+def test_no_checkpoint_here_is_both_closed_without_a_result_and_holding_one():
+    assert terminal_contradictions(ROOT) == []
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [(None, UNRUN), (WITHDRAWN, WITHDRAWN), (DECLINED, DECLINED)],
+)
+def test_the_declaration_is_the_only_thing_separating_these_states(
+    tmp_path, monkeypatch, terminal, expected
+):
+    """One empty tree, three readings, and only the declaration differs.
+
+    This is why the state cannot be derived: nothing under `artifacts/`
+    distinguishes a checkpoint waiting its turn from one nobody will ever open.
+    """
+    probe = Checkpoint(
+        "P9", "btc_p9_probe", "artifacts/benchmark/btc_p9/p9.json", terminal=terminal
+    )
+    monkeypatch.setattr(research_state, "CHECKPOINTS", (probe,))
+    assert not (tmp_path / probe.evidence).exists()
+    assert checkpoint_states(tmp_path)["P9"] == expected
+
+
+def test_a_terminal_declaration_may_not_outrank_evidence(tmp_path, monkeypatch):
+    """The failure a declaration makes possible, and the guard against it.
+
+    Declaring a checkpoint closed-without-a-result must never be a way to stop
+    a committed number from being reported. So evidence wins the state, *and*
+    the contradiction is named.
+    """
+    root = _clone(tmp_path)
+    closed = Checkpoint(
+        "P9", "btc_p9_probe", "artifacts/benchmark/btc_p9/p9.json", terminal=DECLINED
+    )
+    monkeypatch.setattr(research_state, "CHECKPOINTS", CHECKPOINTS + (closed,))
+    assert checkpoint_states(root)["P9"] == DECLINED
+    assert terminal_contradictions(root) == []
+
+    aggregate = root / closed.evidence
+    aggregate.parent.mkdir(parents=True, exist_ok=True)
+    aggregate.write_text("{}")
+
+    assert checkpoint_states(root)["P9"] == ANSWERED
+    problems = terminal_contradictions(root)
+    assert len(problems) == 1 and "declared declined" in problems[0]
+    assert any("declared declined" in problem for problem in verify(root))
+
+
+def test_a_state_that_is_not_a_terminal_state_is_refused():
+    """`terminal` is a small closed vocabulary, not free text."""
+    with pytest.raises(ValueError, match="not a terminal state"):
+        Checkpoint(
+            "P9", "btc_p9_probe", "artifacts/benchmark/btc_p9/p9.json", terminal="negative"
+        )
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "P14 is answered",
+        "P14 was answered",
+        "P14 is negative",
+        "P14 answered negative",
+        "P14 returned negative",
+        "P14's verdict is recorded below",
+        "P8 failed",
+        "P8 is inconclusive",
+        "P8's result is recorded below",
+    ],
+)
+def test_a_document_claiming_an_outcome_for_a_checkpoint_that_has_none_is_rejected(
+    tmp_path, sentence
+):
+    """The mirror of the unrun guard, and the reason both exist.
+
+    `withdrawn` and `declined` mean NO NUMBER WAS EVER PRODUCED. Every sentence
+    here presupposes a statistic, so every one of them is false by construction
+    — which is exactly the kind of false a summary drifts into.
+    """
+    root = _clone(tmp_path)
+    readme = root / "README.md"
+    readme.write_text(readme.read_text() + "\n" + sentence + "\n")
+    problems = verify(root)
+    assert any("closed without ever producing a number" in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    "sentence", ["P3 is negative", "P3 answered negative", "P3's verdict"]
+)
+def test_the_same_words_about_a_checkpoint_that_does_have_a_result_are_allowed(
+    tmp_path, sentence
+):
+    """Falsifies the test above: the guard is about the state, not the words.
+
+    P3 ran and answered negative. Saying so is the truth, and a guard that
+    forbade it would be forbidding the repository's own findings.
+    """
+    root = _clone(tmp_path)
+    readme = root / "README.md"
+    readme.write_text(readme.read_text() + "\n" + sentence + "\n")
+    assert verify(root) == []
+
+
+def test_the_real_documents_describe_p8_and_p14_as_the_non_results_they_are():
+    """Not a clone: the front doors this repository actually ships."""
+    states = checkpoint_states(ROOT)
+    for name in FRONT_DOOR_DOCUMENTS:
+        assert result_claims((ROOT / name).read_text(encoding="utf-8"), states) == [], name
+
+
+def test_the_writer_reconciles_a_checkpoint_that_was_closed_without_a_result(
+    tmp_path, monkeypatch
+):
+    """A withdrawal goes stale in the documents exactly as a result would."""
+    root = _clone(tmp_path)
+    assert verify(root) == []
+    closed = Checkpoint(
+        "P9", "btc_p9_probe", "artifacts/benchmark/btc_p9/p9.json", terminal=WITHDRAWN
+    )
+    monkeypatch.setattr(research_state, "CHECKPOINTS", CHECKPOINTS + (closed,))
+    assert verify(root) != []
+
+    written = write_blocks(root)
+    assert sorted(written) == sorted(FRONT_DOOR_DOCUMENTS)
+    assert verify(root) == []
+    assert "**withdrawn**" in (root / "README.md").read_text()
