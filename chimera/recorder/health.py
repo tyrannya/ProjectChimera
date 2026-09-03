@@ -78,6 +78,44 @@ class StreamHealth:
     decode_errors: int = 0
     missing_minutes: int | None = None
     last_event_ns: int | None = None
+    #: Set once, by a storage failure, and never cleared inside a run. Section
+    #: 2.2's A -> B arrow: "write error -> recorder halts that stream, health
+    #: metric flips, alert". A recorder that had lost the ability to write one
+    #: stream durably and kept reporting it up would be presenting silence as
+    #: data, so the halt is latched rather than retried: the connection may be
+    #: perfectly healthy and the storage still gone, and only a restart — which
+    #: runs the whole recovery path — may lift it.
+    halted: bool = False
+    halt_reason: str | None = None
+    halted_at_ns: int | None = None
+    #: Observations refused because the stream was already halted.
+    dropped_after_halt: int = 0
+
+    @property
+    def up(self) -> bool:
+        """Whether this stream is both receiving *and* able to store what it receives.
+
+        ``connected`` is a fact about a socket and stays truthful about one.
+        This is the operational answer, and it is what
+        ``chimera_recorder_up`` publishes: a stream whose sink has failed is not
+        up, however well its connection is doing.
+        """
+        return self.connected and not self.halted
+
+    def halt(self, reason: str, *, now_ns: int | None = None) -> bool:
+        """Latch a storage failure. Returns whether this call was the one that did.
+
+        Idempotent in the flag and in the reason — the first failure is the one
+        worth reading, because everything after it is a consequence — while the
+        write-error counter still counts every distinct failure.
+        """
+        self.write_errors += 1
+        if self.halted:
+            return False
+        self.halted = True
+        self.halt_reason = reason
+        self.halted_at_ns = now_ns
+        return True
 
     def age_seconds(self, now_ns: int) -> float | None:
         """Now minus the canonical time of the last observation.
@@ -92,7 +130,12 @@ class StreamHealth:
     def to_dict(self, now_ns: int) -> dict[str, Any]:
         return {
             "stream": self.stream,
+            "up": self.up,
             "connected": self.connected,
+            "halted": self.halted,
+            "halt_reason": self.halt_reason,
+            "halted_at_ns": self.halted_at_ns,
+            "dropped_after_halt": self.dropped_after_halt,
             "events": self.events,
             "duplicates": self.duplicates,
             "late": self.late,
@@ -148,6 +191,11 @@ class RecorderHealth:
         return sum(health.write_errors for health in self.streams.values())
 
     @property
+    def halted_streams(self) -> tuple[str, ...]:
+        """Streams whose storage failed and which are recording nothing."""
+        return tuple(sorted(name for name, health in self.streams.items() if health.halted))
+
+    @property
     def evidence_class(self) -> str:
         """What a minute recorded right now would be.
 
@@ -180,6 +228,7 @@ class RecorderHealth:
             ),
             "disk_free_bytes": self.disk_free_bytes,
             "write_errors": self.write_errors,
+            "halted_streams": list(self.halted_streams),
             "errors": list(self.errors),
             "streams": [self.streams[name].to_dict(now_ns) for name in sorted(self.streams)],
         }
@@ -324,7 +373,10 @@ def publish(
     seen = previous or {}
     for name in sorted(health.streams):
         stream = health.streams[name]
-        metrics.RECORDER_UP.labels(stream=name).set(1 if stream.connected else 0)
+        # `up`, not `connected`: a stream that cannot store what it receives is
+        # not up, and section 2.2 requires the health metric to flip on a write
+        # error rather than on a disconnection alone.
+        metrics.RECORDER_UP.labels(stream=name).set(1 if stream.up else 0)
         age = stream.age_seconds(now_ns)
         if age is not None:
             metrics.RECORDER_LAST_EVENT_AGE.labels(stream=name).set(age)

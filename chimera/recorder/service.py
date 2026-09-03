@@ -158,6 +158,8 @@ class ServiceResult:
     reconnects: int = 0
     heartbeats: int = 0
     normalized_days: tuple[str, ...] = ()
+    halted_streams: tuple[str, ...] = ()
+    dropped_after_halt: int = 0
     errors: tuple[str, ...] = ()
 
     @property
@@ -177,6 +179,8 @@ class ServiceResult:
             "reconnects": self.reconnects,
             "heartbeats": self.heartbeats,
             "normalized_days": list(self.normalized_days),
+            "halted_streams": list(self.halted_streams),
+            "dropped_after_halt": self.dropped_after_halt,
             "errors": list(self.errors),
         }
 
@@ -262,22 +266,35 @@ class RecorderService:
 
         Called from the websocket read loop and from every poller, so it is the
         single place a write error, a duplicate or a late arrival is counted.
-        A failed write is counted and surfaced rather than raised: one unwritable
-        record must not take down five healthy streams, and
-        ``chimera_recorder_write_errors_total`` is the series an operator alerts
-        on. The acceptance criterion for this PR is that it stays at zero.
+
+        **A write failure halts the stream** (section 2.2, the ``A -> B`` arrow:
+        "write error -> recorder halts that stream, health metric flips, alert").
+        Counting the failure and carrying on would leave the recorder presenting
+        a stream as operational while dropping every observation on it — the
+        socket keeps delivering, the metric keeps saying up, and the silence
+        looks like a quiet market rather than a broken disk. So the failure is
+        latched, further observations for that stream are refused and counted,
+        and only a restart, through the whole recovery path, can lift it.
+
+        Exactly one stream is halted, not the run: the other five keep recording
+        if they can, and a client that multiplexes several streams over one
+        socket keeps serving its healthy ones, because the halt is applied here,
+        per stream id, rather than by dropping a connection.
         """
         stream = self.health.stream(event.stream)
+        if stream.halted:
+            stream.dropped_after_halt += 1
+            return
         sink = self.sinks.get(event.stream)
         if sink is None:
-            self._note(f"no sink for {event.stream}; the contract does not declare it")
-            stream.write_errors += 1
+            self._halt(
+                event.stream, "the contract declares no such stream, so there is no sink"
+            )
             return
         try:
             result = sink.append(event)
         except (RecorderSinkError, OSError) as exc:
-            stream.write_errors += 1
-            self._note(f"write failed for {event.stream}: {exc}")
+            self._halt(event.stream, f"append failed: {exc}")
             return
         if result.outcome is AppendOutcome.ACCEPTED:
             stream.events += 1
@@ -300,6 +317,29 @@ class RecorderService:
         logger.warning("%s", message)
         self._errors.append(message)
         self.health.errors = tuple(self._errors[-32:])
+
+    def _halt(self, name: str, reason: str) -> None:
+        """Latch a storage failure for one stream and stop recording it.
+
+        The sink is closed on the way out so that nothing can append to it by
+        another path, and because closing is the last chance to flush what was
+        already accepted. Closing may itself fail — the storage is, after all,
+        what just failed — and that is noted rather than raised: the stream is
+        already halted and there is nothing further to protect.
+        """
+        stream = self.health.stream(name)
+        first = stream.halt(reason, now_ns=self._wall_ns())
+        if not first:
+            return
+        stream.connected = False
+        logger.error("%s halted: %s", name, reason)
+        self._note(f"{name} halted and is recording nothing: {reason}")
+        sink = self.sinks.get(name)
+        if sink is not None:
+            try:
+                sink.close()
+            except (RecorderSinkError, OSError) as exc:
+                self._note(f"{name} could not be closed after its halt: {exc}")
 
     # --- startup ----------------------------------------------------------
     def recover(self) -> _Recovery:
@@ -707,24 +747,38 @@ class RecorderService:
 
     # --- periodic work ----------------------------------------------------
     def _sync(self) -> None:
+        """Flush every open stream, and halt any whose durability has gone.
+
+        An fsync that fails means the bytes already accepted are not on the disk,
+        which is the same fact as a failed append arriving a moment later. It is
+        treated the same way rather than counted and forgotten.
+        """
         for stream, sink in self.sinks.items():
+            if self.health.stream(stream).halted:
+                continue
             try:
                 sink.sync()
-            except RecorderSinkError as exc:
-                self.health.stream(stream).write_errors += 1
-                self._note(f"fsync failed for {stream}: {exc}")
+            except (RecorderSinkError, OSError) as exc:
+                self._halt(stream, f"fsync failed: {exc}")
 
     def _beat(self) -> None:
         self._refresh_connection_state()
         self.heartbeat.write(self.health)
 
     def _refresh_connection_state(self) -> None:
-        """Copy what the clients know into the health snapshot."""
+        """Copy what the clients know into the health snapshot.
+
+        A halted stream keeps ``connected`` false whatever its socket is doing.
+        The socket is very likely fine — a disk failing does not close a
+        connection — and letting this refresh copy that fact over the latch is
+        exactly how a halted stream would come back up in the report a moment
+        after it stopped recording. ``halted`` is never written here.
+        """
         skews = []
         for client in self.clients:
             for stream_id in client.stream_ids:
                 stream = self.health.stream(stream_id)
-                stream.connected = client.connected
+                stream.connected = client.connected and not stream.halted
                 stream.reconnects = client.counters.reconnects
                 stream.out_of_order = client.counters.out_of_order
                 stream.decode_errors = client.counters.decode_errors
@@ -811,9 +865,11 @@ class RecorderService:
                 self.health.stream(stream_id).connected = False
         self.heartbeat.write(self.health)
         for stream, sink in self.sinks.items():
+            if self.health.stream(stream).halted:
+                continue  # closed when it was halted; reopening it writes nothing
             try:
                 sink.close()
-            except RecorderSinkError as exc:
+            except (RecorderSinkError, OSError) as exc:
                 self._note(f"could not close {stream}: {exc}")
 
     def _result(self, started_ns: int) -> ServiceResult:
@@ -829,6 +885,8 @@ class RecorderService:
             reconnects=sum(client.counters.reconnects for client in self.clients),
             heartbeats=self.heartbeat.writes,
             normalized_days=tuple(self._normalized_days),
+            halted_streams=self.health.halted_streams,
+            dropped_after_halt=sum(stream.dropped_after_halt for stream in streams),
             errors=tuple(self._errors),
         )
 

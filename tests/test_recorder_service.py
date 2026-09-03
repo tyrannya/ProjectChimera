@@ -54,13 +54,14 @@ from chimera.recorder.service import (
     RecorderServiceError,
     build_service,
 )
-from chimera.recorder.sink import RawSink, read_raw_events
+from chimera.recorder.sink import RawSink, RecorderSinkError, read_raw_events
 from tests.recorder_synthetic import (
     DAY,
     funding_rest_row,
     kline_event,
     kline_rest_row,
     kline_ws_frame,
+    mark_event,
     minute_ms,
     premium_index_row,
 )
@@ -804,28 +805,292 @@ def test_the_open_day_follows_the_clock_and_not_the_local_timezone(tmp_path):
     assert service.health.open_day == DAY
 
 
-def test_a_write_error_is_counted_and_surfaced_rather_than_swallowed(tmp_path):
-    service = service_for(tmp_path)
-    service.recover()
-
-    class Refusing:
-        stream = UM_KLINE_1M
-
-        def append(self, event):
-            raise OSError("disk full")
-
-    service.sinks[UM_KLINE_1M] = Refusing()
-    service._record(kline_event(minute_ms(0)))
-    assert service.health.stream(UM_KLINE_1M).write_errors == 1
-    assert service.health.write_errors == 1
-    assert any("write failed" in note for note in service.health.errors)
-    document = service.heartbeat.write(service.health, now_ns=NOON_NS)
-    assert document["write_errors"] == 1, "the acceptance criterion reads this field"
-
-
 def test_the_service_time_is_the_injected_clock_so_a_test_can_pin_a_day(tmp_path):
     """A guard on the fixtures above: if the service read the real clock, every
     assertion about ``DAY`` in this file would be about today instead."""
     service = service_for(tmp_path)
     assert service._wall_ns() == NOON_NS
     assert abs(time.time_ns() - NOON_NS) > 10**9, "the pinned day is not now"
+
+
+# --- I. a stream that cannot be written is halted, and stays halted -------------
+#
+# Section 2.2's `A -> B` arrow: "write error -> recorder halts that stream, health
+# metric flips, alert". The alternative — count it and carry on — leaves the
+# recorder delivering a stream it cannot store: the socket keeps arriving, the
+# up metric keeps saying up, and the resulting hole in the data looks like a
+# quiet market rather than a broken disk. Every test below is about that
+# distinction.
+
+
+class FailingSink:
+    """A real :class:`RawSink` that refuses to write from a chosen call onwards.
+
+    A wrapper rather than a stub, so everything not being broken on purpose —
+    paths, the frozen check, the day rotation — is the real behaviour and the
+    test is about the one thing it changes.
+    """
+
+    def __init__(self, inner, *, fail_append_from=None, fail_sync=False, fail_close=False):
+        self._inner = inner
+        self._fail_append_from = fail_append_from
+        self._fail_sync = fail_sync
+        self._fail_close = fail_close
+        self.appends = 0
+        self.closes = 0
+
+    def append(self, event):
+        self.appends += 1
+        if self._fail_append_from is not None and self.appends >= self._fail_append_from:
+            raise RecorderSinkError("no space left on device")
+        return self._inner.append(event)
+
+    def sync(self):
+        if self._fail_sync:
+            raise RecorderSinkError("could not fsync the raw file: input/output error")
+        self._inner.sync()
+
+    def close(self):
+        self.closes += 1
+        if self._fail_close:
+            raise RecorderSinkError("could not fsync the raw file on close")
+        self._inner.close()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def break_sink(service, stream, **how):
+    """Replace one stream's sink with one that fails, keeping the real one inside."""
+    service.sinks[stream] = FailingSink(service.sinks[stream], **how)
+    return service.sinks[stream]
+
+
+def test_an_append_failure_halts_that_stream_and_only_that_stream(tmp_path):
+    service = service_for(tmp_path)
+    service.recover()
+    broken = break_sink(service, UM_KLINE_1M, fail_append_from=2)
+
+    service._record(kline_event(minute_ms(0)))  # accepted
+    service._record(kline_event(minute_ms(1)))  # the failure
+    service._record(kline_event(minute_ms(2)))  # refused without reaching the sink
+
+    failed = service.health.stream(UM_KLINE_1M)
+    assert failed.halted is True
+    assert failed.write_errors == 1
+    assert failed.events == 1, "only the observation before the failure was recorded"
+    assert failed.dropped_after_halt == 1, "the one after it was refused and counted"
+    assert broken.appends == 2, "the sink was not touched again after it failed"
+    assert broken.closes == 1, "it was closed on the way out"
+    assert "no space left on device" in (failed.halt_reason or "")
+    assert failed.halted_at_ns is not None
+
+    # Exactly one stream. The other five are untouched and still recordable.
+    assert service.health.halted_streams == (UM_KLINE_1M,)
+    service._record(mark_event(minute_ms(0) + 1_000))
+    healthy = service.health.stream(UM_MARK_PRICE)
+    assert healthy.halted is False and healthy.events == 1
+    assert read_raw_events(tmp_path, UM_MARK_PRICE, DAY), "the healthy stream wrote"
+
+
+def test_the_halted_streams_observations_never_reach_the_disk(tmp_path):
+    """The point of the latch, asserted against the file rather than a counter."""
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=2)
+    for index in range(6):
+        service._record(kline_event(minute_ms(index)))
+
+    stored = read_raw_events(tmp_path, UM_KLINE_1M, DAY)
+    assert [event.minute_open_ms for event in stored] == [minute_ms(0)]
+    assert service.health.stream(UM_KLINE_1M).dropped_after_halt == 4
+
+
+def test_a_halted_stream_is_not_up_even_while_its_socket_is_connected(tmp_path):
+    """A disk failing does not close a connection, which is the whole hazard."""
+    service = service_for(tmp_path)
+    service.recover()
+    stream = service.health.stream(UM_KLINE_1M)
+    stream.connected = True
+    assert stream.up is True
+
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+    assert stream.halted is True and stream.up is False
+
+
+def test_a_later_health_refresh_cannot_lift_the_latch(tmp_path):
+    """The refresh copies socket state, and the socket is fine. It must not win."""
+
+    class Connected(ScriptedClient):
+        pass
+
+    service = service_for(tmp_path)
+    service.recover()
+    client = Connected("um-test", (UM_KLINE_1M, UM_MARK_PRICE), service._record)
+    client.connected = True
+    service.clients = (client,)
+
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+
+    for _ in range(3):
+        service._refresh_connection_state()
+        stream = service.health.stream(UM_KLINE_1M)
+        assert stream.halted is True, "the refresh cleared the latch"
+        assert stream.connected is False and stream.up is False
+    # And the sibling on the very same client is reported up throughout.
+    assert service.health.stream(UM_MARK_PRICE).up is True
+
+
+def test_a_halt_does_not_take_down_the_siblings_sharing_its_connection(tmp_path):
+    """One socket carries three streams; a broken disk on one must not blind the
+    other two, so the halt is applied per stream id and never by dropping a
+    connection."""
+
+    async def scenario():
+        service = service_for(tmp_path)
+        service.recover()
+        broken = break_sink(service, UM_KLINE_1M, fail_append_from=1)
+        client = ScriptedClient(
+            "um-test",
+            (UM_KLINE_1M, UM_MARK_PRICE),
+            service._record,
+            [kline_event(minute_ms(0)), mark_event(minute_ms(0) + 1_000)],
+        )
+        service.clients = (client,)
+        return await run_briefly(service), broken, client
+
+    result, broken, client = asyncio.run(scenario())
+    assert result.halted_streams == (UM_KLINE_1M,)
+    assert service_streams_recorded(tmp_path, UM_MARK_PRICE) == 1
+    assert service_streams_recorded(tmp_path, UM_KLINE_1M) == 0
+    assert result.write_errors == 1
+
+
+def service_streams_recorded(root, stream):
+    try:
+        return len(read_raw_events(root, stream, DAY))
+    except Exception:
+        return 0
+
+
+def test_an_fsync_failure_halts_the_stream_the_same_way_an_append_does(tmp_path):
+    """Durability lost is the same fact as a write refused, arriving later."""
+    service = service_for(tmp_path)
+    service.recover()
+    service._record(kline_event(minute_ms(0)))
+    break_sink(service, UM_KLINE_1M, fail_sync=True)
+
+    service._sync()
+    stream = service.health.stream(UM_KLINE_1M)
+    assert stream.halted is True and stream.up is False
+    assert stream.write_errors == 1
+    assert "fsync" in (stream.halt_reason or "")
+
+    # A second sync pass does not keep re-counting a stream it has stopped using.
+    service._sync()
+    assert stream.write_errors == 1
+    service._record(kline_event(minute_ms(1)))
+    assert stream.dropped_after_halt == 1
+
+
+def test_a_sink_that_cannot_even_be_closed_is_noted_and_still_halted(tmp_path):
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=1, fail_close=True)
+    service._record(kline_event(minute_ms(0)))
+    assert service.health.stream(UM_KLINE_1M).halted is True
+    assert any("could not be closed" in note for note in service.health.errors)
+
+
+def test_the_heartbeat_and_the_status_report_expose_the_halt(tmp_path):
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+
+    document = service.heartbeat.write(service.health, now_ns=NOON_NS)
+    assert document["halted_streams"] == [UM_KLINE_1M]
+    assert document["write_errors"] == 1
+    entry = next(s for s in document["streams"] if s["stream"] == UM_KLINE_1M)
+    assert entry["halted"] is True and entry["up"] is False
+    assert "no space left on device" in entry["halt_reason"]
+    assert any("halted and is recording nothing" in note for note in document["errors"])
+
+    on_disk = json.loads(heartbeat_path(tmp_path).read_text(encoding="utf-8"))
+    assert on_disk["halted_streams"] == [UM_KLINE_1M]
+    report = read_status(CONTRACT, tmp_path, now_ns=NOON_NS)
+    assert report["heartbeat"]["halted_streams"] == [UM_KLINE_1M]
+
+
+def test_the_up_metric_follows_storage_and_not_the_socket(tmp_path):
+    """``chimera_recorder_up`` is the series section 2.2 says must flip."""
+    from chimera import metrics
+
+    service = service_for(tmp_path)
+    service.recover()
+    stream = service.health.stream(UM_KLINE_1M)
+    stream.connected = True
+    service.heartbeat.write(service.health, now_ns=NOON_NS)
+    assert metrics.RECORDER_UP.labels(stream=UM_KLINE_1M)._value.get() == 1
+
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+    stream.connected = True  # the socket is still perfectly healthy
+    service.heartbeat.write(service.health, now_ns=NOON_NS + 10**9)
+    assert metrics.RECORDER_UP.labels(stream=UM_KLINE_1M)._value.get() == 0
+
+
+def test_a_run_that_halted_a_stream_reports_a_failure_the_cli_exits_on(tmp_path):
+    """Requirement 7: a run with any write error is not a passing acceptance run."""
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+    result = service._result(NOON_NS)
+    assert result.write_errors == 1
+    assert result.halted_streams == (UM_KLINE_1M,)
+    # tools.recorder.command_run returns EXIT_FAILED on exactly this condition.
+    from tools.recorder import EXIT_FAILED, EXIT_OK
+
+    assert (EXIT_FAILED if result.write_errors else EXIT_OK) == EXIT_FAILED
+
+
+def test_a_restart_on_healthy_storage_recovers_the_stream_normally(tmp_path):
+    """Requirement 8: the latch is lifted by a restart, and by nothing else.
+
+    It lives on the health snapshot, which one service run owns, so a new
+    service on the same root comes up clean — and comes up through the whole
+    recovery path, reading back what the halted run had already written.
+    """
+    first = service_for(tmp_path)
+    first.recover()
+    first._record(kline_event(minute_ms(0)))
+    break_sink(first, UM_KLINE_1M, fail_append_from=1)
+    first._record(kline_event(minute_ms(1)))
+    assert first.health.stream(UM_KLINE_1M).halted is True
+
+    second = service_for(tmp_path)
+    recovery = second.recover()
+    assert second.health.stream(UM_KLINE_1M).halted is False
+    assert recovery.last_canonical_ns[UM_KLINE_1M] == minute_ms(0) * NS_PER_MILLISECOND
+    second._record(kline_event(minute_ms(1)))
+    assert second.health.stream(UM_KLINE_1M).events == 1
+    assert len(read_raw_events(tmp_path, UM_KLINE_1M, DAY)) == 2
+
+
+def test_nothing_halts_and_nothing_changes_when_every_write_succeeds(tmp_path):
+    """The control. Without it every assertion above could pass on a broken build."""
+    events = [kline_event(minute_ms(index)) for index in range(3)]
+    service = service_for(tmp_path, events=events)
+    result = asyncio.run(run_briefly(service))
+    assert result.write_errors == 0
+    assert result.halted_streams == ()
+    assert result.dropped_after_halt == 0
+    assert result.events == 3
+    for stream in service.health.streams.values():
+        assert stream.halted is False and stream.halt_reason is None
+    document = json.loads(heartbeat_path(tmp_path).read_text(encoding="utf-8"))
+    assert document["halted_streams"] == []
+    assert all(entry["halted"] is False for entry in document["streams"])

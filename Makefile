@@ -12,7 +12,7 @@
 	p6-clock p6-btc p6-decide p6ext-btc p6ext-decide \
 	p7-mode p7-btc p7-decide \
 	paper-smoke \
-	recorder-run recorder-status recorder-acceptance \
+	recorder-preflight recorder-run recorder-status recorder-acceptance \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -137,6 +137,9 @@ p7-decide:  ## P7: apply the frozen decision rule to both modes
 
 paper-smoke:  ## Engineering smoke of Pythia -> mode -> Aegis -> Hermes -> dry-run venue
 	$(PYTHON) -m tools.paper_run --smoke --bars 2000 --out artifacts/paper_smoke
+
+recorder-preflight:  ## Can this network receive every stream acceptance needs? No recorder code
+	$(PYTHON) -m tools.recorder_preflight
 
 recorder-run:  ## Record public Binance market data until interrupted (engineering data)
 	$(PYTHON) -m tools.recorder --base-dir $(RECORDER_BASE_DIR) run

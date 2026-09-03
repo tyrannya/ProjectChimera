@@ -501,9 +501,15 @@ URL_PATTERN = re.compile(r"(?:wss?|https?)://[^\s\"'`)\]<>]+")
 API_PATH_PATTERN = re.compile(r"/(?:fapi|dapi|sapi|api)/v\d[A-Za-z0-9_/]*")
 
 LIVE_SOURCE_TEXT = {path: path.read_text(encoding="utf-8") for path in LIVE_SOURCES}
-#: The CLI is part of PR-05's reachable surface, so it is held to the same rules.
+#: The CLI and the network preflight are part of PR-05's reachable surface, so
+#: they are held to the same rules. The preflight deliberately imports nothing
+#: from this repository — that is what makes its answer about the venue rather
+#: than about the recorder — but it still names hosts, and a host it named that
+#: the allow-list did not would be exactly as much of a finding there.
 CLI_SOURCE = REPO / "tools" / "recorder.py"
-LIVE_SOURCE_TEXT[CLI_SOURCE] = CLI_SOURCE.read_text(encoding="utf-8")
+PREFLIGHT_SOURCE = REPO / "tools" / "recorder_preflight.py"
+for _tool in (CLI_SOURCE, PREFLIGHT_SOURCE):
+    LIVE_SOURCE_TEXT[_tool] = _tool.read_text(encoding="utf-8")
 LIVE_PATHS = sorted(LIVE_SOURCE_TEXT)
 
 
@@ -631,7 +637,9 @@ def test_the_live_layer_depends_on_no_research_code(path):
     assert "nn.evaluate" not in text, f"{path.name} imports the research evaluator"
     assert "chimera.carry" not in text, f"{path.name} imports the carry accounting"
     imports = set(re.findall(r"^\s*(?:from|import)\s+(nn[\w.]*)", text, re.MULTILINE))
-    if path == CLI_SOURCE:
+    if path == PREFLIGHT_SOURCE:
+        assert not imports, "the preflight imports nothing from this repository"
+    elif path == CLI_SOURCE:
         assert imports <= {"nn.source_identity"}, (
             f"the CLI imports {sorted(imports)} from nn; provenance is the only thing it "
             "may take from research code"

@@ -196,6 +196,9 @@ def _print_status(report: dict[str, Any]) -> None:
             f"heartbeat     {heartbeat.get('heartbeat_utc')}  ({age_text})  "
             f"write_errors={heartbeat.get('write_errors')}"
         )
+    halted = (heartbeat or {}).get("halted_streams") or []
+    if halted:
+        print(f"HALTED        {', '.join(halted)} — storage failed; recording nothing")
     for stream in report["streams"]:
         days = stream["days"]
         last = stream["last_day"] or "-"
