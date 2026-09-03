@@ -99,11 +99,21 @@ logger = logging.getLogger(__name__)
 #: second"; the sink deliberately owns no timer, so the cadence lives here.
 SYNC_INTERVAL_S = 1.0
 
-#: How often the current UTC day is re-normalized while it is still open. Often
-#: enough that ``missing_minutes`` and the normalized files are meaningful on a
-#: running recorder; rarely enough that a 1440-row Parquet is not rewritten
-#: every minute.
+#: How often the current UTC day is re-normalized while it is still open, at
+#: least. Often enough that ``missing_minutes`` and the normalized files are
+#: meaningful on a running recorder; rarely enough that a 1440-row Parquet is not
+#: rewritten every minute.
 NORMALIZE_INTERVAL_S = 300.0
+
+#: The largest share of wall time the service will spend re-normalizing the open
+#: day. Re-normalizing re-reads every raw event of the day, so its cost grows
+#: with the day: measured on a real BTCUSDT recording, ``build_day`` for the
+#: perpetual took 66 s once the book stream held 1.5 M rows, and a full day holds
+#: far more than that. A fixed interval would therefore have the recorder
+#: spending most of its time normalizing by evening. The interval below is a
+#: floor and this is the ceiling: whichever is longer wins, so the work stays a
+#: bounded fraction of the machine no matter how large the day gets.
+NORMALIZE_DUTY_CYCLE = 0.1
 
 #: How long after a UTC midnight the previous day's raw files are frozen. A
 #: frame stamped 23:59:59 can be delivered after 00:00:00, and freezing at the
@@ -244,6 +254,7 @@ class RecorderService:
         self._current_day: str | None = None
         self._normalized_days: list[str] = []
         self._frozen_after: dict[str, float] = {}
+        self._last_maintenance_s = 0.0
 
     # --- writing ----------------------------------------------------------
     def _record(self, event: RawEvent) -> None:
@@ -578,7 +589,7 @@ class RecorderService:
             tasks.append(asyncio.create_task(client.run(stop), name=client.name))
         tasks.append(self._loop(stop, self.sync_interval_s, self._sync, "sync"))
         tasks.append(self._loop(stop, self.heartbeat_interval_s, self._beat, "heartbeat"))
-        tasks.append(self._loop(stop, self.normalize_interval_s, self._maintain, "normalize"))
+        tasks.append(self._maintenance_task(stop))
         tasks.append(
             self._loop(
                 stop, self.premium_index_interval_s, self.poll_premium_index, "premium-index"
@@ -623,6 +634,40 @@ class RecorderService:
                     await outcome
 
         return asyncio.create_task(body(), name=name)
+
+    def _maintenance_task(self, stop: asyncio.Event) -> asyncio.Task[Any]:
+        """Roll the day over and re-normalize the open one, paced by its own cost.
+
+        Separate from :meth:`_loop` because this is the one periodic job whose
+        cost is not constant: it re-reads the day's raw events, so it gets slower
+        as the day fills. The wait before each pass is the configured interval or
+        the previous pass's duration divided by :data:`NORMALIZE_DUTY_CYCLE`,
+        whichever is longer.
+        """
+
+        async def body() -> None:
+            while not stop.is_set():
+                delay = max(
+                    self.normalize_interval_s,
+                    self._last_maintenance_s / NORMALIZE_DUTY_CYCLE,
+                )
+                if await _sleep_or_stop(stop, delay):
+                    return
+                began = time.monotonic()
+                await self._maintain()
+                self._last_maintenance_s = time.monotonic() - began
+                if self._last_maintenance_s > self.normalize_interval_s:
+                    logger.warning(
+                        "re-normalizing the open day took %.0fs, longer than the %.0fs "
+                        "interval; the next pass waits %.0fs to stay under a %.0f%% duty "
+                        "cycle",
+                        self._last_maintenance_s,
+                        self.normalize_interval_s,
+                        self._last_maintenance_s / NORMALIZE_DUTY_CYCLE,
+                        NORMALIZE_DUTY_CYCLE * 100,
+                    )
+
+        return asyncio.create_task(body(), name="normalize")
 
     def _funding_task(self, stop: asyncio.Event) -> asyncio.Task[Any]:
         """Poll shortly after each expected settlement, and hourly as a catch-up.
@@ -690,20 +735,29 @@ class RecorderService:
         self.health.open_day = self._current_day
 
     async def _maintain(self) -> None:
-        """Roll the day over when it turns, then re-normalize what is open."""
+        """Roll the day over when it turns, then re-normalize what is open.
+
+        Every step here reads or rewrites whole files, and on a real recording
+        those files are large: re-normalizing one day of the perpetual re-reads
+        the entire book stream, and freezing a day gzips it. Doing that on the
+        event loop stops the websocket read loops for as long as it takes, the
+        exchange's ping goes unanswered, and the recorder disconnects itself —
+        which is exactly what a 44-minute live run did, once every interval, on
+        both connections at the same instant. It runs in a worker thread.
+        """
         today = utc_day(self._wall_ns())
         if self._current_day is not None and today != self._current_day:
             closed = self._current_day
             self._current_day = today
             self._frozen_after[closed] = time.monotonic() + self.rotation_grace_s
             for market in self.contract.market_keys():
-                self._normalize(market, closed)
+                await asyncio.to_thread(self._normalize, market, closed)
             if self.gapfill:
                 for market in self.contract.market_keys():
                     await self.fill_kline_gap(market)
-        self._freeze_due()
+        await asyncio.to_thread(self._freeze_due)
         for market in self.contract.market_keys():
-            self._normalize(market, today)
+            await asyncio.to_thread(self._normalize, market, today)
         self.health.normalized_day = today
 
     def _normalize(self, market: str, day: str) -> None:

@@ -416,6 +416,76 @@ def test_shutdown_normalizes_the_open_day_and_writes_a_last_heartbeat(tmp_path):
     assert all(stream["connected"] is False for stream in heartbeat["streams"])
 
 
+def test_re_normalizing_the_open_day_does_not_stall_the_event_loop(tmp_path):
+    """The defect a 44-minute live run found, pinned so it cannot come back.
+
+    ``build_day`` re-reads every raw event of the day, so it gets slower as the
+    day fills: on a real BTCUSDT recording it took 66 s once the perpetual book
+    stream held 1.5 M rows. Run on the event loop, that stops every websocket
+    read for as long as it takes, the exchange's ping goes unanswered, and the
+    recorder disconnects itself — which is what happened, once every interval, on
+    both connections at the same instant.
+
+    The test replaces the normalize step with one that blocks for a beat and
+    asserts a concurrent coroutine kept being scheduled throughout.
+    """
+
+    async def scenario():
+        service = service_for(tmp_path)
+        service.recover()
+        ticks: list[float] = []
+
+        def slow_normalize(market, day):
+            time.sleep(0.25)
+
+        service._normalize = slow_normalize
+
+        async def heartbeat_of_the_loop():
+            # Long enough to span the whole maintenance pass, so the gap between
+            # two ticks measures the stall rather than missing it entirely.
+            for _ in range(80):
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        ticker = asyncio.create_task(heartbeat_of_the_loop())
+        # Let the ticker actually start. Without this it is still pending when
+        # the blocking work begins, finishes cleanly afterwards, and the test
+        # passes whether or not the loop was ever stalled.
+        await asyncio.sleep(0.05)
+        assert len(ticks) >= 2, "the ticker must be running before the pass begins"
+        await service._maintain()
+        await ticker
+        return ticks
+
+    ticks = asyncio.run(scenario())
+    gaps = [second - first for first, second in zip(ticks, ticks[1:])]
+    assert len(ticks) == 80
+    assert max(gaps) < 0.15, (
+        f"the loop stalled for {max(gaps):.2f}s while the open day was re-normalized; "
+        "that is how the recorder disconnected itself on a real run"
+    )
+
+
+def test_the_maintenance_pass_waits_longer_when_it_costs_more(tmp_path):
+    """The pacing rule: the interval is a floor, the duty cycle is the ceiling.
+
+    A day that takes a minute to re-normalize must not be re-normalized every
+    five minutes for ever — the cost grows with the day, and a fixed interval
+    ends with the recorder spending most of its time normalizing.
+    """
+    from chimera.recorder.service import NORMALIZE_DUTY_CYCLE
+
+    service = service_for(tmp_path, normalize_interval_s=300.0)
+    assert service._last_maintenance_s == 0.0
+    cheap = max(service.normalize_interval_s, 0.0 / NORMALIZE_DUTY_CYCLE)
+    assert cheap == 300.0, "a cheap pass waits the configured interval"
+
+    service._last_maintenance_s = 66.0
+    expensive = max(service.normalize_interval_s, 66.0 / NORMALIZE_DUTY_CYCLE)
+    assert expensive == 660.0, "a 66 s pass waits 11 minutes, not 5"
+    assert 0 < NORMALIZE_DUTY_CYCLE <= 0.5
+
+
 # --- E. reconnect, then gap fill, over a real socket -----------------------------
 def test_a_reconnect_is_followed_by_a_rest_gap_fill_of_the_minutes_it_missed(tmp_path):
     """Two subsystems agreeing, so neither is faked.
