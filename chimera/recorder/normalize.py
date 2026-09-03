@@ -247,8 +247,17 @@ class MinuteRecord:
     mark: MarkMinute | None = None
     book: BookMinute | None = None
 
-    def to_row(self, market: str) -> dict[str, Any]:
-        row: dict[str, Any] = {
+    def to_row(self) -> dict[str, Any]:
+        """Every column this record can fill, whether or not a market wants it.
+
+        The union rather than one market's selection, so that adding a market is
+        an entry in :data:`MARKET_COLUMNS` and nothing else: a branch on the
+        market's name here would silently omit the columns a new market declared
+        and leave :func:`minute_frame` to build them out of nothing.
+        """
+        mark = self.mark
+        book = self.book
+        return {
             "minute_open_ms": self.minute_open_ms,
             "kline_close_ms": self.kline.close_ms,
             "kline_source": self.kline.source,
@@ -260,39 +269,49 @@ class MinuteRecord:
             "kline_trades": self.kline.trades,
             "kline_taker_buy_base": self.kline.taker_buy_base,
             "kline_taker_buy_quote": self.kline.taker_buy_quote,
+            "mark_present": mark is not None,
+            "mark_open": None if mark is None else mark.open,
+            "mark_high": None if mark is None else mark.high,
+            "mark_low": None if mark is None else mark.low,
+            "mark_close": None if mark is None else mark.close,
+            "index_open": None if mark is None else mark.index_open,
+            "index_high": None if mark is None else mark.index_high,
+            "index_low": None if mark is None else mark.index_low,
+            "index_close": None if mark is None else mark.index_close,
+            "mark_events": None if mark is None else mark.events,
+            "funding_rate_last": None if mark is None else mark.funding_rate,
+            "next_funding_time_ms": None if mark is None else mark.next_funding_ms,
+            "book_present": book is not None,
+            "book_bid": None if book is None else book.bid,
+            "book_bid_qty": None if book is None else book.bid_qty,
+            "book_ask": None if book is None else book.ask,
+            "book_ask_qty": None if book is None else book.ask_qty,
+            "book_update_id": None if book is None else book.update_id,
+            "book_canonical_ms": None if book is None else book.canonical_ms,
+            "book_time_basis": None if book is None else book.time_basis,
         }
-        if market == "um":
-            mark = self.mark
-            row.update(
-                {
-                    "mark_present": mark is not None,
-                    "mark_open": None if mark is None else mark.open,
-                    "mark_high": None if mark is None else mark.high,
-                    "mark_low": None if mark is None else mark.low,
-                    "mark_close": None if mark is None else mark.close,
-                    "index_open": None if mark is None else mark.index_open,
-                    "index_high": None if mark is None else mark.index_high,
-                    "index_low": None if mark is None else mark.index_low,
-                    "index_close": None if mark is None else mark.index_close,
-                    "mark_events": None if mark is None else mark.events,
-                    "funding_rate_last": None if mark is None else mark.funding_rate,
-                    "next_funding_time_ms": None if mark is None else mark.next_funding_ms,
-                }
-            )
-        book = self.book
-        row.update(
-            {
-                "book_present": book is not None,
-                "book_bid": None if book is None else book.bid,
-                "book_bid_qty": None if book is None else book.bid_qty,
-                "book_ask": None if book is None else book.ask,
-                "book_ask_qty": None if book is None else book.ask_qty,
-                "book_update_id": None if book is None else book.update_id,
-                "book_canonical_ms": None if book is None else book.canonical_ms,
-                "book_time_basis": None if book is None else book.time_basis,
-            }
-        )
-        return row
+
+
+#: Every column a :class:`MinuteRecord` can fill: the union of both markets'
+#: schemas, derived from a record rather than restated beside it, so the two
+#: cannot drift apart.
+ROW_COLUMNS: frozenset[str] = frozenset(
+    MinuteRecord(
+        minute_open_ms=0,
+        kline=KlineMinute(
+            source="",
+            close_ms=0,
+            open=0.0,
+            high=0.0,
+            low=0.0,
+            close=0.0,
+            volume=0.0,
+            trades=0,
+            taker_buy_base=0.0,
+            taker_buy_quote=0.0,
+        ),
+    ).to_row()
+)
 
 
 @dataclass(frozen=True)
@@ -551,7 +570,13 @@ def minute_frame(records: Iterable[MinuteRecord], *, market: str) -> pd.DataFram
     is not a number are different facts and the table keeps them apart.
     """
     specs = columns_for(market)
-    rows = [record.to_row(market) for record in records]
+    rows = [record.to_row() for record in records]
+    unknown = sorted({spec.name for spec in specs} - ROW_COLUMNS)
+    if unknown:
+        raise RecorderNormalizeError(
+            f"the {market} schema declares {unknown}, which a MinuteRecord cannot fill. A "
+            "column built out of nothing would be a value the exchange never published"
+        )
     frame = pd.DataFrame(rows, columns=[spec.name for spec in specs])
     for spec in specs:
         frame[spec.name] = pd.array(frame[spec.name].to_numpy(dtype=object), dtype=spec.dtype)

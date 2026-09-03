@@ -17,8 +17,8 @@ value identity can honestly be promised, that is what is asserted, and the
 digest is defined over values for exactly that reason.
 
 Nothing here computes a return, a signal, a funding flow, a basis or a PnL. The
-normalizer carries published numbers across and nothing else, and
-``test_the_normalizer_computes_nothing`` says so about its source.
+normalizer carries published numbers across and nothing else, and section H
+below says so about the source rather than about the intention.
 """
 
 from __future__ import annotations
@@ -48,6 +48,8 @@ from chimera.recorder.normalize import (
     MARKET_COLUMNS,
     NORMALIZED_META_SCHEMA,
     NORMALIZED_SCHEMA,
+    ROW_COLUMNS,
+    ColumnSpec,
     MinuteNormalizer,
     RecorderNormalizeError,
     build_minutes,
@@ -118,6 +120,17 @@ def test_the_two_markets_have_fixed_columns_and_the_spot_one_has_no_mark():
 def test_an_unknown_market_has_no_schema():
     with pytest.raises(RecorderNormalizeError, match="no normalized schema"):
         columns_for("cm")
+
+
+def test_every_declared_column_is_one_a_minute_record_can_actually_fill(monkeypatch):
+    """Adding a market is a MARKET_COLUMNS entry; a column nothing fills is refused."""
+    for market, specs in MARKET_COLUMNS.items():
+        assert {spec.name for spec in specs} <= ROW_COLUMNS, market
+
+    invented = MARKET_COLUMNS["spot"] + (ColumnSpec("imaginary_column", "f8", True),)
+    monkeypatch.setitem(MARKET_COLUMNS, "invented", invented)
+    with pytest.raises(RecorderNormalizeError, match="cannot fill"):
+        minute_frame([], market="invented")
 
 
 def test_the_frame_carries_the_declared_dtypes(root):
