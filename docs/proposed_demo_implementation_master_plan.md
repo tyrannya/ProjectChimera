@@ -18,6 +18,15 @@ fitted, there is no live route, and no real money is authorised.
 Stage S0 is complete. **The next task is PR-04** (section 14): the recorder's
 contract, events, sink and normalizer, offline only, with no network.
 
+**Amendments to this document since adoption.** Each is listed here so a reader
+who starts at the top learns the plan has been corrected, and each is marked
+where it applies:
+
+| # | date | section | what changed |
+| --- | --- | --- | --- |
+| A1 | 2026-09-03 | 4.9 | The coverage gate divided every required stream's captured set by 1440 and applied the `0.990` outage threshold to all of them, `um.funding` included. Funding is settlement-indexed, so its wallclock coverage could not exceed `3/1440` and the 30-day gate was unreachable by arithmetic. Minute-indexed and settlement-indexed streams are now evaluated separately; every threshold and the substance of funding completeness are unchanged. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
+| A2 | 2026-09-03 | 4.9 | A1 left funding completeness defined as `settlement_coverage(D) = \|captured_settlements\| / \|scheduled_settlements\|` and then declared a day with no scheduled settlement vacuously passing, which is `0 / 0` — undefined exactly where the prose said it held. The same definition also made an unreadable funding archive produce the empty set a venue that scheduled nothing would produce, so missing evidence would have passed the day. The ratio is removed from the gate; funding completeness is a quantifier over an *established* schedule, and a schedule that could not be established is `FUNDING_SCHEDULE_UNAVAILABLE` and does not pass. Every threshold, the three-flagged-days rule and the 30-day window are unchanged, and no economic criterion is introduced. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
+
 Written 2026-09-03 on the audit branch `audit/fable-5-1-full-project-strategic-audit`.
 Every existing name, signature, field and line number below was read from the
 repository at `main` = `177d4b60c7e137730ce88241b481941b07b4cd30`; the audit and
@@ -366,7 +375,10 @@ A reconciliation job (`tools/recorder.py reconcile --day YYYY-MM-DD`
 3. compare funding settlements (time, rate, markPrice) exactly;
 4. write `reconciliation/YYYY-MM-DD.json` with: minutes compared, agreeing,
    disagreeing (listed), present only in the archive, present only in the
-   recorder, published-minute count (the denominator for the coverage gate);
+   recorder, published-minute count (the denominator for the coverage gate),
+   and — because 4.9's funding condition is evaluated from these records —
+   whether the day's funding schedule was established, and the settlements it
+   lists when it was;
 5. never modify the recorder's files; a disagreement is a finding, not a
    repair.
 
@@ -387,28 +399,173 @@ carries it.
 
 ### 4.9 The 30-day coverage gate, exactly
 
-For each UTC day `D` and each stream `s` in `required_for_coverage`:
+> **Amendment A1, 2026-09-03 — pre-acquisition specification correction.**
+> As first written, this section defined `wallclock_coverage(s, D) =
+> |captured| / 1440` for *every* stream in `required_for_coverage` and flagged
+> `RECORDER_OUTAGE` when that fell below `0.990` on *any* required stream.
+> `um.funding` is in `required_for_coverage` and the same section defines its
+> published set as the day's scheduled settlements, so its wallclock coverage
+> could never exceed `3/1440 = 0.00208`. Every day would therefore have been
+> flagged, and "three flagged days in a window fail the gate" made the 30-day
+> gate unreachable by arithmetic rather than by anything the recorder did.
+>
+> The rule below separates the two index kinds: minute-indexed streams keep
+> published and wallclock coverage exactly as before; `um.funding` is
+> settlement-indexed and is evaluated on whether the day's settlements were
+> captured and agree. Nothing else moves — the `0.995` published-coverage bar,
+> the `0.990` minute-stream outage threshold, the three-flagged-days rule and
+> the 30-day window are unchanged, and funding completeness is unchanged in
+> substance (all of the day's settlements, captured with exact agreement) and is
+> now stated as its own condition rather than routed through a minute
+> denominator that does not apply to it.
+>
+> This is an implementation-grade correction to a specification defect. It is
+> made **before** any acquisition, **before** any `prospective_from` exists and
+> while **no recorded minute exists**, so it changes no result, moves no
+> threshold that any evidence has been measured against, and reinterprets
+> nothing that has ever been run. It is the last moment at which this can be
+> corrected without it being a threshold changed after seeing data.
+>
+> **Amendment A2, 2026-09-03 — pre-acquisition specification correction.**
+> A1 left funding completeness defined as `settlement_coverage(D) =
+> |captured_settlements| / |scheduled_settlements|`, made that the operative
+> condition (2), and then said in prose that a day the venue scheduled nothing
+> for satisfies (2) *vacuously*. On such a day the quotient is `0 / 0`, so (2)
+> was undefined exactly where the prose declared it satisfied, and an
+> implementation that failed the day and one that passed it were equally
+> faithful to the text.
+>
+> The same definition had a second and worse reading. `scheduled_settlements(D)`
+> was "the settlements of D the monthly funding archive publishes", and nothing
+> said what happens when that archive cannot be read — absent, unverified,
+> unparseable, or not yet published for a day inside an incomplete month, which
+> 4.7 makes a live possibility rather than a hypothetical, because the funding
+> source it names is a *monthly* object while the reconciliation runs on
+> `D - 2`. A reconciliation that read no settlements would produce an empty set
+> indistinguishable from a venue that genuinely scheduled none, and the
+> vacuous-pass sentence would then hand that day a **pass**: missing evidence
+> would have become evidence of completeness, potentially on every day of the
+> window.
+>
+> The rule below removes the ratio from the gate and states funding completeness
+> as a quantifier over an *established* schedule. A day the source establishes
+> as having no scheduled settlement is complete because the universal holds over
+> the empty set, with no quotient evaluated anywhere; a schedule that could not
+> be established is not an empty schedule, is never recorded as one, and does
+> not pass. The three cases the old text collapsed — nothing was scheduled, the
+> source could not be read, the recorder missed a settlement — are now named and
+> reported separately.
+>
+> Nothing else moves. `0.995`, `0.990`, the three-flagged-days rule, the 30-day
+> window, A1's separation of the two index kinds, and the substance of funding
+> completeness (every scheduled settlement captured with exact agreement) are
+> unchanged; no economic criterion is introduced; and the report loses nothing,
+> because the two counts the ratio was built from are published directly and
+> stay defined where the ratio did not. The minute-indexed clause is not
+> amended: it carries no instruction to pass on an empty published set, so it
+> has no equivalent silent-pass path.
+>
+> Made **before** any acquisition, **before** any `prospective_from` exists and
+> while **no recorded minute exists**, on the same terms as A1.
+
+Required streams come in two index kinds, and the gate treats them separately
+because they are counted in different units:
+
+```
+minute-indexed      um.kline_1m, um.markPrice, um.bookTicker, spot.kline_1m
+settlement-indexed  um.funding
+```
+
+For each UTC day `D` and each **minute-indexed** stream `s` in
+`required_for_coverage`:
 
 ```
 published_minutes(s, D) = minutes of D present in the Binance daily archive for s
-                          (for um.funding: the three scheduled settlements of D)
 captured_minutes(s, D)  = minutes of D present in the recorder's normalized file for s
                           whose values agree with the archive within tolerance
 published_coverage(s, D) = |captured  intersect  published| / |published|
 wallclock_coverage(s, D) = |captured| / 1440
 ```
 
-A day passes when `published_coverage(s, D) >= 0.995` for every required
-stream and all three funding settlements of the day were captured with exact
-agreement. `wallclock_coverage` is reported beside it; a day whose
-`wallclock_coverage < 0.990` on any required stream is flagged
-`RECORDER_OUTAGE` even if it passes, and three flagged days in a window fail
-the gate. The gate passes when 30 consecutive UTC days pass, counted from the
-first passing day at or after `prospective_from`; a failing day resets the
-count to zero. `tools/recorder.py coverage --window 30` **(new)** computes
-and prints the current streak and writes `coverage/GATE.json` with the
-verdict, the streak, and the list of days. No price, return or economic
-quantity is computed by any recorder tool.
+For the **settlement-indexed** stream `um.funding`, the day's schedule must be
+*established* before completeness can be judged against it:
+
+```
+schedule_established(D)  = a funding schedule source covering the whole of D has been
+                           fetched under 4.7's acquisition rules, verified against its
+                           .CHECKSUM companion and parsed. False when that object is
+                           absent, unverified, unparseable, or covers only part of D.
+                           It is a fact about the evidence, never about the venue.
+scheduled_settlements(D) = defined only when schedule_established(D): the settlements
+                           of D that source lists (three, at the eight-hour cadence in
+                           force at the time of writing; the count is read from the
+                           source and never assumed, so a venue that changes its funding
+                           interval does not silently fail or silently pass the day). It
+                           may be empty, and an established empty set means the source
+                           says no settlement was scheduled for D.
+captured_settlements(D)  = those settlements present in the recorder's settlements file
+                           agreeing exactly on settlement time, rate and markPrice
+
+funding_complete(D)      = schedule_established(D)  and  every settlement in
+                           scheduled_settlements(D) is present in
+                           captured_settlements(D)
+```
+
+There is no settlement ratio and no settlement denominator. `funding_complete`
+is a quantifier over an established set and not a quotient, so a day whose
+established schedule is empty is funding-complete — the universal holds over the
+empty set — and `0 / 0` is never evaluated. The report keeps
+`schedule_established(D)`, `|scheduled_settlements(D)|` and
+`|captured_settlements(D)|` as three separate values, which say everything the
+ratio would have said and stay defined where the ratio did not.
+
+`um.funding` has **no** wallclock coverage: it is not divided by 1440 and the
+`0.990` minute-stream outage threshold does not apply to it. A settlement is
+either captured and in exact agreement or it is not, and there is no partial
+credit for a settlement.
+
+A day passes when **both** of the following hold:
+
+1. `published_coverage(s, D) >= 0.995` for every minute-indexed required
+   stream; and
+2. `funding_complete(D)` — the day's funding schedule was established, and
+   every settlement it lists was captured with exact agreement.
+
+`wallclock_coverage` is reported beside (1) for the minute-indexed streams; a
+day whose `wallclock_coverage < 0.990` on any minute-indexed required stream is
+flagged `RECORDER_OUTAGE` even if it passes, and three flagged days in a window
+fail the gate. A missing or disagreeing scheduled settlement is not a flag: it
+fails the day outright.
+
+Three funding cases must be kept apart in the record, because collapsing any two
+of them is how a day passes that should not:
+
+* **the source establishes that no settlement was scheduled for `D`** —
+  `schedule_established(D)` is true and `scheduled_settlements(D)` is empty. The
+  day is funding-complete: there was nothing for the recorder to miss. The zero
+  is recorded so that it is visible in the report rather than invisible.
+* **the schedule could not be established** — the source is absent, unverified,
+  unparseable or partial. This is not a zero and is never recorded as one.
+  `funding_complete(D)` is false, the day does **not** pass, and it is reported
+  `FUNDING_SCHEDULE_UNAVAILABLE`. That is not a `RECORDER_OUTAGE` flag and does
+  not enter the three-flagged-days count: it is missing evidence rather than a
+  recorder fault, and a day that cannot be judged is not a day that passed.
+* **a scheduled settlement is missing or disagrees** — the day fails outright,
+  as above.
+
+The gate passes when 30 consecutive UTC days pass, counted from the first
+passing day at or after `prospective_from`; any day that does not pass — whether
+it failed or could not be judged — resets the count to zero. The streak is
+recomputed from the reconciliation records every time the gate is evaluated, so
+a day whose schedule source appears later takes its real verdict when the
+reconciliation is run again for it, and the gate is claimed only once every day
+in the window has an established schedule. `tools/recorder.py coverage --window
+30` **(new)** computes and prints the current streak and writes
+`coverage/GATE.json` with the verdict, the streak, the per-stream coverages,
+`schedule_established`, `scheduled_settlements` and `captured_settlements`, and
+the list of days. No price, return or economic quantity is computed by any
+recorder tool: settlement agreement is an equality check on published values,
+and funding profitability is not a thing the recorder knows how to compute.
 
 ---
 

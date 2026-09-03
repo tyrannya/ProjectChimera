@@ -76,6 +76,10 @@ include = ["chimera*", "nn*", "strategies*", "tools*"]
 # cannot run without — the sealed boundary lives in them — so they ship with
 # the package rather than being looked up relative to a checkout.
 nn = ["research_contracts/*.json"]
+# The committed recorder contracts, for the same reason: the prospective
+# boundary and everything the recorder will acquire live in them, and
+# `chimera.recorder.contract` has nothing to select from without them.
+chimera = ["recorder/contracts/*.json"]
 
 [tool.black]
 line-length = 95
