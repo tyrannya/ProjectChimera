@@ -119,12 +119,15 @@ def test_the_coverage_rule_counts_funding_in_settlements_and_not_in_minutes():
     unreachable by arithmetic. The rule now separates the two index kinds. This
     test fails if the contract drifts back to a single denominator, which is the
     only way the defect can return.
+
+    Amendment A2 later replaced ``settlement_coverage`` with ``funding_complete``;
+    section G holds the tests for that, and this one pins the separation A1 made.
     """
     rule = load_recorder_contract().coverage_rule
     lowered = rule.lower()
     assert "minute-indexed" in lowered and "settlement-indexed" in lowered
     assert "scheduled_settlements" in rule and "captured_settlements" in rule
-    assert "settlement_coverage" in rule
+    assert "funding_complete" in rule
     assert "no wallclock coverage" in rule, "funding must be exempt from the 1440 denominator"
     assert "not divided by 1440" in rule
     assert "0.990 minute-stream outage threshold does not apply to it" in rule
@@ -540,6 +543,24 @@ MASTER_PLAN = (
 )
 
 
+def plan_section() -> str:
+    """Section 4.9 of the master plan, amendment notes included."""
+    plan = MASTER_PLAN.read_text(encoding="utf-8")
+    return plan.split("### 4.9 The 30-day coverage gate, exactly")[1].split("\n## ")[0]
+
+
+def plan_operative() -> str:
+    """Section 4.9 without its amendment notes: the rule in force, and only that.
+
+    The notes are blockquotes, and they quote the superseded rules in order to
+    record what was corrected. A scan for a defect that reads them would find
+    the description of the defect and fail on the document that fixed it.
+    """
+    return "\n".join(
+        line for line in plan_section().splitlines() if not line.lstrip().startswith(">")
+    )
+
+
 def test_the_master_plan_and_the_contract_agree_about_the_coverage_gate():
     """The contract restates section 4.9; a restatement that drifts is worse than a link.
 
@@ -547,17 +568,19 @@ def test_the_master_plan_and_the_contract_agree_about_the_coverage_gate():
     tripwire against the two documents diverging on *what the gate measures*,
     which is the failure amendment A1 was written to close.
     """
-    plan = MASTER_PLAN.read_text(encoding="utf-8")
-    section = plan.split("### 4.9 The 30-day coverage gate, exactly")[1].split("\n## ")[0]
+    section = plan_section()
     rule = load_recorder_contract().coverage_rule
 
-    assert "Amendment A1" in section, "the correction must stay marked in the plan"
+    for amendment in ("Amendment A1", "Amendment A2"):
+        assert amendment in section, f"{amendment} must stay marked in the plan"
     for clause in (
         "minute-indexed",
         "settlement-indexed",
         "scheduled_settlements",
         "captured_settlements",
-        "settlement_coverage",
+        "schedule_established",
+        "funding_complete",
+        "FUNDING_SCHEDULE_UNAVAILABLE",
         "0.995",
         "0.990",
         "1440",
@@ -569,14 +592,151 @@ def test_the_master_plan_and_the_contract_agree_about_the_coverage_gate():
     # The specific defect: neither document may divide funding by 1440 again.
     # The amendment note is a blockquote and is allowed to describe the old rule
     # in order to record what was corrected; the operative rule beneath it is not.
-    operative = "\n".join(
-        line for line in section.splitlines() if not line.lstrip().startswith(">")
-    )
+    operative = plan_operative()
     plan_minutes = operative.split("minute-indexed")[1].split("settlement-indexed")[0]
     assert UM_FUNDING not in plan_minutes, "the plan lists funding as minute-indexed again"
     for document, text in (("plan", operative), ("contract", rule)):
         assert "not divided by 1440" in text, f"the {document} lost funding's exemption"
         assert "fails the day outright" in text, f"the {document} lost the funding failure"
+        assert "settlement_coverage" not in text, (
+            f"the {document}'s operative rule divides by the scheduled-settlement count "
+            "again, and that quotient is undefined on a day with no scheduled settlement"
+        )
+
+
+def flat(text: str) -> str:
+    """One line, without markdown emphasis, so the two documents compare on words.
+
+    The plan is wrapped prose carrying backticks and bold; the contract is one
+    long JSON string. Comparing them raw would fail on a line break rather than on
+    a disagreement, which is the opposite of what this section is for.
+    """
+    return " ".join(text.replace("`", "").replace("**", "").replace("*", "").split())
+
+
+def amended_gate_texts() -> tuple[tuple[str, str], ...]:
+    """The operative gate rule as each document states it, flattened and named."""
+    return (
+        ("plan", flat(plan_operative())),
+        ("contract", flat(load_recorder_contract().coverage_rule)),
+    )
+
+
+def funding_complete(established: bool, scheduled: frozenset, captured: frozenset) -> bool:
+    """Section 4.9's funding condition after amendment A2, transcribed literally.
+
+    It is here to show the amended rule is *total*: it returns a verdict for every
+    combination of the three inputs, the empty schedule included, which is the
+    input the superseded ratio was undefined on. There is no division in it, and
+    there is no second reading of it for PR-06 to choose between.
+    """
+    return established and scheduled <= captured
+
+
+def test_the_superseded_settlement_ratio_was_undefined_on_a_zero_scheduled_day():
+    """Amendment A2's defect, demonstrated rather than described.
+
+    A1 defined ``settlement_coverage(D) = |captured| / |scheduled|`` and made
+    ``settlement_coverage(D) == 1`` the operative pass condition, while the prose
+    beneath it said a day with no scheduled settlement satisfied that condition
+    *vacuously*. On such a day the quotient is ``0 / 0``: the condition was
+    undefined at exactly the point the prose declared it satisfied, so failing the
+    day and passing it were equally faithful readings of one sentence. The
+    replacement is a quantifier, and it answers.
+    """
+    scheduled: frozenset = frozenset()
+    captured: frozenset = frozenset()
+    with pytest.raises(ZeroDivisionError):
+        len(captured) / len(scheduled)  # the superseded settlement_coverage(D)
+    assert funding_complete(True, scheduled, captured) is True
+
+    for document, text in amended_gate_texts():
+        assert "settlement_coverage" not in text, f"the {document} kept the undefined ratio"
+        assert (
+            "no settlement ratio and no settlement denominator" in text
+        ), f"the {document} must say the quotient is gone, not merely omit it"
+
+
+def test_a_genuine_zero_scheduled_settlement_day_is_complete_without_a_division():
+    """Case one of the three: the source establishes that nothing was scheduled.
+
+    The day is funding-complete because the universal quantifier holds over the
+    empty set — there was nothing for the recorder to miss — and the zero is still
+    recorded so that it is visible in the report rather than invisible.
+    """
+    assert funding_complete(True, frozenset(), frozenset()) is True
+
+    for document, text in amended_gate_texts():
+        assert (
+            "a quantifier over an established set and not a quotient" in text
+        ), f"the {document} lost the statement that makes the empty day decidable"
+        assert "the universal holds over the empty set" in text, document
+        assert "0 / 0" in text and "is never evaluated" in text, document
+        assert (
+            "zero is recorded so" in text.lower()
+        ), f"the {document} stopped requiring the zero to be visible in the report"
+
+
+def test_an_unestablished_funding_schedule_cannot_masquerade_as_a_zero():
+    """Case two, and the one that could have passed a day on missing evidence.
+
+    ``scheduled_settlements(D)`` was "the settlements of D the monthly funding
+    archive publishes", with nothing said about an archive that cannot be read. A
+    reconciliation that fetched nothing would have produced the same empty set as
+    a venue that scheduled nothing, and the vacuous-pass sentence would then have
+    passed the day. Section 4.7's funding source is a *monthly* object while the
+    reconciliation runs on ``D - 2``, so this is a live case and not a
+    hypothetical one.
+    """
+    # Whatever the recorder holds, an unestablished schedule is not completeness.
+    assert funding_complete(False, frozenset(), frozenset()) is False
+    assert funding_complete(False, frozenset(), frozenset({0, 8, 16})) is False
+
+    for document, text in amended_gate_texts():
+        assert "schedule_established" in text, f"the {document} lost the establishment test"
+        assert (
+            "unverified" in text and "unparseable" in text
+        ), f"the {document} no longer says what makes a source unusable"
+        assert (
+            "is not a zero" in text and "never recorded as one" in text
+        ), f"the {document} lets an unreadable source be recorded as a scheduled zero"
+        assert "FUNDING_SCHEDULE_UNAVAILABLE" in text, f"the {document} lost the verdict name"
+        # Missing evidence is not a recorder fault, so it must not be absorbed
+        # into the flag count that a *passing* day is allowed to carry.
+        assert "does not enter the three-flagged-days count" in text, document
+
+
+def test_a_missing_or_disagreeing_scheduled_settlement_fails_the_day():
+    """Case three, unchanged in substance by either amendment.
+
+    Every settlement the established schedule lists must be present and agree
+    exactly. There is no partial credit, and the failure is not a flag.
+    """
+    scheduled = frozenset({0, 8, 16})
+    assert funding_complete(True, scheduled, scheduled) is True
+    assert funding_complete(True, scheduled, frozenset({0, 8})) is False
+    assert funding_complete(True, scheduled, frozenset()) is False
+
+    for document, text in amended_gate_texts():
+        assert "missing or disagreeing scheduled settlement" in text, document
+        assert "is not a flag" in text and "fails the day outright" in text, document
+
+
+def test_funding_stays_exempt_from_the_minute_denominator_and_the_outage_threshold():
+    """A2 must not undo A1: the settlement-indexed stream keeps both exemptions.
+
+    Amendment A1 took funding out of the 1440 denominator and out of the ``0.990``
+    outage threshold. A2 rewrites the same clause, so both exemptions are pinned
+    again here, in both documents, from the amended text rather than from A1's.
+    """
+    for document, text in amended_gate_texts():
+        assert "um.funding has no wallclock coverage" in text, document
+        assert "not divided by 1440" in text, f"the {document} lost funding's exemption"
+        assert "minute-stream outage threshold does not apply to it" in text, document
+        assert "0.990" in text, document
+
+    # The arithmetic that made the original rule impossible, still true.
+    assert (3 / 1440) < 0.990
 
 
 def test_the_committed_contract_asserts_nothing_about_what_the_venue_published():
