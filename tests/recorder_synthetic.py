@@ -190,6 +190,38 @@ def funding_rest_row(
     return row
 
 
+def premium_index_row(
+    time_ms: int,
+    *,
+    mark: str = "60050.00",
+    index: str = "60049.00",
+    settle: str | None = "60050.50",
+    rate: str = "0.00010000",
+    next_funding_ms: int | None = None,
+    symbol: str = "BTCUSDT",
+) -> dict[str, Any]:
+    """One Binance ``premiumIndex`` REST response, in the documented shape.
+
+    The same five published values the mark-price stream carries, under the long
+    field names the REST endpoint uses. ``lastFundingRate`` is the rate in
+    effect and is never a realised settlement.
+    """
+    row: dict[str, Any] = {
+        "symbol": symbol,
+        "markPrice": mark,
+        "indexPrice": index,
+        "lastFundingRate": rate,
+        "interestRate": "0.00010000",
+        "nextFundingTime": (
+            day_ms() + 8 * 3_600_000 if next_funding_ms is None else next_funding_ms
+        ),
+        "time": time_ms,
+    }
+    if settle is not None:
+        row["estimatedSettlePrice"] = settle
+    return row
+
+
 def kline_event(
     open_ms: int,
     *,

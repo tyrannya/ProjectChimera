@@ -249,6 +249,91 @@ MODE_RISK_VETOES = Counter(
 )
 
 
+# --- prospective recorder -----------------------------------------------
+#
+# Section 4.8 of the adopted demo plan, in full. The only label anywhere in this
+# family is `stream`, whose value set is the six stream ids the gen3 recorder
+# contract declares — bounded by a committed file, not by traffic. There is no
+# price here, no return, no funding flow and no basis: every series below counts
+# observations, connections, files and clocks, which is the whole of what a
+# recorder knows. A series reporting how a recorded price had *moved* would be
+# an economic quantity computed by the recorder, and the recorder computes none.
+RECORDER_UP = Gauge(
+    f"{_PREFIX}_recorder_up",
+    "1 while a recorder stream is connected and receiving, 0 otherwise",
+    ["stream"],
+)
+RECORDER_EVENTS = Counter(
+    f"{_PREFIX}_recorder_events_total",
+    "Observations accepted into the raw sink, by stream",
+    ["stream"],
+)
+RECORDER_LAST_EVENT_AGE = Gauge(
+    f"{_PREFIX}_recorder_last_event_age_seconds",
+    "Now minus the canonical time of the last observation, by stream",
+    ["stream"],
+)
+RECORDER_RECONNECTS = Counter(
+    f"{_PREFIX}_recorder_reconnects_total",
+    "Websocket reconnects, by stream",
+    ["stream"],
+)
+RECORDER_DUPLICATES = Counter(
+    f"{_PREFIX}_recorder_duplicates_total",
+    "Re-delivered observations the sink recognised and did not store twice, by stream",
+    ["stream"],
+)
+RECORDER_LATE = Counter(
+    f"{_PREFIX}_recorder_late_total",
+    "Observations whose canonical day had already closed, by stream",
+    ["stream"],
+)
+RECORDER_GAPFILL_ROWS = Counter(
+    f"{_PREFIX}_recorder_gapfill_rows_total",
+    "Closed klines fetched over REST after a disconnect, by stream",
+    ["stream"],
+)
+RECORDER_MISSING_MINUTES = Gauge(
+    f"{_PREFIX}_recorder_missing_minutes_total",
+    "Minutes of the current UTC day with no closed kline in this recorder, by stream",
+    ["stream"],
+)
+RECORDER_CLOCK_SKEW = Gauge(
+    f"{_PREFIX}_recorder_clock_skew_ms",
+    "Rolling median of receipt wall time minus exchange event time, in milliseconds",
+)
+RECORDER_DISK_FREE = Gauge(
+    f"{_PREFIX}_recorder_disk_free_bytes",
+    "Free bytes on the filesystem holding the recorder's storage root",
+)
+RECORDER_WRITE_ERRORS = Counter(
+    f"{_PREFIX}_recorder_write_errors_total",
+    "Failed writes, by stream",
+    ["stream"],
+)
+RECORDER_HEARTBEAT = Gauge(
+    f"{_PREFIX}_recorder_heartbeat_timestamp",
+    "Unix timestamp of the last heartbeat the recorder wrote",
+)
+
+#: The twelve series section 4.8 requires, by name. Pinned here so that a rename
+#: is caught by a test rather than by a blank dashboard panel.
+RECORDER_METRIC_NAMES: tuple[str, ...] = (
+    f"{_PREFIX}_recorder_up",
+    f"{_PREFIX}_recorder_events_total",
+    f"{_PREFIX}_recorder_last_event_age_seconds",
+    f"{_PREFIX}_recorder_reconnects_total",
+    f"{_PREFIX}_recorder_duplicates_total",
+    f"{_PREFIX}_recorder_late_total",
+    f"{_PREFIX}_recorder_gapfill_rows_total",
+    f"{_PREFIX}_recorder_missing_minutes_total",
+    f"{_PREFIX}_recorder_clock_skew_ms",
+    f"{_PREFIX}_recorder_disk_free_bytes",
+    f"{_PREFIX}_recorder_write_errors_total",
+    f"{_PREFIX}_recorder_heartbeat_timestamp",
+)
+
+
 def mark_mode_decision(decision: Any) -> None:
     """Record one mode decision across the mode family.
 

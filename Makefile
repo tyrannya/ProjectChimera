@@ -12,6 +12,7 @@
 	p6-clock p6-btc p6-decide p6ext-btc p6ext-decide \
 	p7-mode p7-btc p7-decide \
 	paper-smoke \
+	recorder-run recorder-status recorder-acceptance \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -29,6 +30,14 @@ MODELS   ?= artifacts/models
 # boundary: only ids under nn/research_contracts/ are accepted, and a new
 # research generation is a new contract file.
 CONTRACT ?= btc-usdt-1h-gen1
+# Where the prospective recorder writes. The contract's storage root is
+# resolved under this, so the data lands in $(RECORDER_BASE_DIR)/prospective/gen3/.
+# Under data/, which .gitignore excludes: everything recorded before a
+# committed prospective_from is engineering data and must not be committed.
+RECORDER_BASE_DIR ?= data
+# Seconds the bounded acceptance run records for. The adopted PR-05
+# acceptance criterion is a 60-minute run against the real public endpoints.
+RECORDER_SECONDS ?= 3600
 # Where tools.acquire_multiclock_source caches the Binance monthly archives.
 MULTICLOCK_ARCHIVE_DIR ?= data/archives/binance_spot_btcusdt_1m
 EPOCHS   ?= 30
@@ -128,6 +137,16 @@ p7-decide:  ## P7: apply the frozen decision rule to both modes
 
 paper-smoke:  ## Engineering smoke of Pythia -> mode -> Aegis -> Hermes -> dry-run venue
 	$(PYTHON) -m tools.paper_run --smoke --bars 2000 --out artifacts/paper_smoke
+
+recorder-run:  ## Record public Binance market data until interrupted (engineering data)
+	$(PYTHON) -m tools.recorder --base-dir $(RECORDER_BASE_DIR) run
+
+recorder-status:  ## What the recorder has on disk. Reads only; writes nothing
+	$(PYTHON) -m tools.recorder --base-dir $(RECORDER_BASE_DIR) status
+
+recorder-acceptance:  ## PR-05 acceptance: a bounded live run. Args: RECORDER_SECONDS=3600
+	$(PYTHON) -m tools.recorder --base-dir $(RECORDER_BASE_DIR) run \
+		--seconds $(RECORDER_SECONDS) --json
 
 multiclock-acquire:  ## Download and verify the Binance 1m source every clock is cut from
 	$(PYTHON) -m tools.acquire_multiclock_source --archive-dir $(MULTICLOCK_ARCHIVE_DIR)
