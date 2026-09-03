@@ -39,6 +39,7 @@ from chimera.recorder.events import (
     UM_MARK_PRICE,
     EventSource,
     RawEvent,
+    RecorderEventError,
     TimeBasis,
     sort_events,
 )
@@ -47,14 +48,17 @@ from chimera.recorder.incremental import (
     IncrementalNormalizer,
     NormalizeCacheError,
 )
-from chimera.recorder.normalize import MinuteNormalizer, digest, minute_frame
+from chimera.recorder.normalize import (
+    MinuteNormalizer,
+    RecorderNormalizeError,
+    digest,
+    minute_frame,
+)
 from chimera.recorder.sink import RawSink
 from tests.recorder_synthetic import (
     DAY,
     book_event,
-    book_ws_frame,
     kline_event,
-    kline_ws_frame,
     mark_event,
     minute_ms,
 )
@@ -734,8 +738,14 @@ def test_an_unreadable_raw_line_stops_the_fold_rather_than_skipping_it(tmp_path)
     with path.open("ab") as handle:
         handle.write(b'{"schema": "chimera.recorder-raw-event/1", "stream": "nonsense"}\n')
     incremental = IncrementalNormalizer(root, CONTRACT)
-    with pytest.raises(Exception):
+    with pytest.raises(NormalizeCacheError, match="line"):
         incremental.update("um", DAY)
+    # The public entry point falls back to the authoritative rebuild, which meets
+    # the same unreadable record and refuses it too. Either way the day is not
+    # written: a short normalized day would be the silent partial this refuses.
+    with pytest.raises((RecorderNormalizeError, RecorderEventError)):
+        incremental.build_day("um", DAY)
+    assert not MinuteNormalizer(root, CONTRACT).parquet_path("um", DAY).exists()
 
 
 def test_the_gzip_of_a_frozen_day_is_still_readable_by_the_oracle(tmp_path):
