@@ -154,17 +154,16 @@ def _source_revision() -> str | None:
     """
     try:
         from nn.source_identity import source_identity
-    except Exception:  # pragma: no cover - the recorder runs without it
+    except ImportError:  # pragma: no cover - the recorder runs without it
         return None
     try:
-        identity = source_identity()
+        identity = source_identity(Path(__file__).resolve().parents[1])
     except Exception:  # pragma: no cover - a checkout without git metadata
         return None
-    revision = getattr(identity, "revision", None)
-    dirty = getattr(identity, "dirty", None)
-    if revision is None:
+    revision = identity.get("revision")
+    if not revision:
         return None
-    return f"{revision}{'+dirty' if dirty else ''}"
+    return f"{revision}{'+dirty' if identity.get('dirty') else ''}"
 
 
 def command_status(args: argparse.Namespace) -> int:

@@ -332,6 +332,30 @@ def test_a_premium_index_answer_missing_a_value_is_refused_rather_than_recorded(
     assert any("premiumIndex" in note for note in service.health.errors)
 
 
+def test_startup_reads_the_current_mark_state_once_before_the_loops_begin(tmp_path):
+    """Otherwise the mark and index have no observation until the first poll.
+
+    The periodic pollers sleep before they act, which is right for a steady
+    state and wrong for a start: on a restart that follows an outage the minute
+    the recorder comes back in would have no mark reading at all.
+    """
+    last_closed = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000 - 60_000
+    service = service_for(
+        tmp_path,
+        gapfill=True,
+        answers=[
+            FakeResponse(payload=[kline_rest_row(last_closed)]),
+            FakeResponse(payload=[kline_rest_row(last_closed)]),
+            FakeResponse(payload=[funding_rest_row(DAY_NS // NS_PER_MILLISECOND)]),
+            FakeResponse(payload=premium_index_row(NOON_NS // NS_PER_MILLISECOND)),
+        ],
+    )
+    asyncio.run(run_briefly(service, seconds=0.2))
+    marks = read_raw_events(tmp_path, UM_MARK_PRICE, DAY)
+    assert len(marks) == 1, "the recorder came up with a mark reading, not without one"
+    assert marks[0].source is EventSource.REST_POLL
+
+
 # --- D. the run, and how it stops -----------------------------------------------
 def test_a_run_records_what_the_streams_deliver_and_stops_cleanly(tmp_path):
     events = [kline_event(minute_ms(index)) for index in range(3)]

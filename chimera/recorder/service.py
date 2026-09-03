@@ -15,7 +15,8 @@ there is one path and it always runs (section 4.3):
 
 1. validate the tail of every open raw file, preserving anything torn;
 2. read back the last canonical instant per stream;
-3. REST gap-fill the closed klines and the funding settlements since then;
+3. REST gap-fill the closed klines and the funding settlements since then, and
+   read the current mark and index state once;
 4. re-normalize the current UTC day from raw;
 5. connect the streams.
 
@@ -564,6 +565,12 @@ class RecorderService:
             for market in self.contract.market_keys():
                 await self.fill_kline_gap(market)
             await self.poll_funding()
+            # Current state, once, before the periodic loops start. They sleep
+            # before they act, which is right for a steady state and wrong for a
+            # start: without this the mark and index have no observation at all
+            # until a minute has passed, and on a start that follows an outage
+            # that is a minute nothing holds any reading for.
+            await self.poll_premium_index()
         self.heartbeat.write(self.health)
 
         tasks: list[asyncio.Task[Any]] = []
