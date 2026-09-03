@@ -24,7 +24,7 @@ where it applies:
 
 | # | date | section | what changed |
 | --- | --- | --- | --- |
-| A1 | 2026-09-03 | 4.9 | The coverage gate applied a `\|captured\| / 1440` wallclock denominator and the `0.990` outage threshold to every required stream, `um.funding` included. Funding is settlement-indexed, so its wallclock coverage could not exceed `3/1440` and the 30-day gate was unreachable by arithmetic. Minute-indexed and settlement-indexed streams are now evaluated separately; every threshold and the substance of funding completeness are unchanged. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
+| A1 | 2026-09-03 | 4.9 | The coverage gate divided every required stream's captured set by 1440 and applied the `0.990` outage threshold to all of them, `um.funding` included. Funding is settlement-indexed, so its wallclock coverage could not exceed `3/1440` and the 30-day gate was unreachable by arithmetic. Minute-indexed and settlement-indexed streams are now evaluated separately; every threshold and the substance of funding completeness are unchanged. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
 
 Written 2026-09-03 on the audit branch `audit/fable-5-1-full-project-strategic-audit`.
 Every existing name, signature, field and line number below was read from the
