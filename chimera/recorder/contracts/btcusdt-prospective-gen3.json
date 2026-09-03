@@ -1,0 +1,47 @@
+{
+  "contract_schema": "chimera.recorder-contract/1",
+  "contract_id": "btcusdt-prospective-gen3",
+  "generation": 3,
+  "exchange": "binance",
+  "markets": {
+    "um": {
+      "symbol": "BTCUSDT",
+      "instrument": "usd-m perpetual",
+      "quote": "USDT"
+    },
+    "spot": {
+      "symbol": "BTCUSDT",
+      "instrument": "spot",
+      "quote": "USDT"
+    }
+  },
+  "streams": [
+    "um.kline_1m",
+    "um.markPrice",
+    "um.bookTicker",
+    "um.funding",
+    "spot.kline_1m",
+    "spot.bookTicker"
+  ],
+  "required_for_coverage": [
+    "um.kline_1m",
+    "um.markPrice",
+    "um.bookTicker",
+    "um.funding",
+    "spot.kline_1m"
+  ],
+  "timezone": "UTC",
+  "minute_key": "kline open time (ms since epoch, UTC); the minute [t, t+60000) owns t and does not own t+60000",
+  "prospective_from": null,
+  "boundary_rule": "No minute before prospective_from is scientific evidence; minutes before it are engineering data and are excluded from every scientific report. prospective_from is the first UTC midnight after the recorder has completed one full hour of recording; it is written once by the recorder's first run, committed in a follow-up pull request, and is immutable thereafter. While it is null the boundary has not been fixed and no minute recorded under this contract is scientific evidence. The campaign start instant is named separately by the forward protocol and must be at or after prospective_from plus the review period.",
+  "sealed_regions_inherited": {
+    "p4_hold": "the gen1 hold-out region, retired unread by data/research/p4_holdout_ledger.json; no generation reopens it",
+    "styx": "the gen1 sealed test region, from the sealed instant in nn/research_contracts/btc-usdt-1h-gen1.json onward; it is a repository non-read seal with a hindsight-era ceiling, not prospective blind evidence, and it stays sealed"
+  },
+  "storage_layout_version": 1,
+  "checksum_scheme": "SHA-256 over the gzipped raw event file and over the normalized Parquet bytes, recorded in the day manifest and the day metadata. The identity of a normalized day is the value-level digest chimera.recorder-minutes/1, taken over a domain prefix, a canonical header naming the market and its columns, the row count, and then per column a null mask followed by the values as fixed-width little-endian bytes; it is a function of the published numbers and of nothing else, so a re-encoding, a different compression, a different row-group layout or a different pyarrow version cannot move it, and changing one published number does.",
+  "coverage_rule": "For each UTC day D and each stream s in required_for_coverage: published_minutes(s, D) is the set of minutes of D present in the Binance daily archive for s, and for um.funding the three scheduled settlements of D; captured_minutes(s, D) is the set of minutes of D present in the recorder's normalized file for s whose values agree with the archive within tolerance; published_coverage(s, D) = |captured intersect published| / |published|; wallclock_coverage(s, D) = |captured| / 1440. A day passes when published_coverage(s, D) >= 0.995 for every required stream and all three funding settlements of the day were captured with exact agreement. wallclock_coverage is reported beside it; a day whose wallclock_coverage < 0.990 on any required stream is flagged RECORDER_OUTAGE even if it passes, and three flagged days in a window fail the gate. The gate passes when 30 consecutive UTC days pass, counted from the first passing day at or after prospective_from; a failing day resets the count to zero. No price, return, funding flow, basis, profit or other economic quantity is computed by any recorder tool.",
+  "reconciliation_rule": "Once per UTC day, for day D-2: fetch the daily kline archives for um and spot and the monthly funding archive from data.binance.vision with their .CHECKSUM companions, under the acquisition rules already in nn.p13_acquisition (assert_allowed_url, parse_checksum_companion, path-keyed cache) and the readers in nn.p13_sources (read_kline_object, per-file epoch unit resolution); compare, minute by minute, the recorder's normalized open, high, low, close, volume and taker-buy base against the archive with relative tolerance 1e-9, the parity tolerance nn.multiclock already uses; compare funding settlements (time, rate, markPrice) exactly; write reconciliation/YYYY-MM-DD.json recording minutes compared, agreeing, disagreeing (listed), present only in the archive, present only in the recorder, and the published-minute count that is the denominator of the coverage gate; never modify the recorder's files, because a disagreement is a finding and not a repair. Mark-price and index-price daily archives are reconciled the same way for the per-minute close, and the per-minute high only when the archive carries it.",
+  "recorder_version_policy": "The recorder's source identity (nn.source_identity.source_identity: scheme, revision, dirty, source_digest), the Python and library versions, and a hostname hash are recorded on every day manifest, together with the contract id, the contract hash and the boundary state in force when the day was written. Any change to this contract creates a new file with a supersedes field; data recorded under the old contract keeps its hash on every manifest, and one campaign never mixes contracts.",
+  "description": "Prospective, forward-only market data for the Binance USD-M BTCUSDT perpetual and Binance spot BTCUSDT, recorded from public endpoints with no credentials. Nothing under this contract has been acquired: the recorder's network layer is a later change, prospective_from is unset, and no minute of it is scientific evidence."
+}

@@ -62,6 +62,32 @@ data/research/*
 # interlock is refused rather than treated as an open one.
 !data/research/p4_stage1_authorisation.json
 
+# Research generation 3: the prospective recorder's runtime data. Everything the
+# recorder writes under here is *the data itself* — raw event files, normalized
+# daily tables, funding settlements, health — and it is ignored for the same
+# reason every other generation's data is: it is large, it grows by the minute,
+# and it is reproducible only in the sense that it will never occur again.
+#
+# The three exceptions are not data. They are *claims about* the data, small,
+# and worth reviewing as commits: the copy of the contract a run recorded under
+# (so a reader can check the hash a manifest names without the recorder), the
+# daily archive reconciliation reports, and the coverage gate's verdict. Each
+# intermediate directory is re-included explicitly because git cannot re-include
+# a file whose parent directory is excluded.
+!data/prospective/
+data/prospective/*
+!data/prospective/*/
+data/prospective/*/*
+!data/prospective/*/contract/
+data/prospective/*/contract/*
+!data/prospective/*/contract/*.json
+!data/prospective/*/reconciliation/
+data/prospective/*/reconciliation/*
+!data/prospective/*/reconciliation/*.json
+!data/prospective/*/coverage/
+data/prospective/*/coverage/*
+!data/prospective/*/coverage/GATE.json
+
 artifacts/*
 # ...except the artifact index and per-directory status markers. Which research
 # generation is authoritative is documentation, not output: a reader who cannot
