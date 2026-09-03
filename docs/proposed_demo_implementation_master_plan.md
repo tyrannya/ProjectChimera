@@ -1,0 +1,1444 @@
+# PROPOSED - NOT YET ADOPTED: demo implementation master plan
+
+Status: **PROPOSED - NOT YET ADOPTED.** This document expands the proposal in
+[`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md)
+into an implementation-grade plan. It is planning only. Nothing here has been
+implemented, no evidence has been generated, and no authoritative document has
+been changed. The authoritative plan remains `docs/current_development_plan.md`
+until the owner adopts this proposal in an explicit decision (stage S0).
+
+Written 2026-09-03 on the audit branch `audit/fable-5-1-full-project-strategic-audit`.
+Every existing name, signature, field and line number below was read from the
+repository at `main` = `177d4b60c7e137730ce88241b481941b07b4cd30`; the audit and
+proposal documents are on the branch head `78b2cb943a245651e26d1251cd976a76898a366c`
+(draft PR #68). Proposed new names are marked **(new)**.
+
+Firewall carried forward: no P14 statistic, no P13 economics, P8 unopened,
+`P4-HOLD` unread, Styx sealed, no model fitted, no live route, PR #67 and PR #68
+unmerged.
+
+---
+
+## 1. Exact current state, and the four things a reader must keep apart
+
+| item | state on 2026-09-03 |
+| --- | --- |
+| **CURRENT MAIN** | `177d4b60` . Ten answered checkpoints (v4, P2a, P2b, P2c, P3, P4, P5, P6, P6-EXT, P7); P8 and P13 preregistered and unopened; P13 closed on source validity; futures execution v1 dry-run validated (`artifacts/futures_dry_run_v1`, 16/16 invariants); a paper-chain smoke that places zero orders (`artifacts/paper_smoke`); Freqtrade spot pathway double-gated and live-capable in principle; no sustained run has ever been performed; no prospective data is being recorded. |
+| **CURRENT P14 PROPOSAL** | Draft PR #67, head `36cdae48`, base `main`, open, unmerged, CI green. Preregisters a 1m signed trade-flow screen on spot. Its state is `P14 NATIVE 1m TRADE-FLOW SCREEN: NOT YET RUN`. The audit recommends replacing it; the owner has not decided. |
+| **FABLE AUDIT** | Draft PR #68, head `78b2cb94`, base `main`, open, unmerged, CI green. Adds `docs/fable_5_1_full_project_strategic_audit.md` and `docs/proposed_development_plan_post_fable_5_1_audit.md`. This document is the third file on that branch. None of the three is authoritative. |
+| **PROPOSED FUTURE ARCHITECTURE** | The Minimum Viable Chimera (MVC) demo described in sections 2 to 11 below: prospective recorder, frozen rules, Aegis, `chimera.futures` executor with recorded-quote fills, two-leg carry position, decision log, replay parity, minimal observability. It exists only on paper. |
+
+Nothing in sections 2 onward is to be read as adopted. The stage S0 decision
+(section 17) is the only thing that changes that.
+
+---
+
+## 2. Target architecture: Minimum Viable Chimera, precisely
+
+### 2.1 Process model
+
+Two long-running processes, one host, filesystem as the only channel between
+them. No message broker, no database server, no Freqtrade, no inference
+service.
+
+| process | entry point | owns | writes | reads |
+| --- | --- | --- | --- | --- |
+| `chimera-recorder` **(new)** | `python -m tools.recorder run --contract <id>` | exchange websocket and REST sessions | raw event files, normalized minute files, recorder health metrics | nothing from the runner |
+| `chimera-demo` **(new)** | `python -m tools.demo_run --config conf/demo/pvc1.json` | rules, Aegis, executors, ledgers, decision log | state files, decision log, runner metrics, daily reports | normalized minute files, funding settlement files, its own state |
+
+The recorder must keep running when the runner halts, restarts or is stopped;
+the runner must never write into recorder directories; the runner must never
+open a socket. Each process exposes a Prometheus endpoint on its own port
+(recorder 9102, runner 9103) and writes a heartbeat file every 30 seconds.
+
+Supervision: a process supervisor with restart-on-exit (systemd unit templates
+under `deploy/systemd/` **(new)**; docker compose services as an alternative,
+not a requirement). A restart is a normal event the design expects, not an
+incident.
+
+### 2.2 End-to-end runtime flow
+
+```
+Binance public market data (websocket + REST, no credentials)
+  -> [A] recorder streams          chimera.recorder.streams / chimera.recorder.rest
+  -> [B] raw append-only sink       chimera.recorder.sink
+  -> [C] minute normalizer          chimera.recorder.normalize
+  -> [D] normalized feed cursor     chimera.demo.feed
+  -> [E] market state               chimera.demo.feed.MarketState
+  -> [F] frozen rule(s)             chimera.demo.rules
+  -> [G] Aegis                      chimera.risk.RiskEngine
+  -> [H] hedged position planner    chimera.carry.hedge.HedgedPosition
+  -> [I] executor + simulated venue chimera.futures.FuturesExecutor + DryRunFuturesVenue
+  -> [J] ledgers                    chimera.futures.Ledger (perp), spot inventory ledger, chimera.carry.ledger.CarryLedger
+  -> [K] persistent state           chimera.futures.FuturesStore x2, CarryLedger file, RiskState file
+  -> [L] decision log               chimera.demo.decision_log
+  -> [M] metrics / alerts           chimera.metrics + Prometheus + alert rules
+  -> [N] daily / monthly reports    tools.demo_report, tools.freeze_evidence
+```
+
+For every arrow:
+
+| arrow | producer -> consumer | data structure / interface | sync or async | failure semantics | persistence | idempotency | timestamp semantics | restart behaviour |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| exchange -> A | Binance -> `StreamClient` **(new)** | JSON frames on `wss://fstream.binance.com/ws/...` and `wss://stream.binance.com:9443/ws/...`; REST JSON | async (asyncio) | disconnect -> reconnect with backoff; 24h forced disconnect expected; ping/pong honoured | none | exchange provides `E` event time and, for klines, `t`/`T`; duplicates possible after reconnect | canonical time = exchange time; receipt time = local monotonic and wall clock, both recorded | resubscribe; REST gap-fill for klines and funding since the last recorded canonical time |
+| A -> B | `StreamClient` -> `RawSink` **(new)** | `RawEvent(stream, canonical_ns, receipt_ns, payload_json)` | sync append inside the async loop (single writer per stream) | write error -> recorder halts that stream, health metric flips, alert | append-only NDJSON per stream per UTC day; fsync every second and on rotation | event dedup key = (stream, exchange update id or (`t`,`T`) or `E`+payload hash); duplicates written to a `dup` counter, not to the file | file day boundary by canonical time; a late event for a closed day goes to `<day>.late.ndjson` | on start, the sink re-opens today's file in append mode and reads its last line to recover the dedup horizon |
+| B -> C | `RawSink` files -> `MinuteNormalizer` **(new)** | closed-minute records per stream | sync, runs inside the recorder after each closed minute and on day close | a minute with no closed kline -> recorded as missing, never interpolated | Parquet per stream per day plus `.meta.json` with row count, digest, gap list | recomputation from raw is deterministic; the digest is the identity | minute key = kline open time `t` (UTC, ms); bookTicker and mark aggregated by canonical event time into the minute containing them | normalizer re-derives the current day from raw on start; previous days are immutable once their `.sha256` exists |
+| C -> D | normalized files -> `FeedCursor` **(new)** | `MinuteRecord` per market per minute | sync polling (the runner sleeps until the next expected close plus a grace window, then reads) | file missing or minute missing -> runner marks the feed stale; Aegis stale-feed veto; no decision on invented data | cursor position persisted in runner state (`last_minute_processed`) | processing the same minute twice is prevented by the cursor and by the decision log's `(rule_id, minute)` uniqueness | decision minute = kline open time; a decision is made only for minutes whose kline is closed and whose bookTicker snapshot at close exists | on restart the cursor resumes from the persisted minute; minutes between the persisted cursor and now are processed in order with `catch_up=True` in the log, and no position change is executed for catch-up minutes older than the configured `max_catchup_minutes` (default 3): older minutes are logged as `SKIPPED_STALE` |
+| D -> E | `FeedCursor` -> `MarketState` **(new)** | frozen dataclass: perp 1m OHLCV, spot 1m OHLCV, top of book for both, mark and index at minute close, last funding settlement, next funding time, feed ages | sync | any required field missing -> `MarketState.complete == False`; rules do not evaluate; the log records `INCOMPLETE_STATE` | not persisted (re-derivable from files) | pure function of files | all times canonical | none |
+| E -> F | `MarketState` -> `Rule.evaluate` | `RuleDecision(rule_id, rule_hash, target: HedgeTarget or SignalOnly, reason, inputs_hash)` | sync | rule raises -> runner enters HALT with reason `rule_exception`; never a partial decision | not persisted except through the log | deterministic given inputs; rules hold no hidden state beyond what the log records | none | rules are stateless or reconstruct state from the log |
+| F -> G | `HedgedPosition.plan` -> `RiskEngine.evaluate_entry` | existing signature `evaluate_entry(pair, equity, entry_price, stop_price, leverage, proposed_stake, data_delay_s, inference_age_s, funding_rate, liquidation_price, exchange_healthy)` (`chimera/risk.py:336`) | sync, in-process | veto -> intent `REJECTED`, reason logged with the bounded label from `chimera/futures/executor.py:1031` | full `RiskState` persisted (section 7) | evaluation is pure given state; `record_order` mutates the order-rate window once per approved order | wall-clock replaced by the runner clock (section 2.4) | `RiskEngine` loads its state file; unreadable -> halted |
+| G -> H | decision -> `HedgedPosition` state machine | `HedgeTarget(quantity_btc)`; leg intents | sync | a leg rejection leaves the position in `PARTIAL` and triggers the correction policy (section 6) | `CarryLedger` state file | leg orders carry ids derived from (minute, leg, attempt) | canonical | reconstructs from both `FuturesStore`s plus its own file; disagreement -> `DISPUTED` |
+| H -> I | `HedgedPosition` -> `FuturesExecutor.execute_target` (`executor.py:499`) / `emergency_flatten` (`:556`) / `settle_funding` (`:635`) | existing `TargetPosition`, `OrderIntent`, `OrderEvent` | sync | existing semantics: veto, venue rejection, `ReconciliationRequired`, `NotBootstrapped` | `FuturesStore` atomic JSON (`store.py:182`) | `apply_event` dedups by `event_id` (`executor.py:873`) | executor `clock` injected (runner clock) | `recover(reported)` (`executor.py:275`) on every start |
+| I -> venue | `FuturesExecutor._submit` -> `DryRunFuturesVenue.submit(order_id, intent, reference_price)` (`venue.py:496`) | fills from `RecordedQuoteFillModel.plan` **(new)** | sync | no fresh quote -> `FillPlan(rejection="no_fresh_quote")` -> order `REJECTED` | venue positions are in-memory; the store is the truth; `recover` compares them | fill event ids `f"{order_id}:{n}"` (`venue.py:598`) | quote timestamp must be within `max_quote_age` of the decision minute close | venue rebuilt from the store on start (`reported_position` seeded from store positions by the runner before `recover`) |
+| I -> J | fills -> `Ledger` (`accounting.py:99`) and spot inventory | existing `book_fee`, `book_turnover`, `book_realised`, `book_funding` | sync | arithmetic error -> `StoreError`, runner HALT | inside `FuturesStore` | `book_funding` dedups by `settlement_id` | funding settlement time from the exchange | reload |
+| J -> K | ledgers -> files | `FuturesState` schema `chimera.futures-execution-state/1`; `CarryLedgerState` **(new)** schema `chimera.carry-ledger/1`; `RiskState` **(new on disk)** schema `chimera.risk-state/1` | sync, after every mutation | write failure -> HALT; the previous file survives (`tmp` + `fsync` + `os.replace`) | atomic | idempotent overwrite | `updated_at` carries the runner clock | first thing read on start |
+| K/H/I -> L | every decision -> `DecisionLog.append` | `DecisionRecord` (section 9) | sync, after the state write of the same minute | append failure -> HALT; the record is written after state so a crash leaves state ahead of the log, which replay detects and reports as `LOG_BEHIND_STATE` | append-only NDJSON with hash chain, fsync per record | `(rule_id, minute, attempt)` unique; the chain hash makes duplicates detectable | canonical decision minute plus runner clock at write | on start the log's last record hash is verified against the persisted `last_record_hash` in runner state |
+| everything -> M | counters and gauges -> Prometheus scrape | `chimera_*` series (section 11) | async scrape, sync updates | metrics are never load-bearing; a scrape failure changes nothing | Prometheus TSDB | n/a | scrape time | gauges re-published on start |
+| L/K -> N | files -> reports | `tools.demo_report` **(new)** daily JSON and Markdown; monthly frozen directory | batch (cron or manual) | a report never mutates state | monthly report frozen with `tools.freeze_evidence` | reports are pure functions of the log and state snapshots | report day boundary = UTC | none |
+
+### 2.3 Who drives `chimera.futures`
+
+`chimera.demo.runner.DemoRunner` **(new)** owns exactly one `HedgedPosition`
+per configured hedge, and each `HedgedPosition` owns two `FuturesExecutor`
+instances (perp leg symbol `BTC/USDT:USDT`, spot leg symbol `BTC/USDT`), one
+shared `RiskEngine`, two `FuturesStore`s, and one `DryRunFuturesVenue` per
+leg with a `RecordedQuoteFillModel`. Nothing else instantiates an executor in
+the demo path. `tools/paper_run.py` and `tools/futures_dry_run.py` keep their
+own construction for historical reproduction and are not on the demo path.
+
+### 2.4 Runner clock and determinism
+
+The runner never reads the wall clock for a decision. Its clock is
+`RunnerClock` **(new)**: `now_ns = max(receipt_ns seen so far)` from the
+recorder's files, advanced monotonically as records are read. Feed staleness is
+`now_ns - canonical_ns` of the last complete minute. The same files replayed
+produce the same `now_ns` sequence, so every stale-feed veto replays exactly.
+Wall clock is used only for scheduling sleeps and for the heartbeat file, never
+for a value that enters a decision or the decision log's core fields.
+
+`RiskEngine(clock=...)` and `FuturesExecutor(clock=...)` already accept an
+injected clock (`risk.py:118`, `executor.py:186`); the runner injects
+`RunnerClock.time()` (seconds as float, derived from `now_ns`).
+
+---
+
+## 3. Freqtrade replacement and migration plan
+
+### 3.1 What Freqtrade provides and what is used
+
+Freqtrade is imported in four files: `chimera/__init__.py` (docstring only),
+`strategies/common/risk_manager.py`, `strategies/nn_predictor_strategy.py`,
+`tools/run_bot.py`. It is the base of the `Dockerfile` image, the target of
+the CI `Config validation` job, the `freqtrade` service in `docker-compose.yml`,
+and the subject of `docs/dry_run.md`. No committed artifact was produced by a
+Freqtrade run; `artifacts/paper_smoke` and `artifacts/futures_dry_run_v1` use
+`chimera.futures` directly.
+
+| FREQTRADE CAPABILITY | CURRENT USE | REQUIRED FOR NEW DEMO? | REPLACEMENT | IMPLEMENTATION OWNER / MODULE | MIGRATION STAGE | TEST / ACCEPTANCE CRITERION |
+| --- | --- | --- | --- | --- | --- | --- |
+| exchange market-data ingestion (ccxt, candles) | strategies only; never in an artifact | yes | prospective recorder (websocket + REST, public endpoints) | `chimera/recorder/*` **(new)** | S1 | 30-day coverage gate (section 4.9) |
+| dry-run wallet and fill simulation | never exercised end to end | yes | `DryRunFuturesVenue` + `RecordedQuoteFillModel` | `chimera/futures/venue.py`, `chimera/futures/fills.py` **(new)** | S3 | `tests/test_futures_fills.py` **(new)**; round-trip numbers pinned |
+| strategy callbacks (`populate_indicators`, `confirm_trade_entry`, `custom_stake_amount`, `order_filled`, `leverage`) | `RiskAwareStrategy` binds Aegis to them | yes, as a concept | `Rule` protocol + `HedgedPosition` + executor gate | `chimera/demo/rules.py` **(new)**, `chimera/carry/hedge.py` **(new)** | S3 | every exposure increase reaches `RiskEngine.evaluate_entry` (section 7.6) |
+| order and position state (SQLite trades) | none | yes | `FuturesStore` (atomic JSON) x2 + `CarryLedger` file | `chimera/futures/store.py`, `chimera/carry/ledger.py` **(new)** | S3 | restart tests; corrupted-file tests |
+| bot loop / scheduler (`process_throttle_secs`) | none | yes | `DemoRunner.run_forever` minute-tick loop | `chimera/demo/runner.py` **(new)** | S3 | soak (S4) |
+| start / stop / restart, persisted state | none | yes | runner state machine + supervisor + `FuturesExecutor.recover` | `chimera/demo/runner.py`, `deploy/systemd/*` **(new)** | S3, S4 | restart drills in soak |
+| backtesting and hyperopt | none | no | not replaced; historical research stays in `nn/` | n/a | n/a | n/a |
+| REST API / Telegram bot | disabled by config | no | `chimera.notify` stays optional | `chimera/notify.py` | n/a | existing tests |
+| config schema validation | CI job | no | JSON schema for `conf/demo/*.json` | `chimera/demo/config.py` **(new)** | S3 | config tests |
+| live order routing (double-gated) | none; the only live-capable code | no; must not exist on the demo branch | nothing | removal | S3 (disconnect), post-S4 (delete) | AST scan extended to `chimera/demo` and `chimera/carry` |
+| docker image | never started end to end | no | recorder and runner images (optional) | `deploy/docker/*` **(new)** | S3 | compose config parses |
+
+### 3.2 Direct answers
+
+- **WHO CALLS `chimera.futures`?** `chimera.carry.hedge.HedgedPosition`, constructed and driven by `chimera.demo.runner.DemoRunner`. Two `FuturesExecutor` instances per hedge, one per leg.
+- **WHAT PROCESS IS THE MAIN DEMO LOOP?** `python -m tools.demo_run --config conf/demo/pvc1.json`, which calls `chimera.demo.runner.main`.
+- **WHAT REPLACES THE FREQTRADE EVENT LOOP?** `DemoRunner.run_forever()`: a single-threaded loop that sleeps until the next closed minute is expected, reads it through `FeedCursor`, and runs one `tick(minute)`.
+- **WHAT REPLACES STRATEGY CALLBACKS?** The `Rule` protocol (`evaluate(state, portfolio) -> RuleDecision`) plus `HedgedPosition` as the only translator from a decision to order intents.
+- **WHAT REPLACES ORDER / POSITION STATE?** `FuturesStore` (schema `chimera.futures-execution-state/1`) for each leg, plus `CarryLedger` (`chimera.carry-ledger/1`) for the hedge-level view, plus `RiskState` (`chimera.risk-state/1`).
+- **WHAT REPLACES PAPER FILLS?** `DryRunFuturesVenue.submit` with `RecordedQuoteFillModel`: fills at the recorded best ask (BUY) or best bid (SELL) at the decision minute's close, plus a configured slippage, taker fees from `SymbolConstraints`.
+- **WHAT REPLACES EXCHANGE DATA INGESTION?** `chimera.recorder` (section 4).
+- **WHAT REPLACES BOT START/STOP/RESTART BEHAVIOUR?** The runner state machine (section 8) with `FuturesExecutor.recover(reported)` on every start, a kill-switch file, and a supervisor that restarts the process.
+
+### 3.3 Historical, disconnected, deletable
+
+| category | files | rule |
+| --- | --- | --- |
+| HISTORICAL (never modified, kept reproducible) | everything under `artifacts/`, `data/research/`, `nn/p*.py`, `nn/walkforward.py`, `nn/benchmark*.py`, `nn/p2b*.py`, `nn/wf_diagnostics.py`, `nn/regime.py`, the preregistration documents, `tools/futures_dry_run.py`, `tools/paper_run.py`, `tools/export_*_snapshot.py`, `tools/verify_*_snapshot.py` | may receive portability fixes that change no number; their tests keep running in CI |
+| DISCONNECTED at S3 (kept, not on any path, not built by CI's critical jobs) | `strategies/*`, `tools/run_bot.py`, `conf/binance.*.json`, `conf/bybit.*.json`, `conf/okx.*.json`, `Dockerfile`, the `freqtrade` and `nn_infer` compose services, `nn/infer_service.py`, `nn/registry.py`, `chimera/inference_client.py`, `chimera/modes.py`, `chimera/consensus.py`, `nn/Dockerfile.nn_infer` | module docstrings gain a first line `HISTORICAL - not on the demo path`; the CI `Config validation` job becomes optional (`workflow_dispatch`) |
+| DELETE after S4 passes (one PR, reviewable) | `strategies/*`, `tools/run_bot.py`, `conf/*.live.json`, `conf/*.test.json`, `Dockerfile`, the Freqtrade compose service, the `trade` extra in `pyproject.toml`, `tests/test_strategies.py`, `tests/test_config_and_cli.py`, the Freqtrade-specific parts of `tests/test_risk_manager.py` and `tests/test_risk_regressions.py`, `docs/dry_run.md` | deletion is safe when: S4 passed; `artifacts/paper_smoke` and `artifacts/futures_dry_run_v1` still verify; no remaining import of `freqtrade` in the tree; `chimera/safety.py` kept (its redaction helpers and the acknowledgement token are reused by the future live contract) |
+
+`chimera/modes.py` and `chimera/consensus.py` are not deleted in the demo
+timeframe because `tests/test_p7_consensus.py`, `tests/test_p7_evidence.py`
+and `tests/test_p8_preregistration.py` import them to verify frozen P7 evidence
+and the P8 preregistration. They are disconnected from the runtime, not from
+the historical record.
+
+---
+
+## 4. Prospective recorder: full design (stage S1)
+
+### 4.1 Streams
+
+All endpoints are Binance public market data; no API key is created, read or
+stored anywhere. Stream and endpoint names below are as published in the
+Binance API documentation at the time of writing; PR-04 includes an endpoint
+discovery test (section 15) that fails loudly if a name or payload field
+changes.
+
+| stream id | market | preferred source | event timestamp used | canonical timestamp | sequence / ordering | notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| `um.kline_1m` | USD-M perp BTCUSDT | websocket `btcusdt@kline_1m` on `wss://fstream.binance.com/ws`; gap-fill REST `GET /fapi/v1/klines?symbol=BTCUSDT&interval=1m&startTime=&endTime=&limit=` | `k.t` open, `k.T` close, `E` event | minute key = `k.t` (UTC ms); a minute is complete only when a frame with `k.x == true` was received or the REST row exists | ordered by `k.t`; the last frame with `k.x == true` per minute wins; earlier partial frames are kept in raw, ignored by the normalizer | fields kept: o, h, l, c, v, n, V (taker buy base), Q |
+| `um.markPrice` | USD-M perp | websocket `btcusdt@markPrice@1s` | `E` | per event `E`; per-minute aggregate keyed by the minute containing `E` | ordered by `E`; duplicates by (`E`, payload hash) | payload carries mark `p`, index `i`, estimated settle `P`, funding rate `r`, next funding time `T`; minute aggregate stores mark open/high/low/close, index open/high/low/close, last `r`, last `T`, event count |
+| `um.indexPrice_1m` | USD-M perp | derived from `um.markPrice` index field; reconciliation via REST `GET /fapi/v1/indexPriceKlines?pair=BTCUSDT&interval=1m` | as above | minute key | n/a | index klines are derived, then checked against the REST index klines daily |
+| `um.markPrice_1m` | USD-M perp | derived from `um.markPrice`; reconciliation via REST `GET /fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=1m` | as above | minute key | n/a | the per-minute mark high is what the liquidation touch reads (section 6) |
+| `um.funding` | USD-M perp | REST `GET /fapi/v1/fundingRate?symbol=BTCUSDT&startTime=&endTime=&limit=1000`, polled 60 s after each expected settlement (00:00, 08:00, 16:00 UTC) and hourly as a catch-up; current state from `GET /fapi/v1/premiumIndex?symbol=BTCUSDT` every minute | `fundingTime` | settlement id = `fundingTime` (UTC ms) | ordered by `fundingTime`; a settlement is final when returned by `fundingRate` | fields kept: `fundingRate`, `fundingTime`, `markPrice` (the exchange's own notional base), `rateType` if present |
+| `um.bookTicker` | USD-M perp | websocket `btcusdt@bookTicker` | `E` (event), `T` (transaction), update id `u` | per event; per-minute snapshot = last event with `E` before the minute close | ordered by `u`; an event with `u` not greater than the last kept is a duplicate or out of order and is counted, not stored | fields: b, B, a, A |
+| `spot.kline_1m` | spot BTCUSDT | websocket `btcusdt@kline_1m` on `wss://stream.binance.com:9443/ws`; gap-fill REST `GET /api/v3/klines` | as `um.kline_1m` | minute key | as above | same field set |
+| `spot.bookTicker` | spot BTCUSDT | websocket `btcusdt@bookTicker` | `u` only (spot bookTicker has no event time); receipt time used for minute assignment with the update id as the order | last event before minute close by receipt time | ordered by `u` | optional for the coverage gate; required for spot-leg fills |
+
+Receipt timestamp: `time.time_ns()` at frame receipt and `time.monotonic_ns()`
+for ordering, both stored on every raw event. Clock skew: the recorder records
+`skew_ms = receipt_wall_ms - E` per event where `E` exists, and publishes the
+rolling median as a metric; skew above 5 s raises an alert; skew never alters
+a canonical timestamp.
+
+### 4.2 Reconnect, duplicates, missing, late
+
+- Reconnect: exponential backoff 1 s to 60 s; the exchange closes connections
+  after 24 hours, so the client reconnects proactively at 23 h 50 m; every
+  reconnect is logged as a recorder event with the gap it may have caused.
+- After any reconnect of a kline stream, the REST gap-fill fetches klines
+  from the last complete minute to now and writes them with
+  `source = "rest_gapfill"`; a minute present from both websocket and REST
+  must agree on o/h/l/c/v within `1e-9` relative or the day is flagged
+  `CONFLICT` and both records are kept.
+- Duplicates: counted per stream (`chimera_recorder_duplicates_total`), never
+  written twice to the normalized layer; raw keeps the first occurrence only.
+- Missing: a minute with no closed kline from either source is missing; it is
+  listed in the day's `.meta.json` gap list and in the coverage report. It is
+  never interpolated, never carried forward.
+- Late: a raw event whose canonical time falls in an already-closed day is
+  appended to `<day>.late.ndjson`; the normalizer for that day is not re-run
+  automatically; the daily reconciliation job reports late events and, if the
+  day's normalized file is not yet frozen (no `.sha256`), re-normalizes.
+
+### 4.3 Storage layout and formats
+
+```
+data/prospective/gen3/                       (gitignored except manifests noted below)
+  contract/btcusdt-prospective-gen3.json     copy of the contract in force, with its hash
+  raw/<stream_id>/YYYY-MM-DD/events.ndjson   append-only; gzip-compressed to events.ndjson.gz at day close
+  raw/<stream_id>/YYYY-MM-DD/events.late.ndjson
+  raw/<stream_id>/YYYY-MM-DD/manifest.json   rows, first/last canonical, duplicates, reconnects, sha256 of the gz
+  normalized/um/1m/YYYY-MM-DD.parquet        one row per minute: kline o/h/l/c/v/n/V/Q, mark o/h/l/c, index o/h/l/c,
+                                             book bid/ask/bid_qty/ask_qty at close, last funding rate, next funding time,
+                                             flags: kline_source, book_present, mark_present
+  normalized/um/1m/YYYY-MM-DD.meta.json      rows, expected_minutes (1440), missing list, digest, contract hash, recorder version
+  normalized/spot/1m/YYYY-MM-DD.parquet      kline + book at close
+  normalized/spot/1m/YYYY-MM-DD.meta.json
+  funding/um/settlements.ndjson              append-only settlements: fundingTime, fundingRate, markPrice, rateType, receipt
+  funding/um/settlements.sha256              running digest file, rewritten atomically on append
+  reconciliation/YYYY-MM-DD.json             archive reconciliation result per day (section 4.7)
+  coverage/YYYY-MM-DD.json                   coverage per stream per day (section 4.9)
+  health/heartbeat.json                      rewritten every 30 s
+```
+
+Compression: raw gzip at day close; normalized Parquet with zstd (the
+repository already writes zstd Parquet in `tools/acquire_multiclock_source.py`).
+Checksums: SHA-256 over the gzipped raw file and over the Parquet bytes,
+written to `manifest.json` / `.meta.json`, plus a value-level digest of the
+normalized table computed the way `nn.multiclock.candle_digest`
+(`nn/multiclock.py:427`) does, extended to the extra columns, so a
+re-encoding cannot change the identity. A day is frozen when its `.sha256`
+files exist; frozen files are never rewritten; a correction produces a new
+file `YYYY-MM-DD.v2.parquet` with a note, and the reconciliation report says
+which version the runner used.
+
+Append-only guarantee: the sink opens files with `O_APPEND`; a background
+task fsyncs at most once per second; the last line of a file is validated as
+complete JSON on reopen and a truncated tail is moved to `*.truncated` and
+counted.
+
+Crash recovery: on start the recorder (1) validates the tail of every open raw
+file; (2) reads the last canonical time per stream; (3) REST gap-fills klines
+and funding since then; (4) re-normalizes the current day from raw; (5)
+resumes streams. Total expected recovery time under one minute.
+
+### 4.4 The `gen3` prospective contract **(new)**
+
+The existing `nn/research_contract.py` schema refuses unknown keys and
+requires `sealed_test_start`; a prospective contract has no seal, so it is a
+new schema parsed by `chimera/recorder/contract.py` **(new)**, not an edit to
+the research-contract parser. Research contracts for later scientific use of
+gen3 data (`btc-usdt-perp-1m-gen3`, `btc-usdt-spot-1m-gen3`) are created in
+S2 and reference this contract by hash.
+
+```json
+{
+  "contract_schema": "chimera.recorder-contract/1",
+  "contract_id": "btcusdt-prospective-gen3",
+  "generation": 3,
+  "exchange": "binance",
+  "markets": {
+    "um":   {"symbol": "BTCUSDT", "instrument": "usd-m perpetual", "quote": "USDT"},
+    "spot": {"symbol": "BTCUSDT", "instrument": "spot", "quote": "USDT"}
+  },
+  "streams": ["um.kline_1m", "um.markPrice", "um.bookTicker", "um.funding",
+              "spot.kline_1m", "spot.bookTicker"],
+  "required_for_coverage": ["um.kline_1m", "um.markPrice", "um.bookTicker", "um.funding", "spot.kline_1m"],
+  "timezone": "UTC",
+  "minute_key": "kline open time (ms since epoch, UTC)",
+  "prospective_from": "<the first UTC midnight after the recorder's first complete hour; written once by the recorder, immutable>",
+  "boundary_rule": "no minute before prospective_from is scientific evidence; earlier minutes are engineering data",
+  "sealed_regions_inherited": {"p4_hold": "2025-05-19T08:00:00+00:00 to 2025-08-27T23:00:00+00:00, retired unread",
+                               "styx": "2025-08-27T23:00:00+00:00 onward within gen1, sealed"},
+  "storage_layout_version": 1,
+  "checksum_scheme": "sha256 over gz raw and parquet bytes; value digest per normalized day",
+  "coverage_rule": "section 4.9 of the master plan, restated verbatim here in the adopted version",
+  "reconciliation_rule": "section 4.7 of the master plan, restated verbatim here in the adopted version",
+  "recorder_version_policy": "the recorder's source identity (nn.source_identity) is recorded on every day manifest",
+  "description": "Prospective, forward-only market data for Binance BTCUSDT perpetual and spot, recorded from public endpoints with no credentials."
+}
+```
+
+`contract_hash` = SHA-256 over the canonical JSON (sorted keys, no
+whitespace) excluding `description`, following `nn/research_contract.py:221`.
+The contract is committed at
+`chimera/recorder/contracts/btcusdt-prospective-gen3.json` **(new)** and
+`prospective_from` is filled by the recorder's first run and committed in a
+follow-up PR; after that the file is immutable.
+
+Contract versioning: any change creates `btcusdt-prospective-gen3-r2.json`
+with a `supersedes` field; data recorded under the old contract keeps its
+hash on every manifest; the runner refuses to mix contracts within one
+campaign.
+
+### 4.5 Provenance metadata
+
+Every day manifest carries: contract id and hash; recorder source identity
+(`nn.source_identity.source_identity` fields: revision, dirty, source_digest);
+Python and library versions; hostname hash; stream reconnect count; duplicate
+count; late count; REST gap-fill count; first and last canonical time; clock
+skew median.
+
+### 4.6 Prospective boundary
+
+`prospective_from` is the first UTC midnight after the recorder has run one
+complete hour. Minutes before it are engineering data (used for S3 and S4
+drills) and are excluded from every scientific report. The S2 protocol names
+the campaign start instant separately; it must be at or after
+`prospective_from` plus the review period.
+
+### 4.7 Archive reconciliation
+
+Binance publishes daily archives at `https://data.binance.vision`:
+`data/futures/um/daily/{klines,markPriceKlines,indexPriceKlines,bookTicker,aggTrades,trades}/BTCUSDT/...`,
+`data/futures/um/monthly/fundingRate/BTCUSDT/...`, and
+`data/spot/daily/{klines,aggTrades,trades}/BTCUSDT/...` (monthly listings
+were checked on 2026-09-03; daily objects appear with a lag of about one day).
+A reconciliation job (`tools/recorder.py reconcile --day YYYY-MM-DD`
+**(new)**) runs once per day for `day - 2`:
+
+1. fetch the daily kline archives for `um` and `spot` and the monthly funding
+   archive, with `.CHECKSUM` companions, using the acquisition rules already in
+   `nn/p13_acquisition.py` (`assert_allowed_url`, `parse_checksum_companion`,
+   path-keyed cache) and the reader in `nn/p13_sources.py` (`read_kline_object`,
+   per-file epoch unit resolution);
+2. compare, minute by minute, the recorder's normalized o/h/l/c/v/V against
+   the archive with relative tolerance `1e-9` (the multiclock parity
+   tolerance, `nn/multiclock.py:363`);
+3. compare funding settlements (time, rate, markPrice) exactly;
+4. write `reconciliation/YYYY-MM-DD.json` with: minutes compared, agreeing,
+   disagreeing (listed), present only in the archive, present only in the
+   recorder, published-minute count (the denominator for the coverage gate);
+5. never modify the recorder's files; a disagreement is a finding, not a
+   repair.
+
+Mark-price and index-price daily archives are reconciled the same way for the
+per-minute close; the per-minute high is compared only when the archive
+carries it.
+
+### 4.8 Health metrics (minimum)
+
+`chimera_recorder_up{stream}`, `chimera_recorder_events_total{stream}`,
+`chimera_recorder_last_event_age_seconds{stream}` (now minus last canonical),
+`chimera_recorder_reconnects_total{stream}`,
+`chimera_recorder_duplicates_total{stream}`, `chimera_recorder_late_total{stream}`,
+`chimera_recorder_gapfill_rows_total{stream}`,
+`chimera_recorder_missing_minutes_total{stream}` (today),
+`chimera_recorder_clock_skew_ms` (gauge), `chimera_recorder_disk_free_bytes`,
+`chimera_recorder_write_errors_total{stream}`, `chimera_recorder_heartbeat_timestamp`.
+
+### 4.9 The 30-day coverage gate, exactly
+
+For each UTC day `D` and each stream `s` in `required_for_coverage`:
+
+```
+published_minutes(s, D) = minutes of D present in the Binance daily archive for s
+                          (for um.funding: the three scheduled settlements of D)
+captured_minutes(s, D)  = minutes of D present in the recorder's normalized file for s
+                          whose values agree with the archive within tolerance
+published_coverage(s, D) = |captured  intersect  published| / |published|
+wallclock_coverage(s, D) = |captured| / 1440
+```
+
+A day passes when `published_coverage(s, D) >= 0.995` for every required
+stream and all three funding settlements of the day were captured with exact
+agreement. `wallclock_coverage` is reported beside it; a day whose
+`wallclock_coverage < 0.990` on any required stream is flagged
+`RECORDER_OUTAGE` even if it passes, and three flagged days in a window fail
+the gate. The gate passes when 30 consecutive UTC days pass, counted from the
+first passing day at or after `prospective_from`; a failing day resets the
+count to zero. `tools/recorder.py coverage --window 30` **(new)** computes
+and prints the current streak and writes `coverage/GATE.json` with the
+verdict, the streak, and the list of days. No price, return or economic
+quantity is computed by any recorder tool.
+
+---
+
+## 5. Recorded-quote simulated venue: full design (stage S3)
+
+### 5.1 Constraints imposed by existing tests
+
+`tests/test_futures_no_live_path.py` pins: exactly one class in the package
+whose name ends in `Venue` (`DryRunFuturesVenue`); its dataclass fields are
+exactly `{source, fill_model, positions, _sequence}`; no module under
+`chimera/futures/` imports network, crypto, credential or subprocess modules,
+reads the environment, or contains exchange hostnames, `wss://`, `/fapi/`,
+`/api/v3/` or credential tokens. The executor calls three venue methods only:
+`constraints(symbol)`, `reported_position(symbol)`,
+`submit(order_id, intent, reference_price) -> list[OrderEvent]`.
+
+Therefore the simulated venue is **the existing `DryRunFuturesVenue` with a
+new fill model**, not a new venue class, and the new module contains no
+network code and no endpoint strings.
+
+### 5.2 `chimera/futures/fills.py` **(new)**
+
+```
+@dataclass(frozen=True)
+class TopOfBook:
+    instant_ns: int        # canonical time of the snapshot (minute close)
+    bid: Decimal
+    bid_qty: Decimal
+    ask: Decimal
+    ask_qty: Decimal
+    def mid(self) -> Decimal
+    def spread_bps(self) -> Decimal
+
+@dataclass
+class RecordedQuoteFillModel:            # implements FillModel.plan
+    slippage_bps: Decimal = Decimal("2")    # on top of crossing the spread
+    max_quote_age_ns: int = 120_000_000_000 # 120 s
+    max_reference_deviation_bps: Decimal = Decimal("50")
+    max_fill_ratio: Decimal = Decimal("1")  # fault injection only
+    quote: TopOfBook | None = None
+    now_ns: int = 0
+    def set_quote(self, quote: TopOfBook, now_ns: int) -> None
+    def plan(self, intent: OrderIntent, reference_price: Decimal, constraints: SymbolConstraints) -> FillPlan
+```
+
+`plan` rules: no quote or `now_ns - quote.instant_ns > max_quote_age_ns` ->
+`FillPlan(fills=(), rejection="no_fresh_quote")`; BUY price =
+`quantize_price(ask * (1 + slippage))`, SELL price =
+`quantize_price(bid * (1 - slippage))`; if
+`|fill_price - reference_price| / reference_price` exceeds
+`max_reference_deviation_bps` -> rejection `quote_reference_divergence`
+(guards against a stale or corrupt book); quantity chunking as
+`DeterministicFillModel` (`venue.py:431`) does; fee is computed by the venue
+from `constraints.taker_fee_rate` (`venue.py:574`), so taker-only.
+
+The runner calls `fill_model.set_quote(...)` with the decision minute's
+recorded book before any `execute_target`, and passes `reference_price =
+quote.mid()`.
+
+### 5.3 Venue behaviour for the first demo
+
+| item | v1 decision |
+| --- | --- |
+| order intent types | `OPEN`, `INCREASE`, `REDUCE`, `CLOSE`, `FLATTEN` (existing `OrderPurpose`) |
+| supported order types | `MARKET` only (existing `SUPPORTED_ORDER_TYPES`) |
+| LONG / SHORT semantics | existing `Position.apply_fill`, `plan_transition` (a reversal is two legs) |
+| spot leg | a second `DryRunFuturesVenue` with a spot `SymbolConstraints` entry: `symbol "BTC/USDT"`, `step_size 0.00001`, `min_notional 10`, `taker_fee_rate 0.001`, `maker_fee_rate 0.001`, `supported_position_sides {"LONG"}`, `maintenance_margin_rate 0.004` (unused at 1x LONG; kept valid for the constraints parser) |
+| perp leg | existing `default_constraints_table()` entry for `BTC/USDT:USDT` (`venue.py:603`) |
+| quantity precision | `quantize_quantity` ROUND_DOWN to step (`venue.py:238`) |
+| notional precision | fees quantized to 1e-8 (`venue.py:574`) |
+| min quantity / notional | `check_placeable` (`venue.py:290`) |
+| fill model | `RecordedQuoteFillModel` |
+| bid/ask use | BUY at ask, SELL at bid, at the decision minute close |
+| maker/taker | taker only; no maker rebate path (the `Ledger.book_fee` refuses negatives, `accounting.py:128`) |
+| slippage | configured bps on top of the spread; recorded per fill in `chimera_futures_slippage_bps` |
+| partial fills | none in v1 except through `max_fill_ratio` under fault injection |
+| rejection rules | existing venue rejections plus `no_fresh_quote`, `quote_reference_divergence`, and **(new)** a side check in `DryRunFuturesVenue.submit`: `intent.position_side.value not in constraints.supported_position_sides` -> `REJECTED` (the only edit to `venue.py`) |
+| timeouts / cancellation | a market order is filled or rejected within the same `submit` call; no resting orders, so no cancellation in v1 |
+| funding settlements | `FuturesExecutor.settle_funding(FundingEvent(symbol, rate, mark_price, settlement_id=str(fundingTime)))` fed from `funding/um/settlements.ndjson` |
+| mark price | recorded per-minute mark close and mark high; used for unrealised PnL, margin state and the liquidation touch |
+| liquidation representation | not a forced fill in v1: the hedge-level check (section 6.7) raises a `LIQUIDATION_TOUCH` event, Aegis halts, and `emergency_flatten` reduces; the ledger records the forced-close price as the next minute's book |
+| margin | `margin_state` (`accounting.py:279`) at 1x isolated for the perp leg |
+| 1x enforcement | `FuturesExecutionConfig.__post_init__` refuses any other leverage (`executor.py:172`) |
+| reconciliation | `FuturesExecutor.reconcile` every 60 minutes and on every start; `ReconciliationPolicy.HALT` |
+| position state | `FuturesStore` per leg |
+| realised / unrealised | `Ledger.realised_pnl`, `unrealised_pnl` (`accounting.py:191`) |
+| fee accounting | per fill, notional times taker rate |
+| failure injection | `chimera/demo/faults.py` **(new)**: deterministic schedules (drop quote, duplicate fill event, stale feed, corrupt state file, forced restart, partial fill) enabled only by test or soak configuration, never by a campaign configuration; the campaign config schema forbids the key |
+
+### 5.4 Deliberately not simulated in v1
+
+Order book depth and market impact beyond a constant; queue position and
+maker fills; latency between decision and fill (the fill uses the same minute's
+closing book, disclosed as optimistic and compensated by the slippage bps);
+exchange outages as rejections (a missing book is a stale-feed veto, not a
+simulated rejection); insurance fund and auto-deleveraging; tiered maintenance
+margin above tier 1; interest on idle cash; withdrawal or transfer frictions.
+Each of these is listed in the S2 protocol as a disclosed limitation.
+
+---
+
+## 6. Two-leg carry position (stage S3)
+
+### 6.1 Representation
+
+`chimera/carry/hedge.py` **(new)**:
+
+```
+class HedgeState(str, Enum): FLAT, OPENING, HEDGED, PARTIAL, REBALANCING, CLOSING, DISPUTED
+
+@dataclass
+class LegState:
+    symbol: str            # "BTC/USDT" or "BTC/USDT:USDT"
+    side: PositionSide     # LONG for spot, SHORT for perp, FLAT when empty
+    quantity: Decimal
+    entry_price: Decimal   # average, from the FuturesStore position
+    last_order_id: str
+
+@dataclass
+class HedgedPosition:
+    spot: FuturesExecutor
+    perp: FuturesExecutor
+    risk: RiskEngine
+    ledger: CarryLedger
+    config: HedgeConfig    # target quantity rule, tolerance, correction policy, funding halt rule
+    state: HedgeState
+    def plan(self, target: HedgeTarget, state: MarketState) -> list[LegIntent]
+    def apply(self, intents, state) -> HedgeOutcome
+    def imbalance(self) -> Decimal      # spot_qty - perp_qty (BTC)
+    def mark_to_market(self, state) -> CarryMark
+    def reconstruct(self) -> None       # from both stores + ledger file
+```
+
+Common BTC quantity: `quantity = step_floor(min(Q_spot_bound, Q_perp_bound))`
+with the P13 sizing rule (`nn/p13_carry.py:427`, ported), using the coarser
+step (perp `0.001`). Legs are equal by construction when `HEDGED`; the
+`imbalance` is the invariant the state machine protects.
+
+### 6.2 Entry sequence
+
+1. Aegis pre-check for both legs (section 7.6) with the combined proposed
+   stake; either veto stops the sequence before any order.
+2. Perp leg first: `perp.execute_target(TargetPosition(symbol, SHORT, Q), mid)`.
+   Reason: the perp is the leg that can be reversed cheaply and the one whose
+   rejection is more likely (constraints, funding halt).
+3. Spot leg: `spot.execute_target(TargetPosition(symbol, LONG, Q), mid)`.
+4. Both `FILLED` -> `HEDGED`; the ledger records entry basis
+   `perp_fill - spot_fill`, fees and slippage per leg.
+
+### 6.3 Partial-leg failure
+
+If step 2 fills and step 3 is rejected (or vice versa), state becomes
+`PARTIAL` with `imbalance != 0`. Correction policy, fixed in config and in the
+S2 protocol: retry the missing leg on the next minute for at most
+`max_correction_minutes` (default 3); if still unfilled, reduce the filled leg
+to flat (`emergency_flatten` with `FlattenCause.DATA_LOSS` is not the right
+cause; a new cause `FlattenCause.HEDGE_CORRECTION` **(new)** is added to the
+enum) and return to `FLAT`. While `PARTIAL`, Aegis exposure for the position is
+the unhedged leg's notional, and `max_exposure_per_asset_pct` applies to it.
+
+### 6.4 Hedge imbalance and rebalancing
+
+Rebalancing in v1 exists only as correction of imbalance created by partial
+fills or by step rounding; there is no periodic re-hedge because both legs
+hold the same BTC quantity by construction. A rebalance is a reduce of the
+larger leg to the smaller quantity; the cost is booked to the ledger's
+`rebalance_cost` field (P13 kept it at zero; the demo reports it).
+
+### 6.5 Funding, fees, slippage, basis
+
+- Funding: perp leg only, `FuturesExecutor.settle_funding` with the recorded
+  settlement; the ledger stores `funding_received` and `funding_paid`
+  separately (`accounting.py:118`), never netted in reports.
+- Fees: spot fee `0.001` on notional per fill; perp fee `0.0005`; both from
+  constraints; reported per leg.
+- Slippage: the difference between the fill price and the mid at decision,
+  per fill, per leg, reported in bps and in quote currency.
+- Basis: `basis = perp_close - spot_close` per minute from the normalized
+  files; entry basis and current basis in the ledger; price PnL identity
+  `Q x (basis_entry - basis_now)` asserted against the two legs' marked PnL to
+  within fee rounding, every minute, as a running invariant (`CarryLedger.check_identity`).
+
+### 6.6 Mark-to-market, realised, net
+
+```
+spot_value       = Q * spot_close
+perp_unrealised  = (perp_entry - perp_mark) * Q            (SHORT)
+perp_margin      = Q * perp_entry                          (1x)
+free_cash        = capital - spot_notional_at_entry - fees_paid - slippage_paid + net_funding + realised_on_closed_legs
+equity           = free_cash + spot_value + perp_margin + perp_unrealised
+net_pnl          = equity - capital
+```
+
+The `CarryLedger` **(new)** persists `capital`, `free_cash`, per-leg
+accumulators, funding, fees, slippage, entry basis, `worst_equity`, and the
+running identity check. `realised_pnl` is booked only on a leg reduction, from
+`Position.apply_fill` (`domain.py:259`).
+
+### 6.7 Liquidation checks
+
+Per minute while `HEDGED` or `PARTIAL`:
+`equity < Q * mark_high * maintenance_margin_rate` (portfolio model,
+`nn/p13_carry.py:615` ported) and the perp-leg isolated distance from
+`margin_state` (`accounting.py:279`). A breach raises `LIQUIDATION_TOUCH` in
+the log, calls `risk.halt("liquidation_touch")`, and `emergency_flatten` on
+both legs (reductions bypass the gate by design, `executor.py:603`). This
+cannot fire at 1x from price alone; it is there for funding-driven equity
+erosion, exactly as P13 argued.
+
+### 6.8 Emergency reduction, restart, stale legs
+
+- `HedgedPosition.emergency_reduce(cause)` flattens the perp first, then the
+  spot; each step records a `flatten_reasons` entry in its store.
+- Restart: `reconstruct()` calls `recover(reported)` on both executors with
+  `reported` seeded from each store's own positions (the venue is in-memory),
+  then compares the two legs' quantities and the ledger file; any
+  disagreement -> `DISPUTED`, Aegis halted, operator resolution required via
+  `resolve_reconciliation` on the affected leg and `CarryLedger.resolve(note)`.
+- Stale leg: a leg whose store `updated_at` lags the other by more than one
+  minute after a tick is `DISPUTED`.
+
+### 6.9 Reuse from P13 versus new engineering
+
+| reused as formulas (ported into `chimera/carry/accounting.py` **(new)** with a cross-check test against `nn.p13_carry` on the synthetic witnesses) | new |
+| --- | --- |
+| `Costs`, `Venue.step_floor`, `Allocation`, `hedge_quantity`, the funding cash-flow sign and notional rule, `is_liquidated` (portfolio and isolated), the basis identity, equity definition, `FundingSettlement.MAX_PLAUSIBLE_RATE` refusal | streaming ledger with persistence; per-leg quantities and partial-leg states; correction and rebalance; incremental funding accrual (`open_instant < settlement <= now`); restart reconstruction; the one-minute deferred forced-close state; the invariant check as a running assertion |
+
+`nn/p13_carry.py` is not imported by `chimera/` (it pulls pandas through
+`nn.research_contract`); the port is a copy of pure Decimal formulas with a
+test that asserts equality on `tests/p13_synthetic.py` worlds and on the three
+hand-traced witnesses A, B, C (`tests/test_p13_carry_accounting.py:110, 140, 216`).
+No P13 historical economics are computed by that test: it evaluates synthetic
+worlds only.
+
+---
+
+## 7. Aegis: demo-grade specification (stage S3, PR-03)
+
+### 7.1 Persisted state
+
+`RiskState` (`risk.py:99`) becomes the persisted structure, schema
+`chimera.risk-state/1`, written atomically (`tmp` + `fsync` + `os.replace`,
+the `FuturesStore.save` pattern at `store.py:182`) after every mutation. Fields:
+
+| field | type | today | proposed |
+| --- | --- | --- | --- |
+| `equity` | float | memory | persisted |
+| `peak_equity` | float | memory | persisted |
+| `day_start_equity`, `day` | float, str (UTC date) | memory | persisted |
+| `daily_pnl` | float | derived | persisted for the report |
+| `drawdown` | float | derived | derived; `current_drawdown()` unchanged |
+| `open_positions` (exposure by pair) | dict | memory | persisted |
+| `order_times` (60 s window) | list | memory | persisted (last 60 s only) |
+| `consecutive_losses` | int | memory | persisted |
+| `cooldown_until` | float | memory | persisted |
+| `halted`, `halt_reason` | bool, str | persisted | unchanged |
+| `kill_switch` | bool | none | **(new)** set when the kill-switch file exists |
+| `stale_feed_since` | float or None | none | **(new)** |
+| `reconciliation_disputed` | dict[symbol, str] | none | **(new)** mirror of the executors' `disputed` |
+| `funding_adverse_streak` | int | none | **(new)** consecutive settlements paid by the position |
+| `funding_halt` | bool | none | **(new)** |
+| `updated_at`, `schema` | | | **(new)** |
+
+Backward compatibility: a file with only `{halted, halt_reason, updated_at}`
+(today's format) loads as a legacy halt record; an unreadable file starts
+halted (unchanged, `risk.py:172`).
+
+### 7.2 Rules
+
+| rule | INPUT | STATE | DECISION | FAIL-CLOSED CONDITION | REDUCTION EXCEPTION | PERSISTENCE | RESTART BEHAVIOUR | TEST |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| halted | - | `halted` | veto all increases | any halt | reductions allowed | yes | halt survives | existing + new |
+| kill switch | file `user_data/KILL_SWITCH` exists | `kill_switch` | halt with reason `kill_switch` | file present or unreadable directory | reductions allowed; operator may flatten | yes | re-checked on start and every tick | new |
+| cooldown | loss streak | `cooldown_until` | veto until expiry | - | allowed | yes | survives | existing |
+| exchange healthy | runner flag | - | veto when false | recorder heartbeat older than 90 s | allowed | no | - | new |
+| equity | equity | `equity` | veto at `<= 0`; halt | non-positive | allowed | yes | survives | existing |
+| stale feed | `data_delay_s` = runner now minus last complete minute close | `stale_feed_since` | veto above `max_data_delay_s` (default 180 s for the demo) | missing feed | allowed | yes | survives | new two-sided |
+| stale inference | n/a in the demo (no model) | - | pass `None` | - | - | - | - | - |
+| max open positions | count | `open_positions` | veto | - | allowed | yes | survives | existing |
+| funding rate (entry) | side-aware cost = `-sign(side) * rate` | - | veto an increase when the position would pay more than `max_funding_cost_rate` (default 0.0005 per settlement) | - | allowed | no | - | new (replaces the sign-blind `abs(rate)` check at `risk.py:406` for callers that pass a side; the old behaviour stays for callers that do not) |
+| funding halt (holding) | settlement outcome | `funding_adverse_streak`, `funding_halt` | after `N` consecutive adverse settlements (default 3) the runner must reduce; Aegis vetoes increases | - | allowed, required | yes | survives | new |
+| leverage | `leverage` | - | veto above `max_leverage` (1.0 in `conf/base.json`) | - | allowed | - | - | existing |
+| liquidation distance | `liquidation_price` from `margin_state` | - | veto below `min_liquidation_distance_pct` | the executor's `PositionError` fallback passes `None`: **change** so that a `None` from a non-flat prospective position vetoes (`liquidation_unknown`) | allowed | - | - | new two-sided |
+| sizing | equity, stop distance | - | `position_size` | zero stake | allowed | - | - | existing |
+| stake bound | proposed stake | - | veto above allowed | - | allowed | - | - | existing |
+| total exposure | sum of exposures | `open_positions` | veto | - | allowed | yes | survives | existing |
+| per-asset exposure | | | veto | - | allowed | yes | survives | existing |
+| drawdown | equity vs peak | `peak_equity` | halt at `max_drawdown_pct` | - | allowed | yes | **now survives restart** | new: restart between peak and breach |
+| daily loss | equity vs day start | `day_start_equity`, `day` | halt at `max_daily_loss_pct` | - | allowed | yes | survives; day rollover uses the runner clock | new |
+| order rate | window | `order_times` | halt above `max_orders_per_minute` | - | allowed | yes | survives (window restored) | existing + new |
+| reconciliation | executor dispute | `reconciliation_disputed` | veto increases on a disputed symbol | dispute present | allowed | yes | survives; cleared only by operator note | new |
+
+### 7.3 Interface additions to `RiskEngine`
+
+```
+def check_kill_switch(self) -> bool                        # reads the file, halts if present
+def note_feed(self, last_minute_close_ns: int, now_ns: int) -> None
+def note_reconciliation(self, symbol: str, disputed: str | None) -> None
+def note_funding_settlement(self, pair: str, side: PositionSide, rate: float) -> None
+def evaluate_entry(...existing..., position_side: PositionSide | None = None)  # side-aware funding cost when given
+def snapshot(self) -> dict                                  # for the decision log's risk_state_hash
+```
+
+### 7.4 Demo limits (proposed `conf/demo/pvc1.json`, subject to S2)
+
+`max_drawdown_pct 0.05`, `max_daily_loss_pct 0.02`, `max_open_positions 2`
+(two legs), `max_total_exposure_pct 1.0`, `max_exposure_per_asset_pct 1.0`
+(the hedge holds equal notional on both legs), `max_leverage 1.0`,
+`max_orders_per_minute 4`, `loss_streak_limit 3`, `cooldown_seconds 3600`,
+`max_data_delay_s 180`, `max_funding_cost_rate 0.0005`,
+`funding_adverse_streak_limit 3`, `min_liquidation_distance_pct 0.5`.
+
+### 7.5 Reduction exception
+
+Every rule above admits reductions: `OrderPurpose.increases_exposure` is
+`True` only for `OPEN` and `INCREASE` (`domain.py:105`), the executor asks
+Aegis only for those (`executor.py:681`), and `emergency_flatten` passes
+`bypass_risk_gate=True` (`executor.py:603`). Unchanged.
+
+### 7.6 Architectural proof that no position increase bypasses Aegis
+
+1. The only objects that can change a leg's position are `DryRunFuturesVenue`
+   instances, and the only caller of `venue.submit` on the demo path is
+   `FuturesExecutor._submit`, reached only from `_run_intent`, which calls
+   `_ask_aegis` for every intent whose purpose increases exposure unless
+   `bypass_risk_gate` is set, and `bypass_risk_gate=True` is passed only by
+   `emergency_flatten` for `FLATTEN` intents (`executor.py:663-712, 597-604`).
+2. `HedgedPosition` holds no venue reference and cannot construct an
+   `OrderIntent` that reaches a venue except through the two executors.
+3. The demo runner constructs venues only inside `HedgedPosition`'s factory.
+4. `tests/test_demo_no_live_path.py` **(new)** extends the AST scan to
+   `chimera/carry/` and `chimera/demo/`: no import of `chimera.futures.venue`
+   except from `chimera/carry/factory.py`; no call to `submit` outside
+   `chimera/futures/executor.py`; no construction of `OrderIntent` with
+   `purpose in {OPEN, INCREASE}` outside `chimera/futures/domain.plan_transition`.
+5. Invariant I05 of the frozen dry-run protocol already proves the executor
+   half; the demo soak re-asserts it on live data (section 17, S4).
+
+---
+
+## 8. Demo runner (stage S3)
+
+Decision: **create a new production-shaped runner** `chimera/demo/runner.py`
+**(new)**. `tools/paper_run.py` is wired to `chimera.modes` and
+`chimera.consensus` and to frozen P6 predictions; evolving it would keep the
+retired architecture on the path. `paper_run.py` stays untouched as the
+generator of `artifacts/paper_smoke`.
+
+### 8.1 State machine
+
+```
+STARTUP -> SELF_CHECK -> RECOVER -> READY -> (tick loop: DATA_READY -> RULE_EVALUATION -> RISK_CHECK -> EXECUTION -> RECONCILIATION -> PERSISTENCE -> REPORTING) -> READY
+any state -> HALT (on: kill switch, Aegis halt, rule exception, store error, log error, dispute)
+HALT -> RECOVERY (operator action or automatic for transient causes) -> RECOVER
+any state -> SHUTDOWN (SIGTERM, SIGINT): finish the current tick, persist, write the log record `SHUTDOWN`, exit 0
+```
+
+| state | what happens | exit condition |
+| --- | --- | --- |
+| STARTUP | parse config; compute config hash; load contract; open metrics endpoint; write heartbeat | always -> SELF_CHECK |
+| SELF_CHECK | verify: source identity matches the campaign's frozen revision (or `--allow-dirty` for soak only); recorder heartbeat fresh; disk free above threshold; decision log tail hash equals persisted `last_record_hash`; both stores loadable; risk state loadable | any failure -> HALT with reason |
+| RECOVER | `HedgedPosition.reconstruct()`; `RiskEngine` load; `check_kill_switch` | dispute -> HALT; else READY |
+| READY | sleep until next expected minute close + grace (default 5 s) | -> DATA_READY |
+| DATA_READY | `FeedCursor.next()` reads the next minute; build `MarketState`; `risk.note_feed` | incomplete -> log `INCOMPLETE_STATE`, `risk` stale check, back to READY; complete -> RULE_EVALUATION |
+| RULE_EVALUATION | for each rule: `evaluate(state, portfolio)`; shadow rules produce `SignalOnly` | exception -> HALT |
+| RISK_CHECK | `HedgedPosition.plan` runs Aegis pre-check | veto -> log, back to PERSISTENCE |
+| EXECUTION | `HedgedPosition.apply` -> executors -> venue | outcomes logged |
+| RECONCILIATION | every 60 minutes and after any execution: `reconcile` both legs; identity check | mismatch -> HALT |
+| PERSISTENCE | stores already saved by executors; save `CarryLedger`, `RiskState`, runner cursor | write error -> HALT |
+| REPORTING | metrics; at 00:00 UTC write the daily report; at month end trigger the monthly freeze | never blocks |
+| HALT | reductions remain possible via the operator command `tools/demo_run.py flatten --note`; no increase; heartbeat continues; alert fires | operator `resume --note` or automatic after a transient stale-feed cause clears |
+| SHUTDOWN | as above | exit |
+
+### 8.2 Process ownership and concurrency
+
+One process, one thread for the tick loop, one background thread for the
+Prometheus HTTP server (the `prometheus_client` default). No shared mutable
+state between them except metric objects. File writes are atomic. The recorder
+is a separate process; the runner treats its files as read-only input.
+
+### 8.3 CLI (`tools/demo_run.py` **(new)**)
+
+`run --config PATH [--replay FROM TO] [--allow-dirty]`, `status`, `flatten
+--note TEXT`, `resume --note TEXT`, `resolve --symbol S --note TEXT`,
+`report --day D`. Every operator command writes a decision-log record with
+`kind = OPERATOR`.
+
+---
+
+## 9. Decision log (stage S3)
+
+`chimera/demo/decision_log.py` **(new)**. Append-only NDJSON, one file per UTC
+day under `<state_dir>/decision_log/YYYY-MM-DD.ndjson`, hash-chained, fsync
+per record.
+
+### 9.1 Record fields
+
+```
+{
+  "schema": "chimera.decision-record/1",
+  "seq": 123456,                          # monotone per campaign
+  "prev_hash": "sha256:...",              # hash of the previous record's canonical bytes
+  "kind": "DECISION" | "FUNDING" | "RECONCILIATION" | "OPERATOR" | "HALT" | "RESUME" | "STARTUP" | "SHUTDOWN" | "INCOMPLETE_STATE" | "SKIPPED_STALE" | "LIQUIDATION_TOUCH",
+  "minute": "2026-11-23T00:01:00+00:00",  # canonical decision minute (kline open time)
+  "runner_now_ns": 1795312920123456789,   # RunnerClock at write
+  "inputs": {
+    "contract_hash": "sha256:...",
+    "um_minute_digest": "...", "spot_minute_digest": "...",   # digests of the exact MinuteRecords read
+    "book_um": {...}, "book_spot": {...}, "mark": {...}, "funding_last": {...},
+    "inputs_hash": "sha256:..."           # over the canonical MarketState
+  },
+  "rule": {"id": "R1_carry", "version": "1.0.0", "rule_hash": "sha256:...", "params_hash": "sha256:..."},
+  "signal": {"target_qty": "0.500", "reason": "hold"},
+  "requested_action": [{"leg": "perp", "purpose": "OPEN", "side": "SELL", "qty": "0.500"}, ...] | [],
+  "risk": {"state_hash": "sha256:...", "decisions": [{"leg": "perp", "allowed": false, "reason": "stale_data: ..."}]},
+  "execution": [{"leg": "perp", "order_id": "BTCUSDTUSDT-000017", "state": "FILLED",
+                 "fills": [{"event_id": "BTCUSDTUSDT-000017:1", "qty": "0.500", "price": "61234.50", "fee": "15.31"}]}],
+  "position_after": {"hedge_state": "HEDGED", "spot_qty": "0.500", "perp_qty": "0.500", "imbalance": "0.000"},
+  "ledger_effect": {"fees": "15.31", "slippage": "6.12", "funding": "0", "realised": "0", "equity": "999978.57"},
+  "veto_or_rejection": null | {"stage": "risk" | "venue", "label": "stale_data", "detail": "..."},
+  "software": {"revision": "<git sha>", "source_digest": "...", "dirty": false, "python": "3.11.x", "libs": {...}},
+  "config_hash": "sha256:...",
+  "record_hash": "sha256:..."             # over all fields above except record_hash
+}
+```
+
+### 9.2 Canonical serialization
+
+`json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`
+with every `Decimal` rendered as a string with the quantized scale of its
+constraints, every timestamp as ISO-8601 UTC with `+00:00`, every hash as
+`sha256:<hex>`. `record_hash` = SHA-256 over the canonical bytes of the record
+without `record_hash`; `prev_hash` of the first record of a campaign is
+`sha256:` + 64 zeros. The same function serializes the record in live and
+replay, so byte comparison is meaningful.
+
+### 9.3 Crash and restart
+
+The runner writes state files first, then the log record, then updates
+`last_record_hash` in the runner state file. On start, `SELF_CHECK` verifies
+that the last line of the last log file parses, that its `record_hash` equals
+`last_record_hash`, and that its `prev_hash` chain is intact for the current
+day. A missing final record (crash between state write and log write) is
+reported as `LOG_BEHIND_STATE` with the affected minute; the runner appends a
+`RECOVERY` record naming it and continues. The affected minute is excluded
+from the campaign's evidence and counted in the monthly report.
+
+### 9.4 Evidence versus operational log
+
+Evidence: `DECISION`, `FUNDING`, `RECONCILIATION`, `LIQUIDATION_TOUCH`,
+`OPERATOR` records and the daily state snapshots; these are what the monthly
+frozen report is computed from and what S6 audits. Operational: `STARTUP`,
+`SHUTDOWN`, `INCOMPLETE_STATE`, `SKIPPED_STALE`, heartbeat and metrics; kept,
+reported, not scored.
+
+---
+
+## 10. Replay parity (stage S3, verified in S4)
+
+`tools/replay_parity.py` **(new)**: given a date range, a campaign config and
+a frozen revision, it (1) copies the recorder's normalized and funding files
+for the range into a scratch directory; (2) runs `DemoRunner` in `--replay`
+mode with an empty state directory and `RunnerClock` fed from the recorded
+receipt timestamps; (3) compares the replay's decision log with the live log
+for the same range.
+
+| output | must match byte-for-byte | may differ (excluded from the comparison) |
+| --- | --- | --- |
+| `inputs`, `rule`, `signal`, `requested_action`, `risk.decisions`, `execution` (order ids, event ids, quantities, prices, fees), `position_after`, `ledger_effect`, `veto_or_rejection`, `minute`, `kind`, `seq` | yes | `runner_now_ns` is compared with tolerance zero because it is derived from recorded receipt stamps, not the wall clock; `software.python`/`libs` may differ only if the parity run declares a different environment, in which case the run is labelled `ENVIRONMENT_PARITY` and reported separately |
+| funding events, fees, ledger totals, equity series, daily reports | yes (recomputed from the replayed log by the same report code) | Prometheus metrics; heartbeat; log file names |
+| `STARTUP`/`SHUTDOWN`/`RECOVERY` records | semantic: the replay may have fewer restarts; the comparison aligns by `minute` and `kind` and ignores operational kinds | |
+
+Nondeterminism controls: Decimal arithmetic everywhere on the path (no
+floats in fills, fees, funding, ledger); Aegis uses floats today (`risk.py`)
+and receives the same float inputs in replay, so its decisions replay
+exactly; iteration order over dicts is fixed by sorted keys; order ids are
+sequence-based (`executor.py:203`); event ids are deterministic
+(`venue.py:598`); no randomness anywhere on the path; the runner clock is
+derived from recorded stamps; the config hash and source identity are
+recorded and checked.
+
+Failure criteria: any mismatch in a must-match field is a parity failure;
+the tool prints the first divergent record and both versions. S4 requires
+zero unexplained divergences over the full soak window; a divergence caused
+by a `LOG_BEHIND_STATE` minute is explained and excluded once.
+
+`tests/test_demo_replay_parity.py` **(new)** runs the tool on a committed
+fixture: 48 hours of synthetic normalized files generated by
+`chimera/demo/fixtures.py` **(new)** (not real market data; no economic
+meaning), with fault schedules, and asserts parity.
+
+---
+
+## 11. Observability and operations (stage S3)
+
+### 11.1 Metrics
+
+Runner: `chimera_demo_up`, `chimera_demo_state{state}` (gauge 0/1),
+`chimera_demo_ticks_total`, `chimera_demo_decisions_total{rule,kind}`,
+`chimera_demo_last_minute_age_seconds`, `chimera_demo_feed_age_seconds{market}`,
+`chimera_demo_hedge_state{state}`, `chimera_demo_hedge_imbalance_btc`,
+`chimera_demo_equity`, `chimera_demo_net_pnl`, `chimera_demo_funding_total{direction}`,
+`chimera_demo_basis`, `chimera_demo_liquidation_distance{leg}`,
+`chimera_demo_log_records_total{kind}`, `chimera_demo_log_write_errors_total`,
+`chimera_demo_heartbeat_timestamp`, `chimera_demo_disk_free_bytes`, plus the
+existing `chimera_futures_*` series (two executors, labelled by symbol where
+the series has a symbol label) and `chimera_risk_halted`, `chimera_drawdown`,
+`chimera_rejected_entries_total{reason}`. The mode series are not emitted.
+
+### 11.2 Alerts (`conf/alerts_demo.yml` **(new)**, replaces the ML alert group on the demo deployment)
+
+| alert | expression | for | severity |
+| --- | --- | --- | --- |
+| RecorderStreamStale | `chimera_recorder_last_event_age_seconds{stream=~"um.kline_1m|spot.kline_1m|um.markPrice|um.bookTicker"} > 180` | 2m | critical |
+| RecorderDown | `time() - chimera_recorder_heartbeat_timestamp > 120` | 0m | critical |
+| RunnerDown | `time() - chimera_demo_heartbeat_timestamp > 120` | 0m | critical |
+| RunnerHalted | `chimera_risk_halted == 1 or chimera_demo_state{state="HALT"} == 1` | 0m | critical |
+| ReconciliationMismatch | `increase(chimera_futures_reconciliation_total{outcome="MISMATCH"}[10m]) > 0` | 0m | critical |
+| HedgeImbalance | `abs(chimera_demo_hedge_imbalance_btc) > 0` | 5m | warning |
+| DiskLow | `min(chimera_recorder_disk_free_bytes, chimera_demo_disk_free_bytes) < 10e9` | 5m | warning |
+| DataGapToday | `chimera_recorder_missing_minutes_total > 7` | 0m | warning |
+| ClockSkew | `abs(chimera_recorder_clock_skew_ms) > 5000` | 5m | warning |
+| FundingAdverseStreak | `chimera_demo_funding_adverse_streak >= 2` | 0m | warning |
+
+Alertmanager keeps the null receiver by default; Telegram is wired through
+`chimera.notify` from the runner for `RunnerHalted`, `ReconciliationMismatch`
+and `RecorderDown` only, and only when credentials are present (existing
+behaviour, `notify.py:61`).
+
+### 11.3 One dashboard (`grafana/provisioning/dashboards/demo.json` **(new)**)
+
+Eight panels: runner state and heartbeat; recorder stream ages; equity and net
+PnL; hedge state and imbalance; funding paid/received; fees and slippage;
+vetoes by reason; reconciliation outcomes. Nothing else.
+
+### 11.4 Reports
+
+- Daily (`tools/demo_report.py --day D` **(new)**): JSON and Markdown from the
+  decision log and the state snapshot at 00:00 UTC: minutes processed,
+  incomplete minutes, decisions by kind, orders and fills per leg, fees,
+  slippage, funding, equity open/close, worst equity, halts and their causes,
+  reconciliation outcomes, parity status if a parity run covered the day.
+- Monthly frozen (`tools/demo_report.py --month YYYY-MM --freeze` **(new)**):
+  writes `artifacts/prospective/pvc1/YYYY-MM/report.json` and `STATUS.md` with
+  `evidence_class: "prospective"`, the S2 protocol hash, the contract hash,
+  the source identity, and the list of excluded minutes; then
+  `tools/freeze_evidence --out artifacts/pvc1_YYYY-MM_SHA256SUMS.txt`
+  (`tools/freeze_evidence.py:175` refuses to overwrite). The monthly report
+  computes only the quantities the S2 protocol names.
+
+### 11.5 Runbook (`docs/demo_runbook.md` **(new)**)
+
+Sections: start and stop; restart procedure (supervisor restart; verify
+`STARTUP` and `RECOVER` records; check `chimera_demo_state{state="READY"}`);
+reconciliation procedure (read the `RECONCILIATION` record; inspect both
+stores; `resolve --symbol --note`; the note is mandatory and is evidence);
+kill-switch procedure (`touch user_data/KILL_SWITCH`; confirm `RunnerHalted`;
+`flatten --note` if required; remove the file; `resume --note`); disk-space
+monitoring; data-gap monitoring; stale-feed monitoring; process heartbeat;
+monthly freeze checklist; what an operator may never do during a campaign
+(change config, rule, cost, or limits; edit a log; restart the recorder to
+"fix" coverage without recording it).
+
+---
+
+## 12. Exact repository change map
+
+### 12.1 Keep unchanged (on the demo path)
+
+`chimera/futures/domain.py`, `chimera/futures/accounting.py`,
+`chimera/futures/store.py`, `chimera/futures/__init__.py` (one addition: export
+`TopOfBook`, `RecordedQuoteFillModel`, `FlattenCause` already exported),
+`chimera/contracts.py`, `chimera/features.py`, `chimera/notify.py`,
+`chimera/safety.py`, `nn/multiclock.py` (`resample_from_minutes(...,
+boundary=None)`, `candle_digest`, `minute_gaps`), `nn/source_identity.py`,
+`nn/data_fingerprint.py`, `nn/p13_acquisition.py`, `nn/p13_sources.py`,
+`tools/freeze_evidence.py`, `tools/verify_research_state.py`,
+`nn/research_state.py` (except the encoding fix).
+
+### 12.2 Modify
+
+| file | change | stage / PR |
+| --- | --- | --- |
+| `chimera/risk.py` | full `RiskState` persistence with schema; kill switch; feed note; reconciliation note; side-aware funding; funding halt; `snapshot()`; liquidation `None` handling | PR-03 |
+| `chimera/futures/venue.py` | side check in `submit`; nothing else | PR-07 |
+| `chimera/futures/executor.py` | `FlattenCause.HEDGE_CORRECTION`; pass `position_side` to `evaluate_entry`; veto on `liquidation_price=None` for a non-flat prospective position | PR-07, PR-03 |
+| `chimera/futures/__init__.py` | exports for `fills.py` | PR-07 |
+| `chimera/metrics.py` | recorder and demo series | PR-05, PR-12 |
+| `nn/research_state.py`, `tools/verify_research_state.py`, `nn/mtf.py:255`, path assertions in `tests/test_p2b_evidence.py`, `tests/test_reporting_integrity.py`, `tests/test_p13_evidence.py`, `tests/test_p5_leakage.py` | encoding, numpy-2.2 dtype, OS-neutral paths | PR-02 |
+| `pyproject.toml` | extras `recorder`, `demo`; lock file generation; `trade` extra marked historical then removed | PR-02, PR-13, PR-16 |
+| `.github/workflows/ci.yml` | Windows job; recorder/demo tests; `Config validation` made `workflow_dispatch`; later removed | PR-02, PR-13, PR-16 |
+| `conf/prometheus.yml` | scrape recorder 9102 and runner 9103; drop `freqtrade` and `nn_infer` jobs on the demo profile | PR-12 |
+| `docker-compose.yml` | add optional `recorder` and `demo` services; mark `freqtrade`/`nn_infer` profiles `legacy` | PR-12, PR-13 |
+| `Makefile` | targets `recorder-run`, `recorder-coverage`, `recorder-reconcile`, `demo-run`, `demo-replay-parity`, `demo-report`, `demo-soak-drill` | PR-05, PR-10, PR-11, PR-12 |
+| `README.md`, `docs/architecture.md` | demo path described; Freqtrade section moved to historical | PR-13 |
+| `.gitignore` | `data/prospective/**` ignored except `**/GATE.json`, `**/reconciliation/*.json`, contract copies; `artifacts/prospective/**` allow-listed like other checkpoints | PR-04, PR-12 |
+
+### 12.3 New files
+
+| path | public interface |
+| --- | --- |
+| `chimera/recorder/__init__.py` | re-exports |
+| `chimera/recorder/contract.py` | `RecorderContract` (frozen dataclass; fields as section 4.4), `load_recorder_contract(id) -> RecorderContract`, `contract_hash(contract) -> str`, `parse_recorder_contract(payload) -> RecorderContract` (refuses unknown keys) |
+| `chimera/recorder/contracts/btcusdt-prospective-gen3.json` | the contract |
+| `chimera/recorder/events.py` | `RawEvent(stream, canonical_ns, receipt_wall_ns, receipt_mono_ns, dedup_key, payload)`; `KlineEvent`, `MarkPriceEvent`, `BookTickerEvent`, `FundingSettlement` parsers `from_ws(payload) / from_rest(row)` |
+| `chimera/recorder/streams.py` | `StreamClient(url, stream_names, on_event, backoff)`; `run(stop_event)`; reconnect policy |
+| `chimera/recorder/rest.py` | `RestPoller(base_url, session)`: `klines(market, start_ms, end_ms)`, `funding_rate(start_ms, end_ms)`, `premium_index()`, `mark_price_klines(...)`, `index_price_klines(...)`; rate-limit aware |
+| `chimera/recorder/sink.py` | `RawSink(root, stream)`: `append(event) -> bool` (False on duplicate), `rotate(day)`, `recover_tail()`, `freeze_day(day)` |
+| `chimera/recorder/normalize.py` | `MinuteNormalizer(root, contract)`: `build_day(market, day) -> Path`, `MinuteRecord` schema, `digest(frame)`, `meta(frame)` |
+| `chimera/recorder/reconcile.py` | `reconcile_day(root, day, fetch) -> ReconciliationReport` using `nn.p13_acquisition`/`nn.p13_sources` |
+| `chimera/recorder/coverage.py` | `coverage_for_day(root, day) -> CoverageReport`; `gate(root, window=30) -> GateVerdict` |
+| `chimera/recorder/health.py` | metric registration and heartbeat writer |
+| `chimera/recorder/service.py` | `RecorderService(contract, root)`: asyncio orchestration of streams, pollers, sink, normalizer, health |
+| `tools/recorder.py` | CLI: `run`, `status`, `reconcile --day`, `coverage --window`, `verify-day --day`, `freeze-day --day` |
+| `chimera/futures/fills.py` | `TopOfBook`, `RecordedQuoteFillModel` (section 5.2) |
+| `chimera/carry/__init__.py` | re-exports |
+| `chimera/carry/accounting.py` | ported pure formulas: `Costs`, `hedge_quantity`, `funding_flow(side, notional, rate)`, `portfolio_liquidated(equity, qty, mark, mmr)`, `isolated_liquidated(...)`, `equity(...)`, `basis(...)` |
+| `chimera/carry/ledger.py` | `CarryLedgerState` (schema `chimera.carry-ledger/1`), `CarryLedger(path)`: `open()`, `save()`, `book_leg_fill(...)`, `book_funding(...)`, `mark(state)`, `check_identity()`, `resolve(note)` |
+| `chimera/carry/hedge.py` | `HedgeState`, `LegState`, `HedgeTarget`, `HedgeConfig`, `HedgedPosition` (section 6.1) |
+| `chimera/carry/factory.py` | `build_hedged_position(config, state_dir, risk, clock) -> HedgedPosition`; the only constructor of venues on the demo path; `demo_constraints_table()` |
+| `chimera/demo/__init__.py` | re-exports |
+| `chimera/demo/config.py` | `DemoConfig` (frozen), `load_config(path)`, `config_hash(config)`, JSON schema; forbids `faults` in a campaign config |
+| `chimera/demo/clock.py` | `RunnerClock` |
+| `chimera/demo/feed.py` | `FeedCursor(root, contract, state)`, `MarketState`, `MinuteRecord` readers |
+| `chimera/demo/rules.py` | `Rule` protocol, `RuleDecision`, `HedgeTarget`, `SignalOnly`, `RuleRegistry` |
+| `chimera/demo/rules_carry.py` | `CarryRule` (R1) parameters and evaluate; parameters frozen by the S2 protocol |
+| `chimera/demo/rules_shadow.py` | `FrozenLogisticRule`, `DailyMomentumRule` (signal-only; parameters frozen by S2) |
+| `chimera/demo/decision_log.py` | `DecisionRecord`, `DecisionLog(root)`: `append(record)`, `verify_chain(day)`, `last_hash()` |
+| `chimera/demo/runner.py` | `DemoRunner(config, root, clock)`: `run_forever()`, `tick(minute)`, `replay(from, to)`, `flatten(note)`, `resume(note)`; the state machine |
+| `chimera/demo/reports.py` | `daily_report(root, day)`, `monthly_report(root, month)` |
+| `chimera/demo/faults.py` | `FaultSchedule`, applied by tests and soak drills only |
+| `chimera/demo/fixtures.py` | synthetic normalized-day generator for tests (no market data) |
+| `tools/demo_run.py` | CLI (section 8.3) |
+| `tools/replay_parity.py` | CLI (section 10) |
+| `tools/demo_report.py` | CLI (section 11.4) |
+| `conf/demo/pvc1.json` | campaign config (limits, symbols, state dir, rule parameters by reference to the S2 protocol) |
+| `conf/alerts_demo.yml` | section 11.2 |
+| `grafana/provisioning/dashboards/demo.json` | section 11.3 |
+| `deploy/systemd/chimera-recorder.service`, `deploy/systemd/chimera-demo.service`, `deploy/docker/Dockerfile.recorder`, `deploy/docker/Dockerfile.demo` | supervision |
+| `docs/gen3_recorder_contract.md`, `docs/demo_architecture.md`, `docs/demo_runbook.md`, `docs/replay_parity.md`, `docs/pvc1_protocol.md` (S2, scientific) | documentation |
+| `requirements-lock.txt` | pinned resolution for CI and deployments |
+| tests: `test_recorder_contract.py`, `test_recorder_events.py`, `test_recorder_sink.py`, `test_recorder_normalize.py`, `test_recorder_streams_fake_server.py`, `test_recorder_rest_fake.py`, `test_recorder_reconcile.py`, `test_recorder_coverage.py`, `test_futures_fills.py`, `test_carry_accounting_parity.py`, `test_carry_ledger.py`, `test_carry_hedge.py`, `test_risk_state_persistence.py`, `test_risk_new_rules.py`, `test_decision_log.py`, `test_demo_config.py`, `test_demo_feed.py`, `test_demo_runner.py`, `test_demo_fault_injection.py`, `test_demo_replay_parity.py`, `test_demo_no_live_path.py`, `test_portability_paths.py`, `test_endpoint_names.py` | section 15 |
+
+### 12.4 Disconnect, archive, delete
+
+See section 3.3. Archive means: leave in place, add the `HISTORICAL` docstring
+line, remove from `README.md`'s "What works today" table, keep tests. Delete
+means PR-16 after S4.
+
+---
+
+## 13. Dependency graph
+
+```
+PR-01 adoption (S0) -+-> PR-04 recorder contract+sink+normalize -> PR-05 streams+REST+CLI -> PR-06 reconcile+coverage -> [S1 gate: 30 days]
+                     +-> PR-02 portability+lockfile (independent)
+                     +-> PR-03 Aegis persistence+rules (independent of recorder; needed by PR-10)
+                     +-> PR-07 fills+side check -+
+                     +-> PR-08 carry accounting+hedge (needs PR-07, PR-03) -+
+                     +-> PR-09 decision log+config (independent) ----------+-> PR-10 runner -> PR-11 replay parity -> PR-12 observability+reports+runbook -> [S4 soak needs S1 recorder running]
+                     +-> PR-13 disconnect Freqtrade/modes/consensus/inference (independent; before S4)
+                     +-> PR-14 PVC-1 protocol + gen3 research contracts (scientific, S2; needs PR-04's contract hash; independent review)
+[S4 pass] -> PR-15 soak report -> [PVC-1 start] -> monthly freezes -> [S6] -> PR-16 deletion (any time after S4)
+```
+
+Parallel lanes: (a) recorder PR-04 to PR-06; (b) Aegis PR-03 and portability
+PR-02; (c) fills/carry PR-07 and PR-08; (d) decision log PR-09; (e) S2
+protocol PR-14. Serial: PR-10 needs (b), (c), (d); PR-11 needs PR-10; PR-12
+needs PR-10 and PR-05; S4 needs PR-11, PR-12, PR-13 and a running recorder.
+
+Critical path to PVC-1 start: PR-04 -> PR-05 -> PR-06 -> 30-day gate, in
+parallel with PR-03/07/08/09 -> PR-10 -> PR-11 -> PR-12 -> S4 (14 days). The
+30-day gate and the S4 soak overlap; the binding constraint is whichever
+finishes later, typically the gate.
+
+---
+
+## 14. Implementation packages (PR plan)
+
+Common to every PR: base = current `main` at the time (rebasing a feature
+branch onto `main` is normal; amending, squashing or force-pushing a branch
+that has been reviewed is not); one reviewer other than the author; CI green
+on Ubuntu and Windows; no change to any file under `artifacts/`,
+`data/research/`, `docs/p*_preregistration.md`, or any frozen hash;
+`tools.verify_research_state` and `tools.freeze_evidence --verify` on every
+existing manifest pass; the scientific-integrity check listed per PR is
+executed and its result pasted in the PR description.
+
+| # | PR NAME | PURPOSE | BASE REQUIREMENT | EXACT SCOPE | OUT OF SCOPE | EXPECTED FILES | TESTS | ACCEPTANCE CRITERIA | SCIENTIFIC-INTEGRITY CHECK | ROLLBACK | DEPENDENCIES |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 01 | `governance: adopt post-audit plan (S0)` | record the owner decision | owner has decided | edit `docs/current_development_plan.md` START HERE and standing constraints to reference the adopted plan; close PR #67 with a comment; mark P8 `withdrawn` (new state value in `nn/research_state.py` and regenerated blocks) or defer that to a later PR if the owner prefers | any code | docs, `nn/research_state.py`, front-door blocks | `tests/test_research_state.py` updated for the new state | `verify_research_state` passes; blocks regenerated | no artifact touched | revert | none |
+| 02 | `portability: encodings, numpy 2.2, OS-neutral paths, lock file, Windows CI` | make the suite pass on Windows and pin deps | none | `read_text(encoding="utf-8")` in `nn/research_state.py:248`, `tools/verify_research_state.py:40`; `nn/mtf.py:255` datetime arithmetic; `Path` comparisons in the four evidence tests; `requirements-lock.txt` from `pip-compile`; CI matrix `windows-latest` for the test job | behaviour changes | as listed | existing suite on both OSes; `test_portability_paths.py` | 0 failures on Ubuntu and Windows; lock file used by CI | frozen numbers unchanged: `freeze_evidence --verify` on all 20 manifests; `test_p2b_evidence` fold counts unchanged | revert | none |
+| 03 | `aegis: persisted RiskState, kill switch, feed/reconciliation/funding rules` | demo-grade Aegis | none | section 7 | any executor change beyond passing `position_side` and the `None` liquidation veto | `chimera/risk.py`, `chimera/futures/executor.py` (two small edits), `docs/risk_manager.md` | `test_risk_state_persistence.py` (restart between peak and breach; legacy file; unreadable file; atomic write interrupted), `test_risk_new_rules.py` (two-sided for every new rule) | every rule in section 7.2 has a passing and a failing synthetic case; existing risk tests pass | I05/I06 semantics unchanged: `tools.futures_dry_run --verify artifacts/futures_dry_run_v1` still verifies (the protocol hash must not move; if a change forces it, the change is wrong for this PR) | revert | none |
+| 04 | `recorder: contract, events, sink, normalizer (offline)` | the recorder's data model without any network | none | section 4.3 to 4.5; parsers from documented payload shapes; synthetic event fixtures | websocket/REST clients | `chimera/recorder/{__init__,contract,events,sink,normalize}.py`, contract JSON, `.gitignore` | `test_recorder_contract.py`, `test_recorder_events.py`, `test_recorder_sink.py` (append-only, truncated tail, duplicates, late events, day rotation, crash mid-write), `test_recorder_normalize.py` (missing minutes never filled; digest stable across re-encoding) | all offline tests pass on both OSes | no network in tests (a test asserts no socket is opened) | revert | none |
+| 05 | `recorder: streams, REST pollers, service, CLI, health` | live collection | PR-04 | section 4.1, 4.2, 4.8; `tools/recorder.py run/status`; metrics; heartbeat; systemd unit | reconciliation and coverage | `chimera/recorder/{streams,rest,service,health}.py`, `tools/recorder.py`, `chimera/metrics.py`, `deploy/systemd/chimera-recorder.service`, `Makefile` | `test_recorder_streams_fake_server.py` (local fake websocket server: reconnect, duplicate, out-of-order, 24h close), `test_recorder_rest_fake.py`, `test_endpoint_names.py` (payload field names pinned) | a 60-minute local run against the real public endpoints, performed by the reviewer, records all streams with zero write errors; the run's data is engineering data | recorder computes no derived economic quantity (test asserts the package imports nothing from `nn/evaluate.py` or `chimera/carry`) | stop the service; revert | PR-04 |
+| 06 | `recorder: archive reconciliation and the 30-day coverage gate` | make coverage measurable | PR-05 | section 4.7, 4.9; `reconcile --day`, `coverage --window`, `GATE.json` | anything economic | `chimera/recorder/{reconcile,coverage}.py`, `tools/recorder.py` | `test_recorder_reconcile.py` (synthetic archive bytes via `nn/p13_sources` readers), `test_recorder_coverage.py` (gate arithmetic two-sided: 0.9949 fails, 0.995 passes; streak reset) | a reconciliation of two real days agrees on published minutes | reconciliation reads prices only to compare equality; no return computed | revert | PR-05 |
+| 07 | `futures: recorded-quote fill model and side check` | fills from the recorded book | none | section 5.2, 5.3; `FlattenCause.HEDGE_CORRECTION` | executor flow changes | `chimera/futures/fills.py`, `venue.py` (one check), `executor.py` (enum member), `__init__.py` | `test_futures_fills.py` (stale quote rejection, deviation guard, BUY at ask / SELL at bid, fee arithmetic pinned like `test_futures_no_live_path.py:452`), `test_futures_no_live_path.py` unchanged and passing | AST scan passes with the new module; dry-run protocol hash unchanged | revert | none |
+| 08 | `carry: ported accounting, ledger, hedged position` | two-leg position | PR-03, PR-07 | section 6 | rules | `chimera/carry/*`, `chimera/futures/__init__.py` | `test_carry_accounting_parity.py` (equality with `nn.p13_carry` on synthetic worlds and witnesses A/B/C), `test_carry_ledger.py` (persistence, corrupted file, identity check), `test_carry_hedge.py` (entry, partial-leg correction, rebalance, emergency reduce, restart reconstruction, dispute) | hand-traced LONG spot / SHORT perp example in the PR description with units, notional, fees, funding and PnL | no P13 historical data read; the parity test uses `tests/p13_synthetic.py` only | revert | PR-03, PR-07 |
+| 09 | `demo: config, clock, decision log` | deterministic logging | none | sections 2.4, 9 | runner | `chimera/demo/{config,clock,decision_log}.py`, `conf/demo/pvc1.json` (skeleton) | `test_decision_log.py` (chain, canonical bytes, crash between state and log, verify_chain), `test_demo_config.py` (faults key forbidden; hash stable) | canonical serialization is byte-stable across OSes | none needed | revert | none |
+| 10 | `demo: feed, rules protocol, runner state machine, CLI` | the runner | PR-03, PR-08, PR-09 | section 8; `rules.py` with `CarryRule` parameterised (values from config), shadow rules as signal-only; replay mode | observability beyond basic metrics | `chimera/demo/{feed,rules,rules_carry,rules_shadow,runner,fixtures,faults}.py`, `tools/demo_run.py`, `Makefile` | `test_demo_feed.py`, `test_demo_runner.py` (every state transition; catch-up; incomplete state; halt paths; operator commands), `test_demo_fault_injection.py`, `test_demo_no_live_path.py` | 48-hour synthetic run completes with the expected log; all halts recoverable | rules read only `MarketState`; the runner never opens a socket (test) | revert | PR-03, PR-08, PR-09 |
+| 11 | `demo: replay parity tool and fixture` | prove reproducibility | PR-10 | section 10 | - | `tools/replay_parity.py`, `docs/replay_parity.md` | `test_demo_replay_parity.py` | parity on the synthetic fixture with faults | - | revert | PR-10 |
+| 12 | `observability: metrics, alerts, dashboard, reports, runbook, compose profile` | operations | PR-05, PR-10 | section 11 | Grafana beyond one dashboard | `chimera/metrics.py`, `chimera/demo/reports.py`, `tools/demo_report.py`, `conf/alerts_demo.yml`, `conf/prometheus.yml`, `grafana/.../demo.json`, `docker-compose.yml`, `docs/demo_runbook.md`, `deploy/*` | `test_observability.py` extended: every dashboard query names an emitted series; every alert expression parses; report is a pure function of the log | `promtool check rules` passes; daily report reproduces from a replayed log | monthly freeze writes `evidence_class: prospective` and never a research-question row in `artifacts/README.md`'s research table | revert | PR-05, PR-10 |
+| 13 | `disconnect: Freqtrade, modes, consensus, inference off the path` | remove retired layers from the runtime and docs | none | section 3.3 disconnect column; CI job to `workflow_dispatch`; README tables; module docstrings | deletion | docs, CI, `docker-compose.yml`, module docstrings | existing tests keep passing | `README.md` "What works today" lists only demo-path components; `artifacts/paper_smoke` still regenerates | no artifact changed | revert | none |
+| 14 | `science: PVC-1 protocol preregistration and gen3 research contracts (S2)` | freeze what is evaluated forward | PR-04 (contract hash) | `docs/pvc1_protocol.md`, `nn/pvc1_protocol.py` (hashed constants: rules, parameters, pass/fail, floors, multiplicity, window, blocks, exclusions), `nn/research_contracts/btc-usdt-perp-1m-gen3.json`, `btc-usdt-spot-1m-gen3.json`; `nn/research_state.py` gains a `PVC-1` checkpoint whose evidence is `artifacts/prospective/pvc1/decision.json`; front-door blocks regenerated | any evaluation | as listed | `tests/test_pvc1_protocol.py` (hash frozen; no evidence exists; rules referenced by hash from `conf/demo/pvc1.json`) | independent review recorded in the PR; minimum one week between merge and campaign start | no number computed; protocol hash committed before the campaign start instant | revert before the start instant only; after it, an amendment is a new hash with the superseded one kept | PR-04 |
+| 15 | `ops: S4 soak report` | record the soak | S4 done | `artifacts/operational/demo_soak_v1/` with `evidence_class: operational`, invariants observed, parity result, restarts, drills | - | artifacts (operational), `artifacts/README.md` | `tools.freeze_evidence` on the directory; a verify test | 14 days, >= 99% uptime, zero unexplained divergence | operational only; no alpha claim in fields | n/a | PR-11, PR-12, PR-13 |
+| 16 | `cleanup: delete Freqtrade path` | remove the only live-capable code | S4 passed | section 3.3 delete column | anything else | deletions; `pyproject.toml`; CI | suite green; `grep -r freqtrade` empty except docs history | `artifacts/paper_smoke` and `artifacts/futures_dry_run_v1` verify | none | revert | PR-13, PR-15 |
+
+Recommended order: 01, 02, 04, 03, 07, 09, 05, 08, 06, 10, 13, 11, 12, 14 (in
+review while 10 to 12 land), 15, 16. Each PR is sized for one Opus session.
+
+---
+
+## 15. Test plan
+
+| level | subsystem | tests (all **(new)** unless named) | notes |
+| --- | --- | --- | --- |
+| UNIT | recorder events/sink/normalize | parsers on documented payloads; append-only; duplicate and out-of-order; truncated tail; day rotation; no interpolation; digest stability | offline only |
+| UNIT | fills | stale quote, deviation, side prices, fee quantization, ROUND_DOWN quantities | pinned numbers |
+| UNIT | carry accounting | equality with `nn.p13_carry` formulas on `tests/p13_synthetic.py` worlds; witnesses A, B, C reproduced | synthetic only |
+| UNIT | Aegis | every rule two-sided; persistence round trip; legacy file; unreadable file | |
+| UNIT | decision log | canonical bytes; chain; verify | |
+| UNIT | config | schema; hash; forbidden keys | |
+| PROPERTY / INVARIANT | hedge | for random fill sequences under a fault schedule: `imbalance == 0` whenever `HEDGED`; equity identity holds within fee rounding; no state reachable where an increase happened without an Aegis `allowed` record | hypothesis-style generation with a fixed seed; the seed is part of the test |
+| PROPERTY / INVARIANT | executor (existing) | I01-I16 via `tools.futures_dry_run --verify` | unchanged |
+| INTEGRATION | recorder against a fake websocket/REST server | reconnect, 24h close, duplicate flood, late events, REST gap-fill agreement and conflict | local server in the test |
+| INTEGRATION | runner over a synthetic 48-hour day set | full state machine; funding settlements; reconciliation; daily report | `chimera/demo/fixtures.py` |
+| FAULT INJECTION | runner | drop quote, duplicate fill event, stale feed, corrupt store, corrupt risk state, corrupt ledger, crash between state and log, forced restart at each state, partial leg fill, disk full (simulated `OSError`) | every fault has an expected log kind and an expected recovery path |
+| REPLAY | parity | synthetic fixture with faults; live sample from S4 | byte comparison of must-match fields |
+| SOAK | S4 | 14 days on live recorded data with scheduled restarts and drills | report frozen as operational evidence |
+| CROSS-PLATFORM | whole suite | Ubuntu and Windows CI; path assertions OS-neutral; encodings explicit | PR-02 |
+| SCIENTIFIC-INTEGRITY | governance | no test or tool computes a P14 statistic, P13 economics, or reads P4-HOLD/Styx (existing tripwires stay); `tests/test_pvc1_protocol.py` asserts no evidence exists before the start instant; the recorder package imports nothing from `nn.evaluate`; the monthly report computes only protocol-named quantities | |
+| CI | workflow | lint; compile; verify snapshots and research state; freeze-evidence verify on every manifest; tests on both OSes; `promtool check rules`; `docker compose config`; smoke of the recorder on fake server; replay parity on the fixture | the `Config validation` (Freqtrade) job becomes manual, then is removed |
+
+---
+
+## 16. Migration safety
+
+Three tiers, separated by directory and by CI job, never by rewriting history:
+
+| tier | what | rule |
+| --- | --- | --- |
+| HISTORICAL CODE | `nn/p*.py`, walk-forward, benchmark, diagnostics, snapshot exporters, `tools/paper_run.py`, `tools/futures_dry_run.py`, `chimera/modes.py`, `chimera/consensus.py`, `strategies/*` until deletion | changes limited to portability fixes that move no number; every frozen manifest verifies in CI; every decision artifact's recorded revision stays reachable in Git; no rename, no move |
+| ACTIVE RESEARCH CODE | `nn/research_contract.py`, `nn/research_state.py`, `nn/data_pipeline.py`, `nn/multiclock.py`, `nn/data_fingerprint.py`, `nn/source_identity.py`, `nn/p13_sources.py`, `nn/p13_acquisition.py`, `tools/freeze_evidence.py`, `tools/verify_*` | additive changes only; new schemas get new ids; parsers keep refusing unknown keys |
+| FUTURE DEMO RUNTIME | `chimera/recorder`, `chimera/carry`, `chimera/demo`, `chimera/futures/fills.py`, `tools/recorder.py`, `tools/demo_run.py`, `tools/replay_parity.py`, `tools/demo_report.py` | may not import from historical code; may import from active research code and `chimera/futures`; no historical artifact is read by the runtime |
+
+Guarantees: no old scientific verdict is rewritten; no frozen evidence hash
+changes because the runtime changes (the manifests are content hashes of
+artifact files the runtime never touches); the P13 accounting engine is not
+modified, it is ported with a parity test; `research_state` gains states
+(`withdrawn`, `PVC-1`) additively and every front-door block is regenerated in
+the same PR.
+
+---
+
+## 17. Stages S0 to S6 expanded
+
+### S0 - Decision and freeze
+
+| item | content |
+| --- | --- |
+| GOAL | an explicit owner decision on the proposal; PR #67 closed or kept, P8 withdrawn or kept, budget recorded |
+| RATIONALE | nothing below is legitimate without it |
+| PRECONDITIONS | audit and proposal read |
+| ENGINEERING TASKS | PR-01 |
+| SCIENTIFIC TASKS | none |
+| FILES | `docs/current_development_plan.md`, `nn/research_state.py`, front-door blocks |
+| DEPENDENCIES | none |
+| DELIVERABLES | merged PR-01; PR #67 closed; PR #68 merged as record (docs only) |
+| TESTS | `verify_research_state` |
+| PASS | decision recorded with date |
+| FAIL | owner rejects: this plan is archived; the current plan stands |
+| STOP | none |
+| EFFORT | one day |
+| MUST NOT HAPPEN YET | any recorder or runner code; any P14 work |
+| NEXT | S1, and PR-02/03 in parallel |
+
+### S1 - Prospective recorder
+
+| item | content |
+| --- | --- |
+| GOAL | causally clean forward data for both instruments, with the 30-day gate passed |
+| RATIONALE | every later stage consumes it; no prospective data exists |
+| PRECONDITIONS | S0 |
+| ENGINEERING TASKS | PR-04, PR-05, PR-06; deploy on the host that will run the demo; supervisor; disk sizing (about 1.5 GB per month raw gz plus 0.3 GB normalized at these streams) |
+| SCIENTIFIC TASKS | fill `prospective_from`; commit the contract hash |
+| FILES | section 12.3 recorder rows |
+| DEPENDENCIES | none |
+| DELIVERABLES | recorder running; `coverage/GATE.json` with `passed: true` |
+| TESTS | section 15 recorder rows; the reviewer's 60-minute live check |
+| PASS | 30 consecutive passing days per section 4.9 |
+| FAIL | streak resets; root cause recorded in `docs/demo_runbook.md`'s incident list |
+| STOP | if the gate cannot be passed within 90 days of first run: the project cannot do prospective science on this host and network; stop until fixed |
+| EFFORT | 2 to 3 weeks engineering, then 30 days of evidence accrual |
+| MUST NOT HAPPEN YET | any economic quantity computed from recorded data; any rule evaluation |
+| NEXT | S2 (overlaps), S3 (overlaps) |
+
+### S2 - Candidate freeze and PVC-1 preregistration
+
+| item | content |
+| --- | --- |
+| GOAL | the menu of frozen rules, their parameters, and the forward pass/fail rules, hashed and independently reviewed before the first scored minute |
+| RATIONALE | the only non-adaptive evidence available; multiplicity declared in advance |
+| PRECONDITIONS | S0; PR-04 merged (contract hash) |
+| ENGINEERING TASKS | `nn/pvc1_protocol.py`, `docs/pvc1_protocol.md`, gen3 research contracts, `conf/demo/pvc1.json` references the protocol hash |
+| SCIENTIFIC TASKS | define R1 carry parameters (capital, allocation, entry rule, funding halt, exit rule); define R2/R3 if included, with coefficients fitted once on research-visible gen2 data before the campaign and never refitted (this fit is an engineering act that produces no evidence and is disclosed); per-rule effect-size floor, minimum settlements/trades, monthly blocks, block-bootstrap test, multiplicity adjustment, exclusion rules (invalidated minutes, `LOG_BEHIND_STATE`), early-stop rule, the campaign start instant |
+| FILES | as listed |
+| DEPENDENCIES | PR-04 |
+| DELIVERABLES | PR-14 merged; review record; start instant fixed |
+| TESTS | `tests/test_pvc1_protocol.py` |
+| PASS | independent reviewer approves; at least seven days between merge and the start instant |
+| FAIL | reviewer rejects; redesign; no data scored |
+| STOP | none |
+| EFFORT | 2 to 3 weeks plus one week review |
+| MUST NOT HAPPEN YET | scoring any recorded minute; reading any recorded price for rule design (rule design uses gen2 history and external anchors only) |
+| NEXT | S3 (overlaps), S5 |
+
+### S3 - Minimum Viable Chimera build
+
+| item | content |
+| --- | --- |
+| GOAL | the runner runs the frozen rules against live recorded data with simulated fills and proves what it did |
+| RATIONALE | the demo substrate |
+| PRECONDITIONS | S0; PR-02, PR-03, PR-07, PR-08, PR-09 mergeable; recorder producing normalized days |
+| ENGINEERING TASKS | PR-10, PR-11, PR-12, PR-13 |
+| SCIENTIFIC TASKS | none |
+| FILES | section 12 |
+| DEPENDENCIES | section 13 |
+| DELIVERABLES | runner deployable; replay parity tool; dashboard; runbook; Freqtrade off the path |
+| TESTS | section 15 |
+| PASS | 48-hour synthetic run green; parity on fixture; hand-traced two-leg accounting reviewed; all 16 dry-run invariants still verify; effort cap respected |
+| FAIL | parity failures unresolved after one repair cycle |
+| STOP | effort beyond eight person-weeks: simplify (drop shadow rules, drop spot bookTicker, drop dashboard) rather than extend |
+| EFFORT | 5 to 6 weeks |
+| MUST NOT HAPPEN YET | scoring recorded data as evidence; any rule parameter chosen from recorded data |
+| NEXT | S4 |
+
+### S4 - Soak and parity
+
+| item | content |
+| --- | --- |
+| GOAL | sustained operation proven on live recorded data before the campaign |
+| RATIONALE | the campaign must not be its own shakedown |
+| PRECONDITIONS | S3; recorder running (gate may still be accruing) |
+| ENGINEERING TASKS | run the runner with rules armed in dry-run on pre-campaign data; scheduled restarts daily; a simulated feed outage; a reconciliation drill; a kill-switch drill; a corrupt-state drill; replay parity over the whole window; PR-15 |
+| SCIENTIFIC TASKS | none; soak data is engineering data and is excluded from the campaign by the protocol's start instant |
+| FILES | `artifacts/operational/demo_soak_v1/` |
+| DEPENDENCIES | PR-11, PR-12, PR-13 |
+| DELIVERABLES | soak report frozen |
+| TESTS | drills as listed |
+| PASS | 14 consecutive days; uptime >= 99%; zero unexplained parity divergences; every drill recovered as specified; 16 dry-run invariants observed on live data |
+| FAIL | repair, then one repeat of 14 days |
+| STOP | second failure stops the plan pending redesign |
+| EFFORT | 2 to 3 weeks elapsed, small engineering |
+| MUST NOT HAPPEN YET | campaign start |
+| NEXT | S5 |
+
+### S5 - PVC-1 sustained run
+
+| item | content |
+| --- | --- |
+| GOAL | six months of frozen prospective evidence |
+| RATIONALE | the scientific checkpoint |
+| PRECONDITIONS | S1 gate passed; S2 merged and reviewed; S4 passed; start instant reached |
+| ENGINEERING TASKS | operate; monthly freeze; incident log; no code change on the campaign path except disclosed operational repairs that change no decision (verified by replay parity of the affected day) |
+| SCIENTIFIC TASKS | none until closure |
+| FILES | `artifacts/prospective/pvc1/YYYY-MM/*`, monthly SHA256SUMS |
+| DEPENDENCIES | all above |
+| DELIVERABLES | six monthly frozen reports |
+| TESTS | monthly parity replay of a random sampled week |
+| PASS | per protocol |
+| FAIL | per protocol |
+| STOP | operational kill criteria (audit section 24) |
+| EFFORT | none beyond operations |
+| MUST NOT HAPPEN YET | reading interim PnL to change anything; opening P14/P8/P13/P4-HOLD/Styx |
+| NEXT | S6 |
+
+### S6 - Closure and independent audit
+
+| item | content |
+| --- | --- |
+| GOAL | one verdict per rule, once |
+| RATIONALE | decision, not continuation |
+| PRECONDITIONS | S5 complete or early-stopped per protocol |
+| ENGINEERING TASKS | `tools/demo_report.py --campaign pvc1 --close` writes `artifacts/prospective/pvc1/decision.json`; research-state flips `PVC-1` to `answered` |
+| SCIENTIFIC TASKS | apply the preregistered rules; independent audit reconstructs verdicts from the decision log and recorder files |
+| DELIVERABLES | decision artifact; audit report; either a promotion case document (section 20) or a recorded "no deployable alpha under the current mandate" |
+| PASS / FAIL | per protocol |
+| STOP | none |
+| EFFORT | 2 to 4 weeks |
+| NEXT | PVC-2 only if the protocol's ambiguity clause fires; otherwise the section 20 decision tree or closure |
+
+### PVC-2 (only if needed)
+
+Same machinery, re-frozen menu of at most two rules, a new protocol hash, no
+parameter tuned on PVC-1 data, six months, then the decision regardless.
+
+---
+
+## 18. Calendar and critical path
+
+Assumed adoption date: Monday 2026-09-07. Engineering time is the time a
+single executor session-per-PR cadence needs; evidence time is fixed by the
+protocol and is not compressible.
+
+| milestone | BEST | EXPECTED | DELAYED |
+| --- | --- | --- | --- |
+| S0 decision, PR-01 merged | 2026-09-08 | 2026-09-11 | 2026-09-18 |
+| PR-04/05 merged, recorder first run (`prospective_from` = next midnight) | 2026-09-18 | 2026-09-25 | 2026-10-09 |
+| PR-06 merged, coverage measurable | 2026-09-25 | 2026-10-02 | 2026-10-16 |
+| S1 30-day gate passed (no reset) | 2026-10-19 | 2026-10-26 | 2026-11-09 (one reset: 2026-12-09) |
+| S2 protocol PR-14 merged after review | 2026-10-09 | 2026-10-16 | 2026-11-06 |
+| S3 complete (PR-10 to PR-13 merged) | 2026-10-23 | 2026-11-06 | 2026-12-04 |
+| S4 soak passed (14 days) | 2026-11-06 | 2026-11-20 | 2026-12-18 (one repeat: 2027-01-08) |
+| **PVC-1 start** (first UTC midnight after S1, S2 + 7 days, S4) | 2026-11-09 | 2026-11-23 | 2027-01-11 |
+| PVC-1 day 30 milestone (first serious sustained demo) | 2026-12-09 | 2026-12-23 | 2027-02-10 |
+| PVC-1 end (182 days) | 2027-05-10 | 2027-05-24 | 2027-07-12 |
+| S6 closure and audit | 2027-06-07 | 2027-06-21 | 2027-08-09 |
+
+Engineering time to PVC-1 start: about 9 weeks best, 11 weeks expected, 18
+weeks delayed. Evidence accrual: 30 days (S1) overlapping with 14 days (S4),
+then 182 days (S5), then 2 to 4 weeks (S6). The critical path is the S1 gate
+in the best and expected cases and the S3/S4 chain in the delayed case.
+
+---
+
+## 19. "First demo start" defined
+
+The ambiguity: (A) starting the infrastructure against live data versus (B)
+having evidence that a candidate earned a demo. Resolution: **no historical
+evidence can earn a demo in this project** (the audit's finding), so "earned"
+means "its rule and pass/fail criteria passed independent review before any
+scored minute" (S2). The infrastructure start and the campaign start are
+therefore the same instant by construction, and the "serious sustained demo"
+is a milestone inside the campaign.
+
+| term | definition | objective criteria | when |
+| --- | --- | --- | --- |
+| DEMO INFRASTRUCTURE START | the runner processes live recorded minutes with rules armed in dry-run, outside the campaign | S3 complete; recorder running; soak configuration; data marked pre-campaign | S4 day 1 |
+| PROSPECTIVE SCIENTIFIC CAMPAIGN START | the first minute scored under the PVC-1 protocol | S1 gate passed; PR-14 merged and reviewed at least seven days earlier; S4 passed; start instant reached; `STARTUP` record carries the protocol hash | PVC-1 day 1 (same instant as the campaign's infrastructure start under the campaign config) |
+| FIRST SERIOUS SUSTAINED DEMO | the campaign has run 30 consecutive days with zero invalidated blocks, zero unexplained parity divergences, at least one restart recovered, and at least one funding settlement per day captured and booked | verified by the day-30 report and a parity replay of days 1 to 30 | PVC-1 day 30 |
+| DEMO COMPLETION | 182 campaign days elapsed, or the protocol's early-stop rule fired, and the S6 decision artifact exists | `artifacts/prospective/pvc1/decision.json` frozen | S6 |
+| ELIGIBILITY FOR FUTURE LIVE CONSIDERATION | a rule met its preregistered pass rule at S6; parity held over the campaign; the independent audit confirmed the verdict; a separately written live-authorisation contract exists and was reviewed | all four | after S6; never before |
+
+---
+
+## 20. Path beyond the demo (planning only; not permission)
+
+If, and only if, ELIGIBILITY is reached, the following decision tree applies.
+Every node is a separate, later decision; nothing here enables anything.
+
+1. **Prospective evidence threshold.** The rule's PVC-1 verdict is PASS under
+   its own preregistered floor and multiplicity adjustment; a second
+   independent period (PVC-2 or the first months of a continued dry-run)
+   does not contradict it. If the verdict is ambiguous, no promotion.
+2. **Independent audit** of the campaign from the decision log and recorder
+   files, by a reviewer who did not build the runner.
+3. **Executor safety review.** A live route does not exist; designing one is
+   a new contract: separate package, separate AST guard set, a credential
+   architecture reviewed before any key is created.
+4. **Credential architecture.** Exchange sub-account dedicated to the
+   project; API key with trading permission only; withdrawal disabled at the
+   exchange; IP allow-list; key stored outside the repository and outside the
+   runner's working directory; loaded only by the live executor process;
+   redaction as in `chimera/safety.py`.
+5. **Capital cap.** A hard cap in the live contract (for example a fixed
+   small USDT amount) enforced both by the sub-account balance and by Aegis
+   limits; no automatic top-up.
+6. **Leverage cap.** 1x, enforced by `FuturesExecutionConfig` as today and by
+   the exchange account's leverage setting.
+7. **Exchange-account isolation.** No other activity on the sub-account;
+   balance reconciled against the ledger every hour; mismatch halts.
+8. **Withdrawal / API permissions.** Withdrawal permanently disabled on the
+   key; permissions re-verified daily by reading the key's permission set.
+9. **Live kill switch.** The file switch plus an exchange-side "cancel all
+   and close" procedure documented and drilled in dry-run.
+10. **Reconciliation.** The live executor reconciles against the exchange's
+    reported position every minute; `ReconciliationPolicy.HALT`.
+11. **Operator approval.** Two-person rule for enabling the live process; the
+    acknowledgement token `ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK` retained
+    as one of the gates, never the only one.
+12. **Rollback.** A documented path from live to dry-run that flattens first.
+13. **Initial tiny allocation.** The cap from step 5; a fixed duration; the
+    live run is evaluated against the parallel dry-run for parity, not for
+    profit.
+14. **Staged promotion.** Any increase in the cap is a new decision with its
+    own evidence period and audit.
+
+If the evidence never supports real money, the project records "no deployable
+alpha under the current mandate" at S6 and either closes or opens a new
+mandate with its own budget. That outcome is expected to be the most likely
+one for the directional rules and is a legitimate end.
+
+---
+
+## 21. What not to build (deferred or retired), with reopening conditions
+
+| component | status | reopening condition |
+| --- | --- | --- |
+| MTST and any neural model | retired | a dataset with about 10^5 effectively independent labels, a prospectively validated nonlinear edge of a tree model over the linear baseline, and a cost model under which that horizon is tradable |
+| LightGBM as a research family | retired | never for its own sake; a future cell design may include it only as a second tree baseline if a new mandate needs one |
+| XGBoost as deciding family | benchmark only | a new mandate with breadth |
+| mode router (`chimera/modes.py`), P8 | retired / withdrawn | two prospectively validated specialists under a new protocol |
+| consensus (`chimera/consensus.py`) | retired | same |
+| Freqtrade and the four strategies | disconnected, then deleted | a single-leg spot strategy with prospectively validated edge that needs an off-the-shelf engine, which is not on any current path |
+| inference service, registry, promotion gates | deferred | a fitted model that must be served out of process; frozen-coefficient rules run in-process |
+| MLflow, Ray Tune | removed | a tuning campaign under a new mandate |
+| broad dashboards, Alertmanager routing beyond null and Telegram | deferred | more than one operator |
+| order-book depth simulation, maker fills, latency model, ADL/insurance | deferred | a maker-execution research mandate with a book recorder |
+| new historical alpha searches on the four blocks | retired | never |
+| new historical checkpoints on new data | budgeted to at most one after S5 starts | breadth (cross-asset) with the section 10 methodology of the audit |
+| P14 | declined (pending S0) | a maker-cost, multi-minute-horizon, perpetual-instrument redesign as a new checkpoint under the finite budget, after S5 |
+| P13 historical screen | closed | never; the carry question is answered prospectively by R1 |
+| Styx, P4-HOLD | sealed / retired | never as prospective evidence; at most a weak one-shot check on a frozen candidate at S6, if the owner insists, with the hindsight disclosure |
+
+---
+
+## 22. Final implementation checklist (CURRENT STATE to FIRST SERIOUS SUSTAINED DEMO)
+
+Each item is DONE when the named artifact exists and the named check passes.
+
+1. [ ] Owner decision recorded in `docs/current_development_plan.md` with date (S0).
+2. [ ] PR #67 closed with the audit linked; branch retained.
+3. [ ] PR-01 merged; `tools.verify_research_state` passes.
+4. [ ] PR-02 merged; CI green on Ubuntu and Windows; `requirements-lock.txt` committed; all 20 frozen manifests verify.
+5. [ ] PR-04 merged; `chimera/recorder/contracts/btcusdt-prospective-gen3.json` committed with `contract_hash`.
+6. [ ] PR-05 merged; recorder deployed under a supervisor; `health/heartbeat.json` updating; reviewer's 60-minute live check recorded in the PR.
+7. [ ] `prospective_from` written by the recorder and committed; contract immutable from then.
+8. [ ] PR-06 merged; first `reconciliation/YYYY-MM-DD.json` agrees on published minutes.
+9. [ ] PR-03 merged; `RiskState` persists; restart-between-peak-and-breach test passes; `tools.futures_dry_run --verify artifacts/futures_dry_run_v1` still verifies with the unchanged protocol hash.
+10. [ ] PR-07 merged; `tests/test_futures_no_live_path.py` passes unchanged; fill numbers pinned.
+11. [ ] PR-09 merged; decision-log canonical bytes identical on both OSes.
+12. [ ] PR-08 merged; parity with `nn.p13_carry` on synthetic witnesses; hand-traced two-leg example in the PR.
+13. [ ] PR-14 (PVC-1 protocol) merged after independent review; protocol hash recorded; start instant fixed at least seven days later.
+14. [ ] PR-10 merged; 48-hour synthetic run green; `tests/test_demo_no_live_path.py` passes.
+15. [ ] PR-13 merged; `README.md` lists only demo-path components as working; `Config validation` job manual.
+16. [ ] PR-11 merged; replay parity passes on the fixture.
+17. [ ] PR-12 merged; `promtool check rules conf/alerts_demo.yml` passes; dashboard queries all name emitted series; `docs/demo_runbook.md` exists.
+18. [ ] Runner deployed in soak configuration; `STARTUP` and `RECOVER` records present; `chimera_demo_state{state="READY"} == 1`.
+19. [ ] S4 drills executed: daily restart, feed outage, reconciliation, kill switch, corrupt state; each with its expected log kind and recovery.
+20. [ ] Replay parity over the full soak window: zero unexplained divergences.
+21. [ ] PR-15 merged: `artifacts/operational/demo_soak_v1/` frozen; 14 days; uptime >= 99%.
+22. [ ] S1 gate: `coverage/GATE.json` shows `passed: true` with a 30-day streak.
+23. [ ] Campaign config `conf/demo/pvc1.json` references the protocol hash and contains no `faults` key; config hash recorded.
+24. [ ] PVC-1 start: the runner's `STARTUP` record at the start instant carries the protocol hash, contract hash, config hash and source identity with `dirty: false`.
+25. [ ] Day 1 to 30: daily reports written; at least one restart recovered; every funding settlement captured and booked; no invalidated block.
+26. [ ] Day 30: parity replay of days 1 to 30 with zero unexplained divergences; day-30 report frozen. **This is the first serious sustained demo.**
+27. [ ] Months 1 to 6: monthly frozen reports with SHA256SUMS; no rule, cost, limit or config change; incident log complete.
+28. [ ] S6: `artifacts/prospective/pvc1/decision.json` frozen; independent audit report; owner decision recorded (promotion case, PVC-2, or closure).
+29. [ ] PR-16 merged (any time after item 21): no `freqtrade` import remains; `artifacts/paper_smoke` and `artifacts/futures_dry_run_v1` still verify.
