@@ -47,6 +47,8 @@ from chimera.recorder.health import (
     initial_health,
     read_status,
 )
+from chimera.recorder.incremental import IncrementalNormalizer
+from chimera.recorder.normalize import MinuteNormalizer
 from chimera.recorder.rest import RestPoller
 from chimera.recorder.service import (
     MAX_GAPFILL_MINUTES,
@@ -811,6 +813,134 @@ def test_the_service_time_is_the_injected_clock_so_a_test_can_pin_a_day(tmp_path
     service = service_for(tmp_path)
     assert service._wall_ns() == NOON_NS
     assert abs(time.time_ns() - NOON_NS) > 10**9, "the pinned day is not now"
+
+
+# --- J. the service renders through the incremental normalizer -----------------
+def test_recovery_renders_through_the_incremental_path_and_leaves_a_cache(tmp_path):
+    """Startup must use the same renderer the running service uses.
+
+    A restart that rendered through a different path than the run could disagree
+    with itself about a day, and the whole point of the cache is that the first
+    thing to use it is the thing that starts up.
+    """
+    service = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(4):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+    recovery = service.recover()
+    assert recovery.normalized == (f"spot/{DAY}", f"um/{DAY}")
+    cache = service.incremental.cache_path("um", DAY)
+    assert cache.exists(), "the recovery left no cache for the next start to resume from"
+    status = service.incremental.status[("um", DAY)]
+    assert status.resumed is False and status.replayed_records == 4
+
+
+def test_a_restart_replays_only_the_tail_and_renders_the_same_day(tmp_path):
+    """The behaviour the whole change exists for, at the service level."""
+    first = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(4):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+    first.recover()
+    digest_before = json.loads(
+        first.normalizer.meta_path("um", DAY).read_text(encoding="utf-8")
+    )["digest"]
+
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(4, 7):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+
+    second = service_for(tmp_path)
+    second.recover()
+    status = second.incremental.status[("um", DAY)]
+    assert status.resumed is True
+    assert status.replayed_records == 3, "only the three records added since the cache"
+
+    document = json.loads(second.normalizer.meta_path("um", DAY).read_text(encoding="utf-8"))
+    assert document["rows"] == 7
+    assert document["digest"] != digest_before, "the day grew, so its digest moved"
+
+    # And the same material rebuilt the slow way agrees.
+    oracle_root = tmp_path.parent / "oracle"
+    oracle_root.mkdir(exist_ok=True)
+    with RawSink(oracle_root, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(7):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+    oracle = MinuteNormalizer(oracle_root, CONTRACT).build_day("um", DAY)
+    assert oracle.digest == document["digest"]
+
+
+def test_the_last_canonical_instant_comes_from_the_cache_on_a_restart(tmp_path):
+    """Reading it by parsing the day is what made a restart cost minutes."""
+    first = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(3):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+    first.recover()
+
+    second = service_for(tmp_path)
+    recovery = second.recover()
+    assert recovery.last_canonical_ns[UM_KLINE_1M] == minute_ms(2) * NS_PER_MILLISECOND
+    peeked = second.incremental.peek_last_canonical("um", DAY)
+    assert peeked[UM_KLINE_1M] == minute_ms(2) * NS_PER_MILLISECOND
+
+
+def test_the_peek_sees_the_tail_the_cache_has_not_folded_yet(tmp_path):
+    """A maximum over the folded part and over the rest is the maximum overall."""
+    service = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        sink.append(kline_event(minute_ms(0)))
+        sink.sync()
+    service.recover()
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        sink.append(kline_event(minute_ms(9)))
+        sink.sync()
+    peeked = IncrementalNormalizer(tmp_path, CONTRACT).peek_last_canonical("um", DAY)
+    assert (
+        peeked[UM_KLINE_1M] == minute_ms(9) * NS_PER_MILLISECOND
+    ), "the unfolded tail was not looked at"
+
+
+def test_rendering_a_day_does_not_revive_a_halted_stream(tmp_path):
+    """The e705d14 latch survives everything the normalizer does.
+
+    The normalizer reads raw files and writes normalized ones. It has no business
+    deciding a stream is healthy again, and a stream whose sink failed must stay
+    halted through every render for the rest of the run.
+    """
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+    assert service.health.stream(UM_KLINE_1M).halted is True
+
+    for _ in range(3):
+        assert service._normalize("um", DAY) is True
+        stream = service.health.stream(UM_KLINE_1M)
+        assert stream.halted is True, "a render lifted the storage-failure latch"
+        assert stream.up is False
+    assert service.health.halted_streams == (UM_KLINE_1M,)
+
+
+def test_the_cache_lives_under_the_storage_root_and_beside_nothing_it_could_be_mistaken_for(
+    tmp_path,
+):
+    service = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        sink.append(kline_event(minute_ms(0)))
+        sink.sync()
+    service.recover()
+    cache = service.incremental.cache_path("um", DAY)
+    relative = cache.relative_to(tmp_path).as_posix()
+    assert relative == f"cache/normalize/um/{DAY}.json"
+    assert not relative.startswith("raw/"), "it must not sit among the raw evidence"
+    assert not relative.startswith("normalized/"), "nor among the normalized days"
+    assert not relative.startswith("funding/")
 
 
 # --- I. a stream that cannot be written is halted, and stays halted -------------
