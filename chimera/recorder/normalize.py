@@ -1,9 +1,9 @@
-"""One row per minute the exchange actually printed, and nothing else.
+"""One row per minute this recorder captured a closed kline for, and no others.
 
 The normalizer turns the raw event files into the shape everything downstream
-reads: a daily table with one row per *closed* minute, plus a metadata document
-saying what the day holds and what it does not. It is structural work. It
-computes no return, no signal, no funding profit, no basis, no PnL and no
+reads: a daily table with one row per *captured closed* minute, plus a metadata
+document saying what the day holds and what it does not. It is structural work.
+It computes no return, no signal, no funding profit, no basis, no PnL and no
 statistic of any kind; every number in the output was published by the exchange
 and is carried across unchanged.
 
@@ -11,11 +11,29 @@ and is carried across unchanged.
 is worth stating as a list of things that never happen here: no forward fill, no
 backward fill, no interpolation, no invented candle, no minute inferred from a
 neighbour, no mark or index or book value substituted from another stream, no
-gap quietly closed. A minute for which the exchange never published a closed
+gap quietly closed. A minute for which this recorder holds no usable closed
 kline has **no row**, is named in ``missing``, and is summarised in ``gaps``. A
 minute that has a kline but no book has a row whose ``book_present`` is false
 and whose book columns are null. The reader can always tell the difference
 between "zero" and "not there", because one is a number and the other is null.
+
+**What absence means, and what it does not.** A minute's absence from this table
+means exactly one thing: *no usable closed kline for it is present in this
+recorder's material.* It does not mean the exchange never published that minute,
+and this layer never claims that it does. The two are different facts with
+different owners, and the coverage gate counts them under different names:
+``captured_minutes`` is what the recorder holds and is what this module
+produces; ``published_minutes`` is what the venue's daily archive turns out to
+contain, and it is learned only by the archive reconciliation, later, from the
+archive itself. A recorder outage and a venue publication gap are
+indistinguishable from inside this module, so conflating them here would be an
+inference the offline core has no evidence for — and would quietly turn a
+recorder defect into a claim about the market.
+
+The invariant is unchanged by that distinction and is not weakened by it: a
+minute the recorder does not hold is absent, stays absent, and is never filled,
+interpolated or inferred. Saying less about *why* it is absent is what makes the
+statement true.
 
 **Deterministic by construction.** Events are sorted by canonical time with the
 file order as the tie-break, so a day rebuilt from the same raw files is the
@@ -235,8 +253,12 @@ class BookMinute:
 class MinuteRecord:
     """One normalized minute.
 
-    A record exists only when the exchange published a closed kline for the
-    minute, which is exactly the definition the coverage gate counts against.
+    A record exists only when this recorder accepted a closed kline for the
+    minute — the coverage gate's ``captured_minutes``, which is what the
+    recorder can know. Whether the venue's archive published that minute is
+    ``published_minutes``, a separate fact established later by the archive
+    reconciliation and never asserted here.
+
     ``mark`` and ``book`` are ``None`` when that stream had nothing in the
     minute, and the absence travels into the table as a false ``*_present`` flag
     and null columns rather than as a substituted value.
@@ -575,7 +597,7 @@ def minute_frame(records: Iterable[MinuteRecord], *, market: str) -> pd.DataFram
     if unknown:
         raise RecorderNormalizeError(
             f"the {market} schema declares {unknown}, which a MinuteRecord cannot fill. A "
-            "column built out of nothing would be a value the exchange never published"
+            "column built out of nothing would be a value nothing ever observed"
         )
     frame = pd.DataFrame(rows, columns=[spec.name for spec in specs])
     for spec in specs:
@@ -681,7 +703,7 @@ def digest(frame: pd.DataFrame, *, market: str) -> str:
         if not spec.nullable and bool(mask.any()):
             raise RecorderNormalizeError(
                 f"column {spec.name!r} is declared non-null and holds a null. A minute with "
-                "no closed kline has no row at all; it never has a row of nulls"
+                "no captured closed kline has no row at all; it never has a row of nulls"
             )
         running.update(spec.name.encode("utf-8"))
         running.update(mask.astype("<u1").tobytes())
@@ -740,11 +762,17 @@ def meta(
         "parquet_sha256": parquet_sha256,
         "source_paths": list(source_paths),
         "provenance": None if provenance is None else dict(provenance),
+        "missing_semantics": (
+            "captured_minutes. A minute listed in missing is one for which this recorder "
+            "holds no usable closed kline; it is never filled, interpolated or inferred. "
+            "This document does not assert WHY the minute is absent and cannot: a recorder "
+            "outage and a venue publication gap look identical from here. Whether the "
+            "exchange archive published a given minute is published_minutes, established "
+            "by the archive reconciliation from the archive itself, not by this file."
+        ),
         "note": (
             "digest is the identity of the minutes and reproduces from any host; "
-            "parquet_sha256 identifies the stored container, which depends on the writer. "
-            "A minute absent from this table was never published as a closed kline and is "
-            "listed in missing; it is never filled, interpolated or inferred."
+            "parquet_sha256 identifies the stored container, which depends on the writer."
         ),
     }
 

@@ -109,6 +109,55 @@ def test_the_contract_restates_the_rules_rather_than_pointing_at_a_document():
     assert "source_digest" in contract.recorder_version_policy
 
 
+def test_the_coverage_rule_counts_funding_in_settlements_and_not_in_minutes():
+    """Section 4.9's amendment A1, pinned in the contract that has to agree with it.
+
+    As first written the gate divided every required stream's captured set by
+    1440 and flagged ``RECORDER_OUTAGE`` below 0.990. ``um.funding`` is
+    settlement-indexed — three settlements a day at the cadence in force — so its
+    wallclock coverage could not exceed ``3/1440`` and the 30-day gate was
+    unreachable by arithmetic. The rule now separates the two index kinds. This
+    test fails if the contract drifts back to a single denominator, which is the
+    only way the defect can return.
+    """
+    rule = load_recorder_contract().coverage_rule
+    lowered = rule.lower()
+    assert "minute-indexed" in lowered and "settlement-indexed" in lowered
+    assert "scheduled_settlements" in rule and "captured_settlements" in rule
+    assert "settlement_coverage" in rule
+    assert "no wallclock coverage" in rule, "funding must be exempt from the 1440 denominator"
+    assert "not divided by 1440" in rule
+    assert "0.990 minute-stream outage threshold does not apply to it" in rule
+    assert "fails the day outright" in rule, "a missing settlement must still fail the day"
+
+    # The old, impossible reading must be gone: funding is never named among the
+    # streams the 1440 denominator applies to.
+    minute_streams = rule.split("Minute-indexed:")[1].split("Settlement-indexed:")[0]
+    assert UM_FUNDING not in minute_streams, (
+        f"{UM_FUNDING} is listed among the minute-indexed streams again, which is what made "
+        "the gate unreachable"
+    )
+    assert UM_FUNDING in rule.split("Settlement-indexed:")[1]
+    assert (3 / 1440) < 0.990, "the arithmetic that made the original rule impossible"
+
+
+def test_the_coverage_rule_names_no_economic_criterion():
+    """Source-completeness bookkeeping only: agreement, never profitability.
+
+    The rule's closing sentence *names* the economic quantities in order to
+    disclaim them, so the scan is over the operative text before it: what the
+    gate measures, rather than what it says it does not measure.
+    """
+    rule = load_recorder_contract().coverage_rule
+    marker = "No price, return,"
+    assert marker in rule, "the coverage rule must keep its no-economics disclaimer"
+    operative, disclaimer = rule.split(marker, 1)
+    for token in ("profit", "pnl", "return", "yield", "carry", "apr", "basis", "alpha"):
+        assert token not in operative.lower(), f"the gate's criteria mention {token!r}"
+    assert "funding flow, basis, profit" in disclaimer
+    assert "equality check on published values" in disclaimer
+
+
 def test_the_inherited_seals_are_named_and_not_restated():
     """One source of truth for a sealed instant, and it is not this file.
 
@@ -459,3 +508,91 @@ def test_the_label_names_the_id_and_the_short_hash():
     assert contract.label == f"{contract.contract_id}@{contract.contract_hash[:16]}"
     assert contract.provenance()["contract_hash"] == contract.contract_hash
     assert contract.provenance()["contract_schema"] == CONTRACT_SCHEMA
+
+
+# --- F. index price is derived, not a stream of its own -----------------------
+def test_the_index_price_is_carried_by_the_mark_stream_and_is_not_recorded_separately():
+    """Section 4.1's design: ``um.indexPrice_1m`` is derived, never subscribed.
+
+    The mark-price stream publishes the index alongside the mark on every update,
+    so a second subscription would be a second copy of a number the recorder
+    already has — and two sources for one value is how they come to disagree.
+    Section 4.1 says the per-minute index klines are *derived* from this stream
+    and then checked against the venue's index-price archive by the daily
+    reconciliation, which is PR-06's job and not this package's.
+    """
+    contract = load_recorder_contract()
+    assert UM_MARK_PRICE in contract.streams
+    for derived in ("um.indexPrice_1m", "um.markPrice_1m"):
+        assert derived not in contract.streams, (
+            f"{derived} is a recorded stream. The adopted design derives it from "
+            f"{UM_MARK_PRICE}; subscribing to it would create a second source for a value "
+            "the recorder already holds"
+        )
+        assert derived not in contract.required_for_coverage
+
+
+# --- G. the plan and the contract must not disagree ---------------------------
+MASTER_PLAN = (
+    Path(__file__).resolve().parents[1]
+    / "docs"
+    / ("proposed_demo_implementation_master_plan.md")
+)
+
+
+def test_the_master_plan_and_the_contract_agree_about_the_coverage_gate():
+    """The contract restates section 4.9; a restatement that drifts is worse than a link.
+
+    Only the load-bearing clauses are compared, not the prose: this is a
+    tripwire against the two documents diverging on *what the gate measures*,
+    which is the failure amendment A1 was written to close.
+    """
+    plan = MASTER_PLAN.read_text(encoding="utf-8")
+    section = plan.split("### 4.9 The 30-day coverage gate, exactly")[1].split("\n## ")[0]
+    rule = load_recorder_contract().coverage_rule
+
+    assert "Amendment A1" in section, "the correction must stay marked in the plan"
+    for clause in (
+        "minute-indexed",
+        "settlement-indexed",
+        "scheduled_settlements",
+        "captured_settlements",
+        "settlement_coverage",
+        "0.995",
+        "0.990",
+        "1440",
+        "RECORDER_OUTAGE",
+    ):
+        assert clause in section.lower() or clause in section, f"plan lost {clause!r}"
+        assert clause in rule.lower() or clause in rule, f"contract lost {clause!r}"
+
+    # The specific defect: neither document may divide funding by 1440 again.
+    # The amendment note is a blockquote and is allowed to describe the old rule
+    # in order to record what was corrected; the operative rule beneath it is not.
+    operative = "\n".join(
+        line for line in section.splitlines() if not line.lstrip().startswith(">")
+    )
+    plan_minutes = operative.split("minute-indexed")[1].split("settlement-indexed")[0]
+    assert UM_FUNDING not in plan_minutes, "the plan lists funding as minute-indexed again"
+    for document, text in (("plan", operative), ("contract", rule)):
+        assert "not divided by 1440" in text, f"the {document} lost funding's exemption"
+        assert "fails the day outright" in text, f"the {document} lost the funding failure"
+
+
+def test_the_committed_contract_asserts_nothing_about_what_the_venue_published():
+    """The contract describes an acquisition. It cannot describe the archive's contents.
+
+    ``published_minutes`` is learned from the venue's daily archive by the
+    reconciliation, so a contract clause asserting that a minute was or was not
+    published would be a claim frozen before anything could establish it.
+    """
+    from tests.test_recorder_normalize import unknowable_claims_in
+
+    text = CONTRACT_PATH.read_text(encoding="utf-8")
+    assert unknowable_claims_in(text) == []
+    rule = load_recorder_contract().coverage_rule
+    assert "present in the Binance daily archive" in rule, (
+        "published_minutes must be defined as what the archive contains, not as an "
+        "assumption about the venue"
+    )
+    assert "present in the recorder" in rule, "captured_minutes must be the recorder's own"

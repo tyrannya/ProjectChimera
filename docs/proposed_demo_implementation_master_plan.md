@@ -18,6 +18,14 @@ fitted, there is no live route, and no real money is authorised.
 Stage S0 is complete. **The next task is PR-04** (section 14): the recorder's
 contract, events, sink and normalizer, offline only, with no network.
 
+**Amendments to this document since adoption.** Each is listed here so a reader
+who starts at the top learns the plan has been corrected, and each is marked
+where it applies:
+
+| # | date | section | what changed |
+| --- | --- | --- | --- |
+| A1 | 2026-09-03 | 4.9 | The coverage gate applied a `\|captured\| / 1440` wallclock denominator and the `0.990` outage threshold to every required stream, `um.funding` included. Funding is settlement-indexed, so its wallclock coverage could not exceed `3/1440` and the 30-day gate was unreachable by arithmetic. Minute-indexed and settlement-indexed streams are now evaluated separately; every threshold and the substance of funding completeness are unchanged. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
+
 Written 2026-09-03 on the audit branch `audit/fable-5-1-full-project-strategic-audit`.
 Every existing name, signature, field and line number below was read from the
 repository at `main` = `177d4b60c7e137730ce88241b481941b07b4cd30`; the audit and
@@ -387,28 +395,95 @@ carries it.
 
 ### 4.9 The 30-day coverage gate, exactly
 
-For each UTC day `D` and each stream `s` in `required_for_coverage`:
+> **Amendment A1, 2026-09-03 — pre-acquisition specification correction.**
+> As first written, this section defined `wallclock_coverage(s, D) =
+> |captured| / 1440` for *every* stream in `required_for_coverage` and flagged
+> `RECORDER_OUTAGE` when that fell below `0.990` on *any* required stream.
+> `um.funding` is in `required_for_coverage` and the same section defines its
+> published set as the day's scheduled settlements, so its wallclock coverage
+> could never exceed `3/1440 = 0.00208`. Every day would therefore have been
+> flagged, and "three flagged days in a window fail the gate" made the 30-day
+> gate unreachable by arithmetic rather than by anything the recorder did.
+>
+> The rule below separates the two index kinds: minute-indexed streams keep
+> published and wallclock coverage exactly as before; `um.funding` is
+> settlement-indexed and is evaluated on whether the day's settlements were
+> captured and agree. Nothing else moves — the `0.995` published-coverage bar,
+> the `0.990` minute-stream outage threshold, the three-flagged-days rule and
+> the 30-day window are unchanged, and funding completeness is unchanged in
+> substance (all of the day's settlements, captured with exact agreement) and is
+> now stated as its own condition rather than routed through a minute
+> denominator that does not apply to it.
+>
+> This is an implementation-grade correction to a specification defect. It is
+> made **before** any acquisition, **before** any `prospective_from` exists and
+> while **no recorded minute exists**, so it changes no result, moves no
+> threshold that any evidence has been measured against, and reinterprets
+> nothing that has ever been run. It is the last moment at which this can be
+> corrected without it being a threshold changed after seeing data.
+
+Required streams come in two index kinds, and the gate treats them separately
+because they are counted in different units:
+
+```
+minute-indexed      um.kline_1m, um.markPrice, um.bookTicker, spot.kline_1m
+settlement-indexed  um.funding
+```
+
+For each UTC day `D` and each **minute-indexed** stream `s` in
+`required_for_coverage`:
 
 ```
 published_minutes(s, D) = minutes of D present in the Binance daily archive for s
-                          (for um.funding: the three scheduled settlements of D)
 captured_minutes(s, D)  = minutes of D present in the recorder's normalized file for s
                           whose values agree with the archive within tolerance
 published_coverage(s, D) = |captured  intersect  published| / |published|
 wallclock_coverage(s, D) = |captured| / 1440
 ```
 
-A day passes when `published_coverage(s, D) >= 0.995` for every required
-stream and all three funding settlements of the day were captured with exact
-agreement. `wallclock_coverage` is reported beside it; a day whose
-`wallclock_coverage < 0.990` on any required stream is flagged
-`RECORDER_OUTAGE` even if it passes, and three flagged days in a window fail
-the gate. The gate passes when 30 consecutive UTC days pass, counted from the
-first passing day at or after `prospective_from`; a failing day resets the
-count to zero. `tools/recorder.py coverage --window 30` **(new)** computes
-and prints the current streak and writes `coverage/GATE.json` with the
-verdict, the streak, and the list of days. No price, return or economic
-quantity is computed by any recorder tool.
+For the **settlement-indexed** stream `um.funding`:
+
+```
+scheduled_settlements(D) = the settlements of D the monthly funding archive publishes
+                           (three, at the eight-hour cadence in force at the time of
+                           writing; the count is read from the archive and never assumed,
+                           so a venue that changes its funding interval does not silently
+                           fail or silently pass the day)
+captured_settlements(D)  = those settlements present in the recorder's settlements file
+                           agreeing exactly on settlement time, rate and markPrice
+settlement_coverage(D)   = |captured_settlements| / |scheduled_settlements|
+```
+
+`um.funding` has **no** wallclock coverage: it is not divided by 1440 and the
+`0.990` minute-stream outage threshold does not apply to it. A settlement is
+either captured and in exact agreement or it is not, and there is no partial
+credit for a settlement.
+
+A day passes when **both** of the following hold:
+
+1. `published_coverage(s, D) >= 0.995` for every minute-indexed required
+   stream; and
+2. every settlement the archive publishes for `D` was captured with exact
+   agreement — `settlement_coverage(D) == 1`.
+
+`wallclock_coverage` is reported beside (1) for the minute-indexed streams; a
+day whose `wallclock_coverage < 0.990` on any minute-indexed required stream is
+flagged `RECORDER_OUTAGE` even if it passes, and three flagged days in a window
+fail the gate. A missing or disagreeing funding settlement is not a flag: it
+fails the day outright. A day for which the archive publishes no settlement at
+all satisfies (2) vacuously — the recorder missed nothing — and
+`scheduled_settlements(D)` is recorded so that a zero is visible in the report
+rather than invisible.
+
+The gate passes when 30 consecutive UTC days pass, counted from the first
+passing day at or after `prospective_from`; a failing day resets the count to
+zero. `tools/recorder.py coverage --window 30` **(new)** computes and prints
+the current streak and writes `coverage/GATE.json` with the verdict, the
+streak, the per-stream coverages, `scheduled_settlements` and
+`captured_settlements`, and the list of days. No price, return or economic
+quantity is computed by any recorder tool: settlement agreement is an equality
+check on published values, and funding profitability is not a thing the
+recorder knows how to compute.
 
 ---
 

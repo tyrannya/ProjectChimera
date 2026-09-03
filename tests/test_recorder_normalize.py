@@ -1,12 +1,20 @@
-"""The minute normalizer: one row per minute the exchange printed, and no others.
+"""The minute normalizer: one row per captured closed minute, and no others.
 
 The invariant this file is written around is a single sentence — **missing data
 is missing** — and it is asserted from every side that could quietly break it: a
-minute with no closed kline has no row and appears in the gap list; a minute
-whose mark or book stream was silent has a row whose flag is false and whose
-columns are null rather than the previous minute's values; no stream ever
+minute with no captured closed kline has no row and appears in the gap list; a
+minute whose mark or book stream was silent has a row whose flag is false and
+whose columns are null rather than the previous minute's values; no stream ever
 substitutes for another; and the source of the module is scanned for the fill
 and interpolate calls that would make any of that untrue.
+
+Section I guards the other half of that invariant, which is a claim the offline
+core must *not* make. Absence from a normalized day means the recorder holds no
+usable closed kline for the minute — ``captured_minutes`` — and nothing about
+whether the venue published one, which is ``published_minutes`` and is learned
+only by the archive reconciliation. A recorder outage and a venue publication
+gap are indistinguishable from inside this layer, so the tests there scan the
+source and the persisted metadata for the stronger reading and refuse it.
 
 The second property is determinism. The same raw files produce the same table,
 the same value digest and the same metadata whether the exchange delivered the
@@ -697,7 +705,7 @@ def test_the_normalizer_never_calls_a_fill_or_an_interpolation():
     }
     assert not called & FORBIDDEN_CALLS, (
         f"chimera/recorder/normalize.py calls {sorted(called & FORBIDDEN_CALLS)}; a "
-        "normalizer that fills a gap has invented a minute the exchange never printed"
+        "normalizer that fills a gap has invented a minute nothing ever observed"
     )
 
 
@@ -741,3 +749,164 @@ def test_the_recorder_package_does_not_import_the_research_evaluation_code():
             f"{path} imports from nn; the recorder is infrastructure and must not depend "
             "on a research checkpoint's code"
         )
+
+
+# --- I. what absence may not be read as ----------------------------------------
+#
+# Absence from a normalized day is `captured_minutes`: the recorder holds no
+# usable closed kline for that minute. It is NOT `published_minutes`, which says
+# what the venue's archive turns out to contain and is established by the archive
+# reconciliation from the archive itself. A recorder outage and a venue
+# publication gap are indistinguishable from inside the offline core, so the
+# stronger reading is an inference this layer has no evidence for — and it would
+# quietly turn a recorder defect into a claim about the market.
+#
+# The stronger reading was in the source and in the persisted metadata once. The
+# tests below exist so it cannot come back by someone tidying a docstring.
+
+#: Sentences asserting that the venue did not publish something. Matched against
+#: the package source and against every persisted metadata document.
+UNKNOWABLE_CLAIMS = (
+    r"exchange never published",
+    r"exchange never printed",
+    r"exchange never closed",
+    r"venue never published",
+    r"venue never printed",
+    r"never published as a closed kline",
+    r"never printed as a closed kline",
+    r"exchange did not publish",
+    r"venue did not publish",
+    r"was never published",
+    r"minute the exchange actually printed",
+    r"minute the exchange printed",
+)
+
+#: A sentence may *name* the claim in order to refuse it, which is exactly what
+#: the corrected documentation does. One of these in the same sentence is what
+#: separates "the exchange never published this minute" from "this does not mean
+#: the exchange never published this minute".
+DENIALS = (
+    "does not mean",
+    "do not mean",
+    "never claims",
+    "does not assert",
+    "cannot",
+    "must not",
+    "no evidence for",
+    "not knowable",
+)
+
+
+def sentences(text: str) -> list[str]:
+    """The text as sentences, with docstring line wrapping collapsed."""
+    flat = " ".join(text.split())
+    return [part for part in re.split(r"(?<=[.;:])\s+", flat) if part]
+
+
+def unknowable_claims_in(text: str) -> list[str]:
+    """Every sentence of ``text`` that asserts what the venue did or did not publish."""
+    offenders: list[str] = []
+    for sentence in sentences(text):
+        lowered = sentence.lower()
+        if not any(re.search(pattern, lowered) for pattern in UNKNOWABLE_CLAIMS):
+            continue
+        if any(denial in lowered for denial in DENIALS):
+            continue
+        offenders.append(sentence)
+    return offenders
+
+
+def test_the_unknowable_claim_scan_can_actually_see_one():
+    """Catches the scanner going blind, which would pass every file vacuously."""
+    asserted = "A minute absent from this table was never published as a closed kline."
+    denied = (
+        "Absence means the recorder holds no closed kline for the minute. It does not "
+        "mean the exchange never published that minute."
+    )
+    assert unknowable_claims_in(asserted) == [asserted]
+    assert unknowable_claims_in(denied) == [], "a sentence refusing the claim is not the claim"
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted(NORMALIZE_SOURCE.parent.rglob("*.py")),
+    ids=lambda p: p.name,
+)
+def test_no_module_asserts_what_the_venue_published(path):
+    offenders = unknowable_claims_in(path.read_text(encoding="utf-8"))
+    assert not offenders, (
+        f"{path.name} asserts what the venue published: {offenders}. The offline core knows "
+        "captured_minutes and cannot know published_minutes; the archive reconciliation "
+        "establishes the second one from the archive, and until it runs the only honest "
+        "statement is that this recorder holds no usable closed kline for the minute"
+    )
+
+
+def test_the_persisted_metadata_says_captured_and_does_not_say_published(root):
+    """The strongest form of the guard: the claim is checked in the file on disk."""
+    write(root, um_day([0, 2]))
+    report = MinuteNormalizer(root, CONTRACT).build_day("um", DAY)
+    text = report.meta_path.read_text(encoding="utf-8")
+    document = json.loads(text)
+
+    assert unknowable_claims_in(text) == []
+    semantics = document["missing_semantics"]
+    assert "captured_minutes" in semantics
+    assert "published_minutes" in semantics
+    assert "reconciliation" in semantics
+    assert "no usable closed kline" in semantics
+    assert "does not assert" in semantics, "the document must decline to say why"
+    assert "never filled, interpolated or inferred" in semantics, (
+        "declining to say why a minute is absent must not weaken the invariant that it "
+        "stays absent"
+    )
+    assert minute_ms(1) in document["missing"]
+
+
+def test_the_recorder_package_never_names_published_minutes_as_its_own_output():
+    """`published_minutes` may be explained here; it may never be produced here."""
+    package = NORMALIZE_SOURCE.parent
+    for path in sorted(package.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = module_identifiers(tree)
+        assert "published_minutes" not in names, (
+            f"{path.name} defines or reads published_minutes. That set is the archive's, "
+            "not the recorder's, and computing it here would be the conflation this "
+            "section exists to prevent"
+        )
+        assert "published_coverage" not in names, f"{path.name} computes published_coverage"
+
+
+def test_the_index_survives_from_the_mark_stream_into_the_normalized_minute(root):
+    """Index OHLC is retained per minute, derived from the mark stream's ``i`` field.
+
+    PR-06 reconciles these values against the venue's index-price archive. That
+    is only possible if they are here, and they are here only because the mark
+    stream carries the index on every update — there is no separate index
+    subscription and the adopted design does not want one.
+    """
+    minute = minute_ms(0)
+    indices = ("60000.00", "60500.00", "59500.00", "60100.00")
+    write(
+        root,
+        {
+            UM_KLINE_1M: [kline_event(minute)],
+            UM_MARK_PRICE: [
+                mark_event(minute + offset * 1_000, mark="70000.00", index=index)
+                for offset, index in enumerate(indices)
+            ],
+            UM_BOOK_TICKER: [],
+        },
+    )
+    frame = pd.read_parquet(MinuteNormalizer(root, CONTRACT).build_day("um", DAY).parquet_path)
+    row = frame.iloc[0]
+
+    assert (float(row["index_open"]), float(row["index_close"])) == (60000.0, 60100.0)
+    assert (float(row["index_high"]), float(row["index_low"])) == (60500.0, 59500.0)
+    assert float(row["mark_close"]) == 70000.0, "the mark is not the index"
+    assert {"index_open", "index_high", "index_low", "index_close"} <= {
+        spec.name for spec in columns_for("um")
+    }
+    assert not any(
+        "index" in spec.name for spec in columns_for("spot")
+    ), "spot has no index price and must not carry a column pretending to"

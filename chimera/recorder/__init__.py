@@ -3,8 +3,8 @@
 This package is the data model of the forward-only recorder the project's next
 deciding evidence depends on — the contract that says what will be recorded, the
 event types that say what one observation is, the append-only sink that stores
-them, and the normalizer that turns them into one row per minute the exchange
-actually printed.
+them, and the normalizer that turns them into one row per minute the recorder
+captured a closed kline for.
 
 **It is offline, and offline is a property rather than an intention.** Nothing
 here opens a socket, makes a request, holds a credential or reads a clock. The
@@ -22,8 +22,17 @@ a way nobody can check.
 
 **Missing data is missing.** No forward fill, no backward fill, no
 interpolation, no invented candle, no value borrowed from a neighbouring minute
-or a different stream. A minute the exchange never closed has no row and is named
-in the day's ``missing`` list.
+or a different stream. A minute this recorder holds no usable closed kline for
+has no row and is named in the day's ``missing`` list.
+
+**And missing means missing here, not missing at the venue.** Absence from a
+normalized day says that the recorder has no usable closed kline for that
+minute, and says nothing about whether the exchange published one — the two are
+the coverage gate's ``captured_minutes`` and ``published_minutes``, and only the
+first is knowable offline. The second is established by the archive
+reconciliation, later, from the venue's own archive. Nothing in this package
+infers one from the other, because a recorder outage and a venue publication gap
+are indistinguishable from here.
 
 The prospective boundary — ``prospective_from`` — is unset in the committed
 contract, and until it is written no minute recorded under it is scientific
