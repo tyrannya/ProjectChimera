@@ -202,53 +202,6 @@ FUT_EXECUTION_LATENCY = Histogram(
 )
 
 
-# --- trading modes ------------------------------------------------------
-#
-# Every label here is a bounded enum from `chimera.modes`: a TradingMode value
-# or a ReasonCode value. Neither grows with traffic, and neither carries a
-# free-text reason, an order id, a price or a quantity — the same rule the
-# futures block above states. The one thing deliberately *absent* is any
-# per-mode return: a mode metric that reported how well a mode had been doing
-# would be the profit-based selection input the scaffold exists to not have.
-# Exposure, turnover, fees, funding and drawdown are already published by the
-# futures family, unlabelled, and stay that way for exactly one active mode.
-MODE_SELECTED = Gauge(
-    f"{_PREFIX}_mode_selected",
-    "1 for the currently active trading mode, 0 for every other",
-    ["mode"],
-)
-MODE_ELIGIBLE = Gauge(
-    f"{_PREFIX}_mode_eligible",
-    "1 when a mode's specialists are all screened and viable, 0 otherwise",
-    ["mode"],
-)
-MODE_DECISIONS = Counter(
-    f"{_PREFIX}_mode_decisions_total",
-    "Mode decisions taken, by resulting mode and reason",
-    ["mode", "reason"],
-)
-MODE_TRANSITIONS = Counter(
-    f"{_PREFIX}_mode_transitions_total",
-    "Mode changes, by origin and destination",
-    ["from_mode", "to_mode"],
-)
-MODE_TRANSITION_FLATTENS = Counter(
-    f"{_PREFIX}_mode_transition_flattens_total",
-    "Mode changes that required flattening an inherited position first",
-    ["from_mode", "to_mode"],
-)
-MODE_CONSENSUS_STATE = Counter(
-    f"{_PREFIX}_mode_consensus_state_total",
-    "Consensus outcomes inside an eligible mode, by mode and reason",
-    ["mode", "reason"],
-)
-MODE_RISK_VETOES = Counter(
-    f"{_PREFIX}_mode_risk_vetoes_total",
-    "Aegis vetoes attributed to the mode that was active",
-    ["mode", "reason"],
-)
-
-
 # --- prospective recorder -----------------------------------------------
 #
 # Section 4.8 of the adopted demo plan, in full. The only label anywhere in this
@@ -331,6 +284,53 @@ RECORDER_METRIC_NAMES: tuple[str, ...] = (
     f"{_PREFIX}_recorder_disk_free_bytes",
     f"{_PREFIX}_recorder_write_errors_total",
     f"{_PREFIX}_recorder_heartbeat_timestamp",
+)
+
+
+# --- trading modes ------------------------------------------------------
+#
+# Every label here is a bounded enum from `chimera.modes`: a TradingMode value
+# or a ReasonCode value. Neither grows with traffic, and neither carries a
+# free-text reason, an order id, a price or a quantity — the same rule the
+# futures block above states. The one thing deliberately *absent* is any
+# per-mode return: a mode metric that reported how well a mode had been doing
+# would be the profit-based selection input the scaffold exists to not have.
+# Exposure, turnover, fees, funding and drawdown are already published by the
+# futures family, unlabelled, and stay that way for exactly one active mode.
+MODE_SELECTED = Gauge(
+    f"{_PREFIX}_mode_selected",
+    "1 for the currently active trading mode, 0 for every other",
+    ["mode"],
+)
+MODE_ELIGIBLE = Gauge(
+    f"{_PREFIX}_mode_eligible",
+    "1 when a mode's specialists are all screened and viable, 0 otherwise",
+    ["mode"],
+)
+MODE_DECISIONS = Counter(
+    f"{_PREFIX}_mode_decisions_total",
+    "Mode decisions taken, by resulting mode and reason",
+    ["mode", "reason"],
+)
+MODE_TRANSITIONS = Counter(
+    f"{_PREFIX}_mode_transitions_total",
+    "Mode changes, by origin and destination",
+    ["from_mode", "to_mode"],
+)
+MODE_TRANSITION_FLATTENS = Counter(
+    f"{_PREFIX}_mode_transition_flattens_total",
+    "Mode changes that required flattening an inherited position first",
+    ["from_mode", "to_mode"],
+)
+MODE_CONSENSUS_STATE = Counter(
+    f"{_PREFIX}_mode_consensus_state_total",
+    "Consensus outcomes inside an eligible mode, by mode and reason",
+    ["mode", "reason"],
+)
+MODE_RISK_VETOES = Counter(
+    f"{_PREFIX}_mode_risk_vetoes_total",
+    "Aegis vetoes attributed to the mode that was active",
+    ["mode", "reason"],
 )
 
 

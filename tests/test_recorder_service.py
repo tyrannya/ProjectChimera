@@ -558,6 +558,52 @@ def test_the_section_4_8_metric_names_are_all_present_and_none_is_economic():
             assert token not in name, f"{name} reports an economic quantity"
 
 
+def test_the_recorder_metric_family_is_labelled_only_by_stream():
+    """The mirror of ``test_mode_metrics_are_labelled_only_by_bounded_enums``.
+
+    ``stream`` is the only label in the family and its value set is the six ids a
+    committed contract declares — bounded by a file rather than by traffic, which
+    is what stops Prometheus keeping one series per event for ever. The section
+    is read out of the source, so a label added to a new series is caught here
+    even if nothing in this repository ever sets it.
+    """
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "chimera" / "metrics.py").read_text(
+        encoding="utf-8"
+    )
+    block = source.split("# --- prospective recorder")[1].split("# --- trading modes")[0]
+    assert "RECORDER_UP" in block, "the section was sliced wrongly and would pass vacuously"
+    labels = set(re.findall(r'"(\w+)"\]', block)) | set(re.findall(r'\["(\w+)",', block))
+    assert labels <= {"stream"}, f"the recorder family gained the label(s) {sorted(labels)}"
+    for token in ("price", "return", "pnl", "profit", "basis", "equity", "alpha"):
+        assert f"_recorder_{token}" not in block, f"a series reports {token}"
+
+
+def test_the_recorder_metrics_do_not_live_inside_another_familys_section():
+    """Where the block sits is load-bearing, because a test slices on the banners.
+
+    ``test_mode_metrics_are_labelled_only_by_bounded_enums`` reads everything
+    between ``# --- trading modes`` and ``# --- system``, so a recorder series
+    placed in that span is read as a mode series with an unbounded label. It was,
+    once. The banners are asserted in order here so it cannot be again.
+    """
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "chimera" / "metrics.py").read_text(
+        encoding="utf-8"
+    )
+    banners = [
+        line.split("---")[1].strip()
+        for line in source.splitlines()
+        if line.startswith("# --- ")
+    ]
+    assert banners.index("prospective recorder") < banners.index("trading modes")
+    modes = source.split("# --- trading modes")[1].split("# --- system")[0]
+    assert "_recorder_" not in modes, "a recorder series is inside the trading-modes section"
+
+
 def test_the_heartbeat_cadence_is_the_adopted_thirty_seconds():
     assert HEARTBEAT_INTERVAL_S == 30.0
 
