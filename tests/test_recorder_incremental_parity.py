@@ -44,9 +44,11 @@ from chimera.recorder.events import (
     sort_events,
 )
 from chimera.recorder.incremental import (
+    CACHE_DIGEST_FIELD,
     CACHE_SCHEMA,
     IncrementalNormalizer,
     NormalizeCacheError,
+    cache_digest,
 )
 from chimera.recorder.normalize import (
     MinuteNormalizer,
@@ -578,7 +580,13 @@ def test_a_partial_trailing_line_is_not_folded_until_it_is_whole(tmp_path):
 
 
 def test_a_crash_after_the_cache_and_before_the_output_re_renders_from_the_cache(tmp_path):
-    """The normalized file is derived. Losing it costs a render, never a record."""
+    """The normalized file is derived. Losing it costs a render, never a record.
+
+    This deletes the output after a build rather than failing between the two
+    writes, so it proves the recovery and not the ordering. The ordering itself
+    is pinned at the boundary, with an injected failure, in
+    ``tests/test_recorder_cache_integrity.py``.
+    """
     root = tmp_path / "cursor"
     root.mkdir()
     write(root, {UM_KLINE_1M: [kline_event(minute_ms(i)) for i in range(4)]})
@@ -609,6 +617,20 @@ def test_a_corrupt_cache_is_refused_and_the_day_is_rebuilt_whole(tmp_path):
     assert second.rows == 4, "and all of it, not a partial one"
 
 
+def reseal(path):
+    """Re-write a cache with its seal recomputed over whatever it now holds.
+
+    The tests below edit a cache to reach a *specific* refusal — a foreign
+    contract, a cursor past the end of its file — and each of those edits would
+    otherwise be stopped by the integrity seal first, leaving the rule they
+    exist for untested. Re-sealing puts them back in front of the rule they name.
+    """
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document.pop(CACHE_DIGEST_FIELD, None)
+    document[CACHE_DIGEST_FIELD] = cache_digest(document)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
 def test_a_cache_from_another_build_or_another_contract_is_refused(tmp_path):
     root = tmp_path / "cursor"
     root.mkdir()
@@ -626,6 +648,7 @@ def test_a_cache_from_another_build_or_another_contract_is_refused(tmp_path):
         document = json.loads(path.read_text(encoding="utf-8"))
         document[field] = value
         path.write_text(json.dumps(document), encoding="utf-8")
+        reseal(path)
         rendered = incremental.build_day("um", DAY)
         assert incremental.status[("um", DAY)].rebuilt is True, field
         assert rendered.rows == 3, f"a refused cache must not shorten the day ({field})"
@@ -642,9 +665,12 @@ def test_a_cache_claiming_more_than_the_raw_file_holds_is_refused(tmp_path):
     document = json.loads(path.read_text(encoding="utf-8"))
     document["cursors"][f"{UM_KLINE_1M}:main"]["offset"] += 10_000
     path.write_text(json.dumps(document), encoding="utf-8")
+    reseal(path)
 
     rendered = incremental.build_day("um", DAY)
-    assert incremental.status[("um", DAY)].rebuilt is True
+    status = incremental.status[("um", DAY)]
+    assert status.rebuilt is True
+    assert "already folded" in status.reason, "refused by the seal, not by the cursor rule"
     assert rendered.rows == 4
 
 

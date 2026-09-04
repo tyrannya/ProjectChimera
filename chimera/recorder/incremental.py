@@ -44,20 +44,44 @@ the raw files at any time, and it is deliberately outside everything that
 identifies a recording: it is not in the contract, not in the value digest, not
 in a day's metadata, not in a day manifest, and not in anything a reconciliation
 or a scientific report reads. Deleting it costs time and nothing else. The raw
-NDJSON remains the only authority, and the durability order is always
+NDJSON remains the only authority.
 
-    durable raw  ->  cursor and aggregate  ->  normalized output
+**Which is also why it does not get to be believed.** Being rebuildable is half
+of "not evidence"; the other half is that its aggregates never become the source
+of a normalized value. A file whose schema, market, day and contract hash all
+still look right can still hold a book price, a mark close, a kline value, a
+tally or a resume instant that nobody folded, and rendering it would quietly
+make the cache the authority the raw files are supposed to be. So every cache is
+written sealed with :func:`cache_digest` — a domain-separated SHA-256 over the
+whole document — and the seal is verified before a single aggregate is read. It
+is a checksum and not a signature: it makes an altered cache detectable, and it
+does not pretend to stop someone who can rewrite the file and recompute the
+hash. It does not have to. A cache that fails the seal, that is missing it, or
+whose shapes are not the shapes this build writes is discarded and folded again
+from the raw — never repaired, never half believed.
 
-so a cursor can only ever name material the raw files already hold. A cursor
-that names more than the file contains — a truncated tail, a frozen day, a
-schema from another build — is refused, and the day is rebuilt the slow way
-rather than rendered from a state nobody can vouch for.
+**The order things become durable.** Raw first, then the checkpoint, then the
+derived output:
+
+    durable raw  ->  verified cursor and aggregate  ->  normalized output
+
+:meth:`IncrementalNormalizer.build_day` writes in that order, so each crash
+window has exactly one recovery. Before the cache: the raw tail is folded again,
+once, because the cursor never claimed it. After the cache and before the
+output: the day is rendered again from the checkpoint without re-reading a byte
+of the prefix. After the output: the three already agree. A cursor can therefore
+only ever name material the raw files already hold, and one that names more than
+the file contains — a truncated tail, a frozen day, a schema from another build
+— is refused, and the day is rebuilt the slow way rather than rendered from a
+state nobody can vouch for.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -68,10 +92,13 @@ from chimera.recorder.events import (
     MS_PER_MINUTE,
     NS_PER_MILLISECOND,
     BookTickerEvent,
+    EventSource,
     KlineEvent,
     MarkPriceEvent,
     RawEvent,
     RecorderEventError,
+    TimeBasis,
+    canonical_json,
     day_start_ns,
 )
 from chimera.recorder.normalize import (
@@ -90,6 +117,7 @@ from chimera.recorder.sink import (
     GZIP_SUFFIX,
     LATE_FILE,
     RAW_DIRECTORY,
+    RecorderSinkError,
     require_day,
     require_stream_id,
     write_json_atomic,
@@ -101,7 +129,23 @@ logger = logging.getLogger(__name__)
 #: a reader must be able to tell an engineering cache from a recorded value at a
 #: glance, and a cache written by another build must be refused rather than
 #: interpreted.
-CACHE_SCHEMA = "chimera.recorder-normalize-cache/1"
+#:
+#: ``/2`` because ``/1`` carried no integrity digest, so its aggregates could be
+#: edited and still read back as if they had been folded. A ``/1`` file is not
+#: migrated: trusting its values is the one thing the bump exists to stop, so it
+#: is stale engineering state and its day is folded again from the raw.
+CACHE_SCHEMA = "chimera.recorder-normalize-cache/2"
+
+#: Prefixed into the cache's integrity digest so it can never collide with a
+#: digest taken over some other repository object, and carrying the schema so a
+#: document written under one cannot verify under another.
+CACHE_DIGEST_DOMAIN = b"chimera.recorder-normalize-cache/2"
+
+#: Where the seal lives in the document. Engineering metadata, and only that: it
+#: identifies a memo of a computation and never a recorded value, so it belongs
+#: to no contract, no contract hash, no value digest, no day metadata, no
+#: manifest and no report.
+CACHE_DIGEST_FIELD = "cache_digest"
 
 #: Where it lives under the storage root. A sibling of the recorded data and not
 #: part of it; ``.gitignore`` excludes everything here that is not a manifest.
@@ -156,14 +200,6 @@ class _Cursor:
 
     def to_dict(self) -> dict[str, Any]:
         return {"offset": self.offset, "lines": self.lines, "variant": self.variant}
-
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "_Cursor":
-        return cls(
-            offset=int(payload["offset"]),
-            lines=int(payload["lines"]),
-            variant=str(payload["variant"]),
-        )
 
 
 @dataclass
@@ -459,14 +495,35 @@ def _key_list(key: Iterable[int]) -> list[int]:
     return [int(part) for part in key]
 
 
+def cache_digest(document: Mapping[str, Any]) -> str:
+    """The cache's seal: SHA-256 over everything in the document except itself.
+
+    A domain prefix, then the canonical JSON of the document with
+    :data:`CACHE_DIGEST_FIELD` removed — so schema, market, day, contract hash,
+    every cursor, every tally, every resume instant and every kline, mark and
+    book aggregate is covered, and changing any one of them changes the seal.
+
+    A checksum, not a signature. It makes an edited cache detectable; it does not
+    pretend to withstand someone who can rewrite the file and recompute the hash.
+    It does not have to: the raw NDJSON is the authority, and a cache that fails
+    this check is thrown away and folded again from it.
+    """
+    payload = {key: value for key, value in document.items() if key != CACHE_DIGEST_FIELD}
+    running = hashlib.sha256()
+    running.update(CACHE_DIGEST_DOMAIN)
+    running.update(canonical_json(payload).encode("utf-8"))
+    return running.hexdigest()
+
+
 def state_to_document(state: DayState) -> dict[str, Any]:
-    """The cache exactly as it is written. Plain JSON, no float surprises.
+    """The cache exactly as it is written, sealed. Plain JSON, no float surprises.
 
     Python renders a float as the shortest string that reads back as the same
     float64, so a value written here and read back is the same number, which is
-    what lets the digest of a rendered day match the digest of a rebuilt one.
+    what lets the digest of a rendered day match the digest of a rebuilt one —
+    and what lets the seal taken here verify against the file it is read from.
     """
-    return {
+    document: dict[str, Any] = {
         "cache_schema": CACHE_SCHEMA,
         "note": (
             "Engineering cache. Rebuildable from the raw files, not evidence, not part of "
@@ -515,12 +572,275 @@ def state_to_document(state: DayState) -> dict[str, Any]:
             for minute, entry in sorted(state.books.items())
         },
     }
+    document[CACHE_DIGEST_FIELD] = cache_digest(document)
+    return document
+
+
+# --- reading a cache back ----------------------------------------------------
+# A cache is trusted whole or refused whole, so every one of these raises
+# NormalizeCacheError with a sentence in it rather than letting a short tuple, a
+# string where a number belongs or a negative offset leave this module as a bare
+# IndexError, TypeError or OSError for RecorderService to meet.
+
+#: The characters a SHA-256 hex digest is made of, and the only ones a seal may
+#: hold. ``hexdigest`` is lowercase, so a mixed-case field did not come from one.
+_HEX = frozenset("0123456789abcdef")
+
+#: Exactly the keys each part of the document carries. Exactly: a key this build
+#: does not write is as much a sign of a document it did not write as a missing
+#: one, and a validation with a hole in it is not one.
+_DOCUMENT_KEYS = frozenset(
+    {
+        "cache_schema",
+        CACHE_DIGEST_FIELD,
+        "note",
+        "market",
+        "day",
+        "contract_hash",
+        "cursors",
+        "tallies",
+        "last_canonical",
+        "klines",
+        "marks",
+        "books",
+    }
+)
+_CURSOR_KEYS = frozenset({"offset", "lines", "variant"})
+_KLINE_KEYS = frozenset({"key", "source", "close_ms", "values", "published", "conflict"})
+_MARK_KEYS = frozenset({"first_key", "last_key", "open", "close", "high", "low", "events"})
+_BOOK_KEYS = frozenset({"key", "values", "update_id", "canonical_ms", "time_basis"})
+
+#: The raw files a cursor can be reading. Both, because a cursor names one of
+#: the two files :func:`read_raw_events` concatenates and nothing else.
+_CURSOR_VARIANTS = (EVENTS_FILE, LATE_FILE)
+
+
+def _mapping(value: Any, what: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise NormalizeCacheError(f"{what} is {type(value).__name__}, not an object")
+    return value
+
+
+def _keys(payload: Mapping[str, Any], expected: frozenset[str], what: str) -> None:
+    present = frozenset(payload)
+    if present != expected:
+        missing = sorted(expected - present)
+        extra = sorted(present - expected)
+        raise NormalizeCacheError(
+            f"{what} is missing {missing} and carries {extra} this build does not write"
+        )
+
+
+def _int(value: Any, what: str, *, minimum: int | None = None) -> int:
+    # ``bool`` is an ``int`` in Python and is not one here: a cache that holds
+    # True where a count belongs is a cache that was written by something else.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise NormalizeCacheError(f"{what} is {value!r}, not an integer")
+    if minimum is not None and value < minimum:
+        raise NormalizeCacheError(f"{what} is {value}; the least it can be is {minimum}")
+    return value
+
+
+def _float(value: Any, what: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise NormalizeCacheError(f"{what} is {value!r}, not a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise NormalizeCacheError(f"{what} is {value!r}, which is not a finite number")
+    return number
+
+
+def _text(value: Any, what: str) -> str:
+    if not isinstance(value, str):
+        raise NormalizeCacheError(f"{what} is {value!r}, not a string")
+    return value
+
+
+def _bool(value: Any, what: str) -> bool:
+    if not isinstance(value, bool):
+        raise NormalizeCacheError(f"{what} is {value!r}, not a boolean")
+    return value
+
+
+def _label(value: Any, kind: type[EventSource] | type[TimeBasis], what: str) -> str:
+    text = _text(value, what)
+    try:
+        kind(text)
+    except ValueError as exc:
+        raise NormalizeCacheError(
+            f"{what} is {text!r}, and the labels this build writes are "
+            f"{[member.value for member in kind]}"
+        ) from exc
+    return text
+
+
+def _components(value: Any, arity: int, what: str) -> list[Any]:
+    if not isinstance(value, list) or len(value) != arity:
+        raise NormalizeCacheError(f"{what} is {value!r}; this build writes {arity} components")
+    return value
+
+
+def _numbers(value: Any, arity: int, what: str) -> tuple[float, ...]:
+    return tuple(
+        _float(part, f"{what}[{index}]")
+        for index, part in enumerate(_components(value, arity, what))
+    )
+
+
+def _order_key(value: Any, what: str) -> tuple[int, int, int]:
+    parts = _components(value, 3, what)
+    first, second, third = (
+        _int(part, f"{what}[{index}]", minimum=0) for index, part in enumerate(parts)
+    )
+    return first, second, third
+
+
+def _minute(key: Any, what: str) -> int:
+    """A minute key: an integer, and deliberately not asserted to be aligned.
+
+    Neither this module nor the full path floors a kline into its minute — both
+    take the open the exchange published — so a multiple-of-60000 check here
+    could refuse a cache the oracle would happily accept, and the price of a
+    refusal is the whole-day rebuild this module exists to avoid. Nothing is lost
+    by leaving it out: the seal already covers the key against editing, which is
+    what this validation is for.
+    """
+    text = _text(key, what)
+    try:
+        minute = int(text)
+    except ValueError as exc:
+        raise NormalizeCacheError(f"{what} {text!r} is not an integer minute") from exc
+    if minute < 0:
+        raise NormalizeCacheError(f"{what} {minute} is before the epoch")
+    return minute
+
+
+def _verify_seal(document: Mapping[str, Any]) -> None:
+    """Refuse a document whose contents are not the contents it was sealed over."""
+    claimed = document.get(CACHE_DIGEST_FIELD)
+    if claimed is None:
+        raise NormalizeCacheError(
+            f"the cache carries no {CACHE_DIGEST_FIELD}. Every {CACHE_SCHEMA} cache is "
+            "written with one, and aggregates nothing vouches for are not read"
+        )
+    if not isinstance(claimed, str) or len(claimed) != 64 or not _HEX.issuperset(claimed):
+        raise NormalizeCacheError(
+            f"the cache's {CACHE_DIGEST_FIELD} is {claimed!r}, which is not a SHA-256"
+        )
+    try:
+        actual = cache_digest(document)
+    except RecorderEventError as exc:
+        raise NormalizeCacheError(
+            "the cache holds something that cannot be digested, so nothing in it can be "
+            f"vouched for: {exc}"
+        ) from exc
+    if actual != claimed:
+        raise NormalizeCacheError(
+            f"the cache is sealed {claimed} and its contents digest to {actual}. Its "
+            "aggregates are not the ones it was written with, and raw is what they are "
+            "rebuilt from"
+        )
+
+
+def _cursor_from(payload: Any, what: str) -> _Cursor:
+    entry = _mapping(payload, what)
+    _keys(entry, _CURSOR_KEYS, what)
+    variant = _text(entry["variant"], f"{what}.variant")
+    if variant not in _CURSOR_VARIANTS:
+        raise NormalizeCacheError(
+            f"{what}.variant is {variant!r}; a cursor reads {EVENTS_FILE} or {LATE_FILE}"
+        )
+    return _Cursor(
+        offset=_int(entry["offset"], f"{what}.offset", minimum=0),
+        lines=_int(entry["lines"], f"{what}.lines", minimum=0),
+        variant=variant,
+    )
+
+
+def _kline_from(payload: Any, what: str) -> _KlineState:
+    entry = _mapping(payload, what)
+    _keys(entry, _KLINE_KEYS, what)
+    values = _components(entry["values"], 8, f"{what}.values")
+    published = _components(entry["published"], 8, f"{what}.published")
+    return _KlineState(
+        key=_order_key(entry["key"], f"{what}.key"),
+        source=_label(entry["source"], EventSource, f"{what}.source"),
+        close_ms=_int(entry["close_ms"], f"{what}.close_ms", minimum=0),
+        values=(
+            _float(values[0], f"{what}.values[0]"),
+            _float(values[1], f"{what}.values[1]"),
+            _float(values[2], f"{what}.values[2]"),
+            _float(values[3], f"{what}.values[3]"),
+            _float(values[4], f"{what}.values[4]"),
+            # The trade count is an integer in the full path and stays one here.
+            _int(values[5], f"{what}.values[5]", minimum=0),
+            _float(values[6], f"{what}.values[6]"),
+            _float(values[7], f"{what}.values[7]"),
+        ),
+        published=tuple(
+            _text(part, f"{what}.published[{index}]") for index, part in enumerate(published)
+        ),
+        conflict=_bool(entry["conflict"], f"{what}.conflict"),
+    )
+
+
+def _mark_from(payload: Any, what: str) -> _MarkState:
+    entry = _mapping(payload, what)
+    _keys(entry, _MARK_KEYS, what)
+    close = _components(entry["close"], 4, f"{what}.close")
+    open_ = _numbers(entry["open"], 3, f"{what}.open")
+    high = _numbers(entry["high"], 2, f"{what}.high")
+    low = _numbers(entry["low"], 2, f"{what}.low")
+    return _MarkState(
+        first_key=_order_key(entry["first_key"], f"{what}.first_key"),
+        last_key=_order_key(entry["last_key"], f"{what}.last_key"),
+        open=(open_[0], open_[1], open_[2]),
+        close=(
+            _float(close[0], f"{what}.close[0]"),
+            _float(close[1], f"{what}.close[1]"),
+            _float(close[2], f"{what}.close[2]"),
+            _int(close[3], f"{what}.close[3]"),
+        ),
+        high=(high[0], high[1]),
+        low=(low[0], low[1]),
+        # At least one: a mark aggregate exists because an event created it, and
+        # a minute claiming none would publish a count no reading supports.
+        events=_int(entry["events"], f"{what}.events", minimum=1),
+    )
+
+
+def _book_from(payload: Any, what: str) -> _BookState:
+    entry = _mapping(payload, what)
+    _keys(entry, _BOOK_KEYS, what)
+    values = _numbers(entry["values"], 4, f"{what}.values")
+    return _BookState(
+        key=_order_key(entry["key"], f"{what}.key"),
+        values=(values[0], values[1], values[2], values[3]),
+        update_id=_int(entry["update_id"], f"{what}.update_id"),
+        canonical_ms=_int(entry["canonical_ms"], f"{what}.canonical_ms", minimum=0),
+        time_basis=_label(entry["time_basis"], TimeBasis, f"{what}.time_basis"),
+    )
+
+
+def _tally_from(payload: Any, what: str) -> dict[str, int]:
+    counts = _mapping(payload, what)
+    return {
+        str(name): _int(value, f"{what}[{name!r}]", minimum=0)
+        for name, value in counts.items()
+    }
 
 
 def state_from_document(
     document: Mapping[str, Any], *, market: str, day: str, hash_: str
 ) -> DayState:
-    """Read a cache back, refusing anything this build cannot vouch for."""
+    """Read a cache back, refusing anything this build cannot vouch for.
+
+    In this order: is it an object at all, is it this build's schema, do its
+    contents digest to the seal it carries, is it this market's day under this
+    contract, and is every value the shape this build writes. The seal comes
+    before any aggregate is looked at, because looking at one first would
+    already be trusting it.
+    """
     if not isinstance(document, Mapping):
         raise NormalizeCacheError("the cache file does not hold an object")
     schema = document.get("cache_schema")
@@ -528,6 +848,8 @@ def state_from_document(
         raise NormalizeCacheError(
             f"the cache declares schema {schema!r}; this build writes {CACHE_SCHEMA!r}"
         )
+    _verify_seal(document)
+    _keys(document, _DOCUMENT_KEYS, "the cache")
     if document.get("market") != market or document.get("day") != day:
         raise NormalizeCacheError(
             f"the cache is for {document.get('market')!r} {document.get('day')!r}, not "
@@ -538,65 +860,38 @@ def state_from_document(
             "the cache was folded under contract hash "
             f"{document.get('contract_hash')!r} and this recorder carries {hash_!r}"
         )
-    try:
-        state = DayState(
-            market=market,
-            day=day,
-            contract_hash=hash_,
-            cursors={
-                name: _Cursor.from_dict(payload)
-                for name, payload in dict(document["cursors"]).items()
-            },
-            tallies={
-                name: {key: int(value) for key, value in dict(counts).items()}
-                for name, counts in dict(document["tallies"]).items()
-            },
-            last_canonical={
-                name: int(value)
-                for name, value in dict(document.get("last_canonical", {})).items()
-            },
-            klines={
-                int(minute): _KlineState(
-                    key=tuple(int(part) for part in entry["key"]),
-                    source=str(entry["source"]),
-                    close_ms=int(entry["close_ms"]),
-                    values=tuple(entry["values"]),
-                    published=tuple(str(part) for part in entry["published"]),
-                    conflict=bool(entry["conflict"]),
-                )
-                for minute, entry in dict(document["klines"]).items()
-            },
-            marks={
-                int(minute): _MarkState(
-                    first_key=tuple(int(part) for part in entry["first_key"]),
-                    last_key=tuple(int(part) for part in entry["last_key"]),
-                    open=tuple(entry["open"]),
-                    close=tuple(entry["close"][:3]) + (int(entry["close"][3]),),
-                    high=tuple(entry["high"]),
-                    low=tuple(entry["low"]),
-                    events=int(entry["events"]),
-                )
-                for minute, entry in dict(document["marks"]).items()
-            },
-            books={
-                int(minute): _BookState(
-                    key=tuple(int(part) for part in entry["key"]),
-                    values=tuple(entry["values"]),
-                    update_id=int(entry["update_id"]),
-                    canonical_ms=int(entry["canonical_ms"]),
-                    time_basis=str(entry["time_basis"]),
-                )
-                for minute, entry in dict(document["books"]).items()
-            },
-        )
-    except (KeyError, TypeError, ValueError, IndexError) as exc:
-        raise NormalizeCacheError(f"the cache is not readable as one: {exc!r}") from exc
-    # The kline trades count is an integer in the full path and must stay one.
-    for entry in state.klines.values():
-        values = list(entry.values)
-        values[5] = int(values[5])
-        entry.values = tuple(values)
-    return state
+    _text(document["note"], "the cache's note")
+    return DayState(
+        market=market,
+        day=day,
+        contract_hash=hash_,
+        cursors={
+            str(name): _cursor_from(payload, f"cursor {name!r}")
+            for name, payload in _mapping(document["cursors"], "the cache's cursors").items()
+        },
+        tallies={
+            str(name): _tally_from(counts, f"the {name!r} tallies")
+            for name, counts in _mapping(document["tallies"], "the cache's tallies").items()
+        },
+        last_canonical={
+            str(name): _int(value, f"last_canonical[{name!r}]", minimum=0)
+            for name, value in _mapping(
+                document["last_canonical"], "the cache's last_canonical"
+            ).items()
+        },
+        klines={
+            _minute(minute, "a kline minute key"): _kline_from(entry, f"kline minute {minute}")
+            for minute, entry in _mapping(document["klines"], "the cache's klines").items()
+        },
+        marks={
+            _minute(minute, "a mark minute key"): _mark_from(entry, f"mark minute {minute}")
+            for minute, entry in _mapping(document["marks"], "the cache's marks").items()
+        },
+        books={
+            _minute(minute, "a book minute key"): _book_from(entry, f"book minute {minute}")
+            for minute, entry in _mapping(document["books"], "the cache's books").items()
+        },
+    )
 
 
 class IncrementalNormalizer:
@@ -812,9 +1107,33 @@ class IncrementalNormalizer:
         return records, missing, conflicts, tallies
 
     def save(self, state: DayState) -> Path:
-        """Persist the cache atomically, after the raw it describes is durable."""
+        """Persist the cache atomically and verified, after its raw is durable.
+
+        Sealed by :func:`state_to_document`, written through the same temp-file
+        ``fsync``-and-rename the raw files use, and then read back through the
+        same refusal every later start reads it through. A checkpoint the
+        crash protocol relies on and nobody has looked at is not a checkpoint: a
+        torn write, a disk that lied or a document that will not verify is found
+        here, while the raw tail behind it can still simply be folded again,
+        rather than on the next start. A file that fails is removed, not
+        repaired.
+        """
         path = self.cache_path(state.market, state.day)
         write_json_atomic(path, state_to_document(state))
+        try:
+            state_from_document(
+                json.loads(path.read_text(encoding="utf-8")),
+                market=state.market,
+                day=state.day,
+                hash_=state.contract_hash,
+            )
+        except (OSError, ValueError, NormalizeCacheError) as exc:
+            self.drop(state.market, state.day)
+            raise NormalizeCacheError(
+                f"the cache written to {path} does not read back as the state it was "
+                f"written from: {exc}. It has been removed, and the day will be folded "
+                "again from the raw"
+            ) from exc
         return path
 
     def drop(self, market: str, day: str) -> None:
@@ -830,10 +1149,15 @@ class IncrementalNormalizer:
         """Normalize one day incrementally, or fall back to the authoritative path.
 
         Falls back — whole, never partially — when the cache cannot be vouched
-        for: a different schema, another contract, a shorter raw file than the
+        for: a different schema, a broken seal, an aggregate that is not the
+        shape this build writes, another contract, a shorter raw file than the
         cursor claims, a day frozen since the cache was written, a record that
         will not parse. The slow path is the same code every other caller uses,
         so a fallback costs time and changes no value.
+
+        The two durable writes happen in the order the module's crash protocol
+        states: the raw is already fsynced, the verified checkpoint goes down
+        next, and the derived output after it.
         """
         try:
             state, status = self.update(market, day)
@@ -846,8 +1170,14 @@ class IncrementalNormalizer:
                 market=market, day=day, rebuilt=True, reason=str(exc)
             )
             return self.normalizer.build_day(market, day, provenance=provenance)
-        report = self.normalizer.write_day(
-            market, day, self.render(state), provenance=provenance
-        )
-        self.save(state)
-        return report
+        rendered = self.render(state)
+        try:
+            self.save(state)
+        except (NormalizeCacheError, RecorderSinkError) as exc:
+            # A checkpoint that cannot be written must not stop a day from being
+            # normalized. The cache is a memo, the raw it summarises is still
+            # there, and no cache at all is a state the next pass already knows
+            # how to recover from — it folds the day again.
+            logger.warning("%s %s: the cache was not saved: %s", market, day, exc)
+            status.reason = f"{status.reason}; cache not saved: {exc}"
+        return self.normalizer.write_day(market, day, rendered, provenance=provenance)
