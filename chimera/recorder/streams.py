@@ -76,9 +76,22 @@ from chimera.recorder.events import (
 logger = logging.getLogger(__name__)
 
 #: The public market-data websocket bases, exactly as section 4.1 names them.
-#: Both are unauthenticated: no key is sent, and neither host has a signed
+#: All are unauthenticated: no key is sent, and no host below has a signed
 #: endpoint this module could reach even if one existed.
-UM_WS_BASE = "wss://fstream.binance.com/ws"
+#:
+#: Binance retired the single USD-M base on 2026-04-23 and split its traffic by
+#: category. That retired base — the bare ``/ws`` path on the same host, which
+#: this file no longer spells out because the allow-list in
+#: ``tests/test_recorder_no_network.py`` reads prose too — still accepts a
+#: connection and still answers ``SUBSCRIBE`` with ``{"result": null}`` for any
+#: stream, and then pushes *public* traffic only. On it ``bookTicker``
+#: floods and ``kline`` and ``markPrice`` are silent forever, with no error and
+#: no close: a client left there looks connected and healthy while recording
+#: nothing. Which endpoint a stream is published on is therefore a fact about
+#: the stream, and :data:`WEBSOCKET_STREAMS` below records it per stream rather
+#: than per market. Spot was not migrated and keeps its single base.
+UM_MARKET_WS_BASE = "wss://fstream.binance.com/market/ws"
+UM_PUBLIC_WS_BASE = "wss://fstream.binance.com/public/ws"
 SPOT_WS_BASE = "wss://stream.binance.com:9443/ws"
 
 #: The venue's own stream-name suffixes. A recorder stream id (``um.kline_1m``)
@@ -123,6 +136,27 @@ class StreamKind(str, Enum):
     BOOK_TICKER = "BOOK_TICKER"
 
 
+class Endpoint(str, Enum):
+    """Which public websocket publishes a stream.
+
+    USD-M is two of these, not one, because the venue divides its own traffic by
+    category and not by market. A connection is opened per endpoint, so the two
+    USD-M sockets fail, back off and reconnect independently of each other.
+    """
+
+    UM_MARKET = "um-market"
+    UM_PUBLIC = "um-public"
+    SPOT = "spot"
+
+
+#: Endpoint -> the base this build connects to for it.
+ENDPOINT_WS_BASES: Mapping[Endpoint, str] = {
+    Endpoint.UM_MARKET: UM_MARKET_WS_BASE,
+    Endpoint.UM_PUBLIC: UM_PUBLIC_WS_BASE,
+    Endpoint.SPOT: SPOT_WS_BASE,
+}
+
+
 @dataclass(frozen=True)
 class Subscription:
     """One venue stream, and what this repository calls the thing it carries.
@@ -149,16 +183,27 @@ class Subscription:
             raise RecorderStreamError(f"kind must be a StreamKind, got {self.kind!r}")
 
 
-#: Recorder stream id -> (venue suffix, parser kind). The four websocket streams
-#: of the gen3 contract; ``um.funding`` is absent because funding is published
-#: over REST and not pushed, which is :mod:`chimera.recorder.rest`'s job.
-WEBSOCKET_STREAMS: Mapping[str, tuple[str, StreamKind]] = {
-    UM_KLINE_1M: (KLINE_1M_SUFFIX, StreamKind.KLINE),
-    UM_MARK_PRICE: (MARK_PRICE_SUFFIX, StreamKind.MARK_PRICE),
-    UM_BOOK_TICKER: (BOOK_TICKER_SUFFIX, StreamKind.BOOK_TICKER),
-    SPOT_KLINE_1M: (KLINE_1M_SUFFIX, StreamKind.KLINE),
-    SPOT_BOOK_TICKER: (BOOK_TICKER_SUFFIX, StreamKind.BOOK_TICKER),
+#: Recorder stream id -> (venue suffix, parser kind, publishing endpoint). The
+#: five websocket streams of the gen3 contract; ``um.funding`` is absent because
+#: funding is published over REST and not pushed, which is
+#: :mod:`chimera.recorder.rest`'s job.
+#:
+#: The endpoint column is the routing table, and it is a table on purpose: the
+#: venue's split is not derivable from the market or from the frame, so it is
+#: written down once, per stream, where it can be read off by inspection.
+WEBSOCKET_STREAMS: Mapping[str, tuple[str, StreamKind, Endpoint]] = {
+    UM_KLINE_1M: (KLINE_1M_SUFFIX, StreamKind.KLINE, Endpoint.UM_MARKET),
+    UM_MARK_PRICE: (MARK_PRICE_SUFFIX, StreamKind.MARK_PRICE, Endpoint.UM_MARKET),
+    UM_BOOK_TICKER: (BOOK_TICKER_SUFFIX, StreamKind.BOOK_TICKER, Endpoint.UM_PUBLIC),
+    SPOT_KLINE_1M: (KLINE_1M_SUFFIX, StreamKind.KLINE, Endpoint.SPOT),
+    SPOT_BOOK_TICKER: (BOOK_TICKER_SUFFIX, StreamKind.BOOK_TICKER, Endpoint.SPOT),
 }
+
+
+def endpoint_for(stream_id: str) -> Endpoint | None:
+    """Which endpoint publishes ``stream_id``, or ``None`` if nothing pushes it."""
+    entry = WEBSOCKET_STREAMS.get(stream_id)
+    return None if entry is None else entry[2]
 
 
 def venue_stream_name(symbol: str, suffix: str) -> str:
@@ -182,7 +227,7 @@ def subscriptions_for(contract: RecorderContract, market: str) -> tuple[Subscrip
         entry = WEBSOCKET_STREAMS.get(stream_id)
         if entry is None:
             continue
-        suffix, kind = entry
+        suffix, kind, _endpoint = entry
         subscriptions.append(
             Subscription(
                 stream_id=stream_id,
@@ -631,24 +676,40 @@ def clients_for(
     contract: RecorderContract,
     on_event: Callable[[RawEvent], None],
     *,
-    um_url: str = UM_WS_BASE,
-    spot_url: str = SPOT_WS_BASE,
+    urls: Mapping[Endpoint, str] | None = None,
     **options: Any,
 ) -> tuple[StreamClient, ...]:
-    """One client per market the contract declares websocket streams for."""
-    urls = {"um": um_url, "spot": spot_url}
-    clients: list[StreamClient] = []
+    """One client per *endpoint* the contract's websocket streams are published on.
+
+    Not one per market. USD-M's three streams live on two endpoints, and a single
+    connection carrying all three would silently receive only the public one, so
+    grouping by endpoint is what makes ``um.kline_1m`` arrive at all. It also
+    keeps the two USD-M sockets independent: either can drop, back off and
+    reconnect without disturbing the other's streams, and health stays per
+    recorder stream because :class:`StreamClient` reports per stream id.
+    """
+    bases = dict(ENDPOINT_WS_BASES)
+    if urls:
+        bases.update(urls)
+    grouped: dict[Endpoint, list[Subscription]] = {}
     for market in contract.market_keys():
-        subscriptions = subscriptions_for(contract, market)
+        for subscription in subscriptions_for(contract, market):
+            endpoint = endpoint_for(subscription.stream_id)
+            if endpoint is None:  # pragma: no cover - subscriptions_for filtered these
+                continue
+            grouped.setdefault(endpoint, []).append(subscription)
+    clients: list[StreamClient] = []
+    for endpoint in Endpoint:  # a fixed order, so the client list is deterministic
+        subscriptions = grouped.get(endpoint)
         if not subscriptions:
             continue
-        url = urls.get(market)
-        if url is None:
+        url = bases.get(endpoint)
+        if not url:
             raise RecorderStreamError(
-                f"contract {contract.label} declares websocket streams for market {market!r} "
-                f"and this build knows a websocket host for {sorted(urls)} only"
+                f"contract {contract.label} declares websocket streams published on "
+                f"endpoint {endpoint.value!r} and this build knows no host for it"
             )
         clients.append(
-            StreamClient(url, subscriptions, on_event, name=f"{market}-ws", **options)
+            StreamClient(url, subscriptions, on_event, name=f"{endpoint.value}-ws", **options)
         )
     return tuple(clients)

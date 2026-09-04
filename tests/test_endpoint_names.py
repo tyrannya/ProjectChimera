@@ -12,9 +12,13 @@ if a name or payload field changes".
 
 **Three kinds of name are pinned here.**
 
-* *Endpoints* — the two websocket hosts and the six REST paths. Their allow-list
-  in ``tests/test_recorder_no_network.py`` is the security half of the same
-  fact; this file is the correctness half.
+* *Endpoints* — the three websocket bases and the six REST paths, and which
+  endpoint publishes which stream. Their allow-list in
+  ``tests/test_recorder_no_network.py`` is the security half of the same fact;
+  this file is the correctness half. USD-M is two bases rather than one because
+  the venue split its traffic by category on 2026-04-23, and the routing table
+  is pinned here because getting it wrong is silent: the retired base still
+  accepts a subscription and simply never sends.
 * *Stream names* — ``btcusdt@kline_1m`` and friends, built from the contract's
   own symbol rather than hard-coded, so a contract naming a different instrument
   subscribes to that instrument.
@@ -69,14 +73,19 @@ from chimera.recorder.rest import (
 )
 from chimera.recorder.streams import (
     BOOK_TICKER_SUFFIX,
+    ENDPOINT_WS_BASES,
     EVENT_TYPE_BOOK_TICKER,
     EVENT_TYPE_KLINE,
     EVENT_TYPE_MARK_PRICE,
     KLINE_1M_SUFFIX,
     MARK_PRICE_SUFFIX,
     SPOT_WS_BASE,
-    UM_WS_BASE,
+    UM_MARKET_WS_BASE,
+    UM_PUBLIC_WS_BASE,
+    Endpoint,
     StreamKind,
+    clients_for,
+    endpoint_for,
     frame_kind,
     subscriptions_for,
     venue_stream_name,
@@ -96,14 +105,116 @@ OPEN_MS = minute_ms(0)
 
 
 # --- A. endpoints ---------------------------------------------------------------
-def test_the_two_websocket_hosts_are_the_ones_section_4_1_names():
-    """USD-M and spot are different hosts, and spot carries an explicit port."""
-    assert UM_WS_BASE == "wss://fstream.binance.com/ws"
+#: The USD-M bases Binance retired on 2026-04-23. Named so the regression guard
+#: below can say what must never come back, and not merely what should be there.
+#: The retired base still connects and still answers SUBSCRIBE with success, so a
+#: build that returned to it would satisfy every check that only asks whether a
+#: socket is healthy — and would record nothing at all on two of three streams.
+LEGACY_UM_WS_BASES = (
+    "wss://fstream.binance.com/ws",
+    "wss://fstream.binance.com/stream",
+)
+
+
+def test_the_three_websocket_bases_are_the_ones_the_venue_publishes_now():
+    """USD-M has been two endpoints since 2026-04-23; spot is still one."""
+    assert UM_MARKET_WS_BASE == "wss://fstream.binance.com/market/ws"
+    assert UM_PUBLIC_WS_BASE == "wss://fstream.binance.com/public/ws"
     assert SPOT_WS_BASE == "wss://stream.binance.com:9443/ws"
-    assert UM_WS_BASE != SPOT_WS_BASE, "one host for both markets would be wrong"
-    for base in (UM_WS_BASE, SPOT_WS_BASE):
+    bases = (UM_MARKET_WS_BASE, UM_PUBLIC_WS_BASE, SPOT_WS_BASE)
+    assert len(set(bases)) == 3, "each endpoint is its own connection"
+    for base in bases:
         assert base.startswith("wss://"), "market data is read over TLS"
         assert base.endswith("/ws"), "the raw-stream endpoint, not the combined one"
+
+
+def test_every_endpoint_has_a_base_and_the_table_is_exhaustive():
+    """An endpoint with no base would raise at startup, not connect somewhere."""
+    assert set(ENDPOINT_WS_BASES) == set(Endpoint)
+    assert ENDPOINT_WS_BASES[Endpoint.UM_MARKET] == UM_MARKET_WS_BASE
+    assert ENDPOINT_WS_BASES[Endpoint.UM_PUBLIC] == UM_PUBLIC_WS_BASE
+    assert ENDPOINT_WS_BASES[Endpoint.SPOT] == SPOT_WS_BASE
+
+
+def test_no_base_is_one_the_venue_retired():
+    """The legacy base is not merely different. It is silently wrong."""
+    assert set(ENDPOINT_WS_BASES.values()).isdisjoint(LEGACY_UM_WS_BASES)
+
+
+# --- A2. which endpoint publishes which stream ----------------------------------
+def test_the_usd_m_kline_and_mark_price_are_market_traffic():
+    """Both stopped arriving on the retired base; both are Market category."""
+    assert endpoint_for(UM_KLINE_1M) is Endpoint.UM_MARKET
+    assert endpoint_for(UM_MARK_PRICE) is Endpoint.UM_MARKET
+
+
+def test_the_usd_m_book_is_public_traffic():
+    """Which is exactly why it alone kept arriving on the retired base."""
+    assert endpoint_for(UM_BOOK_TICKER) is Endpoint.UM_PUBLIC
+
+
+def test_spot_routing_did_not_change():
+    assert endpoint_for(SPOT_KLINE_1M) is Endpoint.SPOT
+    assert endpoint_for(SPOT_BOOK_TICKER) is Endpoint.SPOT
+
+
+def test_funding_is_published_on_no_websocket_endpoint():
+    assert endpoint_for(UM_FUNDING) is None
+
+
+# --- A3. the connections the service opens --------------------------------------
+def _clients():
+    return clients_for(CONTRACT, lambda event: None)
+
+
+def test_clients_are_split_by_endpoint_and_not_by_market():
+    """Three connections, because USD-M's streams live on two endpoints."""
+    by_name = {client.name: client for client in _clients()}
+    assert set(by_name) == {"um-market-ws", "um-public-ws", "spot-ws"}
+    assert by_name["um-market-ws"].url == UM_MARKET_WS_BASE
+    assert by_name["um-public-ws"].url == UM_PUBLIC_WS_BASE
+    assert by_name["spot-ws"].url == SPOT_WS_BASE
+    assert set(by_name["um-market-ws"].stream_ids) == {UM_KLINE_1M, UM_MARK_PRICE}
+    assert set(by_name["um-public-ws"].stream_ids) == {UM_BOOK_TICKER}
+    assert set(by_name["spot-ws"].stream_ids) == {SPOT_KLINE_1M, SPOT_BOOK_TICKER}
+
+
+def test_one_usd_m_connection_would_be_the_defect_coming_back():
+    """The regression guard. A single socket carrying all three USD-M streams is
+    the shape that connects, reports healthy, and never receives a kline."""
+    clients = _clients()
+    um = [client for client in clients if "fstream.binance.com" in client.url]
+    assert len(um) == 2, "USD-M is two connections; one of them is the old defect"
+    for client in clients:
+        assert client.url not in LEGACY_UM_WS_BASES
+        streams = set(client.stream_ids)
+        assert (
+            not {UM_KLINE_1M, UM_BOOK_TICKER} <= streams
+        ), "Market and Public traffic on one socket is what the venue split apart"
+
+
+def test_no_recorder_stream_is_subscribed_on_two_connections():
+    """A stream carried twice would record every event twice."""
+    seen: list[str] = []
+    for client in _clients():
+        seen.extend(client.stream_ids)
+    assert len(seen) == len(set(seen)), "a stream is subscribed on two connections"
+    assert set(seen) == {
+        UM_KLINE_1M,
+        UM_MARK_PRICE,
+        UM_BOOK_TICKER,
+        SPOT_KLINE_1M,
+        SPOT_BOOK_TICKER,
+    }
+    assert UM_FUNDING not in seen, "funding is polled over REST, not subscribed"
+
+
+def test_every_connection_carries_only_streams_its_endpoint_publishes():
+    """The url a client dials and the streams it asks for cannot disagree."""
+    for client in _clients():
+        endpoints = {endpoint_for(stream_id) for stream_id in client.stream_ids}
+        assert len(endpoints) == 1, f"{client.name} mixes endpoints"
+        assert ENDPOINT_WS_BASES[endpoints.pop()] == client.url
 
 
 def test_the_rest_paths_are_the_public_market_data_ones():

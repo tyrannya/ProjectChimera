@@ -34,6 +34,7 @@ from websockets.asyncio.server import serve
 from chimera.recorder.contract import load_recorder_contract
 from chimera.recorder.events import (
     SPOT_BOOK_TICKER,
+    SPOT_KLINE_1M,
     UM_BOOK_TICKER,
     UM_KLINE_1M,
     UM_MARK_PRICE,
@@ -42,9 +43,11 @@ from chimera.recorder.streams import (
     Backoff,
     PROACTIVE_RECONNECT_S,
     RecorderStreamError,
+    Endpoint,
     StreamClient,
     Subscription,
     StreamKind,
+    clients_for,
     subscriptions_for,
 )
 from chimera.recorder.sink import AppendOutcome, RawSink
@@ -625,3 +628,151 @@ def test_a_subscription_needs_a_recorder_stream_id_and_a_venue_name():
         Subscription(stream_id="um.kline_1m", venue_name="", kind=StreamKind.KLINE)
     with pytest.raises(RecorderStreamError, match="StreamKind"):
         Subscription(stream_id="um.kline_1m", venue_name="x", kind="KLINE")  # type: ignore[arg-type]
+
+
+# --- H. the USD-M endpoint split ------------------------------------------------
+# Since 2026-04-23 USD-M is two connections, not one. Every test below gives each
+# endpoint its own server, so "the market socket broke" and "the public socket
+# broke" are different events that can be told apart. That separation is the
+# whole point of the split: on the retired single base the market streams went
+# silent while the socket stayed up and the public stream kept flooding, and
+# nothing in a per-socket view of health could see the difference.
+def split_clients(market, public, spot, on_event, **options):
+    """The real :func:`clients_for`, pointed at three local servers."""
+    options.setdefault("backoff", Backoff(**TEST_BACKOFF))
+    options.setdefault("open_timeout", 5.0)
+    options.setdefault("ping_interval", None)
+    options.setdefault("ping_timeout", None)
+    return clients_for(
+        CONTRACT,
+        on_event,
+        urls={
+            Endpoint.UM_MARKET: market.url,
+            Endpoint.UM_PUBLIC: public.url,
+            Endpoint.SPOT: spot.url,
+        },
+        **options,
+    )
+
+
+async def gather_until(clients, predicate, *, deadline: float = 5.0):
+    """Run every client until ``predicate`` holds, then stop them all."""
+    stop = asyncio.Event()
+
+    async def watch():
+        began = time.monotonic()
+        while not predicate():
+            if time.monotonic() - began > deadline:
+                break
+            await asyncio.sleep(0.01)
+        stop.set()
+
+    await asyncio.gather(
+        *(run_until(client, stop, deadline=deadline + 1.0) for client in clients),
+        watch(),
+    )
+
+
+def test_each_split_connection_delivers_only_the_streams_it_was_given():
+    """A kline arrives on the market socket; a book arrives on the public one.
+
+    The stray book frame on the market socket is deliberate. The market client
+    holds no book subscription, so the frame must be ignored rather than recorded
+    as ``um.bookTicker`` — the split must not depend on the venue being tidy.
+    """
+
+    async def scenario():
+        market = FakeVenue(
+            [
+                [
+                    kline_ws_frame(OPEN_MS),
+                    mark_ws_frame(OPEN_MS),
+                    book_ws_frame(9, event_ms=OPEN_MS),
+                ]
+            ],
+            close_after=False,
+        )
+        public = FakeVenue([[book_ws_frame(7, event_ms=OPEN_MS)]], close_after=False)
+        spot = FakeVenue([[kline_ws_frame(OPEN_MS)]], close_after=False)
+        async with market, public, spot:
+            events, on_event = collector()
+            clients = split_clients(market, public, spot, on_event)
+            await gather_until(clients, lambda: len(events) >= 4)
+            return events, clients, market, public
+
+    events, clients, market, public = asyncio.run(scenario())
+    by_stream = sorted(event.stream for event in events)
+    assert by_stream == [SPOT_KLINE_1M, UM_BOOK_TICKER, UM_KLINE_1M, UM_MARK_PRICE]
+    assert UM_BOOK_TICKER not in {
+        subscription.stream_id
+        for client in clients
+        if client.name == "um-market-ws"
+        for subscription in client.subscriptions
+    }, "the book stream does not belong to the market connection"
+    market_names = set(market.subscriptions[0]["params"])
+    public_names = set(public.subscriptions[0]["params"])
+    assert market_names == {"btcusdt@kline_1m", "btcusdt@markPrice@1s"}
+    assert public_names == {"btcusdt@bookTicker"}
+    assert market_names.isdisjoint(public_names), "no stream is asked for twice"
+
+
+def test_one_usd_m_socket_reconnecting_leaves_the_other_untouched():
+    """Health is per recorder stream. A market reconnect is not a book outage."""
+
+    async def scenario():
+        market = FakeVenue(
+            [[kline_ws_frame(OPEN_MS)], [kline_ws_frame(OPEN_MS + 60_000)]],
+            close_after=True,  # drops the connection after each script
+        )
+        public = FakeVenue([[book_ws_frame(7, event_ms=OPEN_MS)]], close_after=False)
+        spot = FakeVenue([[]], close_after=False)
+        async with market, public, spot:
+            events, on_event = collector()
+            clients = split_clients(market, public, spot, on_event)
+            um_klines = lambda: sum(1 for e in events if e.stream == UM_KLINE_1M)  # noqa: E731
+            await gather_until(clients, lambda: um_klines() >= 2)
+            by_name = {client.name: client for client in clients}
+            return events, by_name, market, public
+
+    events, by_name, market, public = asyncio.run(scenario())
+    assert market.connections >= 2, "the market socket really did reconnect"
+    assert by_name["um-market-ws"].counters.reconnects >= 1
+    assert public.connections == 1, "the public socket was never re-dialled"
+    assert (
+        by_name["um-public-ws"].counters.reconnects == 0
+    ), "a market reconnect must not be counted against the book stream"
+    assert sum(1 for e in events if e.stream == UM_BOOK_TICKER) == 1
+    assert by_name["um-market-ws"].stream_ids != by_name["um-public-ws"].stream_ids
+
+
+def test_stopping_the_split_clients_leaves_no_task_behind():
+    """Three connections are three chances to leak one."""
+
+    async def scenario():
+        market = FakeVenue([[]], close_after=False)
+        public = FakeVenue([[]], close_after=False)
+        spot = FakeVenue([[]], close_after=False)
+        async with market, public, spot:
+            events, on_event = collector()
+            clients = split_clients(market, public, spot, on_event)
+            assert len(clients) == 3, "three endpoints, so three connections"
+            stop = asyncio.Event()
+            tasks = [asyncio.create_task(client.run(stop)) for client in clients]
+            # Bounded: a venue that is never dialled would otherwise hang here
+            # forever instead of failing, and an endpoint losing its connection
+            # is exactly the regression these tests exist to catch.
+            for venue in (market, public, spot):
+                await asyncio.wait_for(venue.delivered.wait(), timeout=5.0)
+            stop.set()
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=5.0)
+            await asyncio.sleep(0.05)
+            leftovers = [
+                repr(t)
+                for t in asyncio.all_tasks()
+                if t is not asyncio.current_task() and "chimera" in repr(t.get_coro())
+            ]
+            return leftovers, [client.connected for client in clients]
+
+    leftovers, connected = asyncio.run(scenario())
+    assert leftovers == [], f"stopping left {leftovers} running"
+    assert connected == [False, False, False], "every connection is closed"

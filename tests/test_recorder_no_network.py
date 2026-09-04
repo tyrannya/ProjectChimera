@@ -439,7 +439,8 @@ def test_the_denial_fixture_would_actually_catch_a_connection(no_network):
 #: hosts; no signed endpoint, no user-data stream, no account path.
 ALLOWED_ENDPOINTS = frozenset(
     {
-        "wss://fstream.binance.com/ws",
+        "wss://fstream.binance.com/market/ws",
+        "wss://fstream.binance.com/public/ws",
         "wss://stream.binance.com:9443/ws",
         "https://fapi.binance.com",
         "https://api.binance.com",

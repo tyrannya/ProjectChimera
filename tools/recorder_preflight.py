@@ -18,7 +18,7 @@ is signed, and no authenticated endpoint is named.
 
 Usage::
 
-    python -m tools.recorder_preflight            # 25 s per host
+    python -m tools.recorder_preflight            # 25 s per endpoint
     python -m tools.recorder_preflight --seconds 60
 
 Exit code 0 means every required stream delivered at least one frame and the
@@ -36,16 +36,24 @@ from typing import Any, Mapping, Sequence
 
 from websockets.asyncio.client import connect
 
-#: The two public market-data hosts, as section 4.1 names them.
-UM_WS = "wss://fstream.binance.com/ws"
+#: The public market-data endpoints. USD-M is two of them: Binance retired the
+#: single USD-M base — the bare ``/ws`` path on the same host — on 2026-04-23
+#: and split its traffic by category. That base still connects and acknowledges a
+#: SUBSCRIBE for any stream, then pushes public traffic only, which is why a
+#: preflight aimed at it reports bookTicker flooding while kline and markPrice
+#: stay silent. Probing the two current bases separately is the point of this.
+UM_MARKET_WS = "wss://fstream.binance.com/market/ws"
+UM_PUBLIC_WS = "wss://fstream.binance.com/public/ws"
 SPOT_WS = "wss://stream.binance.com:9443/ws"
 
-#: What the acceptance run needs from each host: the venue's stream name, the
-#: event type its frames carry, and the recorder stream id it feeds. A stream
-#: with no frames in the window is a stream the run cannot record.
-UM_REQUIRED: tuple[tuple[str, str, str], ...] = (
+#: What the acceptance run needs from each endpoint: the venue's stream name,
+#: the event type its frames carry, and the recorder stream id it feeds. A
+#: stream with no frames in the window is a stream the run cannot record.
+UM_MARKET_REQUIRED: tuple[tuple[str, str, str], ...] = (
     ("btcusdt@kline_1m", "kline", "um.kline_1m"),
     ("btcusdt@markPrice@1s", "markPriceUpdate", "um.markPrice"),
+)
+UM_PUBLIC_REQUIRED: tuple[tuple[str, str, str], ...] = (
     ("btcusdt@bookTicker", "bookTicker", "um.bookTicker"),
 )
 SPOT_REQUIRED: tuple[tuple[str, str, str], ...] = (
@@ -54,6 +62,13 @@ SPOT_REQUIRED: tuple[tuple[str, str, str], ...] = (
     # event type at all, so it is recognised by its shape. That asymmetry is
     # real, and a preflight that looked only at `e` would report it missing.
     ("btcusdt@bookTicker", "", "spot.bookTicker"),
+)
+
+#: Every endpoint the acceptance run opens, in the order this file reports them.
+REQUIRED_ENDPOINTS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] = (
+    ("USD-M market", UM_MARKET_WS, UM_MARKET_REQUIRED),
+    ("USD-M public", UM_PUBLIC_WS, UM_PUBLIC_REQUIRED),
+    ("spot", SPOT_WS, SPOT_REQUIRED),
 )
 
 DEFAULT_SECONDS = 25.0
@@ -90,7 +105,7 @@ async def probe(url: str, names: Sequence[str], seconds: float) -> collections.C
 
 
 async def check(label: str, url: str, required, seconds: float) -> bool:
-    print(f"{label:<6} {url}")
+    print(f"{label:<12} {url}")
     try:
         counts = await probe(url, [name for name, _, _ in required], seconds)
     except Exception as exc:  # noqa: BLE001 - the reason is what the reviewer needs
@@ -112,27 +127,28 @@ async def run(seconds: float) -> int:
         "Preflight for the PR-05 acceptance run. Public market data only, no "
         "credentials, and nothing from this repository is imported.\n"
     )
-    um = await check("USD-M", UM_WS, UM_REQUIRED, seconds)
-    spot = await check("spot", SPOT_WS, SPOT_REQUIRED, seconds)
+    missing = []
+    for label, url, required in REQUIRED_ENDPOINTS:
+        if not await check(label, url, required, seconds):
+            missing.append(label)
     print()
-    if um and spot:
+    if not missing:
         print(
             "PREFLIGHT PASS — every required stream delivered. This network may run\n"
             "the 60-minute acceptance run:\n"
             "    make recorder-acceptance RECORDER_SECONDS=3600 RECORDER_BASE_DIR=<scratch>"
         )
         return 0
-    missing = []
-    if not um:
-        missing.append("USD-M")
-    if not spot:
-        missing.append("spot")
     print(
         f"PREFLIGHT FAIL — {' and '.join(missing)} did not deliver every required "
         "stream.\nDo NOT start the acceptance run here: it would spend an hour "
         "recording an\nincomplete set and could not satisfy the criterion. Run it from a "
-        "network\nthat passes this check. Nothing about the recorder is implicated by this\n"
-        "result — no recorder code took part in it."
+        "network\nthat passes this check, or from one whose endpoints are current.\n\n"
+        "No recorder code took part in this probe, so the result is about the venue,\n"
+        "the endpoints named above and this network. Do not read it as clearing the\n"
+        "recorder: an endpoint the venue has retired fails here exactly as a blocked\n"
+        "network does, and on 2026-04-23 one of them was. Check the endpoints against\n"
+        "the venue's current documentation before concluding the network is at fault."
     )
     return 1
 
@@ -149,7 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--seconds",
         type=float,
         default=DEFAULT_SECONDS,
-        help=f"how long to listen to each host (default: {DEFAULT_SECONDS:.0f})",
+        help=f"how long to listen to each endpoint (default: {DEFAULT_SECONDS:.0f})",
     )
     args = parser.parse_args(argv)
     if args.seconds <= 0:
