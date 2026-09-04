@@ -83,8 +83,21 @@ KLINE_STREAM_IDS: Mapping[str, str] = {"um": UM_KLINE_1M, "spot": SPOT_KLINE_1M}
 INTERVAL_1M = "1m"
 
 #: Binance's documented maximum rows per kline page, and per funding page.
+#: USD-M and spot do not agree, and the disagreement is not loud: asking spot's
+#: ``/api/v3/klines`` for 1500 rows does not fail, it silently answers with at
+#: most 1000. A paginator that treated "fewer rows than I asked for" as "the
+#: range is exhausted" would therefore stop after one page on spot and report a
+#: truncated fetch as a complete one — which is exactly what a cold start did,
+#: gap-filling 1000 of 1440 spot minutes and calling it done. The per-market
+#: ceiling below is what pagination is measured against, never the caller's ask.
 MAX_KLINE_LIMIT = 1500
+MAX_SPOT_KLINE_LIMIT = 1000
 MAX_FUNDING_LIMIT = 1000
+
+#: Market -> the most rows that market's kline endpoint will return in one page.
+#: ``MAX_KLINE_LIMIT`` also governs the mark- and index-price kline paths, which
+#: are USD-M and unpaged.
+MAX_KLINE_PAGE: Mapping[str, int] = {"um": MAX_KLINE_LIMIT, "spot": MAX_SPOT_KLINE_LIMIT}
 
 #: Statuses that mean "you are asking too often". 418 is Binance's own: an IP
 #: that ignored a 429 for long enough. Both carry ``Retry-After``.
@@ -214,17 +227,24 @@ class RestPoller:
         end_ms: int,
         *,
         symbol: str,
-        limit: int = MAX_KLINE_LIMIT,
+        limit: int | None = None,
     ) -> list[list[Any]]:
         """Closed 1m klines in ``[start_ms, end_ms]``, paged until exhausted.
 
         Binance's kline range is inclusive at both ends and the endpoint returns
-        at most ``limit`` rows, so a range longer than that is walked one page at
-        a time from the open time of the last row received. A page that does not
-        advance ends the walk rather than looping forever.
+        at most one page, so a longer range is walked one page at a time from the
+        open time of the last row received. A page that does not advance ends the
+        walk rather than looping forever.
+
+        ``limit`` is the caller's *request*, clamped to the market's own ceiling
+        (:data:`MAX_KLINE_PAGE`) and defaulting to it. Pagination is decided
+        against that clamped value, never against what the caller asked for: the
+        venue applies its own cap without saying so, and a full page that is
+        smaller than the ask is the middle of a range, not the end of one.
         """
         start, end = _require_range(start_ms, end_ms)
         base, path = self._kline_endpoint(market)
+        page_limit = self._kline_page_limit(market, limit)
         rows: list[list[Any]] = []
         cursor = start
         while cursor <= end:
@@ -235,7 +255,7 @@ class RestPoller:
                     "interval": INTERVAL_1M,
                     "startTime": cursor,
                     "endTime": end,
-                    "limit": int(limit),
+                    "limit": page_limit,
                 },
             )
             batch = _require_rows(page, f"{market} klines")
@@ -250,7 +270,7 @@ class RestPoller:
                     f"{last_open}. A page that does not advance is not a page",
                 )
             cursor = last_open + 60_000
-            if len(batch) < limit:
+            if len(batch) < page_limit:
                 break
         return rows
 
@@ -386,6 +406,32 @@ class RestPoller:
         return _require_rows(payload, path)
 
     # --- transport --------------------------------------------------------
+    def _kline_page_limit(self, market: str, requested: int | None) -> int:
+        """The page size to send: the market's ceiling, or less if asked for less.
+
+        Clamped rather than refused. A caller asking for more than the endpoint
+        will give is not making an error worth failing a recovery over — but it
+        must not then be told the range ended early, so the clamped value is what
+        both the request and the exhaustion test use.
+        """
+        try:
+            ceiling = MAX_KLINE_PAGE[market]
+        except KeyError:
+            raise RecorderRestError(
+                RestFailure.SHAPE,
+                f"no kline page limit is known for market {market!r}; "
+                f"this build knows {sorted(MAX_KLINE_PAGE)}",
+            ) from None
+        if requested is None:
+            return ceiling
+        requested = int(requested)
+        if requested < 1:
+            raise RecorderRestError(
+                RestFailure.SHAPE,
+                f"a kline page limit must be at least 1, got {requested}",
+            )
+        return min(requested, ceiling)
+
     def _kline_endpoint(self, market: str) -> tuple[str, str]:
         try:
             base, path = KLINE_ENDPOINTS[market]

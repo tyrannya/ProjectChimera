@@ -67,7 +67,7 @@ from tests.recorder_synthetic import (
     minute_ms,
     premium_index_row,
 )
-from tests.test_recorder_rest_fake import FakeResponse, FakeSession
+from tests.test_recorder_rest_fake import CappedVenue, FakeResponse, FakeSession
 
 CONTRACT = load_recorder_contract()
 
@@ -250,13 +250,104 @@ def test_a_gap_fill_starts_after_the_last_minute_this_host_already_holds(tmp_pat
 
 
 def test_a_gap_fill_reaches_back_no_further_than_the_horizon(tmp_path):
-    """Beyond a day it is not gap-filling, it is backfilling, and PR-06 owns that."""
+    """Beyond a day it is not gap-filling, it is backfilling, and PR-06 owns that.
+
+    Asserted in *candles*, not in the span between the endpoints. The range is
+    inclusive at both ends, so ``(end - start) // 60_000`` is one less than the
+    number of candles asked for — which is how a 1440-minute cap quietly fetched
+    1441 candles and still satisfied the old form of this assertion.
+    """
     service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
     service.recover()
     asyncio.run(service.fill_kline_gap("um"))
     start = service.poller.session.params[0]["startTime"]
     end = service.poller.session.params[0]["endTime"]
-    assert (end - start) // 60_000 <= MAX_GAPFILL_MINUTES
+    assert (end - start) // 60_000 + 1 == MAX_GAPFILL_MINUTES
+
+
+# --- B2. a cold start asks for exactly the cap, on both markets -----------------
+# The first fresh-root hour gap-filled 1441 um minutes and 1000 spot minutes. The
+# first number was this arithmetic; the second was the venue's page cap read as
+# exhaustion. Both are pinned here in candles, which is the unit the cap is in.
+def _cold_start_window(service, market):
+    """Run a cold gap-fill and return (candles asked for, start, end)."""
+    asyncio.run(service.fill_kline_gap(market))
+    params = service.poller.session.params[0]
+    start, end = params["startTime"], params["endTime"]
+    return (end - start) // 60_000 + 1, start, end
+
+
+@pytest.mark.parametrize("market", ["um", "spot"])
+def test_a_cold_start_asks_for_exactly_1440_closed_candles(tmp_path, market):
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    candles, start, end = _cold_start_window(service, market)
+    assert candles == 1440 == MAX_GAPFILL_MINUTES, "the cap is candles, not offset"
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    assert end == current_open - 60_000, "the forming minute is never requested"
+    assert start == end - 1439 * 60_000
+
+
+@pytest.mark.parametrize("market", ["um", "spot"])
+def test_a_cold_start_records_exactly_1440_minutes_when_the_venue_has_them(tmp_path, market):
+    """End to end through the real poller and the real sink, not just the params."""
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    last_closed = current_open - 60_000
+    first = last_closed - 1439 * 60_000
+    rows = [kline_rest_row(first + i * 60_000) for i in range(1440)]
+    cap = 1500 if market == "um" else 1000
+    service = service_for(tmp_path, answers=[])
+    service.poller.session = CappedVenue(cap)
+    service.recover()
+    filled = asyncio.run(service.fill_kline_gap(market))
+    assert filled == 1440, f"{market} recovered {filled} of 1440 closed minutes"
+    assert len(service.poller.session.calls) == (1 if market == "um" else 2)
+    stream = f"{market}.kline_1m"
+    assert service.health.stream(stream).gapfill_rows == 1440
+    opens = [event.minute_open_ms for event in read_raw_events(tmp_path, stream, DAY)]
+    assert len(set(opens)) == len(opens), "no minute was recorded twice"
+    assert len(rows) == 1440  # the window the venue was asked for
+
+
+def test_a_gap_fill_from_a_held_minute_starts_one_minute_later_and_stays_capped(
+    tmp_path,
+):
+    """``since_ns`` inside the horizon: resume, do not restart."""
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    last_closed = current_open - 60_000
+    held = last_closed - 9 * 60_000
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    asyncio.run(service.fill_kline_gap("um", since_ns=held * NS_PER_MILLISECOND))
+    params = service.poller.session.params[0]
+    assert params["startTime"] == held + 60_000, "the held minute is not re-fetched"
+    assert params["endTime"] == last_closed
+    assert (params["endTime"] - params["startTime"]) // 60_000 + 1 == 9
+
+
+def test_a_since_older_than_the_horizon_is_clamped_to_1440_candles(tmp_path):
+    """A host down for a week does not ask for a week."""
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    last_closed = current_open - 60_000
+    ancient = last_closed - 10_000 * 60_000
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    asyncio.run(service.fill_kline_gap("um", since_ns=ancient * NS_PER_MILLISECOND))
+    params = service.poller.session.params[0]
+    assert (params["endTime"] - params["startTime"]) // 60_000 + 1 == MAX_GAPFILL_MINUTES
+
+
+def test_a_gap_fill_with_nothing_closed_and_missing_asks_for_nothing(tmp_path):
+    """``since_ns`` at the last closed minute: zero rows, and no request at all."""
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    last_closed = current_open - 60_000
+    service = service_for(tmp_path, answers=[])
+    service.recover()
+    filled = asyncio.run(
+        service.fill_kline_gap("um", since_ns=last_closed * NS_PER_MILLISECOND)
+    )
+    assert filled == 0
+    assert service.poller.session.calls == [], "nothing was missing, so nothing was asked"
 
 
 def test_a_gap_fill_that_fails_is_noted_and_does_not_stop_the_recorder(tmp_path):

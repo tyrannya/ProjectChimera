@@ -483,6 +483,12 @@ class RecorderService:
         gap-fill horizon, whichever is later — and ends at the last *closed*
         minute. The currently forming minute is never requested: a REST row for
         it would be a partial candle wearing a closed candle's shape.
+
+        The horizon is ``MAX_GAPFILL_MINUTES`` *candles*, not that many minutes
+        of offset. Binance's range is inclusive at both ends, so the oldest open
+        included is ``last_closed - (N - 1) * 60_000``: subtracting the whole
+        ``N`` would ask for ``N + 1`` candles, and a cold start under a 1440
+        cap fetched 1441.
         """
         stream = f"{market}.kline_1m"
         if stream not in self.sinks:
@@ -490,7 +496,7 @@ class RecorderService:
         now_ns = self._wall_ns()
         last_closed_open_ms = (now_ns // NS_PER_MILLISECOND) // MS_PER_MINUTE * MS_PER_MINUTE
         last_closed_open_ms -= MS_PER_MINUTE
-        horizon_ms = last_closed_open_ms - MAX_GAPFILL_MINUTES * MS_PER_MINUTE
+        horizon_ms = last_closed_open_ms - (MAX_GAPFILL_MINUTES - 1) * MS_PER_MINUTE
         if since_ns is None:
             since_ns = self.recovery.last_canonical_ns.get(stream)
         start_ms = (

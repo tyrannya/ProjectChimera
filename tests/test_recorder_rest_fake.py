@@ -30,7 +30,11 @@ from chimera.recorder.events import SPOT_KLINE_1M, UM_FUNDING, UM_KLINE_1M
 from chimera.recorder.rest import (
     DEFAULT_MIN_INTERVAL_S,
     EXPECTED_FUNDING_HOURS_UTC,
+    KLINE_ENDPOINTS,
+    MAX_KLINE_LIMIT,
+    MAX_KLINE_PAGE,
     MAX_RETRY_AFTER_S,
+    MAX_SPOT_KLINE_LIMIT,
     RecorderRestError,
     RestFailure,
     RestPoller,
@@ -98,6 +102,43 @@ def poller(*answers, **options) -> RestPoller:
     instance = RestPoller(session=FakeSession(answers), sleep=slept.append, **options)
     instance.slept = slept  # type: ignore[attr-defined]
     return instance
+
+
+class CappedVenue:
+    """A fake that applies a server-side page cap, the way the venue does.
+
+    The scripted :class:`FakeSession` cannot express the defect this guards: the
+    endpoint silently returning *fewer* rows than were asked for because its own
+    ceiling is lower. Spot's ``/api/v3/klines`` caps at 1000 however large the
+    ``limit`` parameter says. So this one fake computes its answer instead of
+    replaying it — the minimum of what was asked, what the venue allows, and what
+    the requested range actually contains.
+    """
+
+    def __init__(self, server_cap: int):
+        self.server_cap = server_cap
+        self.calls: list[tuple[str, dict]] = []
+
+    def get(self, url, params=None, timeout=None):
+        params = dict(params or {})
+        self.calls.append((url, params))
+        start, end = int(params["startTime"]), int(params["endTime"])
+        asked = int(params["limit"])
+        available = (end - start) // 60_000 + 1
+        count = max(0, min(asked, self.server_cap, available))
+        rows = [kline_rest_row(start + i * 60_000) for i in range(count)]
+        return FakeResponse(payload=rows)
+
+    @property
+    def params(self) -> list[dict]:
+        return [params for _, params in self.calls]
+
+
+def capped_poller(server_cap: int) -> RestPoller:
+    """A poller talking to an endpoint that enforces ``server_cap`` rows a page."""
+    return RestPoller(
+        session=CappedVenue(server_cap), sleep=lambda s: None, min_interval_s=0.0
+    )
 
 
 # --- A. the requests that go out ------------------------------------------------
@@ -212,6 +253,96 @@ def test_a_page_that_does_not_advance_is_refused_rather_than_fetched_for_ever():
     api = poller(FakeResponse(payload=page), FakeResponse(payload=page))
     with pytest.raises(RecorderRestError, match="went backwards"):
         api.klines("um", OPEN_MS + 120_000, OPEN_MS + 600_000, symbol=SYMBOL, limit=2)
+
+
+# --- B2. the venue's page cap is not the end of the range -----------------------
+# A cold start asked spot for 1440 minutes with limit=1500, got the 1000 spot
+# actually returns, read "fewer than I asked for" as "the range is exhausted" and
+# recorded 1000 of 1440 as a complete recovery. Nothing raised. These pin the
+# distinction between the caller's ask and the endpoint's own ceiling.
+def test_each_market_declares_the_page_size_its_endpoint_really_allows():
+    assert MAX_KLINE_PAGE["um"] == 1500 == MAX_KLINE_LIMIT
+    assert MAX_KLINE_PAGE["spot"] == 1000 == MAX_SPOT_KLINE_LIMIT
+    assert (
+        MAX_KLINE_PAGE["spot"] < MAX_KLINE_PAGE["um"]
+    ), "spot's ceiling is the lower one; sharing um's is the defect"
+
+
+def test_a_spot_cold_start_pages_1000_then_440_rather_than_stopping_at_1000():
+    """The exact acceptance-run failure, as a test."""
+    api = capped_poller(1000)
+    start = OPEN_MS
+    end = OPEN_MS + 1439 * 60_000
+    rows = api.klines("spot", start, end, symbol=SYMBOL)
+    assert len(rows) == 1440, "the second page was not requested"
+    assert len(api.session.calls) == 2, "1440 spot minutes is two pages, not one"
+    assert api.session.params[0]["limit"] == 1000, "never ask spot for more than it gives"
+    assert api.session.params[0]["startTime"] == start
+    assert api.session.params[1]["startTime"] == start + 1000 * 60_000
+    opens = [row[0] for row in rows]
+    assert opens == sorted(opens) and len(set(opens)) == 1440, "no duplicate, no gap"
+    assert opens[0] == start and opens[-1] == end
+
+
+def test_a_um_cold_start_of_1440_fits_in_one_page_at_the_higher_ceiling():
+    api = capped_poller(1500)
+    rows = api.klines("um", OPEN_MS, OPEN_MS + 1439 * 60_000, symbol=SYMBOL)
+    assert len(rows) == 1440
+    assert len(api.session.calls) == 1, "1440 fits under um's 1500"
+    assert api.session.params[0]["limit"] == 1500
+
+
+def test_a_range_of_exactly_one_spot_page_needs_no_second_row_and_loses_none():
+    """The boundary: 1000 rows is a full page, so the walk continues and finds
+    nothing, rather than either stopping early or inventing a 1001st row."""
+    api = capped_poller(1000)
+    rows = api.klines("spot", OPEN_MS, OPEN_MS + 999 * 60_000, symbol=SYMBOL)
+    assert len(rows) == 1000
+    assert [row[0] for row in rows][-1] == OPEN_MS + 999 * 60_000
+
+
+def test_one_minute_past_the_spot_page_boundary_is_fetched_as_1000_plus_1():
+    api = capped_poller(1000)
+    rows = api.klines("spot", OPEN_MS, OPEN_MS + 1000 * 60_000, symbol=SYMBOL)
+    assert len(rows) == 1001
+    assert len(api.session.calls) == 2
+    opens = [row[0] for row in rows]
+    assert len(set(opens)) == 1001, "the boundary candle is not fetched twice"
+    assert opens[-1] == OPEN_MS + 1000 * 60_000
+
+
+def test_a_caller_asking_for_more_than_the_venue_allows_is_clamped_not_obeyed():
+    """Asking spot for 1500 must send 1000 — and must still page to the end."""
+    api = capped_poller(1000)
+    rows = api.klines("spot", OPEN_MS, OPEN_MS + 1200 * 60_000, symbol=SYMBOL, limit=1500)
+    assert api.session.params[0]["limit"] == 1000, "1500 was sent to spot"
+    assert len(rows) == 1201
+
+
+def test_a_caller_asking_for_less_than_the_ceiling_is_obeyed():
+    """The clamp is a ceiling, not an override: a small page stays small."""
+    api = capped_poller(1000)
+    rows = api.klines("spot", OPEN_MS, OPEN_MS + 5 * 60_000, symbol=SYMBOL, limit=2)
+    assert api.session.params[0]["limit"] == 2
+    assert len(rows) == 6 and len(api.session.calls) == 3
+
+
+def test_a_page_limit_below_one_is_refused_rather_than_sent():
+    api = capped_poller(1000)
+    with pytest.raises(RecorderRestError, match="at least 1"):
+        api.klines("spot", OPEN_MS, OPEN_MS + 60_000, symbol=SYMBOL, limit=0)
+
+
+def test_an_unknown_market_is_refused_and_every_known_one_has_a_page_limit():
+    """The endpoint guard fires first, so that is what an unknown market hits.
+    The page-limit table must then cover every market that got past it, or a
+    known market would reach the paginator with no ceiling to measure against."""
+    api = capped_poller(1000)
+    with pytest.raises(RecorderRestError, match="no public kline endpoint"):
+        api.klines("cm", OPEN_MS, OPEN_MS + 60_000, symbol=SYMBOL)
+    assert set(MAX_KLINE_PAGE) == set(
+        KLINE_ENDPOINTS
+    ), "a market with an endpoint but no declared page limit would page blind"
 
 
 # --- C. parsing -----------------------------------------------------------------
