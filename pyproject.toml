@@ -51,6 +51,14 @@ benchmark = [
     "lightgbm>=4.3",
     "xgboost>=2.0",
 ]
+# The prospective recorder's live collection layer. `requests` and
+# `prometheus-client` are already core, so the only thing acquisition adds is a
+# websocket client. Its own group because the offline core -- the contract, the
+# parsers, the append-only sink and the normalizer -- imports none of it: a
+# process that only reads recorded days never installs a socket library.
+recorder = [
+    "websockets>=13",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",
@@ -60,7 +68,7 @@ dev = [
     "mypy>=1.9",
     "pre-commit>=3.6",
 ]
-all = ["projectchimera[trade,ml,tracking,tune,benchmark,dev]"]
+all = ["projectchimera[trade,ml,tracking,tune,benchmark,recorder,dev]"]
 
 [tool.setuptools.packages.find]
 # Discovered rather than listed. Each container image copies only the packages

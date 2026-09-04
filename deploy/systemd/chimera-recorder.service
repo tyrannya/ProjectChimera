@@ -1,0 +1,74 @@
+# Supervision for the prospective recorder (PR-05, master plan section 4).
+#
+# Reads public Binance market data and writes it under the storage root the
+# committed gen3 contract resolves. There are no credentials here, and there is
+# nothing to add: the recorder has no authenticated endpoint, so an
+# EnvironmentFile carrying a key would be a key this unit has no use for.
+#
+# Install:
+#   sudo cp deploy/systemd/chimera-recorder.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now chimera-recorder
+#
+# Adjust User, WorkingDirectory and the two paths in ExecStart to the host. The
+# defaults assume a checkout at /opt/chimera owned by a `chimera` service user
+# with a virtualenv at /opt/chimera/.venv.
+
+[Unit]
+Description=Chimera prospective market-data recorder (public data, no credentials)
+Documentation=file:/opt/chimera/docs/proposed_demo_implementation_master_plan.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chimera
+Group=chimera
+WorkingDirectory=/opt/chimera
+
+# --base-dir is the directory the contract's storage root is resolved under, so
+# the data lands in <base-dir>/prospective/gen3/. Keep it on a filesystem with
+# room for roughly 1.5 GB of compressed raw and 0.3 GB of normalized data per
+# month at these streams (section 14).
+ExecStart=/opt/chimera/.venv/bin/python -m tools.recorder \
+    --base-dir /var/lib/chimera/data \
+    --log-level INFO \
+    run --metrics-port 9102
+
+# SIGTERM is what the service's own stop path listens for: it sets the stop
+# event, the tasks wind down, the open day is normalized and a last heartbeat is
+# written. Give that room to finish before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+# Restart on any exit, including the non-zero one the recorder uses to say it
+# had write errors — a recorder that is down records nothing, and the counters
+# and the heartbeat are what an operator alerts on.
+Restart=always
+RestartSec=10s
+# Do not give up after repeated restarts: a recorder in a crash loop must keep
+# trying, and StartLimitIntervalSec=0 is what stops systemd from disabling it.
+StartLimitIntervalSec=0
+
+# The recorder needs the network, its checkout and one data directory. Nothing
+# else, so nothing else is reachable.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/chimera/data
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chimera-recorder
+
+[Install]
+WantedBy=multi-user.target

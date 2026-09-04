@@ -26,6 +26,7 @@ where it applies:
 | --- | --- | --- | --- |
 | A1 | 2026-09-03 | 4.9 | The coverage gate divided every required stream's captured set by 1440 and applied the `0.990` outage threshold to all of them, `um.funding` included. Funding is settlement-indexed, so its wallclock coverage could not exceed `3/1440` and the 30-day gate was unreachable by arithmetic. Minute-indexed and settlement-indexed streams are now evaluated separately; every threshold and the substance of funding completeness are unchanged. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
 | A2 | 2026-09-03 | 4.9 | A1 left funding completeness defined as `settlement_coverage(D) = \|captured_settlements\| / \|scheduled_settlements\|` and then declared a day with no scheduled settlement vacuously passing, which is `0 / 0` — undefined exactly where the prose said it held. The same definition also made an unreadable funding archive produce the empty set a venue that scheduled nothing would produce, so missing evidence would have passed the day. The ratio is removed from the gate; funding completeness is a quantifier over an *established* schedule, and a schedule that could not be established is `FUNDING_SCHEDULE_UNAVAILABLE` and does not pass. Every threshold, the three-flagged-days rule and the 30-day window are unchanged, and no economic criterion is introduced. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
+| A3 | 2026-09-04 | 14 | The S1 engineering row estimated disk at "about 1.5 GB per month raw gz plus 0.3 GB normalized at these streams". Measured on real BTCUSDT engineering recordings, the raw figure is low by a factor of about 24. Exact numbers, one denominator: **910,761,661 bytes of NDJSON gzipping to 52,425,027 bytes (17.4x)** over **3,463.2 seconds of total recorder uptime** across three sessions, which extrapolates to **36.5 GiB per month of gzipped raw**; allow **about 37 GiB** for the two USD-M websocket streams the measuring network could not receive. Two independent methods — per-stream rows/s times gzipped bytes/row, and total gzipped bytes over total uptime — agree to within 0.1%. The two `bookTicker` streams are **99.4%** of the gzipped bytes. Uptime rather than connected time is the denominator, which understates the rate and so understates the estimate. The normalized figure is an over-estimate and is left alone: the same measurement projects about 7 MiB per month. Corrected because a host provisioned on 1.5 GB fills within a day, and a full disk now halts the affected stream for the rest of the run, which would make the 30-day gate unreachable for a reason that has nothing to do with the market. No stream, sampling rate, threshold, contract field or scientific semantic is changed by this amendment; only the number a host is sized from. |
 
 Written 2026-09-03 on the audit branch `audit/fable-5-1-full-project-strategic-audit`.
 Every existing name, signature, field and line number below was read from the
@@ -105,7 +106,7 @@ For every arrow:
 
 | arrow | producer -> consumer | data structure / interface | sync or async | failure semantics | persistence | idempotency | timestamp semantics | restart behaviour |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| exchange -> A | Binance -> `StreamClient` **(new)** | JSON frames on `wss://fstream.binance.com/ws/...` and `wss://stream.binance.com:9443/ws/...`; REST JSON | async (asyncio) | disconnect -> reconnect with backoff; 24h forced disconnect expected; ping/pong honoured | none | exchange provides `E` event time and, for klines, `t`/`T`; duplicates possible after reconnect | canonical time = exchange time; receipt time = local monotonic and wall clock, both recorded | resubscribe; REST gap-fill for klines and funding since the last recorded canonical time |
+| exchange -> A | Binance -> `StreamClient` **(new)** | JSON frames on `wss://fstream.binance.com/market/ws/...`, `wss://fstream.binance.com/public/ws/...` and `wss://stream.binance.com:9443/ws/...`; REST JSON | async (asyncio) | disconnect -> reconnect with backoff; 24h forced disconnect expected; ping/pong honoured | none | exchange provides `E` event time and, for klines, `t`/`T`; duplicates possible after reconnect | canonical time = exchange time; receipt time = local monotonic and wall clock, both recorded | resubscribe; REST gap-fill for klines and funding since the last recorded canonical time |
 | A -> B | `StreamClient` -> `RawSink` **(new)** | `RawEvent(stream, canonical_ns, receipt_ns, payload_json)` | sync append inside the async loop (single writer per stream) | write error -> recorder halts that stream, health metric flips, alert | append-only NDJSON per stream per UTC day; fsync every second and on rotation | event dedup key = (stream, exchange update id or (`t`,`T`) or `E`+payload hash); duplicates written to a `dup` counter, not to the file | file day boundary by canonical time; a late event for a closed day goes to `<day>.late.ndjson` | on start, the sink re-opens today's file in append mode and reads its last line to recover the dedup horizon |
 | B -> C | `RawSink` files -> `MinuteNormalizer` **(new)** | closed-minute records per stream | sync, runs inside the recorder after each closed minute and on day close | a minute with no closed kline -> recorded as missing, never interpolated | Parquet per stream per day plus `.meta.json` with row count, digest, gap list | recomputation from raw is deterministic; the digest is the identity | minute key = kline open time `t` (UTC, ms); bookTicker and mark aggregated by canonical event time into the minute containing them | normalizer re-derives the current day from raw on start; previous days are immutable once their `.sha256` exists |
 | C -> D | normalized files -> `FeedCursor` **(new)** | `MinuteRecord` per market per minute | sync polling (the runner sleeps until the next expected close plus a grace window, then reads) | file missing or minute missing -> runner marks the feed stale; Aegis stale-feed veto; no decision on invented data | cursor position persisted in runner state (`last_minute_processed`) | processing the same minute twice is prevented by the cursor and by the decision log's `(rule_id, minute)` uniqueness | decision minute = kline open time; a decision is made only for minutes whose kline is closed and whose bookTicker snapshot at close exists | on restart the cursor resumes from the persisted minute; minutes between the persisted cursor and now are processed in order with `catch_up=True` in the log, and no position change is executed for catch-up minutes older than the configured `max_catchup_minutes` (default 3): older minutes are logged as `SKIPPED_STALE` |
@@ -212,7 +213,7 @@ changes.
 
 | stream id | market | preferred source | event timestamp used | canonical timestamp | sequence / ordering | notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `um.kline_1m` | USD-M perp BTCUSDT | websocket `btcusdt@kline_1m` on `wss://fstream.binance.com/ws`; gap-fill REST `GET /fapi/v1/klines?symbol=BTCUSDT&interval=1m&startTime=&endTime=&limit=` | `k.t` open, `k.T` close, `E` event | minute key = `k.t` (UTC ms); a minute is complete only when a frame with `k.x == true` was received or the REST row exists | ordered by `k.t`; the last frame with `k.x == true` per minute wins; earlier partial frames are kept in raw, ignored by the normalizer | fields kept: o, h, l, c, v, n, V (taker buy base), Q |
+| `um.kline_1m` | USD-M perp BTCUSDT | websocket `btcusdt@kline_1m` on `wss://fstream.binance.com/market/ws`; gap-fill REST `GET /fapi/v1/klines?symbol=BTCUSDT&interval=1m&startTime=&endTime=&limit=` | `k.t` open, `k.T` close, `E` event | minute key = `k.t` (UTC ms); a minute is complete only when a frame with `k.x == true` was received or the REST row exists | ordered by `k.t`; the last frame with `k.x == true` per minute wins; earlier partial frames are kept in raw, ignored by the normalizer | fields kept: o, h, l, c, v, n, V (taker buy base), Q |
 | `um.markPrice` | USD-M perp | websocket `btcusdt@markPrice@1s` | `E` | per event `E`; per-minute aggregate keyed by the minute containing `E` | ordered by `E`; duplicates by (`E`, payload hash) | payload carries mark `p`, index `i`, estimated settle `P`, funding rate `r`, next funding time `T`; minute aggregate stores mark open/high/low/close, index open/high/low/close, last `r`, last `T`, event count |
 | `um.indexPrice_1m` | USD-M perp | derived from `um.markPrice` index field; reconciliation via REST `GET /fapi/v1/indexPriceKlines?pair=BTCUSDT&interval=1m` | as above | minute key | n/a | index klines are derived, then checked against the REST index klines daily |
 | `um.markPrice_1m` | USD-M perp | derived from `um.markPrice`; reconciliation via REST `GET /fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=1m` | as above | minute key | n/a | the per-minute mark high is what the liquidation touch reads (section 6) |
@@ -226,6 +227,28 @@ for ordering, both stored on every raw event. Clock skew: the recorder records
 `skew_ms = receipt_wall_ms - E` per event where `E` exists, and publishes the
 rolling median as a metric; skew above 5 s raises an alert; skew never alters
 a canonical timestamp.
+
+> **Amendment A3, 2026-09-04 — transport correction, pre-acquisition.**
+> As first written, this section put every USD-M websocket stream on one base,
+> `wss://fstream.binance.com/ws`. Binance retired that base on 2026-04-23 and
+> split USD-M market data by traffic category: `kline` and `markPrice` are
+> Market traffic and are published on `wss://fstream.binance.com/market/ws`,
+> while `bookTicker` is Public traffic on `wss://fstream.binance.com/public/ws`.
+> A connection left on the retired base is still accepted and still answers
+> `SUBSCRIBE` with `{"result": null}`, then delivers Public traffic only — so
+> `um.bookTicker` floods while `um.kline_1m` and `um.markPrice` stay silent
+> with no error and no disconnect. That is what a preflight against the retired
+> base measured on 2026-09-04, and it was first misattributed to a regional
+> network restriction; probing the two current bases from the same host
+> delivered all five websocket streams. The recorder therefore opens one
+> connection per *endpoint* (`um-market-ws`, `um-public-ws`, `spot-ws`), not one
+> per market. Spot is unaffected and keeps `wss://stream.binance.com:9443/ws`.
+>
+> This changes transport only. No stream id, event schema, canonical timestamp,
+> minute key, missingness rule, coverage rule, reconciliation boundary or
+> contract value changes, and the contract hash is unchanged: `canonical_material`
+> in `chimera/recorder/contract.py` hashes no endpoint. `prospective_from`
+> remains unset.
 
 ### 4.2 Reconnect, duplicates, missing, late
 
@@ -1357,7 +1380,7 @@ NOT HAPPEN YET row required.
 | GOAL | causally clean forward data for both instruments, with the 30-day gate passed |
 | RATIONALE | every later stage consumes it; no prospective data exists |
 | PRECONDITIONS | S0 |
-| ENGINEERING TASKS | PR-04, PR-05, PR-06; deploy on the host that will run the demo; supervisor; disk sizing (about 1.5 GB per month raw gz plus 0.3 GB normalized at these streams) |
+| ENGINEERING TASKS | PR-04, PR-05, PR-06; deploy on the host that will run the demo; supervisor; disk sizing — **amended A3, measured, rough**: budget **about 37 GiB per month of gzipped raw** at these streams, plus about 7 MiB per month normalized. Measured: 910,761,661 B of NDJSON gzipping to 52,425,027 B (17.4x) over 3,463.2 s of recorder uptime, i.e. 36.5 GiB/month, and the two `bookTicker` streams are 99.4% of it at ~490 and ~144 updates per second. Rates vary with market activity and two USD-M streams were unreachable when this was measured, so **provision headroom**. The first estimate of 1.5 GB per month raw gz was low by roughly 24x |
 | SCIENTIFIC TASKS | fill `prospective_from`; commit the contract hash |
 | FILES | section 12.3 recorder rows |
 | DEPENDENCIES | none |

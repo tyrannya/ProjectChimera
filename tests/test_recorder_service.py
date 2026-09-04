@@ -1,0 +1,1317 @@
+"""The recorder service: startup recovery, the loops, shutdown, and what it reports.
+
+The websocket client and the REST poller are tested against fakes in their own
+files. This one is about the layer that owns *when*: what happens on a start
+that follows a crash, what a reconnect leads to, what the heartbeat says, what a
+failing task does to the process, and what is left on disk when it stops.
+
+**Everything here runs offline.** The websocket clients are replaced by scripted
+stand-ins and the REST poller by a fake session, so the tests exercise the
+service's own control flow rather than a network. Two of them do start a real
+local websocket server, because "a reconnect is followed by a gap-fill" is a
+statement about two subsystems agreeing and a stand-in for one of them would
+make it vacuous.
+
+**The invariants under test, stated once.** A gap-filled minute is a recorded
+observation and never a repair. A missing minute stays missing. A day that has
+been frozen is not written to again. The prospective boundary is never set by
+anything that runs. And a task that dies takes the service down with it rather
+than leaving a process that reports itself healthy while recording nothing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+
+import pytest
+
+from chimera.metrics import RECORDER_METRIC_NAMES
+from chimera.recorder.contract import load_recorder_contract
+from chimera.recorder.events import (
+    NS_PER_MILLISECOND,
+    SPOT_KLINE_1M,
+    UM_FUNDING,
+    UM_KLINE_1M,
+    UM_MARK_PRICE,
+    EventSource,
+    day_start_ns,
+    utc_day,
+)
+from chimera.recorder.health import (
+    HEARTBEAT_INTERVAL_S,
+    HEARTBEAT_SCHEMA,
+    RecorderHealthError,
+    heartbeat_path,
+    initial_health,
+    read_status,
+)
+from chimera.recorder.incremental import IncrementalNormalizer
+from chimera.recorder.normalize import MinuteNormalizer
+from chimera.recorder.rest import RestPoller
+from chimera.recorder.service import (
+    MAX_GAPFILL_MINUTES,
+    RecorderService,
+    RecorderServiceError,
+    build_service,
+)
+from chimera.recorder.sink import RawSink, RecorderSinkError, read_raw_events
+from tests.recorder_synthetic import (
+    DAY,
+    funding_rest_row,
+    kline_event,
+    kline_rest_row,
+    kline_ws_frame,
+    mark_event,
+    minute_ms,
+    premium_index_row,
+)
+from tests.test_recorder_rest_fake import CappedVenue, FakeResponse, FakeSession
+
+CONTRACT = load_recorder_contract()
+
+#: A wall clock pinned inside the synthetic day, so "today" is ``DAY`` and every
+#: path a test asserts on is the one the fixtures write to.
+DAY_NS = day_start_ns(DAY)
+NOON_NS = DAY_NS + 12 * 3_600_000 * NS_PER_MILLISECOND
+
+
+def frozen_clock(ns: int = NOON_NS):
+    return lambda: ns
+
+
+class ScriptedClient:
+    """A stand-in for :class:`StreamClient` that delivers a list of events.
+
+    It has the attributes the service reads — ``name``, ``stream_ids``,
+    ``counters``, ``skew``, ``connected`` — and a ``run`` that delivers its
+    script and then waits for the stop event, which is what a healthy client
+    does between frames.
+    """
+
+    def __init__(self, name, stream_ids, on_event, events=(), *, fail=None):
+        from chimera.recorder.streams import SkewMeter, StreamCounters
+
+        self.name = name
+        self.stream_ids = tuple(stream_ids)
+        self.on_event = on_event
+        self.events = list(events)
+        self.fail = fail
+        self.counters = StreamCounters()
+        self.skew = SkewMeter()
+        self.connected = False
+        self.started = asyncio.Event()
+
+    async def run(self, stop):
+        self.connected = True
+        self.started.set()
+        if self.fail is not None:
+            raise self.fail
+        for event in self.events:
+            self.on_event(event)
+            self.counters.events += 1
+        try:
+            await stop.wait()
+        finally:
+            self.connected = False
+
+
+def service_for(tmp_path, *, events=(), answers=(), clients=None, **options):
+    """A service writing under ``tmp_path``, with the network replaced by fakes."""
+    options.setdefault("wall_ns", frozen_clock())
+    options.setdefault("gapfill", False)
+    options.setdefault("heartbeat_interval_s", 0.05)
+    options.setdefault("sync_interval_s", 0.05)
+    options.setdefault("normalize_interval_s", 0.05)
+    options.setdefault("premium_index_interval_s", 3600.0)
+    options.setdefault("funding_catchup_interval_s", 3600.0)
+    poller = RestPoller(
+        session=FakeSession(list(answers)), sleep=lambda s: None, min_interval_s=0.0
+    )
+    service = RecorderService(CONTRACT, tmp_path, poller=poller, clients=[], **options)
+    if clients is None:
+        clients = [
+            ScriptedClient("um-test", (UM_KLINE_1M, UM_MARK_PRICE), service._record, events)
+        ]
+    service.clients = tuple(clients)
+    return service
+
+
+async def run_briefly(service, *, seconds: float = 0.3):
+    """Run the service and stop it, with a ceiling so a hang fails the test."""
+    stop = asyncio.Event()
+
+    async def stopper():
+        await asyncio.sleep(seconds)
+        stop.set()
+
+    result, _ = await asyncio.gather(service.run(stop), stopper())
+    return result
+
+
+# --- A. startup recovery --------------------------------------------------------
+def test_a_cold_start_normalizes_the_open_day_and_reports_what_it_found(tmp_path):
+    service = service_for(tmp_path)
+    recovery = service.recover()
+    assert set(recovery.tails) == set(CONTRACT.streams)
+    assert recovery.normalized == (f"spot/{DAY}", f"um/{DAY}")
+    assert service.normalizer.parquet_path("um", DAY).exists()
+    document = json.loads(service.normalizer.meta_path("um", DAY).read_text(encoding="utf-8"))
+    assert document["rows"] == 0
+    assert len(document["missing"]) == 1440, "an empty day is 1440 missing minutes"
+
+
+def test_a_restart_reads_back_the_last_canonical_instant_from_disk(tmp_path):
+    """Step 2 of section 4.3, and the input to the gap-fill that follows it."""
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in (0, 1, 2):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+
+    service = service_for(tmp_path)
+    recovery = service.recover()
+    assert recovery.last_canonical_ns[UM_KLINE_1M] == minute_ms(2) * NS_PER_MILLISECOND
+    assert recovery.last_canonical_ns[SPOT_KLINE_1M] is None
+    assert (
+        service.health.stream(UM_KLINE_1M).last_event_ns == minute_ms(2) * NS_PER_MILLISECOND
+    )
+
+
+def test_a_torn_tail_is_repaired_before_anything_else_reads_the_file(tmp_path):
+    """Step 1: a crash mid-write leaves half a record, and it is preserved."""
+    sink = RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT)
+    sink.append(kline_event(minute_ms(0)))
+    sink.sync()
+    sink.close()
+    path = sink.events_path(DAY)
+    with path.open("ab") as handle:
+        handle.write(b'{"schema": "chimera.recorder-raw-event/1", "stream": "um.k')
+
+    service = service_for(tmp_path)
+    recovery = service.recover()
+    assert recovery.tails[UM_KLINE_1M] == 1
+    assert any("torn" in note for note in recovery.notes)
+    assert path.with_name(path.name + ".truncated").exists(), "the torn bytes are kept"
+    assert len(read_raw_events(tmp_path, UM_KLINE_1M, DAY)) == 1
+
+
+def test_a_frozen_day_is_not_reopened_by_a_restart(tmp_path):
+    """A frozen raw day is finalised; recovery must read past it, not into it."""
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        sink.append(kline_event(minute_ms(0)))
+        sink.sync()
+        sink.freeze_day(DAY)
+    manifest = json.loads(
+        (tmp_path / "raw" / UM_KLINE_1M / DAY / "manifest.json").read_text(encoding="utf-8")
+    )
+    service = service_for(tmp_path)
+    recovery = service.recover()
+    assert recovery.tails[UM_KLINE_1M] == 0, "a frozen day is not recovered"
+    assert recovery.last_canonical_ns[UM_KLINE_1M] == manifest["last_canonical_ns"]
+
+
+# --- B. gap fill ----------------------------------------------------------------
+def test_a_gap_fill_records_rest_rows_through_the_same_sink_and_labels_them(tmp_path):
+    """Section 4.2: gap-filled minutes are observations, with their source said."""
+    last_closed = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000 - 60_000
+    rows = [kline_rest_row(last_closed - 60_000), kline_rest_row(last_closed)]
+    service = service_for(tmp_path, answers=[FakeResponse(payload=rows)])
+    service.recover()
+
+    filled = asyncio.run(service.fill_kline_gap("um"))
+    assert filled == 2
+    stored = read_raw_events(tmp_path, UM_KLINE_1M, DAY)
+    assert [event.source for event in stored] == [EventSource.REST_GAPFILL] * 2
+    assert [event.minute_open_ms for event in stored] == [last_closed - 60_000, last_closed]
+    assert service.health.stream(UM_KLINE_1M).gapfill_rows == 2
+
+
+def test_a_gap_fill_never_asks_for_the_minute_that_is_still_forming(tmp_path):
+    """A REST row for the current minute would be a partial candle wearing a
+    finished candle's shape, because ``rest_payload`` marks every row closed."""
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    asyncio.run(service.fill_kline_gap("um"))
+    params = service.poller.session.params[0]
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    assert params["endTime"] == current_open - 60_000
+    assert params["endTime"] < current_open
+
+
+def test_a_gap_fill_starts_after_the_last_minute_this_host_already_holds(tmp_path):
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        sink.append(kline_event(minute_ms(10)))
+        sink.sync()
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    asyncio.run(service.fill_kline_gap("um"))
+    assert service.poller.session.params[0]["startTime"] == minute_ms(11)
+
+
+def test_a_gap_fill_reaches_back_no_further_than_the_horizon(tmp_path):
+    """Beyond a day it is not gap-filling, it is backfilling, and PR-06 owns that.
+
+    Asserted in *candles*, not in the span between the endpoints. The range is
+    inclusive at both ends, so ``(end - start) // 60_000`` is one less than the
+    number of candles asked for — which is how a 1440-minute cap quietly fetched
+    1441 candles and still satisfied the old form of this assertion.
+    """
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    asyncio.run(service.fill_kline_gap("um"))
+    start = service.poller.session.params[0]["startTime"]
+    end = service.poller.session.params[0]["endTime"]
+    assert (end - start) // 60_000 + 1 == MAX_GAPFILL_MINUTES
+
+
+# --- B2. a cold start asks for exactly the cap, on both markets -----------------
+# The first fresh-root hour gap-filled 1441 um minutes and 1000 spot minutes. The
+# first number was this arithmetic; the second was the venue's page cap read as
+# exhaustion. Both are pinned here in candles, which is the unit the cap is in.
+def _cold_start_window(service, market):
+    """Run a cold gap-fill and return (candles asked for, start, end)."""
+    asyncio.run(service.fill_kline_gap(market))
+    params = service.poller.session.params[0]
+    start, end = params["startTime"], params["endTime"]
+    return (end - start) // 60_000 + 1, start, end
+
+
+@pytest.mark.parametrize("market", ["um", "spot"])
+def test_a_cold_start_asks_for_exactly_1440_closed_candles(tmp_path, market):
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    candles, start, end = _cold_start_window(service, market)
+    assert candles == 1440 == MAX_GAPFILL_MINUTES, "the cap is candles, not offset"
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    assert end == current_open - 60_000, "the forming minute is never requested"
+    assert start == end - 1439 * 60_000
+
+
+@pytest.mark.parametrize("market", ["um", "spot"])
+def test_a_cold_start_records_exactly_1440_minutes_when_the_venue_has_them(tmp_path, market):
+    """End to end through the real poller and the real sink, not just the params."""
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    last_closed = current_open - 60_000
+    first = last_closed - 1439 * 60_000
+    rows = [kline_rest_row(first + i * 60_000) for i in range(1440)]
+    cap = 1500 if market == "um" else 1000
+    service = service_for(tmp_path, answers=[])
+    service.poller.session = CappedVenue(cap)
+    service.recover()
+    filled = asyncio.run(service.fill_kline_gap(market))
+    assert filled == 1440, f"{market} recovered {filled} of 1440 closed minutes"
+    assert len(service.poller.session.calls) == (1 if market == "um" else 2)
+    stream = f"{market}.kline_1m"
+    assert service.health.stream(stream).gapfill_rows == 1440
+    opens = [event.minute_open_ms for event in read_raw_events(tmp_path, stream, DAY)]
+    assert len(set(opens)) == len(opens), "no minute was recorded twice"
+    assert len(rows) == 1440  # the window the venue was asked for
+
+
+def test_a_gap_fill_from_a_held_minute_starts_one_minute_later_and_stays_capped(
+    tmp_path,
+):
+    """``since_ns`` inside the horizon: resume, do not restart."""
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    last_closed = current_open - 60_000
+    held = last_closed - 9 * 60_000
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    asyncio.run(service.fill_kline_gap("um", since_ns=held * NS_PER_MILLISECOND))
+    params = service.poller.session.params[0]
+    assert params["startTime"] == held + 60_000, "the held minute is not re-fetched"
+    assert params["endTime"] == last_closed
+    assert (params["endTime"] - params["startTime"]) // 60_000 + 1 == 9
+
+
+def test_a_since_older_than_the_horizon_is_clamped_to_1440_candles(tmp_path):
+    """A host down for a week does not ask for a week."""
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    last_closed = current_open - 60_000
+    ancient = last_closed - 10_000 * 60_000
+    service = service_for(tmp_path, answers=[FakeResponse(payload=[])])
+    service.recover()
+    asyncio.run(service.fill_kline_gap("um", since_ns=ancient * NS_PER_MILLISECOND))
+    params = service.poller.session.params[0]
+    assert (params["endTime"] - params["startTime"]) // 60_000 + 1 == MAX_GAPFILL_MINUTES
+
+
+def test_a_gap_fill_with_nothing_closed_and_missing_asks_for_nothing(tmp_path):
+    """``since_ns`` at the last closed minute: zero rows, and no request at all."""
+    current_open = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000
+    last_closed = current_open - 60_000
+    service = service_for(tmp_path, answers=[])
+    service.recover()
+    filled = asyncio.run(
+        service.fill_kline_gap("um", since_ns=last_closed * NS_PER_MILLISECOND)
+    )
+    assert filled == 0
+    assert service.poller.session.calls == [], "nothing was missing, so nothing was asked"
+
+
+def test_a_gap_fill_that_fails_is_noted_and_does_not_stop_the_recorder(tmp_path):
+    service = service_for(tmp_path, answers=[FakeResponse(500, text="down")])
+    service.poller.max_attempts = 1
+    service.recover()
+    assert asyncio.run(service.fill_kline_gap("um")) == 0
+    assert any("gap-fill failed" in note for note in service.health.errors)
+
+
+def test_a_minute_neither_source_produced_stays_missing(tmp_path):
+    """The invariant the whole recorder is built around, asserted end to end."""
+    last_closed = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000 - 60_000
+    service = service_for(
+        tmp_path, answers=[FakeResponse(payload=[kline_rest_row(last_closed)])]
+    )
+    service.recover()
+    asyncio.run(service.fill_kline_gap("um"))
+    service._normalize("um", DAY)
+    document = json.loads(service.normalizer.meta_path("um", DAY).read_text(encoding="utf-8"))
+    assert document["rows"] == 1
+    assert len(document["missing"]) == 1439
+    assert last_closed - 60_000 in document["missing"], "the minute before was not invented"
+
+
+# --- C. funding and the premium index -------------------------------------------
+def test_funding_settlements_are_recorded_and_the_settlements_file_is_rebuilt(tmp_path):
+    rows = [
+        funding_rest_row(DAY_NS // NS_PER_MILLISECOND + hour * 3_600_000) for hour in (0, 8)
+    ]
+    service = service_for(tmp_path, answers=[FakeResponse(payload=rows)])
+    service.recover()
+    assert asyncio.run(service.poll_funding()) == 2
+    settlements = service.normalizer.settlements_path("um")
+    lines = [line for line in settlements.read_text(encoding="utf-8").splitlines() if line]
+    assert len(lines) == 2
+    assert service.normalizer.settlements_digest_path("um").exists()
+
+
+def test_the_funding_poller_records_what_came_back_and_checks_no_count(tmp_path):
+    """A day with four settlements, or one, is recorded as it happened.
+
+    Establishing what the venue *scheduled* is PR-06's, from the archive. Nothing
+    here compares the number of rows against the eight-hour cadence.
+    """
+    base = DAY_NS // NS_PER_MILLISECOND
+    rows = [funding_rest_row(base + hour * 3_600_000) for hour in (0, 4, 8, 12)]
+    service = service_for(tmp_path, answers=[FakeResponse(payload=rows)])
+    service.recover()
+    assert asyncio.run(service.poll_funding()) == 4
+    assert service.health.errors == (), "four settlements in a day is not an error"
+
+
+def test_the_premium_index_is_recorded_on_the_mark_stream_and_never_as_a_settlement(tmp_path):
+    service = service_for(
+        tmp_path,
+        answers=[FakeResponse(payload=premium_index_row(NOON_NS // NS_PER_MILLISECOND))],
+    )
+    service.recover()
+    assert asyncio.run(service.poll_premium_index()) is True
+    marks = read_raw_events(tmp_path, UM_MARK_PRICE, DAY)
+    assert len(marks) == 1
+    assert marks[0].source is EventSource.REST_POLL
+    assert marks[0].stream == UM_MARK_PRICE
+    assert (
+        not service.sinks[UM_FUNDING].events_path(DAY).exists()
+    ), "the rate in effect is not a settlement and must not be written as one"
+
+
+def test_a_premium_index_answer_missing_a_value_is_refused_rather_than_recorded(tmp_path):
+    row = premium_index_row(NOON_NS // NS_PER_MILLISECOND)
+    del row["indexPrice"]
+    service = service_for(tmp_path, answers=[FakeResponse(payload=row)])
+    service.recover()
+    assert asyncio.run(service.poll_premium_index()) is False
+    assert any("premiumIndex" in note for note in service.health.errors)
+
+
+def test_startup_reads_the_current_mark_state_once_before_the_loops_begin(tmp_path):
+    """Otherwise the mark and index have no observation until the first poll.
+
+    The periodic pollers sleep before they act, which is right for a steady
+    state and wrong for a start: on a restart that follows an outage the minute
+    the recorder comes back in would have no mark reading at all.
+    """
+    last_closed = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000 - 60_000
+    service = service_for(
+        tmp_path,
+        gapfill=True,
+        answers=[
+            FakeResponse(payload=[kline_rest_row(last_closed)]),
+            FakeResponse(payload=[kline_rest_row(last_closed)]),
+            FakeResponse(payload=[funding_rest_row(DAY_NS // NS_PER_MILLISECOND)]),
+            FakeResponse(payload=premium_index_row(NOON_NS // NS_PER_MILLISECOND)),
+        ],
+    )
+    asyncio.run(run_briefly(service, seconds=0.2))
+    marks = read_raw_events(tmp_path, UM_MARK_PRICE, DAY)
+    assert len(marks) == 1, "the recorder came up with a mark reading, not without one"
+    assert marks[0].source is EventSource.REST_POLL
+
+
+# --- D. the run, and how it stops -----------------------------------------------
+def test_a_run_records_what_the_streams_deliver_and_stops_cleanly(tmp_path):
+    events = [kline_event(minute_ms(index)) for index in range(3)]
+    service = service_for(tmp_path, events=events)
+    result = asyncio.run(run_briefly(service))
+    assert result.events == 3
+    assert result.write_errors == 0
+    assert result.heartbeats >= 2, "the heartbeat kept beating while it ran"
+    assert result.seconds >= 0.0
+    assert service.sinks[UM_KLINE_1M].open_day is None, "the sinks were closed"
+
+
+def test_the_run_returns_after_the_stop_event_and_leaves_no_task_running(tmp_path):
+    async def scenario():
+        service = service_for(tmp_path)
+        stop = asyncio.Event()
+        task = asyncio.create_task(service.run(stop))
+        await asyncio.sleep(0.15)
+        stop.set()
+        await asyncio.wait_for(task, timeout=5.0)
+        await asyncio.sleep(0.05)
+        return [
+            repr(t)
+            for t in asyncio.all_tasks()
+            if t is not asyncio.current_task() and "chimera" in repr(t.get_coro())
+        ]
+
+    assert asyncio.run(scenario()) == []
+
+
+def test_a_task_that_fails_takes_the_service_down_rather_than_looking_healthy(tmp_path):
+    """The alternative is a process that reports itself up and records nothing."""
+
+    def make(service):
+        return [
+            ScriptedClient(
+                "um-test", (UM_KLINE_1M,), service._record, fail=RuntimeError("boom")
+            )
+        ]
+
+    service = service_for(tmp_path)
+    service.clients = tuple(make(service))
+    with pytest.raises(RecorderServiceError, match="a task failed"):
+        asyncio.run(run_briefly(service, seconds=2.0))
+    assert any("boom" in note for note in service.health.errors)
+    document = json.loads(heartbeat_path(tmp_path).read_text(encoding="utf-8"))
+    assert all(stream["connected"] is False for stream in document["streams"])
+
+
+def test_shutdown_normalizes_the_open_day_and_writes_a_last_heartbeat(tmp_path):
+    events = [kline_event(minute_ms(index)) for index in range(2)]
+    service = service_for(tmp_path, events=events)
+    asyncio.run(run_briefly(service))
+    document = json.loads(service.normalizer.meta_path("um", DAY).read_text(encoding="utf-8"))
+    assert document["rows"] == 2
+    heartbeat = json.loads(heartbeat_path(tmp_path).read_text(encoding="utf-8"))
+    assert heartbeat["schema"] == HEARTBEAT_SCHEMA
+    assert all(stream["connected"] is False for stream in heartbeat["streams"])
+
+
+def test_re_normalizing_the_open_day_does_not_stall_the_event_loop(tmp_path):
+    """The defect a 44-minute live run found, pinned so it cannot come back.
+
+    ``build_day`` re-reads every raw event of the day, so it gets slower as the
+    day fills: on a real BTCUSDT recording it took 66 s once the perpetual book
+    stream held 1.5 M rows. Run on the event loop, that stops every websocket
+    read for as long as it takes, the exchange's ping goes unanswered, and the
+    recorder disconnects itself — which is what happened, once every interval, on
+    both connections at the same instant.
+
+    The test replaces the normalize step with one that blocks for a beat and
+    asserts a concurrent coroutine kept being scheduled throughout.
+    """
+
+    async def scenario():
+        service = service_for(tmp_path)
+        service.recover()
+        ticks: list[float] = []
+
+        def slow_normalize(market, day):
+            time.sleep(0.25)
+
+        service._normalize = slow_normalize
+
+        async def heartbeat_of_the_loop():
+            # Long enough to span the whole maintenance pass, so the gap between
+            # two ticks measures the stall rather than missing it entirely.
+            for _ in range(80):
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        ticker = asyncio.create_task(heartbeat_of_the_loop())
+        # Let the ticker actually start. Without this it is still pending when
+        # the blocking work begins, finishes cleanly afterwards, and the test
+        # passes whether or not the loop was ever stalled.
+        await asyncio.sleep(0.05)
+        assert len(ticks) >= 2, "the ticker must be running before the pass begins"
+        await service._maintain()
+        await ticker
+        return ticks
+
+    ticks = asyncio.run(scenario())
+    gaps = [second - first for first, second in zip(ticks, ticks[1:])]
+    assert len(ticks) == 80
+    assert max(gaps) < 0.15, (
+        f"the loop stalled for {max(gaps):.2f}s while the open day was re-normalized; "
+        "that is how the recorder disconnected itself on a real run"
+    )
+
+
+def test_the_maintenance_pass_waits_longer_when_it_costs_more(tmp_path):
+    """The pacing rule: the interval is a floor, the duty cycle is the ceiling.
+
+    A day that takes a minute to re-normalize must not be re-normalized every
+    five minutes for ever — the cost grows with the day, and a fixed interval
+    ends with the recorder spending most of its time normalizing.
+    """
+    from chimera.recorder.service import NORMALIZE_DUTY_CYCLE
+
+    service = service_for(tmp_path, normalize_interval_s=300.0)
+    assert service._last_maintenance_s == 0.0
+    cheap = max(service.normalize_interval_s, 0.0 / NORMALIZE_DUTY_CYCLE)
+    assert cheap == 300.0, "a cheap pass waits the configured interval"
+
+    service._last_maintenance_s = 66.0
+    expensive = max(service.normalize_interval_s, 66.0 / NORMALIZE_DUTY_CYCLE)
+    assert expensive == 660.0, "a 66 s pass waits 11 minutes, not 5"
+    assert 0 < NORMALIZE_DUTY_CYCLE <= 0.5
+
+
+# --- E. reconnect, then gap fill, over a real socket -----------------------------
+def test_a_reconnect_is_followed_by_a_rest_gap_fill_of_the_minutes_it_missed(tmp_path):
+    """Two subsystems agreeing, so neither is faked.
+
+    A real local websocket server delivers one closed minute and drops the
+    connection. The service's own gap-fill then fetches the minute that fell in
+    the gap from the fake REST endpoint, and both land in the same raw file
+    under their own source labels.
+    """
+    from tests.test_recorder_streams_fake_server import FakeVenue
+
+    async def scenario():
+        from chimera.recorder.streams import Backoff, StreamClient, subscriptions_for
+
+        last_closed = (NOON_NS // NS_PER_MILLISECOND) // 60_000 * 60_000 - 60_000
+        pushed = kline_ws_frame(last_closed - 60_000)
+        gap_row = kline_rest_row(last_closed)
+        async with FakeVenue([[pushed], []]) as venue:
+            service = service_for(tmp_path, answers=[FakeResponse(payload=[gap_row])])
+            subscriptions = [
+                s for s in subscriptions_for(CONTRACT, "um") if s.stream_id == UM_KLINE_1M
+            ]
+            client = StreamClient(
+                venue.url,
+                subscriptions,
+                service._record,
+                backoff=Backoff(initial=0.01, maximum=0.02, jitter=0.0),
+                name="um-ws",
+                ping_interval=None,
+            )
+            service.clients = (client,)
+            stop = asyncio.Event()
+            task = asyncio.create_task(service.run(stop))
+            while client.counters.reconnects < 1:
+                await asyncio.sleep(0.01)
+            await service.fill_kline_gap("um")
+            stop.set()
+            await asyncio.wait_for(task, timeout=5.0)
+            return last_closed
+
+    last_closed = asyncio.run(scenario())
+    stored = read_raw_events(tmp_path, UM_KLINE_1M, DAY)
+    by_minute = {event.minute_open_ms: event.source for event in stored}
+    assert by_minute[last_closed - 60_000] is EventSource.WEBSOCKET
+    assert by_minute[last_closed] is EventSource.REST_GAPFILL
+
+
+# --- F. health, metrics and the heartbeat ---------------------------------------
+def test_the_heartbeat_is_replaced_atomically_and_never_read_half_written(tmp_path):
+    """A supervisor reading during a rewrite sees the previous document."""
+    service = service_for(tmp_path)
+    service.recover()
+    first = service.heartbeat.write(service.health, now_ns=NOON_NS)
+    body = heartbeat_path(tmp_path).read_bytes()
+    assert json.loads(body)["heartbeat_ns"] == first["heartbeat_ns"]
+
+    second = service.heartbeat.write(service.health, now_ns=NOON_NS + 30 * 10**9)
+    assert second["heartbeat_ns"] > first["heartbeat_ns"]
+    assert list(heartbeat_path(tmp_path).parent.iterdir()) == [
+        heartbeat_path(tmp_path)
+    ], "an atomic write leaves no temporary file behind"
+
+
+def test_the_heartbeat_carries_provenance_and_says_what_the_data_is(tmp_path):
+    service = service_for(tmp_path, source_revision="abc1234")
+    service.recover()
+    document = service.heartbeat.write(service.health, now_ns=NOON_NS)
+    assert document["contract_id"] == CONTRACT.contract_id
+    assert document["contract_hash"] == CONTRACT.contract_hash
+    assert document["prospective_from"] is None
+    assert (
+        document["evidence_class"] == "engineering"
+    ), "until a boundary is committed, everything recorded is engineering data"
+    assert document["source_revision"] == "abc1234"
+    assert {stream["stream"] for stream in document["streams"]} == set(CONTRACT.streams)
+
+
+def test_the_heartbeat_carries_no_price_and_no_economic_quantity(tmp_path):
+    """Scanned over the field names and the values, with the stream ids excluded.
+
+    ``um.markPrice`` is the *name of a stream*, and a heartbeat that lists the
+    streams it is recording has to say it. What must not appear is a field
+    reporting a price, a return or a flow — so the scan is over every key, and
+    over every value that is not one of the contract's own stream ids.
+    """
+    service = service_for(tmp_path)
+    service.recover()
+    document = service.heartbeat.write(service.health, now_ns=NOON_NS)
+    forbidden = ("price", "return", "pnl", "profit", "basis", "funding", "equity", "alpha")
+
+    def walk(node, path="$"):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                assert not any(token in key.lower() for token in forbidden), (
+                    f"the heartbeat has a field {path}.{key}, which reports an economic "
+                    "quantity the recorder does not compute"
+                )
+                walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{path}[{index}]")
+        elif isinstance(node, str) and node not in CONTRACT.streams:
+            assert not any(
+                token in node.lower() for token in forbidden
+            ), f"the heartbeat value at {path} names an economic quantity: {node!r}"
+
+    walk(document)
+    assert any(
+        stream["stream"] == UM_MARK_PRICE for stream in document["streams"]
+    ), "the scan is not vacuous: a stream id containing 'Price' is present and allowed"
+
+
+def test_a_stream_that_has_seen_nothing_has_no_age_rather_than_an_age_of_zero(tmp_path):
+    health = initial_health(CONTRACT)
+    assert health.stream(UM_KLINE_1M).age_seconds(NOON_NS) is None
+    health.stream(UM_KLINE_1M).last_event_ns = NOON_NS - 5 * 10**9
+    assert health.stream(UM_KLINE_1M).age_seconds(NOON_NS) == pytest.approx(5.0)
+
+
+def test_the_section_4_8_metric_names_are_all_present_and_none_is_economic():
+    required = {
+        "chimera_recorder_up",
+        "chimera_recorder_events_total",
+        "chimera_recorder_last_event_age_seconds",
+        "chimera_recorder_reconnects_total",
+        "chimera_recorder_duplicates_total",
+        "chimera_recorder_late_total",
+        "chimera_recorder_gapfill_rows_total",
+        "chimera_recorder_missing_minutes_total",
+        "chimera_recorder_clock_skew_ms",
+        "chimera_recorder_disk_free_bytes",
+        "chimera_recorder_write_errors_total",
+        "chimera_recorder_heartbeat_timestamp",
+    }
+    assert set(RECORDER_METRIC_NAMES) == required, "section 4.8's list, exactly"
+    assert len(RECORDER_METRIC_NAMES) == len(set(RECORDER_METRIC_NAMES))
+    for name in RECORDER_METRIC_NAMES:
+        assert name.startswith("chimera_recorder_")
+        for token in ("price", "return", "pnl", "profit", "basis", "equity", "alpha"):
+            assert token not in name, f"{name} reports an economic quantity"
+
+
+def test_the_recorder_metric_family_is_labelled_only_by_stream():
+    """The mirror of ``test_mode_metrics_are_labelled_only_by_bounded_enums``.
+
+    ``stream`` is the only label in the family and its value set is the six ids a
+    committed contract declares — bounded by a file rather than by traffic, which
+    is what stops Prometheus keeping one series per event for ever. The section
+    is read out of the source, so a label added to a new series is caught here
+    even if nothing in this repository ever sets it.
+    """
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "chimera" / "metrics.py").read_text(
+        encoding="utf-8"
+    )
+    block = source.split("# --- prospective recorder")[1].split("# --- trading modes")[0]
+    assert "RECORDER_UP" in block, "the section was sliced wrongly and would pass vacuously"
+    labels = set(re.findall(r'"(\w+)"\]', block)) | set(re.findall(r'\["(\w+)",', block))
+    assert labels <= {"stream"}, f"the recorder family gained the label(s) {sorted(labels)}"
+    for token in ("price", "return", "pnl", "profit", "basis", "equity", "alpha"):
+        assert f"_recorder_{token}" not in block, f"a series reports {token}"
+
+
+def test_the_recorder_metrics_do_not_live_inside_another_familys_section():
+    """Where the block sits is load-bearing, because a test slices on the banners.
+
+    ``test_mode_metrics_are_labelled_only_by_bounded_enums`` reads everything
+    between ``# --- trading modes`` and ``# --- system``, so a recorder series
+    placed in that span is read as a mode series with an unbounded label. It was,
+    once. The banners are asserted in order here so it cannot be again.
+    """
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "chimera" / "metrics.py").read_text(
+        encoding="utf-8"
+    )
+    banners = [
+        line.split("---")[1].strip()
+        for line in source.splitlines()
+        if line.startswith("# --- ")
+    ]
+    assert banners.index("prospective recorder") < banners.index("trading modes")
+    modes = source.split("# --- trading modes")[1].split("# --- system")[0]
+    assert "_recorder_" not in modes, "a recorder series is inside the trading-modes section"
+
+
+def test_the_heartbeat_cadence_is_the_adopted_thirty_seconds():
+    assert HEARTBEAT_INTERVAL_S == 30.0
+
+
+def test_an_unreadable_heartbeat_is_refused_rather_than_read_as_an_empty_one(tmp_path):
+    path = heartbeat_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(RecorderHealthError, match="not readable"):
+        read_status(CONTRACT, tmp_path, now_ns=NOON_NS)
+
+
+# --- G. status is read-only -----------------------------------------------------
+def test_status_reports_what_is_on_disk_and_writes_nothing(tmp_path):
+    service = service_for(tmp_path, events=[kline_event(minute_ms(0))])
+    asyncio.run(run_briefly(service))
+    before = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    stamps = {path: path.stat().st_mtime_ns for path in tmp_path.rglob("*") if path.is_file()}
+
+    report = read_status(CONTRACT, tmp_path, now_ns=NOON_NS)
+    after = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    assert before == after, "status created or removed a file"
+    assert all(
+        path.stat().st_mtime_ns == stamp for path, stamp in stamps.items()
+    ), "status modified a file"
+    assert report["contract_hash"] == CONTRACT.contract_hash
+    assert report["evidence_class"] == "engineering"
+    assert report["heartbeat"]["schema"] == HEARTBEAT_SCHEMA
+    um = next(market for market in report["markets"] if market["market"] == "um")
+    assert um["last_day"] == DAY and um["rows"] == 1
+    assert um["missing_minutes"] == 1439
+
+
+def test_status_on_an_empty_root_is_a_report_and_not_an_error(tmp_path):
+    report = read_status(CONTRACT, tmp_path / "nothing", now_ns=NOON_NS)
+    assert report["exists"] is False
+    assert report["heartbeat"] is None
+    assert report["settlements_rows"] == 0
+    assert [stream["days"] for stream in report["streams"]] == [[]] * len(CONTRACT.streams)
+
+
+# --- H. the prospective boundary is not this PR's to move -----------------------
+def test_nothing_the_service_does_sets_the_prospective_boundary(tmp_path):
+    """Recording is PR-05's. Deciding that a recording is evidence is not.
+
+    The committed contract carries ``prospective_from: null``, a full run leaves
+    it null, and the file on disk is unchanged — the boundary is written once, by
+    a reviewed commit, and nothing that runs may do it.
+    """
+    from chimera.recorder.contract import CONTRACTS_DIR, GEN3_CONTRACT_ID
+
+    committed = CONTRACTS_DIR / f"{GEN3_CONTRACT_ID}.json"
+    before = committed.read_bytes()
+    service = service_for(tmp_path, events=[kline_event(minute_ms(0))])
+    asyncio.run(run_briefly(service))
+    assert service.contract.prospective_from is None
+    assert service.contract.activated is False
+    assert committed.read_bytes() == before, "a run rewrote the committed contract"
+    assert service.health.evidence_class == "engineering"
+
+
+def test_the_storage_root_carries_a_copy_of_the_contract_it_was_recorded_under(tmp_path):
+    """Section 4.3's layout: a directory of recordings says what it is.
+
+    It is one of the three things ``.gitignore`` re-includes under
+    ``data/prospective/``, so the provenance of a recording can be committed
+    while the recording itself cannot.
+    """
+    service = service_for(tmp_path)
+    path = service.bind_contract()
+    assert path == tmp_path / "contract" / f"{CONTRACT.contract_id}.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["contract_hash"] == CONTRACT.contract_hash
+    assert document["contract"]["prospective_from"] is None
+    assert document["storage_layout_version"] == CONTRACT.storage_layout_version
+
+
+def test_binding_the_same_contract_again_is_idempotent(tmp_path):
+    service = service_for(tmp_path)
+    first = service.bind_contract().read_bytes()
+    service.recover()
+    assert service.bind_contract().read_bytes() == first
+
+
+def test_a_root_recorded_under_another_contract_is_refused(tmp_path):
+    """The contract's own version policy: one campaign never mixes contracts."""
+    service = service_for(tmp_path)
+    path = service.bind_contract()
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["contract_hash"] = "0" * 64
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(RecorderServiceError, match="never mixes"):
+        service.bind_contract()
+    with pytest.raises(RecorderServiceError, match="never mixes"):
+        service.recover()
+
+
+def test_an_unreadable_contract_copy_stops_the_recorder_rather_than_being_replaced(tmp_path):
+    service = service_for(tmp_path)
+    path = service.bind_contract()
+    path.write_text("{ truncated", encoding="utf-8")
+    with pytest.raises(RecorderServiceError, match="not readable"):
+        service.bind_contract()
+
+
+def test_the_storage_root_is_the_contracts_own_and_lands_under_data(tmp_path):
+    service = build_service(CONTRACT, tmp_path, gapfill=False)
+    assert service.root == tmp_path / "prospective" / "gen3"
+    assert (
+        service.root.relative_to(tmp_path).parts[0] == "prospective"
+    ), ".gitignore excludes data/prospective/**; a root outside it could be committed"
+
+
+def test_the_service_declines_a_stream_the_contract_does_not_name(tmp_path):
+    service = service_for(tmp_path)
+    service.recover()
+    event = kline_event(minute_ms(0))
+    object.__setattr__(event, "stream", "um.trades")
+    service._record(event)
+    assert service.health.stream("um.trades").write_errors == 1
+    assert any("no sink" in note for note in service.health.errors)
+
+
+def test_the_open_day_follows_the_clock_and_not_the_local_timezone(tmp_path):
+    service = service_for(tmp_path, wall_ns=frozen_clock(DAY_NS + 60 * 10**9))
+    service.recover()
+    assert service.health.open_day == utc_day(DAY_NS)
+    assert service.health.open_day == DAY
+
+
+def test_the_service_time_is_the_injected_clock_so_a_test_can_pin_a_day(tmp_path):
+    """A guard on the fixtures above: if the service read the real clock, every
+    assertion about ``DAY`` in this file would be about today instead."""
+    service = service_for(tmp_path)
+    assert service._wall_ns() == NOON_NS
+    assert abs(time.time_ns() - NOON_NS) > 10**9, "the pinned day is not now"
+
+
+# --- J. the service renders through the incremental normalizer -----------------
+def test_recovery_renders_through_the_incremental_path_and_leaves_a_cache(tmp_path):
+    """Startup must use the same renderer the running service uses.
+
+    A restart that rendered through a different path than the run could disagree
+    with itself about a day, and the whole point of the cache is that the first
+    thing to use it is the thing that starts up.
+    """
+    service = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(4):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+    recovery = service.recover()
+    assert recovery.normalized == (f"spot/{DAY}", f"um/{DAY}")
+    cache = service.incremental.cache_path("um", DAY)
+    assert cache.exists(), "the recovery left no cache for the next start to resume from"
+    status = service.incremental.status[("um", DAY)]
+    assert status.resumed is False and status.replayed_records == 4
+
+
+def test_a_restart_replays_only_the_tail_and_renders_the_same_day(tmp_path):
+    """The behaviour the whole change exists for, at the service level."""
+    first = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(4):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+    first.recover()
+    digest_before = json.loads(
+        first.normalizer.meta_path("um", DAY).read_text(encoding="utf-8")
+    )["digest"]
+
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(4, 7):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+
+    second = service_for(tmp_path)
+    second.recover()
+    status = second.incremental.status[("um", DAY)]
+    assert status.resumed is True
+    assert status.replayed_records == 3, "only the three records added since the cache"
+
+    document = json.loads(second.normalizer.meta_path("um", DAY).read_text(encoding="utf-8"))
+    assert document["rows"] == 7
+    assert document["digest"] != digest_before, "the day grew, so its digest moved"
+
+    # And the same material rebuilt the slow way agrees.
+    oracle_root = tmp_path.parent / "oracle"
+    oracle_root.mkdir(exist_ok=True)
+    with RawSink(oracle_root, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(7):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+    oracle = MinuteNormalizer(oracle_root, CONTRACT).build_day("um", DAY)
+    assert oracle.digest == document["digest"]
+
+
+def test_the_last_canonical_instant_comes_from_the_cache_on_a_restart(tmp_path):
+    """Reading it by parsing the day is what made a restart cost minutes."""
+    first = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        for index in range(3):
+            sink.append(kline_event(minute_ms(index)))
+        sink.sync()
+    first.recover()
+
+    second = service_for(tmp_path)
+    recovery = second.recover()
+    assert recovery.last_canonical_ns[UM_KLINE_1M] == minute_ms(2) * NS_PER_MILLISECOND
+    peeked = second.incremental.peek_last_canonical("um", DAY)
+    assert peeked[UM_KLINE_1M] == minute_ms(2) * NS_PER_MILLISECOND
+
+
+def test_the_peek_sees_the_tail_the_cache_has_not_folded_yet(tmp_path):
+    """A maximum over the folded part and over the rest is the maximum overall."""
+    service = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        sink.append(kline_event(minute_ms(0)))
+        sink.sync()
+    service.recover()
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        sink.append(kline_event(minute_ms(9)))
+        sink.sync()
+    peeked = IncrementalNormalizer(tmp_path, CONTRACT).peek_last_canonical("um", DAY)
+    assert (
+        peeked[UM_KLINE_1M] == minute_ms(9) * NS_PER_MILLISECOND
+    ), "the unfolded tail was not looked at"
+
+
+def test_rendering_a_day_does_not_revive_a_halted_stream(tmp_path):
+    """The e705d14 latch survives everything the normalizer does.
+
+    The normalizer reads raw files and writes normalized ones. It has no business
+    deciding a stream is healthy again, and a stream whose sink failed must stay
+    halted through every render for the rest of the run.
+    """
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+    assert service.health.stream(UM_KLINE_1M).halted is True
+
+    for _ in range(3):
+        assert service._normalize("um", DAY) is True
+        stream = service.health.stream(UM_KLINE_1M)
+        assert stream.halted is True, "a render lifted the storage-failure latch"
+        assert stream.up is False
+    assert service.health.halted_streams == (UM_KLINE_1M,)
+
+
+def test_the_cache_lives_under_the_storage_root_and_beside_nothing_it_could_be_mistaken_for(
+    tmp_path,
+):
+    service = service_for(tmp_path)
+    with RawSink(tmp_path, UM_KLINE_1M, contract=CONTRACT) as sink:
+        sink.append(kline_event(minute_ms(0)))
+        sink.sync()
+    service.recover()
+    cache = service.incremental.cache_path("um", DAY)
+    relative = cache.relative_to(tmp_path).as_posix()
+    assert relative == f"cache/normalize/um/{DAY}.json"
+    assert not relative.startswith("raw/"), "it must not sit among the raw evidence"
+    assert not relative.startswith("normalized/"), "nor among the normalized days"
+    assert not relative.startswith("funding/")
+
+
+# --- I. a stream that cannot be written is halted, and stays halted -------------
+#
+# Section 2.2's `A -> B` arrow: "write error -> recorder halts that stream, health
+# metric flips, alert". The alternative — count it and carry on — leaves the
+# recorder delivering a stream it cannot store: the socket keeps arriving, the
+# up metric keeps saying up, and the resulting hole in the data looks like a
+# quiet market rather than a broken disk. Every test below is about that
+# distinction.
+
+
+class FailingSink:
+    """A real :class:`RawSink` that refuses to write from a chosen call onwards.
+
+    A wrapper rather than a stub, so everything not being broken on purpose —
+    paths, the frozen check, the day rotation — is the real behaviour and the
+    test is about the one thing it changes.
+    """
+
+    def __init__(self, inner, *, fail_append_from=None, fail_sync=False, fail_close=False):
+        self._inner = inner
+        self._fail_append_from = fail_append_from
+        self._fail_sync = fail_sync
+        self._fail_close = fail_close
+        self.appends = 0
+        self.closes = 0
+
+    def append(self, event):
+        self.appends += 1
+        if self._fail_append_from is not None and self.appends >= self._fail_append_from:
+            raise RecorderSinkError("no space left on device")
+        return self._inner.append(event)
+
+    def sync(self):
+        if self._fail_sync:
+            raise RecorderSinkError("could not fsync the raw file: input/output error")
+        self._inner.sync()
+
+    def close(self):
+        self.closes += 1
+        if self._fail_close:
+            raise RecorderSinkError("could not fsync the raw file on close")
+        self._inner.close()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def break_sink(service, stream, **how):
+    """Replace one stream's sink with one that fails, keeping the real one inside."""
+    service.sinks[stream] = FailingSink(service.sinks[stream], **how)
+    return service.sinks[stream]
+
+
+def test_an_append_failure_halts_that_stream_and_only_that_stream(tmp_path):
+    service = service_for(tmp_path)
+    service.recover()
+    broken = break_sink(service, UM_KLINE_1M, fail_append_from=2)
+
+    service._record(kline_event(minute_ms(0)))  # accepted
+    service._record(kline_event(minute_ms(1)))  # the failure
+    service._record(kline_event(minute_ms(2)))  # refused without reaching the sink
+
+    failed = service.health.stream(UM_KLINE_1M)
+    assert failed.halted is True
+    assert failed.write_errors == 1
+    assert failed.events == 1, "only the observation before the failure was recorded"
+    assert failed.dropped_after_halt == 1, "the one after it was refused and counted"
+    assert broken.appends == 2, "the sink was not touched again after it failed"
+    assert broken.closes == 1, "it was closed on the way out"
+    assert "no space left on device" in (failed.halt_reason or "")
+    assert failed.halted_at_ns is not None
+
+    # Exactly one stream. The other five are untouched and still recordable.
+    assert service.health.halted_streams == (UM_KLINE_1M,)
+    service._record(mark_event(minute_ms(0) + 1_000))
+    healthy = service.health.stream(UM_MARK_PRICE)
+    assert healthy.halted is False and healthy.events == 1
+    assert read_raw_events(tmp_path, UM_MARK_PRICE, DAY), "the healthy stream wrote"
+
+
+def test_the_halted_streams_observations_never_reach_the_disk(tmp_path):
+    """The point of the latch, asserted against the file rather than a counter."""
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=2)
+    for index in range(6):
+        service._record(kline_event(minute_ms(index)))
+
+    stored = read_raw_events(tmp_path, UM_KLINE_1M, DAY)
+    assert [event.minute_open_ms for event in stored] == [minute_ms(0)]
+    assert service.health.stream(UM_KLINE_1M).dropped_after_halt == 4
+
+
+def test_a_halted_stream_is_not_up_even_while_its_socket_is_connected(tmp_path):
+    """A disk failing does not close a connection, which is the whole hazard."""
+    service = service_for(tmp_path)
+    service.recover()
+    stream = service.health.stream(UM_KLINE_1M)
+    stream.connected = True
+    assert stream.up is True
+
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+    assert stream.halted is True and stream.up is False
+
+
+def test_a_later_health_refresh_cannot_lift_the_latch(tmp_path):
+    """The refresh copies socket state, and the socket is fine. It must not win."""
+
+    class Connected(ScriptedClient):
+        pass
+
+    service = service_for(tmp_path)
+    service.recover()
+    client = Connected("um-test", (UM_KLINE_1M, UM_MARK_PRICE), service._record)
+    client.connected = True
+    service.clients = (client,)
+
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+
+    for _ in range(3):
+        service._refresh_connection_state()
+        stream = service.health.stream(UM_KLINE_1M)
+        assert stream.halted is True, "the refresh cleared the latch"
+        assert stream.connected is False and stream.up is False
+    # And the sibling on the very same client is reported up throughout.
+    assert service.health.stream(UM_MARK_PRICE).up is True
+
+
+def test_a_halt_does_not_take_down_the_siblings_sharing_its_connection(tmp_path):
+    """One socket carries three streams; a broken disk on one must not blind the
+    other two, so the halt is applied per stream id and never by dropping a
+    connection."""
+
+    async def scenario():
+        service = service_for(tmp_path)
+        service.recover()
+        broken = break_sink(service, UM_KLINE_1M, fail_append_from=1)
+        client = ScriptedClient(
+            "um-test",
+            (UM_KLINE_1M, UM_MARK_PRICE),
+            service._record,
+            [kline_event(minute_ms(0)), mark_event(minute_ms(0) + 1_000)],
+        )
+        service.clients = (client,)
+        return await run_briefly(service), broken, client
+
+    result, broken, client = asyncio.run(scenario())
+    assert result.halted_streams == (UM_KLINE_1M,)
+    assert service_streams_recorded(tmp_path, UM_MARK_PRICE) == 1
+    assert service_streams_recorded(tmp_path, UM_KLINE_1M) == 0
+    assert result.write_errors == 1
+
+
+def service_streams_recorded(root, stream):
+    try:
+        return len(read_raw_events(root, stream, DAY))
+    except Exception:
+        return 0
+
+
+def test_an_fsync_failure_halts_the_stream_the_same_way_an_append_does(tmp_path):
+    """Durability lost is the same fact as a write refused, arriving later."""
+    service = service_for(tmp_path)
+    service.recover()
+    service._record(kline_event(minute_ms(0)))
+    break_sink(service, UM_KLINE_1M, fail_sync=True)
+
+    service._sync()
+    stream = service.health.stream(UM_KLINE_1M)
+    assert stream.halted is True and stream.up is False
+    assert stream.write_errors == 1
+    assert "fsync" in (stream.halt_reason or "")
+
+    # A second sync pass does not keep re-counting a stream it has stopped using.
+    service._sync()
+    assert stream.write_errors == 1
+    service._record(kline_event(minute_ms(1)))
+    assert stream.dropped_after_halt == 1
+
+
+def test_a_sink_that_cannot_even_be_closed_is_noted_and_still_halted(tmp_path):
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=1, fail_close=True)
+    service._record(kline_event(minute_ms(0)))
+    assert service.health.stream(UM_KLINE_1M).halted is True
+    assert any("could not be closed" in note for note in service.health.errors)
+
+
+def test_the_heartbeat_and_the_status_report_expose_the_halt(tmp_path):
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+
+    document = service.heartbeat.write(service.health, now_ns=NOON_NS)
+    assert document["halted_streams"] == [UM_KLINE_1M]
+    assert document["write_errors"] == 1
+    entry = next(s for s in document["streams"] if s["stream"] == UM_KLINE_1M)
+    assert entry["halted"] is True and entry["up"] is False
+    assert "no space left on device" in entry["halt_reason"]
+    assert any("halted and is recording nothing" in note for note in document["errors"])
+
+    on_disk = json.loads(heartbeat_path(tmp_path).read_text(encoding="utf-8"))
+    assert on_disk["halted_streams"] == [UM_KLINE_1M]
+    report = read_status(CONTRACT, tmp_path, now_ns=NOON_NS)
+    assert report["heartbeat"]["halted_streams"] == [UM_KLINE_1M]
+
+
+def test_the_up_metric_follows_storage_and_not_the_socket(tmp_path):
+    """``chimera_recorder_up`` is the series section 2.2 says must flip."""
+    from chimera import metrics
+
+    service = service_for(tmp_path)
+    service.recover()
+    stream = service.health.stream(UM_KLINE_1M)
+    stream.connected = True
+    service.heartbeat.write(service.health, now_ns=NOON_NS)
+    assert metrics.RECORDER_UP.labels(stream=UM_KLINE_1M)._value.get() == 1
+
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+    stream.connected = True  # the socket is still perfectly healthy
+    service.heartbeat.write(service.health, now_ns=NOON_NS + 10**9)
+    assert metrics.RECORDER_UP.labels(stream=UM_KLINE_1M)._value.get() == 0
+
+
+def test_a_run_that_halted_a_stream_reports_a_failure_the_cli_exits_on(tmp_path):
+    """Requirement 7: a run with any write error is not a passing acceptance run."""
+    service = service_for(tmp_path)
+    service.recover()
+    break_sink(service, UM_KLINE_1M, fail_append_from=1)
+    service._record(kline_event(minute_ms(0)))
+    result = service._result(NOON_NS)
+    assert result.write_errors == 1
+    assert result.halted_streams == (UM_KLINE_1M,)
+    # tools.recorder.command_run returns EXIT_FAILED on exactly this condition.
+    from tools.recorder import EXIT_FAILED, EXIT_OK
+
+    assert (EXIT_FAILED if result.write_errors else EXIT_OK) == EXIT_FAILED
+
+
+def test_a_restart_on_healthy_storage_recovers_the_stream_normally(tmp_path):
+    """Requirement 8: the latch is lifted by a restart, and by nothing else.
+
+    It lives on the health snapshot, which one service run owns, so a new
+    service on the same root comes up clean — and comes up through the whole
+    recovery path, reading back what the halted run had already written.
+    """
+    first = service_for(tmp_path)
+    first.recover()
+    first._record(kline_event(minute_ms(0)))
+    break_sink(first, UM_KLINE_1M, fail_append_from=1)
+    first._record(kline_event(minute_ms(1)))
+    assert first.health.stream(UM_KLINE_1M).halted is True
+
+    second = service_for(tmp_path)
+    recovery = second.recover()
+    assert second.health.stream(UM_KLINE_1M).halted is False
+    assert recovery.last_canonical_ns[UM_KLINE_1M] == minute_ms(0) * NS_PER_MILLISECOND
+    second._record(kline_event(minute_ms(1)))
+    assert second.health.stream(UM_KLINE_1M).events == 1
+    assert len(read_raw_events(tmp_path, UM_KLINE_1M, DAY)) == 2
+
+
+def test_nothing_halts_and_nothing_changes_when_every_write_succeeds(tmp_path):
+    """The control. Without it every assertion above could pass on a broken build."""
+    events = [kline_event(minute_ms(index)) for index in range(3)]
+    service = service_for(tmp_path, events=events)
+    result = asyncio.run(run_briefly(service))
+    assert result.write_errors == 0
+    assert result.halted_streams == ()
+    assert result.dropped_after_halt == 0
+    assert result.events == 3
+    for stream in service.health.streams.values():
+        assert stream.halted is False and stream.halt_reason is None
+    document = json.loads(heartbeat_path(tmp_path).read_text(encoding="utf-8"))
+    assert document["halted_streams"] == []
+    assert all(entry["halted"] is False for entry in document["streams"])
