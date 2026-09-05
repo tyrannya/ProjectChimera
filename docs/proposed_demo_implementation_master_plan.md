@@ -27,6 +27,12 @@ where it applies:
 | A1 | 2026-09-03 | 4.9 | The coverage gate divided every required stream's captured set by 1440 and applied the `0.990` outage threshold to all of them, `um.funding` included. Funding is settlement-indexed, so its wallclock coverage could not exceed `3/1440` and the 30-day gate was unreachable by arithmetic. Minute-indexed and settlement-indexed streams are now evaluated separately; every threshold and the substance of funding completeness are unchanged. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
 | A2 | 2026-09-03 | 4.9 | A1 left funding completeness defined as `settlement_coverage(D) = \|captured_settlements\| / \|scheduled_settlements\|` and then declared a day with no scheduled settlement vacuously passing, which is `0 / 0` — undefined exactly where the prose said it held. The same definition also made an unreadable funding archive produce the empty set a venue that scheduled nothing would produce, so missing evidence would have passed the day. The ratio is removed from the gate; funding completeness is a quantifier over an *established* schedule, and a schedule that could not be established is `FUNDING_SCHEDULE_UNAVAILABLE` and does not pass. Every threshold, the three-flagged-days rule and the 30-day window are unchanged, and no economic criterion is introduced. Made before any acquisition, before any `prospective_from` and while no recorded minute existed. |
 | A3 | 2026-09-04 | 14 | The S1 engineering row estimated disk at "about 1.5 GB per month raw gz plus 0.3 GB normalized at these streams". Measured on real BTCUSDT engineering recordings, the raw figure is low by a factor of about 24. Exact numbers, one denominator: **910,761,661 bytes of NDJSON gzipping to 52,425,027 bytes (17.4x)** over **3,463.2 seconds of total recorder uptime** across three sessions, which extrapolates to **36.5 GiB per month of gzipped raw**; allow **about 37 GiB** for the two USD-M websocket streams the measuring network could not receive. Two independent methods — per-stream rows/s times gzipped bytes/row, and total gzipped bytes over total uptime — agree to within 0.1%. The two `bookTicker` streams are **99.4%** of the gzipped bytes. Uptime rather than connected time is the denominator, which understates the rate and so understates the estimate. The normalized figure is an over-estimate and is left alone: the same measurement projects about 7 MiB per month. Corrected because a host provisioned on 1.5 GB fills within a day, and a full disk now halts the affected stream for the rest of the run, which would make the 30-day gate unreachable for a reason that has nothing to do with the market. No stream, sampling rate, threshold, contract field or scientific semantic is changed by this amendment; only the number a host is sized from. |
+| A4 | 2026-09-05 | 4.7, 4.9 | **Funding reconciliation required agreement on a field the authorised source does not publish.** 4.7 step 3 and 4.9's `captured_settlements(D)` made a settlement agree only when it matched the archive on `(time, rate, markPrice)`. The authorised source is the monthly `fundingRate` archive on `data.binance.vision`; fetched and `.CHECKSUM`-verified for `BTCUSDT-fundingRate-2026-08` on 2026-09-05, its single member's header is `calc_time,funding_interval_hours,last_funding_rate` — settlement instant, funding interval, realised rate, and **no settlement mark price**. `funding_complete(D)` was therefore unsatisfiable on every day, because a required equality named a field the denominator source does not carry; the only other first-party object that could supply one, `markPriceKlines`, publishes per-minute mark candles rather than the settlement value. Archive funding reconciliation and `funding_complete(D)` now require exact agreement on **settlement time and realised funding rate**, and the archive's funding-interval metadata is recorded where it is published. The recorder may still capture the settlement mark price from its live public source and keep its provenance; that value is not claimed to be verified by the funding archive, is not part of `funding_complete(D)`, is never reconstructed from mark-price candles, never matched to a nearest minute, never filled or interpolated, and never replaced by REST during archive reconciliation. Unchanged: `0.995`, `0.990`, the three-flagged-days rule, the 30-day window, A1's separation of the two index kinds, A2's quantifier, the settlement cadence read from the source, and the frozen P4/P13 funding source policy, which this amendment does not touch. No new source is authorised and no economic criterion is introduced. This is a **prospective source-validity correction**, not a historical scientific amendment. Made while `prospective_from` is `null`, before any acquisition and while no prospective minute existed. |
+| A5 | 2026-09-05 | 4.9 | **A gate-required stream had no archive denominator.** `um.bookTicker` was in `required_for_coverage`, and 4.9 forms `published_coverage(s, D)` by dividing by `published_minutes(s, D)`, "the minutes of D present in the Binance daily archive for s". Probed on 2026-09-05: the last published BTCUSDT daily `bookTicker` object is `2024-03-30`, `2024-03-31` onward answers 404 through at least 2026-09-04, no monthly `bookTicker` object covers the prospective period, and spot is the same. With no contemporary first-party published-minute denominator the quotient could not be formed at all, so the S1 gate was unreachable by arithmetic rather than by recorder behaviour — the same class of defect A1 corrected. `um.bookTicker` is removed from `required_for_coverage` and from nothing else: it remains a **mandatory recorded stream** in `streams`, in recorder collection, in health, in the normalized schema, in the later MarketState and runtime requirements, in the recorded-quote execution inputs and in soak observability. No substitute denominator is introduced — not `bookDepth`, not `metrics`, not `trades`, not `aggTrades`, not a REST snapshot, not another venue — and no new wall-clock threshold is invented for it here. The archive-required minute-indexed set becomes exactly the streams for which a valid contemporary first-party archive denominator exists, and it is *derived* from the committed `required_for_coverage` rather than restated. No threshold moves. Made while `prospective_from` is `null`, before any acquisition and while no prospective minute existed. |
+| A6 | 2026-09-05 | 4.7, 4.9 | **Two source families were collapsed into one required-stream verdict.** 4.1 records index values alongside the mark on every `um.markPrice` update, 4.7 said the mark-price and index-price archives are "reconciled the same way", and 4.9 named one required stream, `um.markPrice`. Read together, one required stream's coverage verdict could be taken to depend on agreement with two independent first-party archives. Both exist and were fetched and `.CHECKSUM`-verified for 2026-09-01 on 2026-09-05: `markPriceKlines` and `indexPriceKlines`, each publishing 1440 minute rows of `open,high,low,close`. The gate meaning is now stated: the archive-based S1 criterion for `um.markPrice` is the **mark-price agreement criterion** supported by `markPriceKlines` and nothing else. Index recording is unchanged, and the index values may be reconciled against `indexPriceKlines` and reported as a diagnostic, but index agreement is **not** an additional pass condition for `um.markPrice` coverage and no threshold is attached to it. No stream is removed and no threshold is introduced or moved. Made while `prospective_from` is `null`, before any acquisition and while no prospective minute existed. |
+| A7 | 2026-09-05 | 4.4, 4.6 | **The activation mechanism contradicted the identity and storage rules.** The committed `boundary_rule` said `prospective_from` "is written once by the recorder's first run", while `chimera/recorder/contract.py`'s `with_prospective_from` is pure and writes nothing, `tests/test_recorder_no_network.py` forbids the live layer from calling it at all, `prospective_from` is inside `canonical_material` so setting it moves `contract_hash`, and `RecorderService.bind_contract` refuses a storage root already bound to another hash. Followed literally the prose had a running recorder rewrite its own committed contract; followed safely it stranded the activated identity on a root bound to the pre-activation hash. Activation is now what the repository can represent and review. The amended contract stays committed with `prospective_from = null` under its own pre-activation hash; a designated production deployment runs under exactly that hash and its data is engineering data; a complete qualifying hour is observed; and a **separate reviewed commit/PR** then sets `prospective_from` to the **earliest** UTC midnight that is both after that qualifying hour and strictly after the activation change has merged, so the deployment can be switched to the activated identity before the boundary — never an arbitrary later midnight. Activation moves `contract_hash`, and the activated hash writes to a **fresh storage root**: a storage root never mixes contract hashes, the pre-activation engineering root stays untouched under its original hash, no old manifest, normalized day, raw event or heartbeat is relabelled, and no engineering data becomes prospective because the contract was later activated. The activated root may hold engineering observations recorded before the boundary; only observations at or after `prospective_from` count toward the S1 streak. The mechanism is the injected base directory `storage_root(base)` already takes: the storage layout is **not** redesigned to encode a hash in a pathname and `storage_layout_version` stays 1. `recorder_version_policy` no longer promises a `supersedes` field, which this schema's parser refuses; activation is the one allowed edit to this file and is recorded in Git, in this table and in the contract hash on every manifest, while any other change to what is acquired is a new contract file with its own `contract_id`. The boundary is still written once, is immutable thereafter, and is still `null` today. Made while `prospective_from` is `null`, before any acquisition and while no prospective minute existed. |
+| A8 | 2026-09-05 | 4.7, 12.3, 14 | **The specification named historical readers PR-06 may not import.** 4.7 and 12.3 said prospective reconciliation would use `nn/p13_acquisition.py` and the readers in `nn/p13_sources.py`. Those readers enforce P13's historical data boundary and refuse an object outside it, so they cannot read a prospective object; and `tests/test_recorder_no_network.py` forbids every module of `chimera/recorder/` from importing `nn` at all, `tools/recorder.py` being allowed `nn.source_identity` and nothing else. The named dependency was both scientifically wrong and refused by an executable guard. The historical P13 readers keep their historical boundary, unchanged and unweakened. PR-06's recorder implementation will own prospective reconciliation parsing under the recorder's own semantics, and the specification now names the **rules** it must satisfy instead of the modules: one allow-listed first-party host and no other; HTTPS with no credential and no signature; `.CHECKSUM` companion parsed and the published digest verified against the bytes received; a checksum mismatch refused rather than repaired; a cache keyed by the object's full archive path that is not read when it cannot vouch for its value; single-member archive verification before extraction; epoch units resolved explicitly per file; and only the frozen recognised funding layouts. No P13 behaviour, boundary, artifact or hash changes. Made while `prospective_from` is `null`, before any acquisition and while no prospective minute existed. |
+| A9 | 2026-09-05 | 4.9, 17, 18 | **The calendar assumed a funding verdict that arrives monthly.** 4.7 runs the reconciliation on `D - 2` while the authorised funding schedule source is a **monthly** object, and 4.9 makes `schedule_established(D)` a precondition of a day passing; 17's S1 row and 18's calendar read as though every day takes its final verdict two days later. Probed on 2026-09-05: `BTCUSDT-fundingRate-2026-08` exists and verifies, `BTCUSDT-fundingRate-2026-09` answers 404 with the month still open, so no day of the current month can yet be funding-judged. The operational consequence is now documented: a day whose covering monthly funding archive does not yet exist is `FUNDING_SCHEDULE_UNAVAILABLE` and does not pass; when that archive later appears and is verified, the reconciliation is rerun and the deterministic record takes its real verdict. That is expected evidence latency and not a recorder outage, it does not enter the three-flagged-days count, and it is not shortened by substituting REST for the monthly archive. **S1 may therefore become claimable later than day 30.** The requirement of 30 qualifying days is unchanged, no threshold moves, and no fixed publication SLA is asserted from the small sample observed. Made while `prospective_from` is `null`, before any acquisition and while no prospective minute existed. |
 
 Written 2026-09-03 on the audit branch `audit/fable-5-1-full-project-strategic-audit`.
 Every existing name, signature, field and line number below was read from the
@@ -217,8 +223,8 @@ changes.
 | `um.markPrice` | USD-M perp | websocket `btcusdt@markPrice@1s` | `E` | per event `E`; per-minute aggregate keyed by the minute containing `E` | ordered by `E`; duplicates by (`E`, payload hash) | payload carries mark `p`, index `i`, estimated settle `P`, funding rate `r`, next funding time `T`; minute aggregate stores mark open/high/low/close, index open/high/low/close, last `r`, last `T`, event count |
 | `um.indexPrice_1m` | USD-M perp | derived from `um.markPrice` index field; reconciliation via REST `GET /fapi/v1/indexPriceKlines?pair=BTCUSDT&interval=1m` | as above | minute key | n/a | index klines are derived, then checked against the REST index klines daily |
 | `um.markPrice_1m` | USD-M perp | derived from `um.markPrice`; reconciliation via REST `GET /fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=1m` | as above | minute key | n/a | the per-minute mark high is what the liquidation touch reads (section 6) |
-| `um.funding` | USD-M perp | REST `GET /fapi/v1/fundingRate?symbol=BTCUSDT&startTime=&endTime=&limit=1000`, polled 60 s after each expected settlement (00:00, 08:00, 16:00 UTC) and hourly as a catch-up; current state from `GET /fapi/v1/premiumIndex?symbol=BTCUSDT` every minute | `fundingTime` | settlement id = `fundingTime` (UTC ms) | ordered by `fundingTime`; a settlement is final when returned by `fundingRate` | fields kept: `fundingRate`, `fundingTime`, `markPrice` (the exchange's own notional base), `rateType` if present |
-| `um.bookTicker` | USD-M perp | websocket `btcusdt@bookTicker` | `E` (event), `T` (transaction), update id `u` | per event; per-minute snapshot = last event with `E` before the minute close | ordered by `u`; an event with `u` not greater than the last kept is a duplicate or out of order and is counted, not stored | fields: b, B, a, A |
+| `um.funding` | USD-M perp | REST `GET /fapi/v1/fundingRate?symbol=BTCUSDT&startTime=&endTime=&limit=1000`, polled 60 s after each expected settlement (00:00, 08:00, 16:00 UTC) and hourly as a catch-up; current state from `GET /fapi/v1/premiumIndex?symbol=BTCUSDT` every minute | `fundingTime` | settlement id = `fundingTime` (UTC ms) | ordered by `fundingTime`; a settlement is final when returned by `fundingRate` | fields kept: `fundingRate`, `fundingTime`, `markPrice` (the exchange's own notional base; captured here and **not** verified by the funding archive, which publishes no settlement mark price — amendment A4), `rateType` if present |
+| `um.bookTicker` | USD-M perp | websocket `btcusdt@bookTicker` | `E` (event), `T` (transaction), update id `u` | per event; per-minute snapshot = last event with `E` before the minute close | ordered by `u`; an event with `u` not greater than the last kept is a duplicate or out of order and is counted, not stored | fields: b, B, a, A; mandatory to record, and **not** in `required_for_coverage` because no contemporary first-party archive publishes a minute denominator for it — amendment A5 |
 | `spot.kline_1m` | spot BTCUSDT | websocket `btcusdt@kline_1m` on `wss://stream.binance.com:9443/ws`; gap-fill REST `GET /api/v3/klines` | as `um.kline_1m` | minute key | as above | same field set |
 | `spot.bookTicker` | spot BTCUSDT | websocket `btcusdt@bookTicker` | `u` only (spot bookTicker has no event time); receipt time used for minute assignment with the update id as the order | last event before minute close by receipt time | ordered by `u` | optional for the coverage gate; required for spot-leg fills |
 
@@ -333,10 +339,10 @@ S2 and reference this contract by hash.
   },
   "streams": ["um.kline_1m", "um.markPrice", "um.bookTicker", "um.funding",
               "spot.kline_1m", "spot.bookTicker"],
-  "required_for_coverage": ["um.kline_1m", "um.markPrice", "um.bookTicker", "um.funding", "spot.kline_1m"],
+  "required_for_coverage": ["um.kline_1m", "um.markPrice", "um.funding", "spot.kline_1m"],
   "timezone": "UTC",
   "minute_key": "kline open time (ms since epoch, UTC)",
-  "prospective_from": "<the first UTC midnight after the recorder's first complete hour; written once by the recorder, immutable>",
+  "prospective_from": null,   // amendment A7: written once by a reviewed activation commit, never at runtime; immutable thereafter
   "boundary_rule": "no minute before prospective_from is scientific evidence; earlier minutes are engineering data",
   "sealed_regions_inherited": {"p4_hold": "2025-05-19T08:00:00+00:00 to 2025-08-27T23:00:00+00:00, retired unread",
                                "styx": "2025-08-27T23:00:00+00:00 onward within gen1, sealed"},
@@ -352,14 +358,24 @@ S2 and reference this contract by hash.
 `contract_hash` = SHA-256 over the canonical JSON (sorted keys, no
 whitespace) excluding `description`, following `nn/research_contract.py:221`.
 The contract is committed at
-`chimera/recorder/contracts/btcusdt-prospective-gen3.json` **(new)** and
-`prospective_from` is filled by the recorder's first run and committed in a
-follow-up PR; after that the file is immutable.
+`chimera/recorder/contracts/btcusdt-prospective-gen3.json` **(new)** with
+`prospective_from = null`; 4.6 says how it is later written, once, by a
+reviewed activation commit, after which the file is immutable.
 
-Contract versioning: any change creates `btcusdt-prospective-gen3-r2.json`
-with a `supersedes` field; data recorded under the old contract keeps its
-hash on every manifest; the runner refuses to mix contracts within one
-campaign.
+Contract versioning **(amendment A7)**: this schema has no `supersedes` field
+and the parser in `chimera/recorder/contract.py` refuses unknown keys, so the
+old promise of a `-r2.json` carrying one described a mechanism the repository
+cannot represent. Two kinds of change are kept apart instead. *Activation* —
+writing `prospective_from` once, from `null` to the midnight 4.6 derives — is
+an edit to this file, made in its own reviewed commit; it moves
+`contract_hash`, and the relation between the pre-activation and the activated
+identity lives where this repository can hold it: in Git history, in the
+amendment record at the top of this document, and in the contract hash stamped
+on every day manifest. *Any other change to what is acquired* is a different
+acquisition and is a new contract file with its own `contract_id`, never an
+edit to this one. Data recorded under a hash keeps that hash on every manifest,
+a storage root never mixes contract hashes, and the runner refuses to mix
+contracts within one campaign.
 
 ### 4.5 Provenance metadata
 
@@ -369,33 +385,130 @@ Python and library versions; hostname hash; stream reconnect count; duplicate
 count; late count; REST gap-fill count; first and last canonical time; clock
 skew median.
 
-### 4.6 Prospective boundary
+### 4.6 Prospective boundary and activation
 
-`prospective_from` is the first UTC midnight after the recorder has run one
-complete hour. Minutes before it are engineering data (used for S3 and S4
-drills) and are excluded from every scientific report. The S2 protocol names
-the campaign start instant separately; it must be at or after
-`prospective_from` plus the review period.
+> **Amendment A7, 2026-09-05 — pre-acquisition specification correction.**
+> As first written, this section and the committed `boundary_rule` said the
+> boundary is "written once by the recorder's first run". Four repository facts
+> make that impossible to follow: `with_prospective_from` is pure and writes
+> nothing; `tests/test_recorder_no_network.py` asserts the live layer never calls
+> it; `prospective_from` is inside `canonical_material`, so writing it moves
+> `contract_hash`; and `RecorderService.bind_contract` refuses a storage root
+> already bound to a different hash. Taken literally the recorder would rewrite
+> its own committed contract; taken safely the activated identity would have had
+> nowhere to write. The rule below is what the repository can actually do, and it
+> is reviewable in Git rather than performed by a process. Nothing about what is
+> recorded, no threshold and no storage layout changes; `storage_layout_version`
+> stays 1. Made **before** any acquisition, **before** any `prospective_from`
+> exists and while **no recorded minute exists**, on the same terms as A1.
+
+Minutes before `prospective_from` are engineering data (used for S3 and S4
+drills) and are excluded from every scientific report — permanently, and
+whatever the contract is later amended to say. The boundary is fixed in four
+steps, in this order:
+
+1. **Before activation.** The amended contract is committed with
+   `prospective_from = null` and has its own pre-activation `contract_hash`. A
+   designated production recorder deployment runs under *that exact hash*, on
+   the host that will run the demo. Everything it records is engineering data.
+2. **The qualifying evidence.** That deployment observes one complete
+   qualifying hour of recording.
+3. **Activation.** A **separate reviewed commit / pull request** — never the
+   running recorder — sets `prospective_from` to the *earliest* UTC midnight
+   that is both (a) after the qualifying complete production hour and
+   (b) strictly after the activation change has merged, so that the deployment
+   can be switched to the activated identity before the boundary arrives. The
+   earliest such midnight is the boundary; an arbitrary later one would be a
+   boundary chosen rather than derived, and is not permitted.
+4. **The fresh root.** Activation changes `contract_hash`. The activated hash
+   writes to a **fresh storage root** — in practice a new operator base
+   directory handed to the `base` argument `storage_root(base)` already takes,
+   which is why no part of the storage layout is redesigned to put a hash in a
+   pathname. A storage root never mixes contract hashes; the pre-activation
+   engineering root stays untouched under its original hash; no old manifest,
+   normalized day, raw event or heartbeat is relabelled; and no engineering
+   datum becomes prospective because the contract was later activated. The
+   activated root may itself hold engineering observations recorded before the
+   boundary, and only observations at or after `prospective_from` count toward
+   the S1 streak.
+
+The boundary is written once and is immutable thereafter:
+`with_prospective_from` refuses to move one that is already set, and refuses
+any instant that is not an exact UTC midnight. The S2 protocol names the
+campaign start instant separately; it must be at or after `prospective_from`
+plus the review period.
 
 ### 4.7 Archive reconciliation
+
+> **Amendments A4, A6 and A8, 2026-09-05 — pre-acquisition specification
+> corrections.** Three defects sat in this section as first written. Step 1 named
+> `nn/p13_acquisition.py` and the readers in `nn/p13_sources.py` as the tools the
+> *prospective* reconciliation would use; those readers enforce P13's historical
+> data boundary and refuse an object outside it, and
+> `tests/test_recorder_no_network.py` forbids every module of
+> `chimera/recorder/` from importing `nn` at all — so the named dependency was
+> both unusable on a prospective object and refused by an executable guard (A8).
+> Step 3 required funding settlements to agree on `markPrice`, which the monthly
+> `fundingRate` archive does not publish (A4). And the closing paragraph
+> reconciled the mark-price and index-price archives "the same way", which reads
+> as one required stream's verdict depending on two independent source families
+> (A6).
+>
+> The historical P13 readers keep their historical boundary, unchanged and
+> unweakened; nothing about P13 is touched. What follows names the *rules* PR-06
+> must satisfy rather than the modules it must call, states the first-party
+> denominator of each required stream, and separates the mark-price criterion
+> from the index diagnostic. No threshold moves and no new source is authorised.
+> Made **before** any acquisition, **before** any `prospective_from` exists and
+> while **no recorded minute exists**, on the same terms as A1.
 
 Binance publishes daily archives at `https://data.binance.vision`:
 `data/futures/um/daily/{klines,markPriceKlines,indexPriceKlines,bookTicker,aggTrades,trades}/BTCUSDT/...`,
 `data/futures/um/monthly/fundingRate/BTCUSDT/...`, and
 `data/spot/daily/{klines,aggTrades,trades}/BTCUSDT/...` (monthly listings
-were checked on 2026-09-03; daily objects appear with a lag of about one day).
-A reconciliation job (`tools/recorder.py reconcile --day YYYY-MM-DD`
-**(new)**) runs once per day for `day - 2`:
+were checked on 2026-09-03; daily objects appear with a lag of about one day.
+The `bookTicker` family is the exception and is why A5 exists: its last
+published BTCUSDT daily object is `2024-03-30`.)
 
-1. fetch the daily kline archives for `um` and `spot` and the monthly funding
-   archive, with `.CHECKSUM` companions, using the acquisition rules already in
-   `nn/p13_acquisition.py` (`assert_allowed_url`, `parse_checksum_companion`,
-   path-keyed cache) and the reader in `nn/p13_sources.py` (`read_kline_object`,
-   per-file epoch unit resolution);
-2. compare, minute by minute, the recorder's normalized o/h/l/c/v/V against
-   the archive with relative tolerance `1e-9` (the multiclock parity
-   tolerance, `nn/multiclock.py:363`);
-3. compare funding settlements (time, rate, markPrice) exactly;
+A reconciliation job (`tools/recorder.py reconcile --day YYYY-MM-DD` **(new)**)
+runs once per day for `day - 2`. Every required stream names the first-party
+object that is its denominator, and a stream is required only when one exists:
+
+| required stream | index kind | first-party archive |
+| --- | --- | --- |
+| `um.kline_1m` | minute | `data/futures/um/daily/klines/BTCUSDT/1m` |
+| `um.markPrice` | minute | `data/futures/um/daily/markPriceKlines/BTCUSDT/1m` |
+| `spot.kline_1m` | minute | `data/spot/daily/klines/BTCUSDT/1m` |
+| `um.funding` | settlement | `data/futures/um/monthly/fundingRate/BTCUSDT` |
+
+1. fetch those objects with their `.CHECKSUM` companions. **The recorder owns
+   this parsing under its own semantics and imports nothing from `nn`**
+   (amendment A8). It is held to the same source-integrity rules this repository
+   already applies to historical acquisition, implemented inside the recorder
+   package rather than borrowed from it:
+   - one allow-listed first-party host and no other;
+   - HTTPS, with no credential and no request signature;
+   - the `.CHECKSUM` companion parsed, and the digest it publishes verified
+     against the bytes received;
+   - a checksum mismatch refused — never repaired, never retried into
+     acceptance;
+   - a cache whose entry identity is the object's full archive path, and which
+     is not read when it cannot vouch for the value it holds;
+   - a single-member archive whose one member is verified before extraction;
+   - the epoch unit resolved explicitly per file rather than inferred from
+     magnitude (spot daily klines carry no header row and microsecond epochs;
+     USD-M klines carry a header row and millisecond epochs);
+   - only the frozen recognised funding layouts accepted;
+2. compare, minute by minute, the recorder's normalized o/h/l/c/v/V against the
+   kline archive with relative tolerance `1e-9` (the multiclock parity
+   tolerance, `nn/multiclock.py:363`), and the recorder's per-minute mark
+   o/h/l/c against `markPriceKlines` the same way;
+3. compare funding settlements exactly on **settlement time and realised rate**,
+   and record the archive's funding-interval metadata where it is published
+   (amendment A4). The funding archive publishes no settlement mark price: the
+   mark price the recorder captured from its live public source is kept with its
+   provenance and is neither verified here, nor reconstructed from mark-price
+   candles, nor matched to a nearest minute, nor filled, nor replaced by REST;
 4. write `reconciliation/YYYY-MM-DD.json` with: minutes compared, agreeing,
    disagreeing (listed), present only in the archive, present only in the
    recorder, published-minute count (the denominator for the coverage gate),
@@ -405,9 +518,13 @@ A reconciliation job (`tools/recorder.py reconcile --day YYYY-MM-DD`
 5. never modify the recorder's files; a disagreement is a finding, not a
    repair.
 
-Mark-price and index-price daily archives are reconciled the same way for the
-per-minute close; the per-minute high is compared only when the archive
-carries it.
+The index values recorded alongside the mark observations are reconciled against
+`indexPriceKlines` and reported as a **diagnostic**: that comparison is not a
+pass condition for `um.markPrice` coverage and no threshold is attached to it
+(amendment A6). `um.bookTicker` is recorded and normalized, and no contemporary
+first-party archive publishes a minute denominator for it, so it is not
+archive-reconciled for coverage and nothing is substituted for it (amendment
+A5).
 
 ### 4.8 Health metrics (minimum)
 
@@ -491,16 +608,95 @@ carries it.
 > Made **before** any acquisition, **before** any `prospective_from` exists and
 > while **no recorded minute exists**, on the same terms as A1.
 
-Required streams come in two index kinds, and the gate treats them separately
-because they are counted in different units:
+> **Amendment A4, 2026-09-05 — pre-acquisition source-validity correction.**
+> `captured_settlements(D)` below required a settlement to agree with the source
+> on "settlement time, rate and markPrice". The authorised funding source is the
+> monthly `fundingRate` archive; its single member's header, read after a
+> `.CHECKSUM`-verified fetch of `BTCUSDT-fundingRate-2026-08` on 2026-09-05, is
+> `calc_time,funding_interval_hours,last_funding_rate` and carries **no
+> settlement mark price**. The equality therefore named a field the source does
+> not publish, and `funding_complete(D)` could not hold on any day. Agreement is
+> now on **settlement time and realised funding rate**; the archive's
+> funding-interval metadata is recorded where it is published; and the settlement
+> mark price the recorder captures from its live public source is kept with its
+> provenance, claimed to be verified by nothing, never reconstructed from
+> mark-price candles, never nearest-minute matched, never filled and never
+> replaced by REST during reconciliation. It is not part of
+> `funding_complete(D)`.
+>
+> **Amendment A5, 2026-09-05 — pre-acquisition source-validity correction.**
+> `um.bookTicker` was in `required_for_coverage`, and `published_coverage(s, D)`
+> divides by the count of minutes the archive publishes. The daily `bookTicker`
+> archive's last published BTCUSDT object is `2024-03-30` — `2024-03-31` onward
+> answered 404 when probed on 2026-09-05, and no monthly object covers the
+> prospective period — so that denominator does not exist, the quotient could not
+> be formed, and the 30-day gate was unreachable by arithmetic, exactly as in A1.
+> `um.bookTicker` leaves `required_for_coverage` **and stays everywhere else**: a
+> mandatory recorded stream in collection, health, the normalized schema, the
+> later MarketState and runtime requirements, the recorded-quote execution inputs
+> and soak observability. Nothing is substituted for the missing denominator, and
+> no wall-clock threshold is invented to replace it. The archive-required
+> minute-indexed set is now *derived* from `required_for_coverage` rather than
+> restated, so the two cannot drift apart.
+>
+> **Amendment A6, 2026-09-05 — pre-acquisition specification correction.**
+> One required stream, `um.markPrice`, carries both the mark and the index on
+> every update, and 4.7 said the mark-price and index-price archives are
+> reconciled "the same way" — which reads as one required stream's verdict
+> resting on two independent source families. Its gate meaning is now explicit:
+> the archive criterion for `um.markPrice` is the **mark-price agreement
+> criterion** supported by `markPriceKlines` and nothing else. Index values stay
+> recorded and may be reconciled against `indexPriceKlines` and reported as a
+> diagnostic; index agreement is **not** a second pass condition for
+> `um.markPrice` coverage and no threshold is attached to it.
+>
+> **Amendment A9, 2026-09-05 — pre-acquisition operational correction.**
+> The funding schedule source is a *monthly* object while 4.7 runs the
+> reconciliation on `D - 2`, so a day inside a month whose archive has not yet
+> been published cannot be funding-judged at all: on 2026-09-05 the 2026-08
+> archive existed and verified while the 2026-09 archive answered 404 with the
+> month still open. Such a day is `FUNDING_SCHEDULE_UNAVAILABLE`, does not pass,
+> and takes its real verdict when the archive appears, is verified, and the
+> reconciliation is run again for it. That is **expected evidence latency, not a
+> recorder outage**, it does not enter the three-flagged-days count, and the
+> monthly archive is not replaced by REST to obtain a faster verdict. The
+> consequence is that **S1 can become claimable later than day 30**. The
+> requirement of 30 qualifying days does not change, and no publication SLA is
+> asserted from the small sample observed.
+>
+> A4, A5, A6 and A9 are made **before** any acquisition, **before** any
+> `prospective_from` exists and while **no recorded minute exists**, on the same
+> terms as A1 and A2. `0.995`, `0.990`, the three-flagged-days rule, the 30-day
+> window, A1's separation of the two index kinds and A2's quantifier are all
+> unchanged, and no economic criterion is introduced.
+
+Required streams come in two index kinds, are counted in different units, and
+the membership of each kind is derived from `required_for_coverage` rather than
+restated, so a change to the required set cannot leave a stale partition behind:
 
 ```
-minute-indexed      um.kline_1m, um.markPrice, um.bookTicker, spot.kline_1m
-settlement-indexed  um.funding
+minute-indexed      required_for_coverage minus the settlement-indexed stream
+settlement-indexed  um.funding   (the only stream of that kind)
 ```
 
-For each UTC day `D` and each **minute-indexed** stream `s` in
-`required_for_coverage`:
+After amendment A5 the minute-indexed required streams are `um.kline_1m`,
+`um.markPrice` and `spot.kline_1m`. That list is *read from the committed
+contract* and never written down a second time:
+`RecorderContract.minute_indexed_required()` derives it from
+`required_for_coverage`, and PR-06 uses that rather than a literal of its own. A
+stream is in `required_for_coverage` only when a contemporary first-party archive
+covering the prospective period publishes a minute denominator for it; 4.7 names
+the archive for each.
+
+`um.bookTicker` is recorded, health-monitored, normalized and read by every later
+consumer that needs a quote, and it is **not** in `required_for_coverage`: no
+contemporary first-party archive publishes a minute denominator for it over the
+prospective period (amendment A5). Nothing is substituted for that denominator —
+not `bookDepth`, not `metrics`, not `trades`, not `aggTrades`, not a REST
+snapshot and not another venue — and no wall-clock threshold takes its place in
+this gate.
+
+For each UTC day `D` and each **minute-indexed** required stream `s`:
 
 ```
 published_minutes(s, D) = minutes of D present in the Binance daily archive for s
@@ -509,6 +705,14 @@ captured_minutes(s, D)  = minutes of D present in the recorder's normalized file
 published_coverage(s, D) = |captured  intersect  published| / |published|
 wallclock_coverage(s, D) = |captured| / 1440
 ```
+
+`um.markPrice` is one required stream with one verdict from one source family:
+its archive criterion is the **mark-price agreement criterion** supported by
+`markPriceKlines` and nothing else. The index values the live mark-price
+observations hold alongside the mark are recorded, and they may be reconciled
+against `indexPriceKlines` and reported as a diagnostic, but index agreement is
+**not** a second pass condition for `um.markPrice` coverage and no threshold is
+attached to it (amendment A6).
 
 For the **settlement-indexed** stream `um.funding`, the day's schedule must be
 *established* before completeness can be judged against it:
@@ -527,12 +731,21 @@ scheduled_settlements(D) = defined only when schedule_established(D): the settle
                            may be empty, and an established empty set means the source
                            says no settlement was scheduled for D.
 captured_settlements(D)  = those settlements present in the recorder's settlements file
-                           agreeing exactly on settlement time, rate and markPrice
+                           agreeing exactly on settlement time and realised funding rate
 
 funding_complete(D)      = schedule_established(D)  and  every settlement in
                            scheduled_settlements(D) is present in
                            captured_settlements(D)
 ```
+
+The funding archive publishes the settlement instant, a funding interval and the
+realised rate; that interval metadata is recorded where it is published. The
+funding archive publishes **no settlement mark price**. The recorder may still
+capture the settlement mark price from its live public source and keep its
+provenance, and that value is not claimed to be verified by the funding archive,
+is not part of `funding_complete(D)`, is never reconstructed from mark-price
+candles, never matched to a nearest minute, never filled or interpolated, and
+never replaced by a REST value during archive reconciliation (amendment A4).
 
 There is no settlement ratio and no settlement denominator. `funding_complete`
 is a quantifier over an established set and not a quotient, so a day whose
@@ -575,6 +788,13 @@ of them is how a day passes that should not:
   recorder fault, and a day that cannot be judged is not a day that passed.
 * **a scheduled settlement is missing or disagrees** — the day fails outright,
   as above.
+
+The funding schedule source is a **monthly** object, so a day inside a month
+whose archive has not been published yet is `FUNDING_SCHEDULE_UNAVAILABLE` and
+does not pass until that archive appears, is verified, and the reconciliation is
+run again for the day. That is expected evidence latency and not a recorder
+fault, it is not shortened by reading a REST endpoint instead, and it means the
+gate can become claimable later than the thirtieth day (amendment A9).
 
 The gate passes when 30 consecutive UTC days pass, counted from the first
 passing day at or after `prospective_from`; any day that does not pass — whether
@@ -1198,8 +1418,8 @@ boundary=None)`, `candle_digest`, `minute_gaps`), `nn/source_identity.py`,
 | `chimera/recorder/rest.py` | `RestPoller(base_url, session)`: `klines(market, start_ms, end_ms)`, `funding_rate(start_ms, end_ms)`, `premium_index()`, `mark_price_klines(...)`, `index_price_klines(...)`; rate-limit aware |
 | `chimera/recorder/sink.py` | `RawSink(root, stream)`: `append(event) -> bool` (False on duplicate), `rotate(day)`, `recover_tail()`, `freeze_day(day)` |
 | `chimera/recorder/normalize.py` | `MinuteNormalizer(root, contract)`: `build_day(market, day) -> Path`, `MinuteRecord` schema, `digest(frame)`, `meta(frame)` |
-| `chimera/recorder/reconcile.py` | `reconcile_day(root, day, fetch) -> ReconciliationReport` using `nn.p13_acquisition`/`nn.p13_sources` |
-| `chimera/recorder/coverage.py` | `coverage_for_day(root, day) -> CoverageReport`; `gate(root, window=30) -> GateVerdict` |
+| `chimera/recorder/reconcile.py` | `reconcile_day(root, day, fetch) -> ReconciliationReport`, with the archive fetch, checksum verification, single-member extraction and CSV parsing owned by the recorder under 4.7's source-integrity rules and importing nothing from `nn` (**amendment A8**) |
+| `chimera/recorder/coverage.py` | `coverage_for_day(root, day) -> CoverageReport`; `gate(root, window=30) -> GateVerdict`; the minute-indexed required streams come from `RecorderContract.minute_indexed_required()` and are never a literal in this module (**amendment A5**) |
 | `chimera/recorder/health.py` | metric registration and heartbeat writer |
 | `chimera/recorder/service.py` | `RecorderService(contract, root)`: asyncio orchestration of streams, pollers, sink, normalizer, health |
 | `tools/recorder.py` | CLI: `run`, `status`, `reconcile --day`, `coverage --window`, `verify-day --day`, `freeze-day --day` |
@@ -1284,7 +1504,7 @@ executed and its result pasted in the PR description.
 | 03 | `aegis: persisted RiskState, kill switch, feed/reconciliation/funding rules` | demo-grade Aegis | none | section 7 | any executor change beyond passing `position_side` and the `None` liquidation veto | `chimera/risk.py`, `chimera/futures/executor.py` (two small edits), `docs/risk_manager.md` | `test_risk_state_persistence.py` (restart between peak and breach; legacy file; unreadable file; atomic write interrupted), `test_risk_new_rules.py` (two-sided for every new rule) | every rule in section 7.2 has a passing and a failing synthetic case; existing risk tests pass | I05/I06 semantics unchanged: `tools.futures_dry_run --verify artifacts/futures_dry_run_v1` still verifies (the protocol hash must not move; if a change forces it, the change is wrong for this PR) | revert | none |
 | 04 | `recorder: contract, events, sink, normalizer (offline)` | the recorder's data model without any network | none | section 4.3 to 4.5; parsers from documented payload shapes; synthetic event fixtures | websocket/REST clients | `chimera/recorder/{__init__,contract,events,sink,normalize}.py`, contract JSON, `.gitignore` | `test_recorder_contract.py`, `test_recorder_events.py`, `test_recorder_sink.py` (append-only, truncated tail, duplicates, late events, day rotation, crash mid-write), `test_recorder_normalize.py` (missing minutes never filled; digest stable across re-encoding) | all offline tests pass on both OSes | no network in tests (a test asserts no socket is opened) | revert | none |
 | 05 | `recorder: streams, REST pollers, service, CLI, health` | live collection | PR-04 | section 4.1, 4.2, 4.8; `tools/recorder.py run/status`; metrics; heartbeat; systemd unit | reconciliation and coverage | `chimera/recorder/{streams,rest,service,health}.py`, `tools/recorder.py`, `chimera/metrics.py`, `deploy/systemd/chimera-recorder.service`, `Makefile` | `test_recorder_streams_fake_server.py` (local fake websocket server: reconnect, duplicate, out-of-order, 24h close), `test_recorder_rest_fake.py`, `test_endpoint_names.py` (payload field names pinned) | a 60-minute local run against the real public endpoints, performed by the reviewer, records all streams with zero write errors; the run's data is engineering data | recorder computes no derived economic quantity (test asserts the package imports nothing from `nn/evaluate.py` or `chimera/carry`) | stop the service; revert | PR-04 |
-| 06 | `recorder: archive reconciliation and the 30-day coverage gate` | make coverage measurable | PR-05 | section 4.7, 4.9; `reconcile --day`, `coverage --window`, `GATE.json` | anything economic | `chimera/recorder/{reconcile,coverage}.py`, `tools/recorder.py` | `test_recorder_reconcile.py` (synthetic archive bytes via `nn/p13_sources` readers), `test_recorder_coverage.py` (gate arithmetic two-sided: 0.9949 fails, 0.995 passes; streak reset) | a reconciliation of two real days agrees on published minutes | reconciliation reads prices only to compare equality; no return computed | revert | PR-05 |
+| 06 | `recorder: archive reconciliation and the 30-day coverage gate` | make coverage measurable | PR-05, **and the pre-PR-06 amendments A4 to A9** | section 4.7, 4.9 as amended; `reconcile --day`, `coverage --window`, `GATE.json` | anything economic; any import from `nn` (A8); any change to `um.bookTicker`'s recording (A5) | `chimera/recorder/{reconcile,coverage}.py`, `tools/recorder.py` | `test_recorder_reconcile.py` (synthetic archive bytes parsed by the recorder's own reader, which imports nothing from `nn`; funding agreement on settlement time and realised rate only; index reconciliation asserted to be diagnostic), `test_recorder_coverage.py` (gate arithmetic two-sided: 0.9949 fails, 0.995 passes; streak reset; the minute-indexed set read from the contract; a `FUNDING_SCHEDULE_UNAVAILABLE` day neither passes nor counts as an outage flag) | a reconciliation of two real days agrees on published minutes | reconciliation reads prices only to compare equality; no return computed; the historical P13 readers and their boundary are untouched | revert | PR-05 |
 | 07 | `futures: recorded-quote fill model and side check` | fills from the recorded book | none | section 5.2, 5.3; `FlattenCause.HEDGE_CORRECTION` | executor flow changes | `chimera/futures/fills.py`, `venue.py` (one check), `executor.py` (enum member), `__init__.py` | `test_futures_fills.py` (stale quote rejection, deviation guard, BUY at ask / SELL at bid, fee arithmetic pinned like `test_futures_no_live_path.py:452`), `test_futures_no_live_path.py` unchanged and passing | AST scan passes with the new module; dry-run protocol hash unchanged | revert | none |
 | 08 | `carry: ported accounting, ledger, hedged position` | two-leg position | PR-03, PR-07 | section 6 | rules | `chimera/carry/*`, `chimera/futures/__init__.py` | `test_carry_accounting_parity.py` (equality with `nn.p13_carry` on synthetic worlds and witnesses A/B/C), `test_carry_ledger.py` (persistence, corrupted file, identity check), `test_carry_hedge.py` (entry, partial-leg correction, rebalance, emergency reduce, restart reconstruction, dispute) | hand-traced LONG spot / SHORT perp example in the PR description with units, notional, fees, funding and PnL | no P13 historical data read; the parity test uses `tests/p13_synthetic.py` only | revert | PR-03, PR-07 |
 | 09 | `demo: config, clock, decision log` | deterministic logging | none | sections 2.4, 9 | runner | `chimera/demo/{config,clock,decision_log}.py`, `conf/demo/pvc1.json` (skeleton) | `test_decision_log.py` (chain, canonical bytes, crash between state and log, verify_chain), `test_demo_config.py` (faults key forbidden; hash stable) | canonical serialization is byte-stable across OSes | none needed | revert | none |
@@ -1381,12 +1601,12 @@ NOT HAPPEN YET row required.
 | RATIONALE | every later stage consumes it; no prospective data exists |
 | PRECONDITIONS | S0 |
 | ENGINEERING TASKS | PR-04, PR-05, PR-06; deploy on the host that will run the demo; supervisor; disk sizing — **amended A3, measured, rough**: budget **about 37 GiB per month of gzipped raw** at these streams, plus about 7 MiB per month normalized. Measured: 910,761,661 B of NDJSON gzipping to 52,425,027 B (17.4x) over 3,463.2 s of recorder uptime, i.e. 36.5 GiB/month, and the two `bookTicker` streams are 99.4% of it at ~490 and ~144 updates per second. Rates vary with market activity and two USD-M streams were unreachable when this was measured, so **provision headroom**. The first estimate of 1.5 GB per month raw gz was low by roughly 24x |
-| SCIENTIFIC TASKS | fill `prospective_from`; commit the contract hash |
+| SCIENTIFIC TASKS | run the designated production deployment under the pre-activation contract hash; observe one complete qualifying hour; then, in a **separate reviewed commit**, set `prospective_from` to the earliest UTC midnight after that hour and after the activation change merges, and deploy the activated hash to a **fresh storage root** (section 4.6, amendment A7) |
 | FILES | section 12.3 recorder rows |
 | DEPENDENCIES | none |
 | DELIVERABLES | recorder running; `coverage/GATE.json` with `passed: true` |
 | TESTS | section 15 recorder rows; the reviewer's 60-minute live check |
-| PASS | 30 consecutive passing days per section 4.9 |
+| PASS | 30 consecutive passing days per section 4.9. **Amendment A9:** the funding schedule evidence is a monthly archive, so days of an unpublished month are `FUNDING_SCHEDULE_UNAVAILABLE` until it appears and the reconciliation is rerun; the gate can therefore be claimable later than the thirtieth day, and that latency is evidence latency rather than recorder outage |
 | FAIL | streak resets; root cause recorded in `docs/demo_runbook.md`'s incident list |
 | STOP | if the gate cannot be passed within 90 days of first run: the project cannot do prospective science on this host and network; stop until fixed |
 | EFFORT | 2 to 3 weeks engineering, then 30 days of evidence accrual |
@@ -1504,7 +1724,8 @@ protocol and is not compressible.
 | milestone | BEST | EXPECTED | DELAYED |
 | --- | --- | --- | --- |
 | S0 decision, PR-01 merged | 2026-09-08 | 2026-09-11 | 2026-09-18 |
-| PR-04/05 merged, recorder first run (`prospective_from` = next midnight) | 2026-09-18 | 2026-09-25 | 2026-10-09 |
+| PR-04/05 merged, production deployment recording under the pre-activation hash | 2026-09-18 | 2026-09-25 | 2026-10-09 |
+| activation commit merged; `prospective_from` = the derived midnight; activated hash deployed to a fresh root (4.6) | 2026-09-19 | 2026-09-26 | 2026-10-10 |
 | PR-06 merged, coverage measurable | 2026-09-25 | 2026-10-02 | 2026-10-16 |
 | S1 30-day gate passed (no reset) | 2026-10-19 | 2026-10-26 | 2026-11-09 (one reset: 2026-12-09) |
 | S2 protocol PR-14 merged after review | 2026-10-09 | 2026-10-16 | 2026-11-06 |
@@ -1514,6 +1735,17 @@ protocol and is not compressible.
 | PVC-1 day 30 milestone (first serious sustained demo) | 2026-12-09 | 2026-12-23 | 2027-02-10 |
 | PVC-1 end (182 days) | 2027-05-10 | 2027-05-24 | 2027-07-12 |
 | S6 closure and audit | 2027-06-07 | 2027-06-21 | 2027-08-09 |
+
+**Amendment A9 applies to every S1 row above.** The dates assume a day is judged
+two days after it closes, which is true of the kline denominators but not of the
+funding one: the funding schedule evidence is a *monthly* archive, so the last
+days of the window cannot be funding-judged until the archive covering their
+month is published and verified and the reconciliation is rerun. "S1 gate
+passed" is therefore the date the gate can first be *claimed*, which is at or
+after the date the thirtieth qualifying day closed, and no fixed publication SLA
+is asserted here from the small sample observed. The remedy is patience, not a
+faster source: REST is not substituted for the monthly archive to obtain an
+earlier verdict.
 
 Engineering time to PVC-1 start: about 9 weeks best, 11 weeks expected, 18
 weeks delayed. Evidence accrual: 30 days (S1) overlapping with 14 days (S4),
@@ -1623,7 +1855,7 @@ Each item is DONE when the named artifact exists and the named check passes.
 4. [ ] PR-02 merged; CI green on Ubuntu and Windows; `requirements-lock.txt` committed; all 20 frozen manifests verify.
 5. [ ] PR-04 merged; `chimera/recorder/contracts/btcusdt-prospective-gen3.json` committed with `contract_hash`.
 6. [ ] PR-05 merged; recorder deployed under a supervisor; `health/heartbeat.json` updating; reviewer's 60-minute live check recorded in the PR.
-7. [ ] `prospective_from` written by the recorder and committed; contract immutable from then.
+7. [ ] `prospective_from` written by a **separate reviewed activation commit** (never by the running recorder), to the earliest midnight section 4.6 derives; the activated hash deployed to a fresh storage root; the pre-activation engineering root untouched under its own hash; contract immutable from then.
 8. [ ] PR-06 merged; first `reconciliation/YYYY-MM-DD.json` agrees on published minutes.
 9. [ ] PR-03 merged; `RiskState` persists; restart-between-peak-and-breach test passes; `tools.futures_dry_run --verify artifacts/futures_dry_run_v1` still verifies with the unchanged protocol hash.
 10. [ ] PR-07 merged; `tests/test_futures_no_live_path.py` passes unchanged; fill numbers pinned.

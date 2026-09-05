@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime, time as time_of_day, timedelta, timezone
 
 import pytest
 
@@ -32,6 +33,7 @@ from chimera.recorder.contract import load_recorder_contract
 from chimera.recorder.events import (
     NS_PER_MILLISECOND,
     SPOT_KLINE_1M,
+    UM_BOOK_TICKER,
     UM_FUNDING,
     UM_KLINE_1M,
     UM_MARK_PRICE,
@@ -75,6 +77,15 @@ CONTRACT = load_recorder_contract()
 #: path a test asserts on is the one the fixtures write to.
 DAY_NS = day_start_ns(DAY)
 NOON_NS = DAY_NS + 12 * 3_600_000 * NS_PER_MILLISECOND
+
+#: A legal UTC midnight after the synthetic day, used only to build an *activated*
+#: contract in memory. Nothing here fixes a boundary: the committed contract stays
+#: at ``prospective_from = null`` and activation is a reviewed commit.
+MIDNIGHT_AFTER_DAY = datetime.combine(
+    datetime.strptime(DAY, "%Y-%m-%d").date() + timedelta(days=1),
+    time_of_day(0, 0),
+    tzinfo=timezone.utc,
+)
 
 
 def frozen_clock(ns: int = NOON_NS):
@@ -863,6 +874,53 @@ def test_a_root_recorded_under_another_contract_is_refused(tmp_path):
         service.bind_contract()
     with pytest.raises(RecorderServiceError, match="never mixes"):
         service.recover()
+
+
+def test_activating_the_boundary_cannot_rebind_the_pre_activation_root(tmp_path):
+    """Amendment A7's storage rule, enforced rather than only written down.
+
+    Activation moves ``contract_hash`` while leaving the generation alone, so the
+    activated contract resolves to the *same* path under the same base directory.
+    The rule is that it is deployed under a fresh root; ``bind_contract`` is what
+    makes the alternative impossible, and this is the case it exists for. The
+    engineering data recorded before activation keeps its own hash and is not
+    relabelled by the activation that followed it.
+    """
+    engineering = service_for(tmp_path / "engineering")
+    committed = engineering.bind_contract()
+    before = committed.read_bytes()
+
+    activated = CONTRACT.with_prospective_from(MIDNIGHT_AFTER_DAY)
+    assert activated.contract_hash != CONTRACT.contract_hash
+
+    stranded = RecorderService(activated, tmp_path / "engineering", poller=None, clients=[])
+    with pytest.raises(RecorderServiceError, match="never mixes"):
+        stranded.bind_contract()
+    assert committed.read_bytes() == before, "the refused bind rewrote the engineering root"
+    assert json.loads(before)["contract_hash"] == CONTRACT.contract_hash
+    assert json.loads(before)["contract"]["prospective_from"] is None
+
+    fresh = RecorderService(activated, tmp_path / "activated", poller=None, clients=[])
+    written = fresh.bind_contract()
+    assert json.loads(written.read_text(encoding="utf-8"))["contract_hash"] == (
+        activated.contract_hash
+    )
+    assert committed.read_bytes() == before, "binding the fresh root touched the old one"
+
+
+def test_the_book_ticker_stream_is_still_collected_after_leaving_the_gate(tmp_path):
+    """Amendment A5 narrowed ``required_for_coverage`` and nothing else.
+
+    What the service subscribes and what the health writer reports both come from
+    ``contract.streams``, so this is the direct statement that a stream removed
+    from the gate is still a stream the recorder must record.
+    """
+    assert UM_BOOK_TICKER in CONTRACT.streams
+    assert UM_BOOK_TICKER not in CONTRACT.required_for_coverage
+    health = initial_health(CONTRACT)
+    assert UM_BOOK_TICKER in health.streams
+    service = service_for(tmp_path)
+    assert UM_BOOK_TICKER in service.contract.streams
 
 
 def test_an_unreadable_contract_copy_stops_the_recorder_rather_than_being_replaced(tmp_path):

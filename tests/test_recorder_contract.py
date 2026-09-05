@@ -79,7 +79,13 @@ def test_the_committed_contract_describes_the_streams_the_plan_names():
         SPOT_KLINE_1M,
         SPOT_BOOK_TICKER,
     }
-    assert set(contract.required_for_coverage) == set(contract.streams) - {SPOT_BOOK_TICKER}
+    # Amendment A5 narrowed the gate: ``um.bookTicker`` is recorded like everything
+    # else and is no longer archive-required, because no contemporary first-party
+    # archive publishes a minute denominator for it. Section H holds that test.
+    assert set(contract.required_for_coverage) == set(contract.streams) - {
+        SPOT_BOOK_TICKER,
+        UM_BOOK_TICKER,
+    }
     assert contract.market_keys() == ("spot", "um")
     assert contract.market("um").symbol == "BTCUSDT"
     assert contract.market("um").instrument == "usd-m perpetual"
@@ -756,3 +762,302 @@ def test_the_committed_contract_asserts_nothing_about_what_the_venue_published()
         "assumption about the venue"
     )
     assert "present in the recorder" in rule, "captured_minutes must be the recorder's own"
+
+
+# --- H. the pre-acquisition amendments A4 to A9 --------------------------------
+#
+# Section G pins A1 and A2. A4 to A9 corrected the *acquisition* semantics: what
+# the authorised sources actually publish, which required streams have an archive
+# denominator at all, what a mark-price verdict rests on, how the boundary is
+# activated, who owns the prospective parsing, and how long the funding evidence
+# takes to arrive. Every one of them was made while ``prospective_from`` was
+# ``null`` and no prospective minute existed, which is the only moment at which
+# they are free.
+
+#: The contract's identity before A4 to A9, kept as chronology rather than as a
+#: target. A manifest carrying this hash was written under the superseded
+#: acquisition semantics; the amended contract must not still be it.
+SUPERSEDED_CONTRACT_HASH = "5bd47e2ed57dc0eaf440617e8ec76699be5d5d336ff6331c88b651390a58ad45"
+
+
+def test_the_amendment_moved_the_identity_while_the_boundary_was_still_null():
+    """The amendment changes what is acquired, so it must change the hash.
+
+    And it is only permissible because the boundary is unset: with a
+    ``prospective_from`` in place, changing the acquisition semantics would be
+    changing the rules after evidence had begun to accrue under them.
+    """
+    contract = load_recorder_contract()
+    assert re.fullmatch(r"[0-9a-f]{64}", contract.contract_hash)
+    assert (
+        contract.contract_hash != SUPERSEDED_CONTRACT_HASH
+    ), "the committed contract still carries the pre-amendment identity"
+    assert RAW["prospective_from"] is None
+    assert contract.prospective_from is None
+    assert contract.activated is False
+
+
+def test_the_required_streams_are_exactly_those_with_an_archive_denominator():
+    """Amendment A5. Four required streams, and 4.7 names an archive for each."""
+    contract = load_recorder_contract()
+    assert set(contract.required_for_coverage) == {
+        UM_KLINE_1M,
+        UM_MARK_PRICE,
+        UM_FUNDING,
+        SPOT_KLINE_1M,
+    }
+    assert contract.minute_indexed_required() == (SPOT_KLINE_1M, UM_KLINE_1M, UM_MARK_PRICE)
+    assert contract.settlement_indexed_required() == (UM_FUNDING,)
+    assert set(contract.minute_indexed_required()) | set(
+        contract.settlement_indexed_required()
+    ) == set(contract.required_for_coverage)
+
+
+def test_the_index_partition_is_derived_from_the_contract_and_not_a_second_list():
+    """A5's mechanism: move ``required_for_coverage`` and the partition moves with it.
+
+    The defect A5 closed was a gate that measured a stream with no denominator.
+    The defect it must not create is a *second* list of "the minute-indexed
+    streams" that agrees with the contract today and disagrees after the next
+    amendment, so the partition is computed rather than written down.
+    """
+    narrowed = parse_recorder_contract(
+        payload(required_for_coverage=[UM_KLINE_1M, UM_FUNDING])
+    )
+    assert narrowed.minute_indexed_required() == (UM_KLINE_1M,)
+    assert narrowed.settlement_indexed_required() == (UM_FUNDING,)
+
+    widened = parse_recorder_contract(payload(required_for_coverage=list(RAW["streams"])))
+    assert UM_BOOK_TICKER in widened.minute_indexed_required()
+    assert widened.settlement_indexed_required() == (UM_FUNDING,)
+
+    rule = load_recorder_contract().coverage_rule
+    assert "derived from required_for_coverage rather than restated" in rule
+
+
+def test_the_book_ticker_stream_is_still_recorded_after_leaving_the_gate():
+    """A5 narrowed the gate and nothing else.
+
+    ``um.bookTicker`` stays in ``streams``, which is the list the service
+    subscribes, the health writer iterates and the normalizer reads; the tests for
+    those live in their own files and are unchanged by this amendment.
+    """
+    contract = load_recorder_contract()
+    assert UM_BOOK_TICKER in contract.streams
+    assert UM_BOOK_TICKER in contract.streams_for("um")
+    assert UM_BOOK_TICKER not in contract.required_for_coverage
+    assert UM_BOOK_TICKER not in contract.minute_indexed_required()
+
+    rule = contract.coverage_rule
+    assert "um.bookTicker is recorded" in rule
+    for substitute in ("bookDepth", "metrics", "trades", "aggTrades", "REST snapshot"):
+        assert substitute in rule, f"the contract stopped refusing {substitute} as a stand-in"
+    assert "not another venue" in rule
+    assert "no wall-clock threshold takes its place" in rule, (
+        "a wall-clock bar invented here would be a new threshold, which this amendment "
+        "does not introduce"
+    )
+
+
+def test_funding_agreement_is_time_and_rate_and_claims_nothing_about_a_mark_price():
+    """Amendment A4: the authorised funding archive publishes no settlement mark price.
+
+    The superseded rule required agreement on ``(time, rate, markPrice)`` against a
+    source whose member header is
+    ``calc_time,funding_interval_hours,last_funding_rate``, so ``funding_complete(D)``
+    could not hold on any day at all. The recorder may still capture the settlement
+    mark price from its live public source; it is simply not verified by this
+    archive and not part of the day's verdict.
+    """
+    for document, text in amended_gate_texts():
+        assert "settlement time and realised funding rate" in text, document
+        assert "settlement time, rate and markPrice" not in text, (
+            f"the {document}'s operative rule again requires agreement on a field the "
+            "funding archive does not publish"
+        )
+        assert "publishes no settlement mark price" in text, document
+        assert "is not part of funding_complete(D)" in text, document
+        for refusal in (
+            "reconstructed from mark-price candles",
+            "matched to a nearest minute",
+            "filled or interpolated",
+            "replaced by a REST value",
+        ):
+            assert refusal in text, f"the {document} lost the refusal of {refusal!r}"
+    assert (
+        "funding interval" in load_recorder_contract().coverage_rule
+    ), "the interval metadata the archive does publish must be recorded"
+
+
+def test_the_mark_price_verdict_and_the_index_diagnostic_stay_apart():
+    """Amendment A6: one required stream, one source family, one verdict."""
+    for document, text in amended_gate_texts():
+        assert "mark-price agreement criterion" in text, document
+        assert "markPriceKlines and nothing else" in text, document
+        assert "indexPriceKlines" in text, document
+        assert "not a second pass condition" in text, document
+        assert "no threshold is attached to it" in text, document
+
+    reconciliation = flat(load_recorder_contract().reconciliation_rule)
+    assert "indexPriceKlines" in reconciliation
+    assert "reported as a diagnostic" in reconciliation
+    assert "not a pass condition for um.markPrice" in reconciliation
+
+
+def test_the_funding_evidence_is_monthly_and_the_gate_may_be_claimed_later():
+    """Amendment A9: latency in the evidence is not an outage in the recorder."""
+    for document, text in amended_gate_texts():
+        assert "monthly object" in text, document
+        assert "FUNDING_SCHEDULE_UNAVAILABLE" in text, document
+        assert "expected evidence latency" in text, document
+        assert "claimable later than the thirtieth day" in text, document
+        assert "not shortened by reading a REST endpoint" in text, document
+        # The window itself does not move, which is what makes this a disclosure
+        # of latency rather than a weakening of the gate.
+        assert "30 consecutive" in text, document
+        assert "does not enter the three-flagged-days count" in text, document
+
+
+def test_no_settlement_ratio_or_minute_denominator_returned_with_the_amendment():
+    """A4 and A9 rewrite the funding clause, so A1 and A2 are re-pinned from it."""
+    for document, text in amended_gate_texts():
+        assert "settlement_coverage" not in text, document
+        assert "um.funding has no wallclock coverage" in text, document
+        assert "not divided by 1440" in text, document
+        assert "no settlement ratio and no settlement denominator" in text, document
+    rule = load_recorder_contract().coverage_rule
+    minute_side = rule.split("Minute-indexed:")[1].split("Settlement-indexed:")[0]
+    assert UM_FUNDING not in minute_side
+
+
+def test_activation_is_a_reviewed_commit_that_writes_to_a_fresh_root():
+    """Amendment A7, pinned in the contract that has to state it.
+
+    The superseded ``boundary_rule`` said the boundary is "written once by the
+    recorder's first run", which no part of this repository can do: the setter is
+    pure, the live layer is forbidden from calling it, and writing the boundary
+    moves the hash that the storage root is bound to.
+    """
+    rule = load_recorder_contract().boundary_rule
+    assert "Activation is a reviewed Git commit and never a runtime action" in rule
+    assert "written once by the recorder's first run" not in rule
+    for clause in (
+        "one complete qualifying hour",
+        "pre-activation hash",
+        "earliest UTC midnight",
+        "strictly after the activation change has merged",
+        "boundary chosen rather than derived",
+        "fresh storage root",
+        "a storage root never mixes contract hashes",
+        "never rewritten or relabelled",
+        "only observations at or after prospective_from count toward the coverage streak",
+        "written once and is immutable thereafter",
+    ):
+        assert clause in rule, f"the boundary rule lost {clause!r}"
+
+
+def test_a_hash_that_moves_needs_a_root_that_moves():
+    """A7's storage rule, shown rather than only stated.
+
+    ``storage_root`` names the *generation*, and activation does not change the
+    generation, so one base directory resolves to one path under two different
+    hashes. That is why the activated contract is deployed under a fresh base; the
+    refusal that enforces it lives in ``bind_contract`` and is tested in
+    ``tests/test_recorder_service.py``.
+    """
+    committed = load_recorder_contract()
+    activated = committed.with_prospective_from(MIDNIGHT)
+    assert activated.contract_hash != committed.contract_hash
+    assert activated.storage_root("data") == committed.storage_root("data")
+    assert activated.storage_root("data-activated") != committed.storage_root("data")
+    assert committed.prospective_from is None, "activation mutated the committed contract"
+
+
+def test_the_version_policy_promises_no_field_the_parser_refuses():
+    """A7's other half: prose must not describe a mechanism the schema lacks."""
+    policy = load_recorder_contract().recorder_version_policy
+    assert (
+        "carries no supersedes field" in policy
+    ), "the policy must say the field is absent rather than quietly stop mentioning it"
+    assert "new contract file with its own contract_id" in policy
+    assert "a storage root never mixes contract hashes" in policy
+    assert "supersedes" not in set(REQUIRED_FIELDS) | set(DOCUMENTARY_FIELDS)
+    with pytest.raises(RecorderContractError, match="unknown field"):
+        parse_recorder_contract(payload(supersedes="btcusdt-prospective-gen3"))
+
+
+def test_the_reconciliation_rule_names_rules_rather_than_the_historical_readers():
+    """Amendment A8: PR-06 owns its parsing, and the P13 readers keep their boundary.
+
+    ``nn/p13_sources.py``'s readers refuse an object outside P13's historical data
+    boundary, so they cannot read a prospective one; and
+    ``tests/test_recorder_no_network.py`` forbids any module of the recorder package
+    from importing ``nn`` at all. Naming them here was both wrong and unbuildable.
+    """
+    rule = load_recorder_contract().reconciliation_rule
+    for forbidden in (
+        "nn.p13_acquisition",
+        "nn.p13_sources",
+        "read_kline_object",
+        "assert_allowed_url",
+        "parse_checksum_companion",
+    ):
+        assert (
+            forbidden not in rule
+        ), f"the contract still directs the prospective reconciliation at {forbidden}"
+    assert "imports no research checkpoint's code" in rule
+    for required in (
+        "allow-listed first-party host",
+        "no credential and no signature",
+        ".CHECKSUM companion parsed",
+        "checksum mismatch refused",
+        "keyed by the object's full archive path",
+        "single-member archive",
+        "epoch unit resolved explicitly per file",
+        "funding layouts frozen in the recorder",
+    ):
+        assert required in rule, f"the contract lost the source-integrity rule {required!r}"
+
+
+def plan_reconciliation_operative() -> str:
+    """Section 4.7 without its amendment notes: the rule in force, and only that."""
+    plan = MASTER_PLAN.read_text(encoding="utf-8")
+    section = plan.split("### 4.7 Archive reconciliation")[1].split("\n### 4.8")[0]
+    return "\n".join(
+        line for line in section.splitlines() if not line.lstrip().startswith(">")
+    )
+
+
+def test_the_plan_no_longer_sends_the_prospective_reconciliation_through_p13():
+    """The same pin on the document the contract restates.
+
+    The amendment note above 4.7 *names* the two modules in order to record what
+    was corrected, so the scan is over the operative text beneath it.
+    """
+    operative = plan_reconciliation_operative()
+    for forbidden in ("nn/p13_acquisition.py", "nn/p13_sources.py"):
+        assert (
+            forbidden not in operative
+        ), f"4.7's operative text still routes prospective reconciliation through {forbidden}"
+    assert "imports nothing from `nn`" in operative
+    assert "markPriceKlines" in operative and "indexPriceKlines" in operative
+    assert "settlement time and realised rate" in operative
+    assert "no settlement mark price" in operative
+
+
+def test_the_plan_and_the_contract_agree_about_the_required_streams():
+    """One list, in two documents that must not drift.
+
+    4.7's denominator table is the plan's statement of which streams have an
+    archive; ``required_for_coverage`` is the contract's. A stream in one and not
+    the other is the defect A5 corrected, arriving from the other direction.
+    """
+    operative = plan_reconciliation_operative()
+    contract = load_recorder_contract()
+    for stream in contract.required_for_coverage:
+        assert f"`{stream}`" in operative, f"4.7 names no archive for required {stream}"
+    assert f"| `{UM_BOOK_TICKER}` | minute |" not in operative
+    gate = plan_operative()
+    assert (
+        "minute_indexed_required()" in gate
+    ), "the plan must send PR-06 to the contract for the partition rather than to a literal"
