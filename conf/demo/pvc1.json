@@ -1,0 +1,22 @@
+{
+  "config_schema": "chimera.demo-campaign-config/1",
+  "campaign_id": "pvc1",
+  "profile": "CAMPAIGN",
+  "protocol_hash": null,
+  "limits": {
+    "max_drawdown_pct": 0.05,
+    "max_daily_loss_pct": 0.02,
+    "max_open_positions": 2,
+    "max_total_exposure_pct": 1.0,
+    "max_exposure_per_asset_pct": 1.0,
+    "max_leverage": 1.0,
+    "max_orders_per_minute": 4,
+    "loss_streak_limit": 3,
+    "cooldown_seconds": 3600,
+    "max_data_delay_s": 180,
+    "max_funding_cost_rate": 0.0005,
+    "funding_adverse_streak_limit": 3,
+    "min_liquidation_distance_pct": 0.5
+  },
+  "description": "Skeleton campaign configuration for the first demo campaign, added by PR-09 (demo config, runner clock and decision log). It is plumbing, not science. The limits are section 7.4 of the adopted demo implementation master plan, which marks them 'proposed ... subject to S2'; PR-09 does not freeze the S2 scientific protocol, does not preregister anything, and authorises no campaign. The prospective protocol -- the rules, their parameters, the pass and fail conditions, the floors, the multiplicity correction, the window, the blocks and the exclusions -- is PR-14's, together with the hash that identifies it, which is why protocol_hash is null here: the key is mandatory so that a reader can see the protocol is not frozen, and the value is what will say that it is. Nothing has been recorded under this file, no evidence exists for it, no number has been computed from it, and no real money is authorised by it. No faults key appears here and none may: fault injection is enabled by a test or soak configuration only (section 5.3), and the campaign schema refuses the key at every depth."
+}
