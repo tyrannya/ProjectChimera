@@ -18,15 +18,24 @@ refuses unknown keys; a prospective contract carrying a seal would be a claim
 about history it does not have.
 
 **The boundary starts unset, and that is the honest state.**
-:attr:`RecorderContract.prospective_from` is ``null`` in the committed file. It
-is written once, by the recorder's first run, and committed in a follow-up pull
-request; after that the file is immutable. Until then *no minute recorded under
-this contract is scientific evidence* — which is why the key is required to be
-present rather than optional. A missing key would be a contract that forgot to
-say where its boundary is; an explicit ``null`` is a contract that says it does
-not have one yet. :meth:`RecorderContract.with_prospective_from` is the only way
-one is set, it is pure, it writes nothing, and it refuses to move a boundary
-that already exists.
+:attr:`RecorderContract.prospective_from` is ``null`` in the committed file.
+Until it is written, *no minute recorded under this contract is scientific
+evidence* — which is why the key is required to be present rather than optional.
+A missing key would be a contract that forgot to say where its boundary is; an
+explicit ``null`` is a contract that says it does not have one yet.
+:meth:`RecorderContract.with_prospective_from` is the only way one is set, it is
+pure, it writes nothing, and it refuses to move a boundary that already exists.
+
+**Activation is a reviewed commit, not something a running recorder does.**
+Amendment A7 of the adopted plan settled what the earlier prose left
+contradictory. A production deployment running under the *pre-activation* hash
+observes one complete qualifying hour; a separate pull request then writes
+``prospective_from`` to the earliest UTC midnight that is both after that hour
+and strictly after the activation change has merged, so the deployment can be
+switched to the activated identity before the boundary arrives. Nothing at
+runtime rewrites the committed contract, and
+``tests/test_recorder_no_network.py`` asserts that the live layer never calls
+:meth:`RecorderContract.with_prospective_from`.
 
 **Identity is semantic, not textual.** :func:`canonical_material` reduces a
 contract to the fields that define the acquisition, normalised, and
@@ -87,6 +96,15 @@ STORAGE_LAYOUT_VERSION = 1
 
 #: Storage layouts this build knows how to write and read.
 SUPPORTED_STORAGE_LAYOUT_VERSIONS = frozenset({STORAGE_LAYOUT_VERSION})
+
+#: The required streams counted in settlements rather than in minutes. Amendment
+#: A1 separated the two index kinds because funding cannot be divided by 1440;
+#: amendment A5 removed a stream from ``required_for_coverage`` and would have
+#: left a second, stale list of "the minute-indexed streams" behind had one been
+#: written down. So the partition is *derived* — see
+#: :meth:`RecorderContract.minute_indexed_required` — and this frozen set is the
+#: only place either kind is named.
+SETTLEMENT_INDEXED_STREAMS = frozenset({"um.funding"})
 
 #: Keys a contract file must carry. A file missing one, or carrying anything
 #: else, is refused rather than read with defaults. ``prospective_from`` is in
@@ -228,6 +246,27 @@ class RecorderContract:
         self.market(market)
         return tuple(name for name in self.streams if name.split(".", 1)[0] == market)
 
+    def minute_indexed_required(self) -> tuple[str, ...]:
+        """The required streams the archive gate counts in minutes, in canonical order.
+
+        Derived from :attr:`required_for_coverage` rather than listed, so the two
+        cannot disagree. The coverage gate divides a captured minute set by a
+        published minute set for exactly these streams; a stream is only in
+        ``required_for_coverage`` at all when a contemporary first-party archive
+        publishes that denominator for it.
+        """
+        return tuple(
+            name
+            for name in self.required_for_coverage
+            if name not in SETTLEMENT_INDEXED_STREAMS
+        )
+
+    def settlement_indexed_required(self) -> tuple[str, ...]:
+        """The required streams counted in settlements. No ``/1440`` applies to them."""
+        return tuple(
+            name for name in self.required_for_coverage if name in SETTLEMENT_INDEXED_STREAMS
+        )
+
     def storage_root(self, base: str | Path) -> Path:
         """Where this generation's data lives under ``base``.
 
@@ -235,6 +274,14 @@ class RecorderContract:
         path in its identity would hash differently on the host that records the
         data and the host that reviews it, which is the exact failure the hash
         exists to make impossible.
+
+        The path names the *generation*, not the hash, so activation — which
+        moves the hash without moving the generation — is deployed by giving the
+        activated contract a fresh ``base``. A root never mixes contract hashes:
+        :meth:`chimera.recorder.service.RecorderService.bind_contract` refuses a
+        root already bound to another hash, which is what keeps the
+        pre-activation engineering data under its own identity instead of being
+        relabelled by a later activation.
         """
         return Path(base) / "prospective" / f"gen{self.generation}"
 
@@ -243,12 +290,12 @@ class RecorderContract:
 
         Refuses to move a boundary that is already set, which is what "immutable"
         means here, and refuses anything that is not an exact UTC midnight,
-        because the boundary is defined as *the first UTC midnight after the
-        recorder has run one complete hour* and an arbitrary instant would be a
-        boundary chosen after the fact rather than derived.
+        because the boundary is *derived* — the earliest UTC midnight after the
+        qualifying production hour and after the activation change has merged —
+        and an arbitrary instant would be a boundary chosen after the fact.
 
         Calling this does not start a clock, does not record anything and does
-        not make any minute scientific evidence. The recorder's first run
+        not make any minute scientific evidence. A reviewed activation commit
         supplies the instant, and committing the resulting file is what makes it
         real.
         """
@@ -256,8 +303,8 @@ class RecorderContract:
             raise ProspectiveBoundaryError(
                 f"recorder contract {self.label} already fixes prospective_from at "
                 f"{self.prospective_from.isoformat()}. The boundary is written once and is "
-                "immutable; a different boundary is a different generation, which is a new "
-                "contract file with a supersedes field, never an edit to this one."
+                "immutable; a different boundary is a different acquisition, which is a new "
+                "contract file with its own contract_id, never an edit to this one."
             )
         return replace(self, prospective_from=require_utc_midnight(instant))
 
@@ -362,8 +409,9 @@ def require_utc_midnight(instant: Any) -> datetime:
     if not midnight:
         raise ProspectiveBoundaryError(
             f"prospective_from {moment.isoformat()} is not a UTC midnight. The boundary is "
-            "the first UTC midnight after the recorder has run one complete hour; an "
-            "instant chosen anywhere else is a boundary chosen rather than derived"
+            "the earliest UTC midnight after the qualifying production hour and after the "
+            "activation change has merged; an instant chosen anywhere else is a boundary "
+            "chosen rather than derived"
         )
     return moment
 
