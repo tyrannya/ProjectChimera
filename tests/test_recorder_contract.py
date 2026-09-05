@@ -29,6 +29,7 @@ from chimera.recorder.contract import (
     DOCUMENTARY_FIELDS,
     GEN3_CONTRACT_ID,
     REQUIRED_FIELDS,
+    SETTLEMENT_INDEXED_STREAMS,
     STORAGE_LAYOUT_VERSION,
     ProspectiveBoundaryError,
     RecorderContractError,
@@ -833,6 +834,39 @@ def test_the_index_partition_is_derived_from_the_contract_and_not_a_second_list(
 
     rule = load_recorder_contract().coverage_rule
     assert "derived from required_for_coverage rather than restated" in rule
+
+
+def test_the_index_kinds_named_in_code_and_in_the_contract_are_the_same_kinds():
+    """The one place the derived partition can still drift, closed from both sides.
+
+    ``minute_indexed_required`` derives the minute-indexed set from
+    ``required_for_coverage``, which removes the stale-second-list risk A5 would
+    otherwise have created. It derives it *through*
+    ``SETTLEMENT_INDEXED_STREAMS``, though, and that is a second naming of an
+    index kind: a constant in code, and a sentence in the committed contract. A
+    stream whose kind changed in only one of them would give the gate two
+    readings, so this asserts they name the same kinds.
+    """
+    contract = load_recorder_contract()
+    rule = contract.coverage_rule
+    minute_clause = rule.split("Minute-indexed:")[1].split("Settlement-indexed:")[0]
+    settlement_clause = rule.split("Settlement-indexed:")[1].split(". ")[0]
+
+    assert SETTLEMENT_INDEXED_STREAMS, "no stream is settlement-indexed, so funding is /1440"
+    assert set(SETTLEMENT_INDEXED_STREAMS) <= set(
+        contract.streams
+    ), "the constant names a stream this contract does not record"
+    for stream in SETTLEMENT_INDEXED_STREAMS:
+        assert (
+            stream in settlement_clause
+        ), f"{stream} is settlement-indexed in code and the contract does not say so"
+        assert (
+            stream not in minute_clause
+        ), f"{stream} is settlement-indexed in code and minute-indexed in the contract"
+    for stream in contract.minute_indexed_required():
+        assert (
+            stream not in settlement_clause
+        ), f"{stream} is derived as minute-indexed and the contract calls it settlement-indexed"
 
 
 def test_the_book_ticker_stream_is_still_recorded_after_leaving_the_gate():
