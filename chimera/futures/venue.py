@@ -504,6 +504,31 @@ class DryRunFuturesVenue:
         would be untestable if this method mutated the caller's state too.
         """
         constraints = self.constraints(intent.symbol)
+        # Checked before the fill model is asked for a price, and so before any
+        # fill could be applied to the venue's position. A position side the
+        # symbol does not offer is refused whatever the book says: the hedged
+        # demo holds a LONG spot leg against a SHORT perpetual one, and a spot
+        # symbol cannot be sold short. Left to the local invariant alone, the
+        # venue would have booked the exposure and only a later reconcile would
+        # have noticed the two views disagreeing. Both events are built inside
+        # this branch rather than reusing the acknowledgement below, so that the
+        # order in which the rest of the method allocates event ids is exactly
+        # what it was before this check existed — an order whose fill model
+        # raises still consumes no id.
+        if intent.position_side.value not in constraints.supported_position_sides:
+            return [
+                OrderEvent(event_id=self._next_id(order_id), kind=EventKind.ACKNOWLEDGED),
+                OrderEvent(
+                    event_id=self._next_id(order_id),
+                    kind=EventKind.REJECTED,
+                    reason=(
+                        f"the venue does not hold a {intent.position_side.value} position "
+                        f"in {intent.symbol}: it supports "
+                        f"{sorted(constraints.supported_position_sides)}"
+                    ),
+                ),
+            ]
+
         plan = self.fill_model.plan(intent, reference_price, constraints)
         events = [OrderEvent(event_id=self._next_id(order_id), kind=EventKind.ACKNOWLEDGED)]
         if plan.rejection:

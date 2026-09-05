@@ -95,6 +95,12 @@ class FlattenCause(str, Enum):
     RECONCILIATION_MISMATCH = "RECONCILIATION_MISMATCH"
     SHUTDOWN = "SHUTDOWN"
     DATA_LOSS = "DATA_LOSS"
+    #: One leg of a hedged position exists and the other does not, so the leg
+    #: that filled is taken back off rather than left as naked directional
+    #: exposure nobody asked for. Distinct from RECONCILIATION_MISMATCH, which is
+    #: about this package disagreeing with the venue about one symbol; here both
+    #: views agree, and it is the pair that is wrong.
+    HEDGE_CORRECTION = "HEDGE_CORRECTION"
 
 
 class ReconciliationPolicy(str, Enum):
