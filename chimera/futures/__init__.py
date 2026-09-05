@@ -70,6 +70,12 @@ from chimera.futures.executor import (
     ReconciliationReport,
     ReconciliationRequired,
 )
+from chimera.futures.fills import (
+    NO_FRESH_QUOTE,
+    QUOTE_REFERENCE_DIVERGENCE,
+    RecordedQuoteFillModel,
+    TopOfBook,
+)
 from chimera.futures.store import (
     STORE_SCHEMA,
     FuturesState,
@@ -114,6 +120,7 @@ __all__ = [
     "LiveFuturesNotImplemented",
     "LoadOutcome",
     "MarginState",
+    "NO_FRESH_QUOTE",
     "NotBootstrapped",
     "OrderEvent",
     "OrderIntent",
@@ -124,10 +131,12 @@ __all__ = [
     "Position",
     "PositionError",
     "PositionSide",
+    "QUOTE_REFERENCE_DIVERGENCE",
     "ReconciliationOutcome",
     "ReconciliationPolicy",
     "ReconciliationReport",
     "ReconciliationRequired",
+    "RecordedQuoteFillModel",
     "STORE_SCHEMA",
     "SUPPORTED_ORDER_TYPES",
     "StaticConstraintSource",
@@ -136,6 +145,7 @@ __all__ = [
     "TERMINAL_STATES",
     "TRADABLE_STATUS",
     "TargetPosition",
+    "TopOfBook",
     "can_transition",
     "default_constraints_table",
     "funding_cash_flow",
