@@ -803,6 +803,15 @@ class FuturesExecutor:
         that exists now — which for an opening order is flat and has no
         liquidation price at all. Aegis compares it against
         ``min_liquidation_distance_pct`` and decides; nothing here does.
+
+        The one judgement made here is a refusal, never an approval: when the
+        prospective position is not flat and no liquidation price can be
+        established for it, this order is vetoed rather than sent to Aegis with
+        ``liquidation_price=None``. ``None`` means "there is nothing to judge",
+        which is true of a flat position and false of a position whose
+        liquidation figure merely could not be computed; handing the second case
+        over as the first let an exposure increase past the distance guard
+        precisely when the guard's own input was missing.
         """
         entry = float(constraints.quantize_price(reference_price))
         stop = (
@@ -816,13 +825,19 @@ class FuturesExecutor:
                 intent.side, intent.quantity, price
             )[0]
         except PositionError:
-            # The prospective position is only needed for the liquidation figure.
             # An opening leg whose quantity was quantized down can fail to cancel
             # an off-grid position exactly, and that must not become an exception
-            # escaping the risk gate — Aegis is told there is no liquidation price
-            # to judge, which is a case it already handles.
+            # escaping the risk gate. It does mean the position this order would
+            # leave behind is unknown, which the veto below refuses on.
             prospective = None
         state = None if prospective is None else margin_state(prospective, price, constraints)
+        if state is None and (prospective is None or not prospective.is_flat):
+            return RiskDecision(
+                False,
+                f"liquidation unknown: the position {intent.symbol} would hold after "
+                f"this {intent.purpose.value} has no computable liquidation price, so "
+                "the distance guard has nothing to measure",
+            )
         return self.risk.evaluate_entry(
             pair=intent.symbol,
             equity=equity,
@@ -836,6 +851,7 @@ class FuturesExecutor:
             funding_rate=funding_rate,
             liquidation_price=None if state is None else float(state.liquidation_price),
             exchange_healthy=exchange_healthy,
+            position_side=intent.position_side,
         )
 
     def _implied_stop(self, side: PositionSide, entry: float) -> float:
@@ -1040,6 +1056,13 @@ def _veto_label(reason: str) -> str:
     has no entry there at all. Neither is this package's to fix — changing the
     spot labels would move a series a live dashboard already queries — but a new
     table repeating a known-wrong prefix would be a defect, not consistency.
+
+    ``liquidation unknown`` is a third entry with no counterpart there, and it
+    is neither correction nor divergence: it labels a veto this package raises
+    itself, for a case the spot path cannot reach. It has to precede
+    ``liquidation`` because the collapse matches on prefixes, and the two would
+    otherwise be reported as one series — hiding a guard whose input was missing
+    behind a guard that measured a distance and refused it.
     """
     for prefix, label in (
         ("halted", "halted"),
@@ -1051,6 +1074,7 @@ def _veto_label(reason: str) -> str:
         ("max open positions", "max_positions"),
         ("funding rate", "funding"),
         ("leverage", "leverage"),
+        ("liquidation unknown", "liquidation_unknown"),
         ("liquidation", "liquidation"),
         ("position sizing", "sizing"),
         ("order stake", "stake_above_risk"),
