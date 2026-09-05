@@ -148,9 +148,19 @@ parameter changes, followed by an independent audit and a decision.
   recorder stores what the exchange publishes, never interpolates, and
   records its own gaps. Reconciliation against `data.binance.vision` archives
   when they appear, using the existing acquisition and verification tools.
-- Pass: 30 consecutive days at >= 99.5% minute coverage per stream, with the
-  archive reconciliation agreeing on every overlapping minute within
-  tolerance.
+- Pass: 30 consecutive days at >= 99.5% published-minute coverage on every
+  archive-required minute-indexed stream, with the archive reconciliation
+  agreeing on every overlapping minute within tolerance, and the day's funding
+  schedule established from the verified monthly archive with every settlement
+  it lists captured. The operative rule, and the pre-acquisition amendments A1
+  to A9 that corrected it, are section 4.9 of the implementation master plan.
+  Two consequences of those amendments belong here. Best bid/ask is recorded
+  and is required for execution, but no contemporary first-party archive
+  publishes a minute denominator for it, so it carries no archive-based
+  criterion and is not part of this pass rule (A5). The funding evidence is a
+  *monthly* archive, so the last days of the window take their verdict only
+  once it is published and verified, and the gate can be claimable later than
+  day 30 (A9).
 - Fail: coverage or reconciliation cannot be sustained. Failure means the
   project cannot do prospective science; it stops until fixed.
 - Complexity: small. Information value: high (it enables every later stage).
