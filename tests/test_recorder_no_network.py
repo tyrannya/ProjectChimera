@@ -25,28 +25,41 @@ import nothing that can reach a network, name no endpoint, hold no credential,
 read no clock, and complete a full record-and-normalize cycle with every socket
 call denied.
 
-**Two barriers, because there are now two kinds of module.** PR-05 added the
+**Three barriers, because there are now three kinds of module.** PR-05 added the
 websocket clients, the REST poller, the service and the health writer, and those
-exist precisely to open sockets. Applying the offline core's rules to them would
-have meant weakening the rules; inheriting them would have meant a guarantee that
-was not kept. So the package is split:
+exist precisely to open sockets; PR-06 added the archive reconciliation, which
+fetches published objects over HTTPS, and the coverage gate, which does not.
+Applying the offline core's rules to a module whose whole job is acquisition
+would have meant weakening the rules; letting it inherit them would have meant a
+guarantee that was not kept. So the package is split three ways:
 
-* :data:`OFFLINE_CORE` — the contract, the parsers, the sink and the normalizer —
-  keeps every rule in sections B, C and D: no network import, no endpoint, no
-  credential, no clock, and a full record-and-normalize cycle with every socket
-  call denied.
-* :data:`LIVE_LAYER` — the acquisition modules — is held to section E instead:
-  public market-data endpoints from a reviewed list and nothing else, no
-  credential, no signature, no private path, no exchange SDK, no environment
+* :data:`OFFLINE_CORE` — the contract, the parsers, the sink, the normalizer and
+  the coverage gate — keeps every rule in sections B, C and D: no network
+  import, no endpoint, no credential, no clock, and a full record-and-normalize
+  cycle with every socket call denied. The gate is here because it is pure: it
+  reads the reconciliation records off the disk and divides two counts, so
+  everything the 30-day claim rests on can be audited without trusting anything
+  about a network.
+* :data:`LIVE_LAYER` — PR-05's collection modules — is held to section E
+  instead: public market-data endpoints from a reviewed list and nothing else,
+  no credential, no signature, no private path, no exchange SDK, no environment
   read, no research dependency, and no way to write the prospective boundary.
+* :data:`ARCHIVE_LAYER` — PR-06's reconciliation — acquires too, so it is held
+  to **every** rule in section E and to the same reviewed endpoint list. It is a
+  third group rather than a member of the second because it is not collection:
+  it opens no websocket, runs no event loop and records nothing. The one host it
+  may name is an entry in :data:`ALLOWED_ENDPOINTS` that somebody added on
+  purpose, which is the property the offline core's "no endpoint at all" rule
+  buys for every layer above it.
 
-``chimera/recorder/__init__.py`` imports only the first group, so importing the
-recorder's data model still cannot pull a socket into the process. Section E
-asserts that too.
+``chimera/recorder/__init__.py`` imports the first group and neither of the
+others, so importing the recorder's data model still cannot pull a socket into
+the process. Section E asserts that too.
 """
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import re
@@ -76,6 +89,12 @@ OFFLINE_CORE: tuple[str, ...] = (
     "incremental.py",
     "normalize.py",
     "sink.py",
+    # The coverage gate. It reads the reconciliation records the archive layer
+    # persisted and divides two counts by a third; it opens nothing, names no
+    # host and reads no clock, so it is held to the offline core's rules rather
+    # than to the acquiring layer's weaker ones. The arithmetic the whole S1
+    # claim rests on is therefore covered by the strongest barrier here.
+    "coverage.py",
 )
 
 #: The modules PR-05 delivers: live collection. They open sockets by design, and
@@ -87,9 +106,16 @@ LIVE_LAYER: tuple[str, ...] = (
     "streams.py",
 )
 
+#: The module PR-06 delivers that acquires: the archive reconciliation. It
+#: fetches published objects over HTTPS from one allow-listed first-party host,
+#: so it cannot keep the offline core's guarantee — and it is not collection, so
+#: it is not the live layer either. Section E covers it in full.
+ARCHIVE_LAYER: tuple[str, ...] = ("reconcile.py",)
+
 ALL_SOURCES = sorted(path for path in PACKAGE.rglob("*.py") if "__pycache__" not in path.parts)
 SOURCES = [path for path in ALL_SOURCES if path.name in OFFLINE_CORE]
 LIVE_SOURCES = [path for path in ALL_SOURCES if path.name in LIVE_LAYER]
+ARCHIVE_SOURCES = [path for path in ALL_SOURCES if path.name in ARCHIVE_LAYER]
 SOURCE_TEXT = {path: path.read_text(encoding="utf-8") for path in SOURCES}
 
 #: Modules that would give the package a way to reach an exchange, sign a
@@ -214,17 +240,21 @@ def clock_reads(source: str) -> set[str]:
 
 
 # --- A. the scan itself --------------------------------------------------------
-def test_every_module_in_the_package_is_covered_by_one_of_the_two_barriers():
+def test_every_module_in_the_package_is_covered_by_one_of_the_three_barriers():
     """A tripwire, and the message says what to do when it fires."""
+    named = OFFLINE_CORE + LIVE_LAYER + ARCHIVE_LAYER
     found = tuple(sorted(path.name for path in ALL_SOURCES))
-    assert found == tuple(sorted(OFFLINE_CORE + LIVE_LAYER)), (
-        f"{PACKAGE} holds {list(found)}, not {sorted(OFFLINE_CORE + LIVE_LAYER)}. Every "
-        "assertion in this file covers exactly the modules it lists, so a new module is "
-        "covered by neither barrier until it is named here. Put it in OFFLINE_CORE if it "
-        "holds no client and opens nothing; put it in LIVE_LAYER if it acquires, and read "
-        "section E for what it then has to keep."
+    assert found == tuple(sorted(named)), (
+        f"{PACKAGE} holds {list(found)}, not {sorted(named)}. Every assertion in this file "
+        "covers exactly the modules it lists, so a new module is covered by no barrier at "
+        "all until it is named here. Put it in OFFLINE_CORE if it holds no client and opens "
+        "nothing; put it in LIVE_LAYER if it collects; put it in ARCHIVE_LAYER if it "
+        "acquires published objects — and read section E for what either of the last two "
+        "then has to keep."
     )
-    assert set(SOURCES).isdisjoint(LIVE_SOURCES), "a module cannot be in both barriers"
+    groups = (set(SOURCES), set(LIVE_SOURCES), set(ARCHIVE_SOURCES))
+    for first, second in ((0, 1), (0, 2), (1, 2)):
+        assert groups[first].isdisjoint(groups[second]), "a module cannot be in two barriers"
     assert all(
         path.read_text(encoding="utf-8").strip() for path in ALL_SOURCES
     ), "a scanned module read empty"
@@ -404,6 +434,14 @@ def test_the_whole_pipeline_runs_with_every_socket_call_denied(no_network, tmp_p
     settlements = normalizer.build_settlements("um")
     normalizer.freeze_day("um", DAY)
 
+    # And the gate, which is offline core too: it reads what is on disk and
+    # computes a verdict. There is no reconciliation record here, so the honest
+    # answer is a streak of zero and an unset boundary — which is exactly the
+    # answer that must come back without a socket.
+    verdict = recorder.gate(root, 30, contract=contract)
+    assert verdict.gate_passed is False
+    assert verdict.streak == 0
+
     assert day.rows == 3
     assert len(day.digest) == 64
     assert settlements.rows == 3
@@ -456,6 +494,13 @@ ALLOWED_ENDPOINTS = frozenset(
         # PRIVATE_PATH_TOKENS below.
         "/fapi/v1",
         "/api/v3",
+        # PR-06's archive host, added here deliberately and reviewed as an edit
+        # to this list — which is the mechanism the message below describes. It
+        # is the public first-party archive site: it publishes daily and monthly
+        # objects with a .CHECKSUM companion beside each, it is served without
+        # authentication, and the archive paths under it carry no API version
+        # prefix, so the host is the whole of what a module here may name.
+        "https://data.binance.vision",
     }
 )
 
@@ -507,17 +552,24 @@ ENVIRONMENT_READS = (
 URL_PATTERN = re.compile(r"(?:wss?|https?)://[^\s\"'`)\]<>]+")
 API_PATH_PATTERN = re.compile(r"/(?:fapi|dapi|sapi|api)/v\d[A-Za-z0-9_/]*")
 
-LIVE_SOURCE_TEXT = {path: path.read_text(encoding="utf-8") for path in LIVE_SOURCES}
-#: The CLI and the network preflight are part of PR-05's reachable surface, so
-#: they are held to the same rules. The preflight deliberately imports nothing
-#: from this repository — that is what makes its answer about the venue rather
-#: than about the recorder — but it still names hosts, and a host it named that
-#: the allow-list did not would be exactly as much of a finding there.
+#: Every module section E covers: the two groups that acquire, plus the two
+#: tools that drive them. Named for what they have in common — a reachable
+#: surface — rather than for either group, so that reading the parametrized
+#: tests below never suggests the archive layer is part of live collection.
+ACQUIRING_SOURCE_TEXT = {
+    path: path.read_text(encoding="utf-8") for path in LIVE_SOURCES + ARCHIVE_SOURCES
+}
+#: The CLI and the network preflight are part of the recorder's reachable
+#: surface, so they are held to the same rules. The preflight deliberately
+#: imports nothing from this repository — that is what makes its answer about
+#: the venue rather than about the recorder — but it still names hosts, and a
+#: host it named that the allow-list did not would be exactly as much of a
+#: finding there.
 CLI_SOURCE = REPO / "tools" / "recorder.py"
 PREFLIGHT_SOURCE = REPO / "tools" / "recorder_preflight.py"
 for _tool in (CLI_SOURCE, PREFLIGHT_SOURCE):
-    LIVE_SOURCE_TEXT[_tool] = _tool.read_text(encoding="utf-8")
-LIVE_PATHS = sorted(LIVE_SOURCE_TEXT)
+    ACQUIRING_SOURCE_TEXT[_tool] = _tool.read_text(encoding="utf-8")
+ACQUIRING_PATHS = sorted(ACQUIRING_SOURCE_TEXT)
 
 
 def endpoints_in(source: str) -> set[str]:
@@ -552,6 +604,25 @@ def test_the_live_layer_is_exactly_the_modules_pr_05_delivers():
     assert LIVE_SOURCES, "the live-layer scan found nothing and would pass vacuously"
 
 
+def test_the_archive_layer_is_exactly_the_module_pr_06_delivers():
+    """The third part of the tripwire: what acquires without collecting.
+
+    Section E's assertions are parametrized over :data:`ACQUIRING_PATHS`, the
+    union of both acquiring groups and the two tools. Naming the archive group
+    separately is what stops a future module from being folded into the live
+    layer's list and inheriting a description of itself that is not true.
+    """
+    found = tuple(sorted(path.name for path in ARCHIVE_SOURCES))
+    assert (
+        found == ARCHIVE_LAYER
+    ), f"{PACKAGE} holds archive modules {list(found)}, not {list(ARCHIVE_LAYER)}"
+    assert ARCHIVE_SOURCES, "the archive-layer scan found nothing and would pass vacuously"
+    assert set(ARCHIVE_SOURCES) <= set(ACQUIRING_SOURCE_TEXT), (
+        "the archive layer is scanned by section E; a module that acquires and is not in "
+        "ACQUIRING_SOURCE_TEXT is covered by nothing at all"
+    )
+
+
 def test_the_endpoint_scan_can_actually_see_one():
     """Catches the scanner going blind, which would allow any host at all."""
     sample = (
@@ -565,9 +636,9 @@ def test_the_endpoint_scan_can_actually_see_one():
     assert not found <= ALLOWED_ENDPOINTS, "the sample must not be mistaken for allowed"
 
 
-@pytest.mark.parametrize("path", LIVE_PATHS, ids=lambda p: p.name)
-def test_the_live_layer_names_only_public_market_data_endpoints(path):
-    found = endpoints_in(LIVE_SOURCE_TEXT[path])
+@pytest.mark.parametrize("path", ACQUIRING_PATHS, ids=lambda p: p.name)
+def test_every_acquiring_module_names_only_public_market_data_endpoints(path):
+    found = endpoints_in(ACQUIRING_SOURCE_TEXT[path])
     offenders = sorted(token for token in found if token not in ALLOWED_ENDPOINTS)
     assert not offenders, (
         f"{path.name} names {offenders}, which is not in the reviewed list of public "
@@ -576,9 +647,9 @@ def test_the_live_layer_names_only_public_market_data_endpoints(path):
     )
 
 
-@pytest.mark.parametrize("path", LIVE_PATHS, ids=lambda p: p.name)
-def test_the_live_layer_never_names_a_private_or_authenticated_path(path):
-    lowered = LIVE_SOURCE_TEXT[path].lower()
+@pytest.mark.parametrize("path", ACQUIRING_PATHS, ids=lambda p: p.name)
+def test_no_acquiring_module_names_a_private_or_authenticated_path(path):
+    lowered = ACQUIRING_SOURCE_TEXT[path].lower()
     found = [token for token in PRIVATE_PATH_TOKENS if token in lowered]
     assert not found, (
         f"{path.name} names {found}. Every one of those exists only behind an API key, "
@@ -586,9 +657,9 @@ def test_the_live_layer_never_names_a_private_or_authenticated_path(path):
     )
 
 
-@pytest.mark.parametrize("path", LIVE_PATHS, ids=lambda p: p.name)
-def test_the_live_layer_names_no_credential(path):
-    lowered = LIVE_SOURCE_TEXT[path].lower()
+@pytest.mark.parametrize("path", ACQUIRING_PATHS, ids=lambda p: p.name)
+def test_no_acquiring_module_names_a_credential(path):
+    lowered = ACQUIRING_SOURCE_TEXT[path].lower()
     found = [token for token in CREDENTIAL_TOKENS if token in lowered]
     assert not found, (
         f"{path.name} mentions {found}. Opening a socket does not make a key necessary: "
@@ -596,25 +667,25 @@ def test_the_live_layer_names_no_credential(path):
     )
 
 
-@pytest.mark.parametrize("path", LIVE_PATHS, ids=lambda p: p.name)
-def test_the_live_layer_imports_no_exchange_sdk_and_signs_nothing(path):
-    found = imported_top_level_modules(LIVE_SOURCE_TEXT[path]) & LIVE_FORBIDDEN_IMPORTS
+@pytest.mark.parametrize("path", ACQUIRING_PATHS, ids=lambda p: p.name)
+def test_no_acquiring_module_imports_an_exchange_sdk_or_signs_anything(path):
+    found = imported_top_level_modules(ACQUIRING_SOURCE_TEXT[path]) & LIVE_FORBIDDEN_IMPORTS
     assert not found, (
         f"{path.name} imports {sorted(found)}. The live layer speaks HTTP and websockets "
         "to public endpoints; an exchange SDK, a MAC or a subprocess is a different thing"
     )
 
 
-@pytest.mark.parametrize("path", LIVE_PATHS, ids=lambda p: p.name)
-def test_the_live_layer_reaches_no_module_by_running_a_string(path):
-    found = dynamic_execution_calls(LIVE_SOURCE_TEXT[path])
+@pytest.mark.parametrize("path", ACQUIRING_PATHS, ids=lambda p: p.name)
+def test_no_acquiring_module_reaches_a_module_by_running_a_string(path):
+    found = dynamic_execution_calls(ACQUIRING_SOURCE_TEXT[path])
     assert not found, f"{path.name} calls {sorted(found)}, which defeats the import scan"
 
 
-@pytest.mark.parametrize("path", LIVE_PATHS, ids=lambda p: p.name)
-def test_the_live_layer_reads_no_environment_variable(path):
+@pytest.mark.parametrize("path", ACQUIRING_PATHS, ids=lambda p: p.name)
+def test_no_acquiring_module_reads_an_environment_variable(path):
     """A secret that is never imported can still be read out of the environment."""
-    found = attribute_reads(LIVE_SOURCE_TEXT[path])
+    found = attribute_reads(ACQUIRING_SOURCE_TEXT[path])
     offenders = sorted(
         name for name in found if name in {f"{a}.{b}" for a, b in ENVIRONMENT_READS}
     )
@@ -631,16 +702,23 @@ def test_the_environment_scan_can_actually_see_a_read():
     assert {"os.getenv", "os.environ"} <= found
 
 
-@pytest.mark.parametrize("path", LIVE_PATHS, ids=lambda p: p.name)
-def test_the_live_layer_depends_on_no_research_code(path):
-    """Live collection is infrastructure. It must not import a checkpoint's code.
+@pytest.mark.parametrize("path", ACQUIRING_PATHS, ids=lambda p: p.name)
+def test_no_acquiring_module_depends_on_research_code(path):
+    """Collection and acquisition are infrastructure, not a checkpoint's code.
+
+    Amendment A8 makes this one load-bearing rather than tidy: the specification
+    used to name ``nn/p13_acquisition.py`` and the readers in
+    ``nn/p13_sources.py`` as the tools the prospective reconciliation would use,
+    and those readers enforce P13's historical data boundary and refuse an object
+    outside it. The reconciliation owns its own parsing precisely because of
+    that, and this assertion is what keeps the two apart.
 
     ``tools/recorder.py`` is the one deliberate exception and it is asserted
     rather than waived: the CLI stamps ``nn.source_identity``'s revision onto the
     heartbeat, which is provenance, and it is the *only* thing it takes from
     ``nn``. The recorder package itself takes nothing.
     """
-    text = LIVE_SOURCE_TEXT[path]
+    text = ACQUIRING_SOURCE_TEXT[path]
     assert "nn.evaluate" not in text, f"{path.name} imports the research evaluator"
     assert "chimera.carry" not in text, f"{path.name} imports the carry accounting"
     imports = set(re.findall(r"^\s*(?:from|import)\s+(nn[\w.]*)", text, re.MULTILINE))
@@ -658,40 +736,104 @@ def test_the_live_layer_depends_on_no_research_code(path):
         )
 
 
-def test_the_live_layer_never_writes_the_prospective_boundary():
-    """PR-05 records. It does not decide that what it recorded is evidence.
+#: Every module that must be unable to write the boundary: the whole package
+#: except the one file that legitimately defines the constructor, plus the two
+#: tools. Deliberately wider than the acquiring set — the module that issues the
+#: gate verdict is the worst possible place for this gap, because a module that
+#: could both set the boundary and then declare the 30-day gate passed would turn
+#: engineering days into scientific evidence in one step, which is the failure
+#: this assertion exists for.
+BOUNDARY_SCANNED_PATHS = sorted(
+    set(ACQUIRING_PATHS) | {path for path in ALL_SOURCES if path.name != "contract.py"}
+)
+
+
+def test_no_module_but_the_contract_can_write_the_prospective_boundary():
+    """They record, they reconcile and they judge. None of them decides it is evidence.
 
     ``with_prospective_from`` is the only way a boundary is ever set, it is pure,
     and setting it is a reviewed commit in a later pull request. A collector that
     called it would turn its own engineering data into scientific evidence while
-    nobody was looking.
+    nobody was looking; a reconciliation that called it would do the same thing
+    two days later, with a coverage number to point at; and the coverage gate
+    itself could do both at once.
     """
-    for path in LIVE_PATHS:
-        text = LIVE_SOURCE_TEXT[path]
+    assert BOUNDARY_SCANNED_PATHS, "the boundary scan found nothing and would pass vacuously"
+    assert (PACKAGE / "coverage.py") in BOUNDARY_SCANNED_PATHS, (
+        "the module that issues the gate verdict is scanned; it is the one that could set "
+        "the boundary and then declare the gate passed"
+    )
+    for path in BOUNDARY_SCANNED_PATHS:
+        text = path.read_text(encoding="utf-8")
         assert "with_prospective_from" not in text, (
-            f"{path.name} sets the prospective boundary. Recording is PR-05's; deciding "
-            "that a recording is evidence is a reviewed commit, not a runtime action"
+            f"{path.name} sets the prospective boundary. Recording and judging are runtime "
+            "work; deciding that a recording is evidence is a reviewed commit"
         )
 
 
-def test_the_live_layer_implements_no_reconciliation_or_coverage_gate():
-    """PR-06's names must not appear as PR-05's code.
+def test_the_collection_modules_implement_no_reconciliation_or_coverage_gate():
+    """The gate's arithmetic belongs to PR-06's modules and stays out of PR-05's.
 
-    The plan's long-term CLI has ``reconcile`` and ``coverage`` subcommands and
-    the contract's coverage rule names the arithmetic. Neither is implemented
-    here, and a stub carrying the name would be read as the thing itself.
+    This assertion was written for PR-05, when neither existed anywhere and any
+    occurrence of the names was a stub. PR-06 is the change that legitimately
+    supersedes that reading, so what it forbids is narrowed to exactly what is
+    still true: the *collection* modules — the websocket clients, the REST
+    poller, the service and the health writer — compute no coverage. A collector
+    that decided how much of a day it had captured would be marking its own
+    homework, and keeping the judgement in a module that reads only files is
+    what makes it checkable.
+
+    ``coverage.py`` and ``reconcile.py`` are the only modules excused, because
+    the names are theirs. ``tools/recorder.py`` stays in the scan: driving the
+    gate means calling ``gate()`` and printing what it returned, which needs none
+    of these identifiers, so the CLI passing this is a real statement that the
+    arithmetic lives in the one module the offline core's barrier holds — no
+    network import, no endpoint, no credential, no clock — rather than in the
+    tool, where sections B to D do not reach and where amendment A2's
+    prohibition on a settlement denominator would be asserted by nothing. The
+    preflight stays for the same reason: it asks the venue a question and has no
+    more business judging coverage than a collector does.
     """
     forbidden = ("published_coverage", "wallclock_coverage", "settlement_coverage")
-    for path in LIVE_PATHS:
-        names = module_identifiers_of(LIVE_SOURCE_TEXT[path])
+    for path in LIVE_SOURCES + [PREFLIGHT_SOURCE, CLI_SOURCE]:
+        names = module_identifiers_of(path.read_text(encoding="utf-8"))
         offenders = sorted(name for name in names if name in forbidden)
-        assert not offenders, f"{path.name} computes {offenders}, which belongs to PR-06"
-    cli = LIVE_SOURCE_TEXT[CLI_SOURCE]
-    for subcommand in ('"reconcile"', "'reconcile'", '"coverage"', "'coverage'"):
-        assert subcommand not in cli, (
-            f"tools/recorder.py registers {subcommand}; a subcommand that exists but "
-            "cannot work reads as a capability this build does not have"
+        assert not offenders, (
+            f"{path.name} computes {offenders}, which belongs to the coverage gate. A "
+            "collector does not judge its own coverage"
         )
+
+
+def test_the_cli_registers_the_subcommands_this_build_can_actually_perform():
+    """``--help`` must describe this build, and PR-06 is when the four arrive.
+
+    Before PR-06 the assertion here was the opposite one: ``reconcile`` and
+    ``coverage`` had to be *absent*, because a subcommand that parsed its
+    arguments and then said "not implemented" would appear in ``--help`` as a
+    capability the build did not have. All four are implemented now, so the
+    honest form of the same rule is that each one is registered and each one
+    describes itself — and ``run`` and ``status`` are still there, because PR-06
+    adds to the command line rather than replacing it.
+    """
+    from tools.recorder import build_parser
+
+    subparsers = [
+        action
+        for action in build_parser()._subparsers._group_actions
+        if isinstance(action, argparse._SubParsersAction)
+    ]
+    assert len(subparsers) == 1, "the CLI has exactly one set of subcommands"
+    choices = subparsers[0].choices
+    assert set(choices) == {
+        "run",
+        "status",
+        "reconcile",
+        "coverage",
+        "verify-day",
+        "freeze-day",
+    }, f"tools/recorder.py registers {sorted(choices)}"
+    for name in ("reconcile", "coverage", "verify-day", "freeze-day"):
+        assert choices[name].description, f"{name} does not say what it does"
 
 
 def module_identifiers_of(source: str) -> set[str]:
@@ -707,19 +849,21 @@ def module_identifiers_of(source: str) -> set[str]:
     return names
 
 
-def test_importing_the_recorder_package_still_does_not_import_the_live_layer():
+def test_importing_the_recorder_package_still_does_not_import_an_acquiring_module():
     """The offline core keeps its guarantee because ``__init__`` does not widen it.
 
-    ``chimera.recorder`` re-exports the contract, the parsers, the sink and the
-    normalizer. If it also imported the streams module, every consumer of the
-    data model — a replay, a test, a report — would pull a websocket client and
-    an event loop into its process, and section C's import-cost test would be
-    measuring something else.
+    ``chimera.recorder`` re-exports the contract, the parsers, the sink, the
+    normalizer and the coverage gate. If it also imported the streams module,
+    every consumer of the data model — a replay, a test, a report — would pull a
+    websocket client and an event loop into its process; if it imported the
+    reconciliation it would pull an HTTP stack in the same way, which is exactly
+    why the gate is exported and the thing that feeds it is not. Section C's
+    import-cost test would be measuring something else in either case.
     """
     text = (PACKAGE / "__init__.py").read_text(encoding="utf-8")
-    for module in ("streams", "rest", "service", "health"):
+    for module in ("streams", "rest", "service", "health", "reconcile"):
         assert f"chimera.recorder.{module}" not in text, (
-            f"chimera/recorder/__init__.py imports {module}. The live layer is imported "
-            "explicitly by whoever wants it, so that holding the data model never means "
-            "holding a socket"
+            f"chimera/recorder/__init__.py imports {module}. Every module that can reach a "
+            "network is imported explicitly by whoever wants it, so that holding the data "
+            "model never means holding a socket"
         )

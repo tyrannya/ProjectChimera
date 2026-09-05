@@ -863,10 +863,38 @@ def test_the_persisted_metadata_says_captured_and_does_not_say_published(root):
     assert minute_ms(1) in document["missing"]
 
 
+#: The two modules that are allowed to name the archive's set, because the
+#: archive is where they get it from. ``reconcile.py`` learns it by fetching and
+#: verifying the venue's own published object; ``coverage.py`` reads the number
+#: that module persisted. Every other module in the package can only ever know
+#: ``captured_minutes``, and naming the other set there would be exactly the
+#: conflation this section exists to prevent. The pair is listed rather than
+#: inferred so that a third module cannot join it by accident.
+ARCHIVE_INFORMED_MODULES = ("coverage.py", "reconcile.py")
+
+
 def test_the_recorder_package_never_names_published_minutes_as_its_own_output():
-    """`published_minutes` may be explained here; it may never be produced here."""
+    """`published_minutes` may be explained here; it may never be *produced* here.
+
+    Written for PR-04, when no module of this package had any way to learn what
+    the venue published and every occurrence of the name would have been an
+    invention. PR-06 gives two modules a way — the archive itself — so the scan
+    is narrowed to the modules for which the original statement is still exactly
+    true, rather than relaxed for all of them.
+    """
     package = NORMALIZE_SOURCE.parent
-    for path in sorted(package.rglob("*.py")):
+    #: Resolved paths, not basenames: a future ``chimera/recorder/<anything>/
+    #: coverage.py`` would otherwise be excused silently, which is precisely the
+    #: accident the explicit list exists to prevent.
+    excused = {package / name for name in ARCHIVE_INFORMED_MODULES}
+    every = set(package.rglob("*.py"))
+    scanned = sorted(every - excused)
+    assert len(scanned) >= 5, "the scan found nothing and would pass vacuously"
+    assert every - set(scanned) == excused, (
+        "exactly two modules are excused from this scan, they are named by path, and they "
+        "are excused because they read the venue's archive rather than guess at it"
+    )
+    for path in scanned:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         names = module_identifiers(tree)
         assert "published_minutes" not in names, (
@@ -875,6 +903,62 @@ def test_the_recorder_package_never_names_published_minutes_as_its_own_output():
             "section exists to prevent"
         )
         assert "published_coverage" not in names, f"{path.name} computes published_coverage"
+
+
+def test_the_archive_informed_modules_take_the_published_set_from_the_archive():
+    """And from nothing else: they read it, and they never derive it from a capture.
+
+    The counterpart of the narrowing above. ``reconcile.py`` must obtain the
+    published minutes by parsing a verified archive object, and ``coverage.py``
+    must obtain them by reading the record that produced. Neither may compute the
+    set from the recorder's own normalized day, which is the one derivation that
+    would make the denominator agree with the numerator by construction.
+    """
+    package = NORMALIZE_SOURCE.parent
+    reconcile = (package / "reconcile.py").read_text(encoding="utf-8")
+    coverage = (package / "coverage.py").read_text(encoding="utf-8")
+    assert "extract_expected_member" in reconcile and "parse_checksum_companion" in reconcile
+    assert unknowable_claims_in(reconcile) == []
+    assert unknowable_claims_in(coverage) == []
+    assert "read_parquet" not in coverage, (
+        "the gate reads persisted reconciliation records; a gate that opened the recorder's "
+        "own table could produce a denominator out of the numerator"
+    )
+
+
+def test_no_module_reintroduces_the_settlement_ratio_amendment_a2_removed():
+    """The one identifier tripwire the two archive-informed modules still need.
+
+    Amendment A2 removed ``settlement_coverage`` from the gate: funding
+    completeness is a quantifier over an established set, so there is no
+    settlement ratio and no settlement denominator, and ``0 / 0`` is evaluated
+    nowhere. The barrier in ``tests/test_recorder_no_network.py`` forbids the
+    name in every module that could not plausibly contain it, and the two modules
+    that could — the gate and the reconciliation — are excused from every
+    identifier scan in this file. This is that gap closed: the name is asserted
+    absent exactly where a future edit would put it, and the funding sections are
+    asserted not to divide by a day of minutes either, which is the other half of
+    A1's separation of the two index kinds.
+    """
+    package = NORMALIZE_SOURCE.parent
+    for name in ARCHIVE_INFORMED_MODULES:
+        path = package / name
+        source = path.read_text(encoding="utf-8")
+        names = module_identifiers(ast.parse(source))
+        assert "settlement_coverage" not in names, (
+            f"{name} names settlement_coverage. Amendment A2 removed the ratio from the "
+            "gate: funding completeness is a quantifier over an established set, and a "
+            "settlement denominator is what turned a source that could not be read into "
+            "evidence of completeness"
+        )
+        for divisor in ("/ 1440", "/ MINUTES_PER_DAY"):
+            for line in source.splitlines():
+                if divisor in line and "funding" in line.lower():
+                    raise AssertionError(
+                        f"{name} divides a funding quantity by a day of minutes: {line!r}. "
+                        "um.funding is settlement-indexed, has no wall-clock coverage, and "
+                        "the 0.990 minute-stream threshold does not apply to it"
+                    )
 
 
 def test_the_index_survives_from_the_mark_stream_into_the_normalized_minute(root):
