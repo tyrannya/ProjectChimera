@@ -163,10 +163,17 @@ def _run_month(args: argparse.Namespace, config: DemoConfig) -> int:
 
     out_dir = PROSPECTIVE_ROOT / config.campaign_id / args.month
     out_dir.mkdir(parents=True, exist_ok=True)
+    # newline="\n" on both: a frozen artifact is identified by the SHA-256 of
+    # its bytes, and the default text mode would translate every newline to
+    # "\r\n" on Windows. The same report frozen on two machines would then
+    # carry two different digests, and `tools.freeze_evidence` would read that
+    # as evidence having moved.
     (out_dir / "report.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
-    (out_dir / "STATUS.md").write_text(status, encoding="utf-8")
+    (out_dir / "STATUS.md").write_text(status, encoding="utf-8", newline="\n")
     freeze(
         [out_dir],
         out=Path("artifacts") / f"{config.campaign_id}_{args.month}_SHA256SUMS.txt",

@@ -325,7 +325,7 @@ def imports_metrics(tree: ast.AST) -> bool:
 
 def metric_importers(*roots: Path) -> list[str]:
     return [
-        str(path.relative_to(REPO))
+        path.relative_to(REPO).as_posix()
         for path in python_sources(*roots)
         if imports_metrics(ast.parse(path.read_text(encoding="utf-8")))
     ]
@@ -504,7 +504,7 @@ def test_no_runtime_module_reads_a_metric_value():
     for path in python_sources(DEMO, CARRY, FUTURES, REPO / "chimera" / "risk.py"):
         hits = metric_reads(ast.parse(path.read_text(encoding="utf-8")))
         if hits:
-            offenders[str(path.relative_to(REPO))] = hits
+            offenders[path.relative_to(REPO).as_posix()] = hits
     hits = metric_reads(ast.parse(Path(metrics.__file__).read_text(encoding="utf-8")))
     if hits:
         offenders["chimera/metrics.py"] = hits
@@ -572,7 +572,7 @@ def test_the_demo_path_names_no_mode_series():
         names = named_identifiers(ast.parse(path.read_text(encoding="utf-8")))
         hit = names & set(MODE_NAMES)
         if hit:
-            offenders[str(path.relative_to(REPO))] = sorted(hit)
+            offenders[path.relative_to(REPO).as_posix()] = sorted(hit)
     assert not offenders, f"a mode series is reachable from the demo path: {offenders}"
 
 
