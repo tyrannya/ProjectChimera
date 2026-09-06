@@ -132,9 +132,20 @@ def test_every_alert_rule_queries_an_exported_metric(path):
 
 
 def test_prometheus_scrapes_only_services_that_exist():
+    """And only ones the DEFAULT topology starts.
+
+    Existing in the `services:` map is not enough. A service behind a
+    `profiles:` key is absent from a bare `docker compose up`, so scraping it
+    yields a job that is down for ever -- the same defect as scraping a service
+    that was never declared, and the one the header of conf/prometheus.yml
+    records. Reading the profile here is what makes the check mean "reachable"
+    rather than "mentioned".
+    """
     prometheus = yaml.safe_load((CONF_DIR / "prometheus.yml").read_text(encoding="utf-8"))
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    services = set(compose["services"])
+    default = {
+        name for name, service in compose["services"].items() if not service.get("profiles")
+    }
 
     for job in prometheus["scrape_configs"]:
         for static in job["static_configs"]:
@@ -142,9 +153,10 @@ def test_prometheus_scrapes_only_services_that_exist():
                 host = target.split(":")[0]
                 if host == "localhost":
                     continue
-                assert (
-                    host in services
-                ), f"prometheus scrapes '{host}', which is not a compose service"
+                assert host in default, (
+                    f"prometheus scrapes '{host}', which the default compose "
+                    "topology does not start"
+                )
 
 
 def test_alertmanager_config_contains_no_placeholder_webhook():
@@ -525,7 +537,14 @@ def test_the_demo_services_carry_no_credential_and_no_live_flag():
         service = compose["services"][name]
         assert "env_file" not in service, f"{name} takes an env file"
         assert "environment" not in service, f"{name} takes an environment block"
-        assert service["profiles"] == ["demo"]
+        # No profile: these two ARE the demo deployment, so they are what a bare
+        # `docker compose up` starts. Behind a profile they would be absent from
+        # the default topology while conf/prometheus.yml scraped them anyway,
+        # which is the permanently-down job the header of that file exists to
+        # forbid. The disconnect change relies on this too: it profiles the
+        # retired services out and states that a demo-path service carries no
+        # profile, and this assertion is what keeps that statement true.
+        assert "profiles" not in service, f"{name} is behind a compose profile"
     # freqtrade is the one service the live flag belongs to, and it sets it
     # blank. Any other service naming it would be a second way to reach a live
     # venue from this file, which is the thing that must not appear.

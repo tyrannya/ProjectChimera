@@ -90,9 +90,6 @@ EXPECTED_UNITS: frozenset[str] = frozenset({"chimera-recorder", "chimera-demo"})
 #: `deploy/systemd/chimera-recorder.service`; 9103 is the runner's.
 EXPECTED_PORTS: tuple[str, str] = ("9102", "9103")
 
-#: The compose profile the demo deployment starts under.
-EXPECTED_PROFILE = "demo"
-
 _FENCE = re.compile(r"^```", re.MULTILINE)
 
 
@@ -277,14 +274,29 @@ def test_the_runbook_names_the_adopted_ports():
     assert "--metrics-port 9103" in text
 
 
-def test_the_runbook_starts_the_compose_profile_the_new_services_carry():
-    """The document and the compose file must name the same profile."""
+def test_the_runbook_starts_the_services_the_default_topology_carries():
+    """The document and the compose file must agree on what `up` starts.
+
+    The recorder and the runner are the demo deployment and carry no profile, so
+    a runbook that told the operator to pass `--profile` would name a profile
+    that selects nothing and start no demo at all. Every service the runbook
+    hands to `docker compose` must be one a bare `up` brings with it.
+    """
     text = prose(RUNBOOK.read_text(encoding="utf-8"))
-    profiles = set(re.findall(r"--profile (\w+)", text))
-    assert profiles == {EXPECTED_PROFILE}
     compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    default = {
+        name for name, service in compose["services"].items() if not service.get("profiles")
+    }
     for service in ("recorder", "demo"):
-        assert compose["services"][service]["profiles"] == [EXPECTED_PROFILE]
+        assert service in default, f"{service} is not in the default topology"
+
+    for line in text.splitlines():
+        if "docker compose" not in line:
+            continue
+        assert "--profile" not in line, f"the runbook passes a profile: {line!r}"
+        named = [word for word in line.split() if word in compose["services"]]
+        for word in named:
+            assert word in default, f"the runbook starts profiled service {word!r}"
 
 
 def test_the_runbook_records_that_a_campaign_cannot_start_today():

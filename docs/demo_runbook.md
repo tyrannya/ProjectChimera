@@ -93,7 +93,7 @@ sudo systemctl start chimera-recorder chimera-demo
 Containerised:
 
 ```
-docker compose --profile demo up -d recorder demo prometheus grafana alertmanager
+docker compose up -d recorder demo prometheus grafana alertmanager
 ```
 
 Confirm on `http://127.0.0.1:9103/metrics` that `chimera_demo_up` is 1 and that
@@ -107,7 +107,7 @@ be firewalled to the Prometheus host; the compose file publishes them on
 
 ```
 sudo systemctl stop chimera-demo
-docker compose --profile demo stop demo
+docker compose stop demo
 ```
 
 The unit sends `SIGTERM`. A stop between the state write and the log write is
