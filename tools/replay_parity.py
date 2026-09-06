@@ -51,6 +51,7 @@ from typing import Any, Iterable, Mapping, Sequence
 __all__ = [
     "MUST_MATCH",
     "OPERATIONAL_KINDS",
+    "EXCLUDING_KINDS",
     "ParityReport",
     "Divergence",
     "compare_logs",
@@ -82,6 +83,12 @@ MUST_MATCH: tuple[str, ...] = (
 OPERATIONAL_KINDS: frozenset[str] = frozenset(
     {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME"}
 )
+
+#: Kinds whose presence in the LIVE log excludes their minute from the
+#: comparison, with the reason reported. See :func:`_excluded_minutes`. This is
+#: not a third kind-set with a third meaning: it is section 10's own
+#: "explained and excluded once", made executable.
+EXCLUDING_KINDS: frozenset[str] = frozenset({"SKIPPED_STALE", "RECOVERY"})
 
 EXIT_PARITY = 0
 EXIT_DIVERGED = 1
@@ -121,6 +128,10 @@ class ParityReport:
     replay_only: list[str] = field(default_factory=list)
     label: str = "PARITY"
     environment_note: str = ""
+    #: Minutes section 10 allows a replay to decide differently, each with the
+    #: reason. Never empty silently: a run with no exclusions reports none, and a
+    #: run with any lists every one. See :func:`_excluded_minutes`.
+    explained_exclusions: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -135,6 +146,7 @@ class ParityReport:
             "live_only": self.live_only,
             "replay_only": self.replay_only,
             "environment_note": self.environment_note,
+            "explained_exclusions": list(self.explained_exclusions),
             "first_divergence": (self.divergences[0].render() if self.divergences else None),
         }
 
@@ -153,8 +165,41 @@ def read_log(log_dir: Path, days: Sequence[str] | None = None) -> list[dict[str,
     return records
 
 
-def _key(record: Mapping[str, Any]) -> tuple[str, str]:
-    return str(record.get("minute", "")), str(record.get("kind", ""))
+def _keys(records: Sequence[Mapping[str, Any]]) -> list[tuple[str, str, int]]:
+    """Alignment keys: ``(minute, kind, ordinal)``, in log order.
+
+    The ordinal is how many records of that kind this minute has already
+    produced, and it exists because a minute may produce more than one record of
+    a kind. Catching up over a settlement boundary can book two FUNDING
+    settlements in one minute; a mismatch can produce a RECONCILIATION and then
+    a HALT.
+
+    Without it the comparison keyed on ``(minute, kind)`` into a dict, so the
+    LAST record of a repeated key overwrote the earlier ones on both sides. The
+    consequences were all silent: the earlier records were never compared to
+    anything, so a replay could differ on them freely; a replay that emitted
+    FEWER of them produced no ``replay_only`` entry, because the key was still
+    present; and ``compared`` counted the duplicates, so the "the comparison must
+    not be vacuous" guard went up rather than down. A parity proof that cannot
+    see a dropped settlement is not a proof.
+
+    With one record per ``(minute, kind)`` -- which is every case before
+    PR-10R -- every ordinal is 0 and the keys are exactly the old ones.
+    """
+    seen: dict[tuple[str, str], int] = {}
+    keys: list[tuple[str, str, int]] = []
+    for record in records:
+        base = (str(record.get("minute", "")), str(record.get("kind", "")))
+        ordinal = seen.get(base, 0)
+        seen[base] = ordinal + 1
+        keys.append((base[0], base[1], ordinal))
+    return keys
+
+
+def _render_key(key: tuple[str, str, int]) -> str:
+    """One alignment key, for a human. The ordinal shows only when it matters."""
+    minute, kind, ordinal = key
+    return f"{kind} at {minute}" if ordinal == 0 else f"{kind} #{ordinal + 1} at {minute}"
 
 
 def _environment_differs(
@@ -200,20 +245,33 @@ def compare_logs(
         report.label = ENVIRONMENT_PARITY
         report.environment_note = note
 
-    live_decisions = [r for r in live if str(r.get("kind")) not in OPERATIONAL_KINDS]
-    replay_decisions = [r for r in replay if str(r.get("kind")) not in OPERATIONAL_KINDS]
+    excluded = _excluded_minutes(live)
+    report.explained_exclusions = [
+        f"{minute}: {reason}" for minute, reason in sorted(excluded.items())
+    ]
 
-    live_keys = [_key(r) for r in live_decisions]
-    replay_keys = [_key(r) for r in replay_decisions]
-    replay_by_key = {k: r for k, r in zip(replay_keys, replay_decisions)}
-    live_by_key = {k: r for k, r in zip(live_keys, live_decisions)}
+    def comparable(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        return [
+            r
+            for r in records
+            if str(r.get("kind")) not in OPERATIONAL_KINDS
+            and str(r.get("minute", "")) not in excluded
+        ]
+
+    live_decisions = comparable(live)
+    replay_decisions = comparable(replay)
+
+    live_keys = _keys(live_decisions)
+    replay_keys = _keys(replay_decisions)
+    replay_by_key = dict(zip(replay_keys, replay_decisions))
+    live_by_key = dict(zip(live_keys, live_decisions))
 
     for key in live_keys:
         if key not in replay_by_key:
-            report.live_only.append(f"{key[1]} at {key[0]}")
+            report.live_only.append(_render_key(key))
     for key in replay_keys:
         if key not in live_by_key:
-            report.replay_only.append(f"{key[1]} at {key[0]}")
+            report.replay_only.append(_render_key(key))
 
     fields = tuple(must_match)
     for index, key in enumerate(live_keys):
@@ -229,6 +287,54 @@ def compare_logs(
             if a != b:
                 report.divergences.append(Divergence(index, key[0], key[1], name, a, b))
     return report
+
+
+def _excluded_minutes(live: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Minutes section 10 lets a replay decide differently, and why, by name.
+
+    Section 10's failure criterion ends "a divergence caused by a
+    ``LOG_BEHIND_STATE`` minute is explained and excluded once". Two conditions
+    produce a live minute a replay cannot be asked to reproduce, and both are
+    facts about the RUNNING of the campaign rather than about the files it read:
+
+    ``SKIPPED_STALE``
+        The live process came back from an outage and the minute was already too
+        old to decide. A replay reads the whole range at once and is never late,
+        so it decides that minute. Which minutes were stale depends on when the
+        process restarted, and nothing in the recorded files records it.
+
+    ``RECOVERY``
+        Section 9.3's own: the affected minute "is excluded from the campaign's
+        evidence and counted in the monthly report". The record names it.
+
+    Each exclusion is a MINUTE and it is REPORTED. It is not a record kind
+    quietly dropped from the comparison: an excluded minute is listed in
+    ``explained_exclusions`` with the reason, appears in the tool's output and in
+    the JSON, and a run with none has an empty list. A parity pass that excluded
+    something silently would be worth nothing, which is why this returns the
+    reasons and not a filter.
+    """
+    excluded: dict[str, str] = {}
+    for record in live:
+        kind = str(record.get("kind"))
+        minute = str(record.get("minute", ""))
+        if not minute:
+            continue
+        if kind == "SKIPPED_STALE":
+            stale = record.get("stale") or {}
+            excluded[minute] = (
+                "the live run skipped this minute as stale on catch-up "
+                f"({stale.get('age_minutes')} minute(s) old, limit "
+                f"{stale.get('max_catchup_minutes')}); a replay is never late"
+            )
+        elif kind == "RECOVERY":
+            recovery = record.get("recovery") or {}
+            affected = str(recovery.get("evidence_excluded_minute") or minute)
+            excluded[affected] = (
+                "section 9.3 excludes the minute a crash left inconsistent "
+                f"({recovery.get('cause')})"
+            )
+    return excluded
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +384,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _last_live_minute_ms(records: Sequence[Mapping[str, Any]]) -> int | None:
+    """The newest minute the live log names, in epoch milliseconds.
+
+    Read from the records rather than from a count of them, and from every kind:
+    a SHUTDOWN at the end of the range still names the minute the campaign
+    reached.
+    """
+    from datetime import datetime
+
+    newest: int | None = None
+    for record in records:
+        minute = record.get("minute")
+        if not isinstance(minute, str) or not minute:
+            continue
+        try:
+            stamp = int(datetime.fromisoformat(minute).timestamp() * 1000)
+        except ValueError:
+            continue
+        if newest is None or stamp > newest:
+            newest = stamp
+    return newest
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -313,8 +442,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if first is None:
         print("the scratch copy carries no minutes", file=sys.stderr)
         return EXIT_REFUSED
-    minutes = [r for r in live_records if r.get("kind") not in OPERATIONAL_KINDS]
-    runner.replay(first, first + (len(minutes) + 1) * 60_000)
+    # The window is the live run's MINUTE RANGE, not a count of its records.
+    # Counting records over-runs the range whenever a minute produced more than
+    # one -- an incomplete minute, an operator command, and since PR-10R a
+    # funding settlement or a reconciliation -- and `DemoRunner.replay` expands
+    # whatever it is given into every minute between the two ends, so the replay
+    # ticked minutes the live run never saw and reported them as `replay_only`.
+    last = _last_live_minute_ms(live_records)
+    if last is None:
+        print("the live log names no minute to replay", file=sys.stderr)
+        return EXIT_REFUSED
+    runner.replay(first, max(first, last))
     runner.shutdown("replay parity")
 
     replay_records = read_log(replay_state / "decision_log", args.days)
@@ -326,6 +464,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{report.label}: {'PARITY' if report.ok else 'DIVERGED'}")
         print(f"  records compared : {report.compared}")
         print(f"  divergences      : {len(report.divergences)}")
+        # Printed always, including the zero: an exclusion a reader has to go
+        # looking for is an exclusion that will be missed.
+        print(f"  explained exclusions: {len(report.explained_exclusions)}")
+        for line in report.explained_exclusions[:10]:
+            print(f"    - {line}")
         if report.environment_note:
             print(f"  environment      : {report.environment_note}")
         if report.live_only:

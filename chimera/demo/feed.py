@@ -40,6 +40,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 import pandas as pd
 
+from chimera.carry.hedge import PerpSettlement
 from chimera.recorder.contract import RecorderContract
 from chimera.recorder.normalize import (
     MinuteNormalizer,
@@ -53,8 +54,10 @@ __all__ = [
     "MarketState",
     "MinuteRecord",
     "plain_json",
+    "settlement_from_row",
     "MINUTE_NS",
     "PERP_MARKET",
+    "SETTLEMENT_INSTANT_FIELD",
     "SPOT_MARKET",
 ]
 
@@ -66,6 +69,19 @@ SPOT_MARKET = "spot"
 
 MINUTE_NS = 60_000_000_000
 _MS_TO_NS = 1_000_000
+
+#: The settlement instant's field name in the recorder's own settlements file,
+#: read off :meth:`chimera.recorder.events.FundingSettlement.to_settlement_record`
+#: rather than guessed.
+#:
+#: It is named here because getting it wrong is silent. Until PR-10R this module
+#: read ``settlement_ms``, a key the recorder has never written: every row
+#: therefore defaulted to instant ``0``, ``settlements()`` "sorted" them all
+#: equal, and ``last_settlement_at_or_before`` answered every minute with the
+#: last row of the file -- so a decision's ``funding_last`` input was whatever
+#: settlement happened to be last in the file rather than the one in force. The
+#: synthetic fixture wrote the same wrong key, which is why no test saw it.
+SETTLEMENT_INSTANT_FIELD = "funding_time_ms"
 
 
 class FeedError(RuntimeError):
@@ -205,6 +221,89 @@ class MarketState:
         }
 
 
+def _settlement_ms(row: Mapping[str, Any]) -> int:
+    """One settlement row's instant, in milliseconds. Refuses a row without one.
+
+    A row whose instant cannot be read is not sorted to zero and not skipped: a
+    settlements file the runner cannot place in time is a funding input it cannot
+    use, and reading past it would leave the campaign charging some settlements
+    and not others with nothing recording which.
+    """
+    value = row.get(SETTLEMENT_INSTANT_FIELD)
+    if value is None:
+        raise FeedError(
+            f"a funding settlement row has no {SETTLEMENT_INSTANT_FIELD!r}: {row!r}. "
+            "That is the field the recorder writes for the settlement instant"
+        )
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise FeedError(
+            f"funding settlement {SETTLEMENT_INSTANT_FIELD}={value!r} is not an integer "
+            "number of milliseconds"
+        ) from exc
+
+
+def settlement_from_row(
+    row: Mapping[str, Any], *, position_symbol: str, venue_symbol: str
+) -> PerpSettlement:
+    """One recorded settlement row, translated for the perpetual leg to book.
+
+    Three translations happen here and each of them is a place a silent wrong
+    answer was available:
+
+    **The symbol.** The row carries the VENUE's spelling (``BTCUSDT``) and the
+    position is keyed by the executor's (``BTC/USDT:USDT``).
+    :func:`chimera.futures.accounting.funding_cash_flow` looks the position up by
+    the event's symbol, so an untranslated row finds no position, reads as flat
+    and books zero -- a settlement the log would report as settled and the ledger
+    would show as free. The row's own spelling is checked against the contract's
+    market symbol first, so a settlements file for another instrument is refused
+    rather than relabelled.
+
+    **The instant.** ``funding_time_ms`` is milliseconds; the carry package's
+    window and dedup key are nanoseconds.
+
+    **The mark price.** The recorder records it when the venue publishes it and
+    writes ``null`` when it does not (amendment A4: the funding archive publishes
+    no settlement mark price, and the recorded one is never reconstructed from
+    mark-price candles). A settlement without one cannot be given a notional, so
+    it is refused here. Substituting this minute's mark would be exactly the
+    "synthesize funding from markPrice" that A4 forbids.
+    """
+    published = str(row.get("symbol", "")).upper()
+    if published != venue_symbol.upper():
+        raise FeedError(
+            f"funding settlement names symbol {published!r}, and this campaign's "
+            f"contract records {venue_symbol.upper()!r}. A settlement for another "
+            "instrument is refused rather than booked against this position"
+        )
+    instant_ms = _settlement_ms(row)
+    rate = _decimal(row.get("funding_rate"))
+    if rate is None:
+        raise FeedError(
+            f"funding settlement at {instant_ms} has no funding_rate; a settlement "
+            "without a realised rate cannot be booked"
+        )
+    mark = _decimal(row.get("mark_price"))
+    if mark is None:
+        raise FeedError(
+            f"funding settlement at {instant_ms} has no mark_price. The notional is "
+            "the quantity at the settlement's own mark, and this minute's mark is a "
+            "different number recorded for a different instant"
+        )
+    return PerpSettlement(
+        symbol=position_symbol,
+        rate=rate,
+        mark_price=mark,
+        # Section 5.3: the settlement id IS the settlement instant in
+        # milliseconds. The futures ledger deduplicates on it and persists it, so
+        # it may never become anything else.
+        settlement_id=str(instant_ms),
+        instant_ns=instant_ms * _MS_TO_NS,
+    )
+
+
 def _row_digest(frame: pd.DataFrame, index: int, market: str) -> str:
     """The recorder's own digest, applied to the single row at ``index``.
 
@@ -328,14 +427,14 @@ class FeedCursor:
                     line = line.strip()
                     if line:
                         rows.append(json.loads(line))
-            rows.sort(key=lambda r: int(r.get("settlement_ms", 0)))
+            rows.sort(key=lambda r: _settlement_ms(r))
             self._settlements = rows
         return self._settlements
 
     def last_settlement_at_or_before(self, minute_open_ms: int) -> Mapping[str, Any] | None:
         seen = None
         for row in self.settlements():
-            if int(row.get("settlement_ms", 0)) <= int(minute_open_ms):
+            if _settlement_ms(row) <= int(minute_open_ms):
                 seen = row
             else:
                 break
@@ -358,6 +457,22 @@ class FeedCursor:
         if now_ms is not None and candidate > int(now_ms):
             return None
         return candidate
+
+    def latest_minute_ms(self) -> int | None:
+        """The newest minute the perpetual's days actually carry, or None.
+
+        The mirror of :meth:`_earliest_minute_ms`, and read off the day frames
+        rather than by probing minute by minute: catch-up asks for it once per
+        pending minute, and a linear probe made that quadratic.
+        """
+        market_dir = self._normalizer.market_dir(PERP_MARKET)
+        if not market_dir.is_dir():
+            return None
+        for parquet in sorted(market_dir.glob("*.parquet"), reverse=True):
+            day = self._day(PERP_MARKET, parquet.stem)
+            if day is not None and len(day.frame):
+                return int(day.frame["minute_open_ms"].iloc[-1])
+        return None
 
     def _earliest_minute_ms(self) -> int | None:
         market_dir = self._normalizer.market_dir(PERP_MARKET)

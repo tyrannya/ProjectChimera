@@ -168,7 +168,7 @@
           "refId": "A"
         }
       ],
-      "description": "Flat zero on this build is NOT evidence that the position paid no funding: the runner does not settle funding yet, so both series are structurally 0. See docs/demo_runbook.md and the daily report's input_coverage block."
+      "description": "The runner books each recorded funding settlement, so these series move. A flat zero still is not evidence that the position paid no funding: the telemetry pre-creates both direction children at 0 so rate() and increase() are defined from the first scrape, and a position that was flat across a settlement looks the same here as one no settlement has reached yet. The daily report's funding block carries one record per settlement and tells those apart."
     },
     {
       "id": 6,

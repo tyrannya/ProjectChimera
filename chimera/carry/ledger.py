@@ -125,6 +125,21 @@ class CarryLedgerState:
     #: Settlement instants already booked. The dedup key, persisted so a restart
     #: cannot re-book a settlement the previous process already applied.
     settled: list[int] = field(default_factory=list)
+    #: When the position now held was opened, in integer ns. Section 6.9's
+    #: funding window is ``open_instant < settlement <= now``, so the lower bound
+    #: is a fact about THIS position and has to outlive the process that opened
+    #: it; a restart that forgot it would either re-charge settlements from
+    #: before the open or, defaulting the other way, charge none at all.
+    #:
+    #: ``None`` means one of two things and they are deliberately not
+    #: distinguished here: the position is flat, or the ledger was written by a
+    #: build that did not record the instant. Both are answered the same way by
+    #: the caller -- a non-flat position with no open instant has an unknowable
+    #: funding window and is refused rather than guessed at. This field is
+    #: additive: :meth:`from_dict` reads it with a ``None`` default, so a file
+    #: written before it existed still loads under the same schema id, and the
+    #: absence means exactly what it says.
+    open_instant_ns: int | None = None
     #: The most recent identity residual, kept so a report can show how close the
     #: position runs to its tolerance rather than only whether it broke it.
     identity_gap: Decimal | None = None
@@ -174,6 +189,7 @@ class CarryLedgerState:
             "last_equity": _text(self.last_equity),
             "worst_equity": _text(self.worst_equity),
             "settled": list(self.settled),
+            "open_instant_ns": self.open_instant_ns,
             "identity_gap": _text(self.identity_gap),
             "disputed": self.disputed,
             "resolutions": [dict(r) for r in self.resolutions],
@@ -207,6 +223,14 @@ class CarryLedgerState:
                 f"marked_at_ns holds a non-integer instant: {marked_raw!r}"
             ) from exc
 
+        opened_raw = data.get("open_instant_ns")
+        try:
+            opened = None if opened_raw is None else int(opened_raw)
+        except (TypeError, ValueError) as exc:
+            raise LedgerError(
+                f"open_instant_ns holds a non-integer instant: {opened_raw!r}"
+            ) from exc
+
         disputed = data.get("disputed")
         return cls(
             capital=_decimal(data.get("capital", "0"), "capital"),
@@ -225,6 +249,7 @@ class CarryLedgerState:
             last_equity=_optional_decimal(data.get("last_equity"), "last_equity"),
             worst_equity=_optional_decimal(data.get("worst_equity"), "worst_equity"),
             settled=settled,
+            open_instant_ns=opened,
             identity_gap=_optional_decimal(data.get("identity_gap"), "identity_gap"),
             disputed=None if disputed is None else str(disputed),
             resolutions=[
@@ -427,6 +452,28 @@ class CarryLedger:
         if leg == "perp":
             return self.state.perp
         raise LedgerError(f"unknown leg {leg!r}; the carry position has exactly spot and perp")
+
+    def note_open_instant(self, *, flat: bool, instant_ns: int) -> None:
+        """Move section 6.9's funding window with the position it belongs to.
+
+        Set when a flat position becomes non-flat, cleared when it returns to
+        flat, and left alone in between -- so a position that is increased,
+        corrected or rebalanced keeps the instant it was OPENED at, which is what
+        ``open_instant < settlement <= now`` names.
+
+        Clearing on flat is the half that matters. Without it a position that
+        closed and later reopened would carry the FIRST open's instant, and a
+        settlement that fell in the gap -- while nothing was held -- would land
+        inside the window and be charged against the second position. The
+        settlement instants already in :attr:`CarryLedgerState.settled` happen to
+        cover the common case, but only because the runner books each settlement
+        as it passes; the window is what makes the answer right by construction
+        rather than by luck.
+        """
+        if flat:
+            self.state.open_instant_ns = None
+        elif self.state.open_instant_ns is None:
+            self.state.open_instant_ns = int(instant_ns)
 
     def note_leg_mark(self, leg: str, instant_ns: int) -> None:
         """Record when a leg was last observed, for the stale-leg rule."""

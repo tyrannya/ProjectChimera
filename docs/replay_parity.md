@@ -64,9 +64,24 @@ replay design rests on.
 ## What may differ
 
 **Operational records.** `STARTUP`, `SHUTDOWN`, `RECOVERY`, `HALT` and `RESUME`
-are aligned by `(minute, kind)` and their contents are not compared, because
-"the replay may have fewer restarts". Dropping a `STARTUP` is not a parity
-failure; dropping a `DECISION` is.
+are aligned by `(minute, kind, ordinal)` and their contents are not compared,
+because "the replay may have fewer restarts". Dropping a `STARTUP` is not a
+parity failure; dropping a `DECISION` is.
+
+**Everything else is compared, including the kinds PR-10R made reachable.**
+`FUNDING`, `RECONCILIATION`, `LIQUIDATION_TOUCH`, `SKIPPED_STALE` and
+`INCOMPLETE_STATE` all go through the full must-match comparison. None of them is
+exempted to make a run green: a replay that booked a different funding flow,
+reconciled to a different outcome, or missed a settlement diverges.
+
+**The alignment key carries an ordinal.** A minute may produce more than one
+record of a kind — catching up across a settlement boundary books two `FUNDING`
+settlements in one minute — and the key is `(minute, kind, n)` so each is
+compared to its own counterpart. Keyed on `(minute, kind)` alone the later record
+overwrote the earlier one on both sides, so the earlier one was compared to
+nothing and a replay that emitted fewer of them produced no `replay_only` entry
+at all. Where a minute produces one record of a kind, which is every case before
+PR-10R, the ordinal is `0` and the key is the old one.
 
 **The environment.** If the two runs declare a different `software.python` or
 `software.libs`, the whole run is labelled **`ENVIRONMENT_PARITY`** and reported
@@ -103,10 +118,23 @@ A divergence is never repaired by the tool. Section 10's failure criterion is
 "any mismatch in a must-match field", and a parity tool that could paper over
 one would be worse than no tool at all.
 
-The one divergence the plan permits to be explained away is a minute where the
-runner started from `LOG_BEHIND_STATE`; section 10 says it "is explained and
-excluded once". That exclusion is an operator's judgement recorded in the
-campaign's notes, not something this tool applies on its own.
+**Explained exclusions.** Section 10 permits one divergence to be explained away:
+a minute the runner started from `LOG_BEHIND_STATE` "is explained and excluded
+once". PR-10R makes that executable and gives it a second, identical case.
+
+The tool excludes a **minute** — never a record kind — when the *live* log says
+that minute was not one the campaign decided from its files:
+
+| live record | minute excluded | why a replay cannot reproduce it |
+| --- | --- | --- |
+| `SKIPPED_STALE` | the skipped minute | the live process came back from an outage and the minute was already older than `max_catchup_minutes`. Which minutes were stale depends on when the process restarted, and no recorded file holds that. |
+| `RECOVERY` | `recovery.evidence_excluded_minute` | section 9.3: the minute a crash left inconsistent "is excluded from the campaign's evidence and counted in the monthly report". |
+
+Every exclusion is reported. `explained_exclusions` lists each excluded minute
+with its reason, in the JSON and in the printed summary, and the count is printed
+even when it is zero. A run with no restarts and no crashes excludes nothing, and
+the 48-hour synthetic acceptance is such a run — so its parity result is an exact
+comparison of every record, not a comparison with something taken out of it.
 
 ## Scope
 

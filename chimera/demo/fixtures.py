@@ -221,26 +221,58 @@ class SyntheticFeed:
             for market in markets:
                 self.write_day(market, day, shapes.get(f"{market}:{day}"))
 
-    def write_settlements(self, days: Sequence[str], *, rate: str = "0.0001") -> Path:
-        """Eight-hourly settlements across the given days."""
+    def write_settlements(
+        self,
+        days: Sequence[str],
+        *,
+        rate: str = "0.0001",
+        rates: Mapping[tuple[str, int], str] | None = None,
+        mark_price: str | None = None,
+        duplicate: Sequence[tuple[str, int]] = (),
+        hours: Sequence[int] = (0, 8, 16),
+    ) -> Path:
+        """Eight-hourly settlements across the given days.
+
+        The row shape is the recorder's own, from
+        :meth:`chimera.recorder.events.FundingSettlement.to_settlement_record`,
+        and not an invention of this module. Before PR-10R it was an invention --
+        the instant was written as ``settlement_ms`` and there was no
+        ``mark_price`` at all -- which made the fixture and a real recorded day
+        distinguishable to :class:`~chimera.demo.feed.FeedCursor` in exactly the
+        place the funding path reads, and hid a live defect in it.
+
+        ``rates`` overrides the rate for one ``(day, hour)`` so a drill can put a
+        pay and a receive settlement in the same run; ``duplicate`` writes a
+        second, byte-identical row for one ``(day, hour)`` so the exactly-once
+        gate has something to refuse. Neither is reachable from a campaign
+        configuration: this module is imported by tests and drills only.
+        """
         path = self.normalizer.settlements_path("um")
         path.parent.mkdir(parents=True, exist_ok=True)
+        overrides = dict(rates or {})
+        repeated = set(duplicate)
         lines = []
         for day in days:
             start = int(pd.Timestamp(day, tz="UTC").timestamp() * 1000)
-            for hour in (0, 8, 16):
+            for hour in hours:
                 at = start + hour * 60 * 60 * 1000
-                lines.append(
-                    json.dumps(
-                        {
-                            "settlement_ms": at,
-                            "funding_rate": rate,
-                            "symbol": "BTCUSDT",
-                            "synthetic": True,
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                )
+                minute_index = hour * 60
+                row = {
+                    "funding_time_ms": at,
+                    "funding_time_utc": pd.Timestamp(at, unit="ms", tz="UTC").isoformat(),
+                    "funding_rate": overrides.get((day, hour), rate),
+                    # The settlement's own mark, as the venue published it. The
+                    # generated mark series is what a recorded day would carry at
+                    # that instant, so the fixture stays one deterministic price
+                    # path rather than two.
+                    "mark_price": mark_price or f"{self.perp_close(minute_index):.2f}",
+                    "rate_type": None,
+                    "symbol": "BTCUSDT",
+                    "receipt_wall_ns": at * 1_000_000,
+                }
+                line = json.dumps(row, sort_keys=True, separators=(",", ":"))
+                lines.append(line)
+                if (day, hour) in repeated:
+                    lines.append(line)
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path

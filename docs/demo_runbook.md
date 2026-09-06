@@ -73,16 +73,19 @@ must not mistake for faults:
   `conf/alerts_demo.yml` cannot be read as liveness on this build;
 * `systemctl status chimera-demo` shows the unit inactive between passes.
 
-A third, of the same kind and worth reading before you trust a funding number:
-the runner does not settle funding on this build -- `HedgedPosition.settle_funding`
-has no caller -- so `CarryLedger.funding_paid` and `funding_received` never move.
-The `FundingAdverseStreak` alert therefore cannot fire, and the dashboard's
-"Funding paid and received" panel draws two flat zero lines rather than "No data".
-**Do not read that panel as evidence that a hedged carry position is paying no
-funding.** The perp leg accrues funding at the venue whatever this repository
-plots. The daily report says the same thing in its `input_coverage` block, which
-is the authority; wiring the settlement is a runner change and is not in the
-observability work that added the panel.
+A third, worth reading before you trust a funding number. The runner does now
+settle funding: it books each recorded settlement in
+`funding/um/settlements.ndjson` that falls inside the window
+`open_instant < settlement <= now`, once and only once, and writes one `FUNDING`
+record per settlement. `CarryLedger.funding_paid`, `funding_received` and
+`chimera_demo_funding_adverse_streak` all move, and `FundingAdverseStreak` can
+fire. What remains true of the panel is narrower and still worth knowing: the
+telemetry pre-creates both `direction` children at 0 so `rate()` and `increase()`
+are defined from the first scrape, so **a flat zero on that panel does not
+distinguish "no settlement has fallen inside this position's window yet" from "the
+position was flat across every settlement so far".** The daily report's `funding`
+block, which carries one record per settlement with its rate, mark, notional and
+signed cash flow, is where those are told apart.
 
 Section 8.1 of the adopted plan describes a continuous `READY` loop and the
 runner has the state machine for one; the CLI does not run it. That is a runner
@@ -173,9 +176,10 @@ Read, in the JSON:
 * `records_by_kind.STARTUP` went up by exactly one for this start;
 * `halts.recoveries` is what you expect — one after an unclean stop, zero after
   a clean one;
-* `input_coverage.by_kind` for the kinds you are reading, because a zero there
-  is ambiguous on this build and the block says which zeros mean "the runner
-  cannot write this yet" and which mean "nothing happened".
+* `input_coverage.by_kind` for the kinds you are reading. On this build
+  `kinds_the_runner_can_write` lists all twelve, so every zero means "it did not
+  happen"; the block is what lets you check that rather than assume it, and on a
+  build where a path went unreachable again it is what would say so.
 
 A torn tail shows as a fault in `chain.faults`. **The report does not repair
 it.** `chimera.demo.decision_log.recover_tail` is the only repair in this

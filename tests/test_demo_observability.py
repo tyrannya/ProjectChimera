@@ -1085,5 +1085,9 @@ def test_the_harness_records_helper_reads_what_this_file_asserts_on(tmp_path):
         len([line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()])
         for path in sorted((harness.state_dir / "decision_log").glob("*.ndjson"))
     )
-    assert on_disk == len(harness.records()) == 5
+    # Six: STARTUP, three DECISIONs, the RECONCILIATION section 8.1 runs after
+    # the minute that opened the hedge, and SHUTDOWN. It was five before PR-10R
+    # wired that reconciliation, and the literal is written out rather than
+    # derived so that a record appearing or disappearing is a failing test.
+    assert on_disk == len(harness.records()) == 6
     assert json.loads(json.dumps(harness.records()[0]))["kind"] == "STARTUP"

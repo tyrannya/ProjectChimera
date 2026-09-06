@@ -12,29 +12,27 @@
 # decided by which services are running, and taking the Freqtrade and inference
 # path off the runtime is PR-13's change, not this one.
 #
-# Known limitation, recorded rather than hidden: the demo runner never schedules
-# FuturesExecutor.reconcile, so ReconciliationMismatch does not watch a periodic
-# comparison of local and venue state on a demo campaign -- it watches the two
-# unscheduled paths that raise the same counter, an emergency flatten that did
-# not reach zero and a fill larger than the order it belongs to. Both are on the
-# runner's real path, so the alert is not dead; the missing periodic
-# reconciliation is a runner gap, tracked as a governance blocker against PR-10
-# rather than papered over here.
+# Both of the limitations this header used to record were closed by PR-10R, and
+# the record of what they were is kept because an operator reading a dashboard
+# needs to know which build first made these two series mean anything.
 #
-# Second known limitation, the same shape and the same cause:
-# HedgedPosition.settle_funding has no caller in this build either, so
-# CarryLedger.funding_paid and funding_received never move, and
-# chimera_demo_funding_adverse_streak is identically 0 on every run. So
-# FundingAdverseStreak cannot fire today, and the dashboard's "Funding paid and
-# received" panel draws two flat zero lines rather than "No data" -- the
-# telemetry pre-creates both `direction` children at 0 so that rate() and
-# increase() are defined from the first scrape, which is right, and which also
-# means the panel cannot tell "no funding yet" from "funding is not wired".
-# Verified empirically, not inferred: a 540-minute synthetic campaign with the
-# position HEDGED across two of the fixture's three settlements leaves every
-# funding series at 0. Both are armed for the day the runner settles funding;
-# recording it here is the alternative to an operator concluding from a flat
-# line that a hedged carry position genuinely paid no funding for nine hours.
+# ReconciliationMismatch now watches a periodic comparison. The runner
+# reconciles both legs after any execution and every `reconcile_every_minutes`
+# processed minutes (60 by default, section 8.1), and a mismatch halts the
+# campaign, so the counter this alert reads moves on the scheduled path and not
+# only on the two incidental ones -- an emergency flatten that did not reach zero
+# and a fill larger than the order it belongs to -- that raised it before.
+#
+# FundingAdverseStreak can now fire. The runner books each recorded settlement
+# through HedgedPosition.settle_funding and tells Aegis, so
+# CarryLedger.funding_paid, funding_received and
+# chimera_demo_funding_adverse_streak all move. One caveat survives and is not a
+# defect: the telemetry pre-creates both `direction` children of
+# chimera_demo_funding_total at 0 so rate() and increase() are defined from the
+# first scrape, so the panel still cannot distinguish "no settlement has fallen
+# inside this position's window yet" from "the position was flat across it". The
+# daily report's funding block, which carries one record per settlement, is where
+# that distinction is available.
 groups:
   - name: chimera-demo-recorder
     rules:

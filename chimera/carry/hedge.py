@@ -49,7 +49,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from chimera.carry.accounting import ZERO, CarryError
+from chimera.carry.accounting import ZERO, CarryError, FundingSettlement
 from chimera.carry.ledger import CarryLedger
 from chimera.futures.domain import OrderState, PositionSide, TargetPosition
 from chimera.futures.executor import FlattenCause, FuturesExecutor
@@ -61,6 +61,12 @@ logger = logging.getLogger(__name__)
 #: The two legs, named once. Used as ledger keys and as log labels.
 SPOT = "spot"
 PERP = "perp"
+
+#: Milliseconds to nanoseconds. A funding ``settlement_id`` is the settlement
+#: instant in MILLISECONDS (section 5.3) and this package deduplicates on
+#: NANOSECONDS, so the two are one multiplication apart and the factor is named
+#: once rather than written out at each comparison.
+_MS_TO_NS = 1_000_000
 
 
 class HedgeError(CarryError):
@@ -101,6 +107,60 @@ class CarryMarketState(Protocol):
 
     @property
     def mark(self) -> Decimal: ...
+
+
+@dataclass(frozen=True)
+class PerpSettlement:
+    """One recorded funding settlement, in the shape the perpetual leg books it.
+
+    Two consumers, one object. :meth:`HedgedPosition.settle_funding` needs
+    ``instant_ns`` to place the settlement in section 6.9's window
+    ``open_instant < settlement <= now``; :meth:`FuturesExecutor.settle_funding`
+    needs ``symbol``, ``rate``, ``mark_price`` and ``settlement_id``. Neither
+    existing type carries both -- :class:`chimera.carry.accounting.FundingSettlement`
+    has the instant and not the identity, and
+    :class:`chimera.futures.accounting.FundingEvent` has the identity and not the
+    instant -- so before this type the runner had nothing it could hand across.
+
+    ``symbol`` is the **position's** symbol (``BTC/USDT:USDT``), not the venue's
+    (``BTCUSDT``). The two differ, and the difference is not cosmetic:
+    :func:`chimera.futures.accounting.funding_cash_flow` looks the position up by
+    the event's symbol, and a settlement carrying the venue's spelling would find
+    no position, read as flat, and book a silent zero -- funding that the log
+    would then report as having been settled. Translating at the boundary is the
+    caller's job; refusing an untranslated one is this type's.
+
+    The two refusals are section 6.9's reused ones, and they read
+    :data:`FundingSettlement.MAX_PLAUSIBLE_RATE` rather than restating it, so the
+    carry package cannot come to hold two different opinions about what a
+    plausible 8-hourly rate is.
+    """
+
+    symbol: str
+    rate: Decimal
+    mark_price: Decimal
+    settlement_id: str
+    instant_ns: int
+
+    def __post_init__(self) -> None:
+        if not self.symbol:
+            raise CarryError("a funding settlement with no symbol cannot be attributed")
+        if not self.settlement_id:
+            raise CarryError("a funding settlement with no id cannot be deduplicated")
+        if self.mark_price <= ZERO:
+            raise CarryError(
+                f"{self.symbol}: funding mark price {self.mark_price} is not positive. "
+                "The notional is the quantity at the settlement's own mark, so a "
+                "settlement without one cannot be booked and is refused rather than "
+                "priced from a mark this position happens to be holding."
+            )
+        if abs(self.rate) > FundingSettlement.MAX_PLAUSIBLE_RATE:
+            raise CarryError(
+                f"funding rate {self.rate} exceeds "
+                f"{FundingSettlement.MAX_PLAUSIBLE_RATE} in magnitude. A realised "
+                "8-hourly BTCUSDT rate is on the order of 1e-4; this is refused as a "
+                "unit error rather than clipped, filtered or winsorised."
+            )
 
 
 @dataclass(frozen=True)
@@ -358,6 +418,9 @@ class HedgedPosition:
 
         outcome = self._settle(filled=tuple(filled), unfilled=tuple(unfilled))
         self._book(outcome, frictions)
+        self.ledger.note_open_instant(
+            flat=outcome.state is HedgeState.FLAT, instant_ns=state.minute_ns
+        )
         return outcome
 
     @staticmethod
@@ -477,7 +540,11 @@ class HedgedPosition:
             self.ledger.note_leg_mark(name, state.minute_ns)
         self.correction_minutes = 0
         self.pending_quantity = ZERO
-        return self._settle(detail="hedge correction timed out; flattened")
+        outcome = self._settle(detail="hedge correction timed out; flattened")
+        self.ledger.note_open_instant(
+            flat=outcome.state is HedgeState.FLAT, instant_ns=state.minute_ns
+        )
+        return outcome
 
     def emergency_reduce(self, cause: FlattenCause, state: CarryMarketState) -> HedgeOutcome:
         """Flatten the perpetual first, then the spot (section 6.8)."""
@@ -488,22 +555,55 @@ class HedgedPosition:
             executor.emergency_flatten(symbol, cause, reference)
             self.ledger.note_leg_mark(name, state.minute_ns)
         self.pending_quantity = ZERO
-        return self._settle(detail=f"emergency reduce: {cause.value}")
+        outcome = self._settle(detail=f"emergency reduce: {cause.value}")
+        self.ledger.note_open_instant(
+            flat=outcome.state is HedgeState.FLAT, instant_ns=state.minute_ns
+        )
+        return outcome
 
     # -- funding -----------------------------------------------------------
 
-    def settle_funding(self, event: Any, *, open_instant_ns: int, now_ns: int) -> Decimal:
+    def settle_funding(
+        self, event: PerpSettlement, *, open_instant_ns: int, now_ns: int
+    ) -> Decimal:
         """Book one perpetual settlement, if it falls in ``open < t <= now``.
 
         Both tie boundaries are pinned: a settlement exactly at the open instant
         is NOT charged (the position did not hold through it) and one exactly at
         ``now`` IS. Funding applies to the perpetual leg only.
+
+        Two dedup layers run, in this order and not the other: the perpetual
+        executor's :class:`~chimera.futures.accounting.Ledger` refuses a
+        ``settlement_id`` it has already booked and PERSISTS that refusal with the
+        store, and this ledger then refuses an ``instant_ns`` it has already
+        booked. The order matters because the executor's is the one that moves
+        money; a crash between the two is what :meth:`booked_settlement_instants`
+        exists to catch on the next start.
         """
-        instant = int(getattr(event, "instant_ns", 0) or 0)
+        instant = int(event.instant_ns)
         if not (open_instant_ns < instant <= now_ns):
             return ZERO
         flow = self.perp.settle_funding(event)
         return self.ledger.book_funding(instant, flow)
+
+    def booked_settlement_instants(self) -> tuple[int, ...]:
+        """The settlement instants the PERPETUAL LEG's ledger has already booked.
+
+        Read back out of the executor's own persisted ``applied_funding`` and
+        converted to the instants this package deduplicates on, so the two
+        ledgers can be compared on one scale. Section 5.3 fixes the identity as
+        ``settlement_id = str(fundingTime)`` in milliseconds; an id that is not
+        that is left out of the comparison rather than parsed into a number it
+        might not be, because a foreign id is a finding for
+        :meth:`reconstruct` and not something to coerce.
+        """
+        instants: list[int] = []
+        for identifier in getattr(self.perp.ledger, "applied_funding", ()):  # noqa: B009
+            try:
+                instants.append(int(str(identifier)) * _MS_TO_NS)
+            except ValueError:
+                continue
+        return tuple(sorted(instants))
 
     # -- marking and the identity -----------------------------------------
 
@@ -603,4 +703,46 @@ class HedgedPosition:
             )
             return HedgeOutcome(self.state, detail="ledger disagrees with the stores")
 
-        return self._settle(detail="reconstructed")
+        unbooked = self.unbooked_funding_instants()
+        if unbooked:
+            # The one crash window funding has, and the only place it is visible.
+            # `settle_funding` books the perpetual executor's ledger first (which
+            # persists with that leg's store) and this ledger second (which
+            # persists on the next `save`), so a crash between the two leaves the
+            # money moved and the carry ledger not knowing it. Both files are
+            # internally consistent, both load, and every other check here passes
+            # -- so without this the campaign would run on from a free_cash that
+            # is wrong by exactly one settlement, for ever, silently.
+            #
+            # It is a dispute rather than a repair. The flow can be re-derived,
+            # but re-deriving it would be this ledger adopting the other one's
+            # story, which is the silent overwrite section 6.8 refuses everywhere
+            # else. An operator resolves it with a note, as with every other
+            # disagreement between the two sides.
+            self.dispute(
+                "funding_booking_torn: the perpetual leg's ledger has booked "
+                f"settlement(s) {list(unbooked)} that the carry ledger has not. A crash "
+                "between the two bookings leaves this position's free cash short by "
+                "exactly those settlements"
+            )
+            return HedgeOutcome(self.state, detail="funding booking torn")
+
+        outcome = self._settle(detail="reconstructed")
+        if outcome.state is HedgeState.FLAT:
+            # A restart onto a flat position clears the window. Nothing is held,
+            # so no settlement can belong to it, and leaving a stale instant
+            # behind would put the next position's lower bound in the past.
+            self.ledger.note_open_instant(flat=True, instant_ns=0)
+        return outcome
+
+    def unbooked_funding_instants(self) -> tuple[int, ...]:
+        """Settlements the perpetual leg has booked and this ledger has not.
+
+        Empty is the only sound answer for a campaign that has not crashed
+        mid-settlement. Anything else is the torn window
+        :meth:`settle_funding` documents.
+        """
+        booked = set(self.ledger.state.settled)
+        return tuple(
+            instant for instant in self.booked_settlement_instants() if instant not in booked
+        )

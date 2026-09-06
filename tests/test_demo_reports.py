@@ -405,7 +405,8 @@ def test_the_runner_written_kinds_are_the_runners_own_append_sites(tmp_path):
 
     Without this, the disclosure the daily report carries would be a comment that
     could drift: the day the runner learns to write a ``FUNDING`` record, every
-    report would go on saying it cannot.
+    report would go on saying it cannot. That day was PR-10R, and this test is
+    what made the stale disclosure impossible to leave behind.
     """
     tree = ast.parse((REPO / "chimera" / "demo" / "runner.py").read_text(encoding="utf-8"))
     written = set()
@@ -420,27 +421,25 @@ def test_the_runner_written_kinds_are_the_runners_own_append_sites(tmp_path):
         assert isinstance(first.value, ast.Name) and first.value.id == "RecordKind"
         written.add(first.attr)
     assert sorted(written) == sorted(reports.RUNNER_WRITTEN_KINDS)
-    assert set(TWELVE_KINDS) - written == {
-        "FUNDING",
-        "LIQUIDATION_TOUCH",
-        "RECONCILIATION",
-        "RECOVERY",
-        "SKIPPED_STALE",
-    }
+    # The second, independent oracle. Every one of section 9.1's kinds now has a
+    # writer: PR-10R closed the D1 gap, and this equality is what says so from
+    # the runner's own source rather than from a constant beside it.
+    assert set(TWELVE_KINDS) - written == set()
 
 
 def test_input_coverage_separates_absent_from_unwritable(tmp_path):
-    """A campaign log: five kinds absent BECAUSE nothing can write them."""
+    """A campaign log: absent kinds, and every one of them writable.
+
+    The block's whole job is to keep those two facts apart. On this build the
+    second is uniformly true, so every zero below is an observation -- which is
+    the claim the block has to be able to make, and could not before PR-10R.
+    """
     harness = _campaign(tmp_path)
     coverage = daily_report(harness.state_dir, DAY)["input_coverage"]["by_kind"]
 
-    assert coverage["FUNDING"] == {"present": False, "records": 0, "runner_can_write": False}
-    assert coverage["RECONCILIATION"]["runner_can_write"] is False
-    assert coverage["LIQUIDATION_TOUCH"]["runner_can_write"] is False
-    assert coverage["RECOVERY"]["runner_can_write"] is False
-    assert coverage["SKIPPED_STALE"]["runner_can_write"] is False
-    # The other side of the distinction: a kind nothing wrote today that the
-    # runner CAN write, which is an observation rather than a limitation.
+    assert coverage["FUNDING"] == {"present": False, "records": 0, "runner_can_write": True}
+    for kind in ("RECONCILIATION", "LIQUIDATION_TOUCH", "RECOVERY", "SKIPPED_STALE"):
+        assert coverage[kind]["runner_can_write"] is True, kind
     assert coverage["HALT"] == {"present": False, "records": 0, "runner_can_write": True}
     assert coverage["DECISION"]["present"] is True
     assert coverage["DECISION"]["runner_can_write"] is True
@@ -471,9 +470,7 @@ def test_input_coverage_marks_a_kind_present_when_the_log_holds_one(tmp_path):
     ):
         assert coverage[kind]["present"] is True, kind
         assert coverage[kind]["records"] == 1, kind
-        # Still unwritable by this build: presence in a synthetic log does not
-        # change what the runner can do, and the report must not claim it does.
-        assert coverage[kind]["runner_can_write"] is False, kind
+        assert coverage[kind]["runner_can_write"] is True, kind
 
 
 def test_a_record_with_no_minute_is_counted_rather_than_dropped(tmp_path):
@@ -974,7 +971,19 @@ HALT_CAUSE_ORACLE = (
         "multiple_actionable_rules",
     ),
     ("source_identity: the working tree is dirty", "source_identity"),
-    ("log_behind_state: the decision log's tail is x", "log_behind_state"),
+    # PR-10R: `log_behind_state:` is no longer a halt reason. Section 9.3's
+    # LOG_BEHIND_STATE is a RECOVERY cause the runner continues from, so a halt
+    # carrying that text would be a reason nobody wrote a prefix for -- and the
+    # oracle says exactly that rather than pretending the label still exists.
+    ("log_behind_state: the decision log's tail is x", "other"),
+    ("log_forged: a complete record does not verify", "log_forged"),
+    ("liquidation_touch: emergency reduce: risk_halt", "liquidation_touch"),
+    ("liquidation_unknown: the minute has no mark", "liquidation_unknown"),
+    ("funding_window_unknown: no open instant", "funding_unbookable"),
+    ("funding_unbookable: no mark_price", "funding_unbookable"),
+    ("funding_not_booked: settlement 1 fell in the window", "funding_unbookable"),
+    ("funding_source_unreadable: bad row", "funding_unbookable"),
+    ("reconciliation_error: perp BTC/USDT:USDT: boom", "reconciliation_error"),
     ("store_error: no such file", "store_error"),
     ("max daily loss breached: 3.00% >= 2.00%", "daily_loss"),
     ("max drawdown breached: 6.00% >= 5.00%", "drawdown"),
@@ -1087,11 +1096,35 @@ def test_a_reconciliation_record_is_quoted_and_never_re_derived(tmp_path):
 
 
 def test_reconciliation_outcomes_are_null_rather_than_an_empty_clean_bill(tmp_path):
-    """The two-sided control. Null says "no outcome recorded", not "all fine"."""
-    harness = _campaign(tmp_path)
-    block = daily_report(harness.state_dir, DAY)["reconciliation"]
+    """The two-sided control. Null says "no outcome recorded", not "all fine".
+
+    Built on a log holding only a decision, because a real campaign now
+    reconciles: PR-10R wired section 8.1's post-execution and hourly checks, so
+    ``_campaign`` produces the records this case exists to be the absence of.
+    """
+    state_dir = tmp_path / "state"
+    _write(state_dir, [_decision("2026-09-19T00:00:00+00:00")])
+    block = daily_report(state_dir, DAY)["reconciliation"]
     assert block["records_of_kind_RECONCILIATION"] == 0
     assert block["outcomes"] is None
+
+
+def test_a_campaign_reconciles_and_the_report_quotes_the_outcome(tmp_path):
+    """The other side: a real campaign's reconciliation reaches the daily report.
+
+    Before PR-10R this was unwritable -- the runner never called
+    ``FuturesExecutor.reconcile`` -- so the block could only ever be null on a
+    real log, and null was indistinguishable from "the check is not wired".
+    """
+    harness = _campaign(tmp_path)
+    block = daily_report(harness.state_dir, DAY)["reconciliation"]
+    assert block["records_of_kind_RECONCILIATION"] >= 1
+    assert block["outcomes"] is not None and block["outcomes"]
+    first = block["outcomes"][0]
+    assert first["minute"] and first["seq"]
+    # An agreement carries no veto_or_rejection, and the report says so rather
+    # than inventing a "detail" for a check that found nothing wrong.
+    assert first["detail"] is None
 
 
 def test_a_liquidation_touch_is_reported_when_the_log_holds_one(tmp_path):

@@ -41,23 +41,70 @@ from typing import Any, Iterable, Mapping, Sequence
 from chimera.carry.hedge import HedgedPosition, HedgeState
 from chimera.demo.clock import RunnerClock
 from chimera.demo.config import DemoConfig
-from chimera.demo.decision_log import DecisionLog, RecordKind, iso_minute
-from chimera.demo.feed import FeedCursor, MarketState, plain_json
+from chimera.demo.decision_log import (
+    DecisionLog,
+    RecordKind,
+    iso_minute,
+    recover_tail,
+    verify_log,
+)
+from chimera.demo.feed import (
+    PERP_MARKET,
+    SETTLEMENT_INSTANT_FIELD,
+    FeedCursor,
+    MarketState,
+    plain_json,
+    settlement_from_row,
+)
 from chimera.demo.rules import HedgeTarget, RuleDecision, RuleError, RuleRegistry
 from chimera.demo.telemetry import RunnerTelemetry
-from chimera.futures.executor import FlattenCause, ReconciliationRequired
+from chimera.futures.domain import PositionSide
+from chimera.futures.executor import (
+    FlattenCause,
+    ReconciliationOutcome,
+    ReconciliationRequired,
+)
 from chimera.recorder.sink import write_json_atomic
 from chimera.risk import RiskEngine
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DemoRunner", "RunnerState", "RunnerError", "TickOutcome", "RUNNER_STATE_SCHEMA"]
+__all__ = [
+    "DemoRunner",
+    "RunnerState",
+    "RunnerError",
+    "TickOutcome",
+    "RUNNER_STATE_SCHEMA",
+    "RUNNER_STATE_SCHEMAS_READ",
+    "RecoveryCause",
+]
 
-RUNNER_STATE_SCHEMA = "chimera.demo-runner-state/1"
+RUNNER_STATE_SCHEMA = "chimera.demo-runner-state/2"
+
+#: The runner-state schemas this build will read, newest first.
+#:
+#: Version 2 adds ``last_reconcile_minute_ms``, the anchor of section 8.1's
+#: hourly reconciliation. A version 1 file does not carry it, and its absence is
+#: read as "no reconciliation has been performed", which makes the next complete
+#: minute reconcile. That is the conservative direction and it is stated rather
+#: than assumed: the other reading -- "reconciled just now" -- would let a
+#: restart onto an old file postpone the check, which is precisely the
+#: restart-avoidance the cadence is persisted to prevent.
+#:
+#: Nothing a version 1 file already carried changes meaning. The bump exists so
+#: that the absence of the new field is a fact this build KNOWS about, rather
+#: than a default it silently supplies under a schema id that promised the field
+#: was never there.
+RUNNER_STATE_SCHEMAS_READ: tuple[str, ...] = (
+    RUNNER_STATE_SCHEMA,
+    "chimera.demo-runner-state/1",
+)
+
 MINUTE_NS = 60_000_000_000
 _MS_TO_NS = 1_000_000
 ZERO = Decimal("0")
 SPOT_LEG = "spot"
+PERP_LEG = "perp"
 
 
 class RunnerError(RuntimeError):
@@ -93,6 +140,48 @@ class RunnerState(str, Enum):
 #: Every state name, for the metric sweep. Module-level so `_enter` works from
 #: the first line of `__init__`, before any instance attribute exists.
 _STATE_NAMES: tuple[str, ...] = tuple(state.value for state in RunnerState)
+
+
+class RecoveryCause(str, Enum):
+    """Why section 9.3's RECOVERY record was written. A bounded vocabulary.
+
+    The two crash causes are named for WHICH FILE IS BEHIND, and the direction is
+    the whole content of the name:
+
+    ``LOG_BEHIND_STATE``
+        Section 9.3's own: the state files were written and the record was not,
+        so the stores describe a position no record does.
+
+    ``LOG_AHEAD_OF_STATE``
+        The record was committed and the runner-state file naming it was not.
+        Before PR-10R this condition was reported under the name
+        ``LOG_BEHIND_STATE``, which says the opposite of what had happened. The
+        old name is not reused for it and not redefined: the inverted label is
+        replaced by the accurate one, and section 9.3's name keeps section 9.3's
+        meaning.
+
+    ``TORN_TAIL``
+        A crash between the write and the ``fsync``. Not a claim about any
+        record: the bytes never formed one.
+
+    ``LOG_FORGED``
+        A complete record that does not verify. Never recovered from, never
+        repaired, and here only so that a refusal has a name.
+    """
+
+    TORN_TAIL = "TORN_TAIL"
+    LOG_BEHIND_STATE = "LOG_BEHIND_STATE"
+    LOG_AHEAD_OF_STATE = "LOG_AHEAD_OF_STATE"
+    LOG_FORGED = "LOG_FORGED"
+
+
+@dataclass(frozen=True)
+class _Recovery:
+    """What :meth:`DemoRunner._recover_log` found, so `start` can branch on it."""
+
+    cause: RecoveryCause
+    reason: str
+    recoverable: bool
 
 
 @dataclass
@@ -159,8 +248,14 @@ class DemoRunner:
         persisted = self._load_state()
         self.cursor = FeedCursor(self.root, contract, persisted)
         self.last_record_hash: str = persisted.get("last_record_hash", "")
+        #: The minute the last reconciliation was performed for, or None when
+        #: none has been. A version 1 state file carries no such field, and its
+        #: absence means "none has been" -- see RUNNER_STATE_SCHEMAS_READ.
+        raw_reconcile = persisted.get("last_reconcile_minute_ms")
+        self.last_reconcile_minute_ms: int | None = (
+            None if raw_reconcile is None else int(raw_reconcile)
+        )
         self._log: DecisionLog | None = None
-        self._minutes_since_reconcile = 0
         self._config_hash = _config_hash(config)
         self._enter(RunnerState.STARTUP)
 
@@ -202,10 +297,10 @@ class DemoRunner:
                 "than replaced, because starting from an empty cursor would reprocess "
                 "minutes that already have decision records"
             ) from exc
-        if payload.get("schema") != RUNNER_STATE_SCHEMA:
+        if payload.get("schema") not in RUNNER_STATE_SCHEMAS_READ:
             raise RunnerError(
-                f"{path} declares schema {payload.get('schema')!r}, not "
-                f"{RUNNER_STATE_SCHEMA!r}"
+                f"{path} declares schema {payload.get('schema')!r}, not one of "
+                f"{list(RUNNER_STATE_SCHEMAS_READ)}"
             )
         return payload
 
@@ -217,6 +312,14 @@ class DemoRunner:
             "last_minute_processed": self.cursor.last_minute_processed,
             "last_record_hash": self.last_record_hash,
             "clock_now_ns": self.clock.now_ns if self.clock.started else None,
+            # Section 8.1's "every 60 minutes", anchored to a PROCESSED MINUTE
+            # and persisted. Both halves are load-bearing. Anchoring to the
+            # minute rather than to a counter of ticks since this process started
+            # is what makes the schedule a function of the campaign's minutes, so
+            # a replay of those minutes reconciles at the same ones; persisting
+            # it is what stops a restart every fifty-nine minutes from postponing
+            # the check for ever.
+            "last_reconcile_minute_ms": self.last_reconcile_minute_ms,
         }
         write_json_atomic(self.state_path, payload)
 
@@ -304,6 +407,9 @@ class DemoRunner:
             return self._halt(problem)
 
         self._enter(RunnerState.RECOVER)
+        recovery = self._recover_log()
+        if recovery is not None and not recovery.recoverable:
+            return self._halt(recovery.reason)
         outcome = self.position.reconstruct()
         if outcome.state is HedgeState.DISPUTED:
             return self._halt(f"dispute: {outcome.detail}")
@@ -333,12 +439,9 @@ class DemoRunner:
                 "allow_dirty was requested for a CAMPAIGN profile. --allow-dirty is for "
                 "soak runs, whose records are operational rather than evidence"
             )
-        tail = self.log.last_record_hash
-        if self.last_record_hash and tail != self.last_record_hash:
-            return (
-                f"log_behind_state: the decision log's tail is {tail} and the runner state "
-                f"names {self.last_record_hash}. One of them is from before a crash"
-            )
+        problem = self._check_log_head()
+        if problem is not None:
+            return problem
         try:
             self.position.spot.store.state  # noqa: B018 - loadable is the assertion
             self.position.perp.store.state  # noqa: B018
@@ -346,6 +449,183 @@ class DemoRunner:
             return f"store_error: {exc}"
         if self.position.ledger.disputed:
             return f"dispute: {self.position.ledger.disputed}"
+        return None
+
+    # ------------------------------------------------------------------
+    # section 9.3: what a crash left behind, and what may be done about it
+    # ------------------------------------------------------------------
+    def _check_log_head(self) -> str | None:
+        """SELF_CHECK's log clause. Returns a halt reason, or None if recoverable.
+
+        Section 9.3 asks SELF_CHECK for three things: that the last line parses,
+        that its ``record_hash`` equals the persisted ``last_record_hash``, and
+        that the chain is intact. Two of the ways those can fail are ordinary
+        crashes and one is not, and the difference decides whether the campaign
+        continues.
+
+        * A **torn tail** is a crash between the write and the ``fsync``. The
+          bytes were never finished, so no record claims anything.
+        * A **head disagreement** is a crash in section 9.3's own write window --
+          state files, then the record, then ``last_record_hash`` -- and every
+          record in the file is complete and correctly linked.
+        * Anything else is a COMPLETE record that is wrong: corruption or
+          tampering. There is no crash that produces one, and continuing past it
+          would extend a chain nothing can stand behind.
+
+        The first two return None here and are handled by :meth:`_recover_log`,
+        which writes the RECOVERY record section 9.3 asks for. The third halts.
+        """
+        verification = verify_log(self.state_dir / "decision_log")
+        if verification.is_forged:
+            return (
+                "log_forged: a complete decision record does not verify "
+                f"({verification.summary()}). A crash cannot produce one, so it is not "
+                "repaired, not truncated and not continued past"
+            )
+        return None
+
+    def _recover_log(self) -> "_Recovery | None":
+        """Section 9.3's RECOVER: repair what a crash left, and say so in the log.
+
+        Returns None when there was nothing to recover. Otherwise a
+        :class:`_Recovery` naming what was found; ``recoverable`` is False only
+        for a forgery, which :meth:`_check_log_head` has already refused.
+
+        Two causes, and the plan names one of them. Section 9.3 says "a missing
+        final record (crash between state write and log write) is reported as
+        ``LOG_BEHIND_STATE``". Read against the write order in the same
+        paragraph, that is the window where the state files are on disk and the
+        record is not -- the log is BEHIND the state.
+
+        The condition this runner used to report under that name was the other
+        one: the log's tail hash not matching the persisted
+        ``last_record_hash``. That happens when the record IS on disk and the
+        runner-state file naming it is not, so the log is one record AHEAD of the
+        state. The name was inverted, and both conditions are real, so PR-10R
+        does not rename anything: it adds ``LOG_AHEAD_OF_STATE`` for the
+        condition that was previously mislabelled, keeps ``LOG_BEHIND_STATE``
+        for the one section 9.3 defines, and reports whichever actually
+        occurred. Section 9.3's consequence -- the affected minute is excluded
+        from the campaign's evidence and counted in the monthly report -- is
+        carried on the record for both.
+        """
+        root = self.state_dir / "decision_log"
+        verification = verify_log(root, expected_last_hash=self.last_record_hash or None)
+        if verification.is_forged:
+            return _Recovery(
+                cause=RecoveryCause.LOG_FORGED,
+                reason=f"log_forged: {verification.summary()}",
+                recoverable=False,
+            )
+
+        cause: RecoveryCause | None = None
+        detail = ""
+        repaired_bytes = 0
+        if verification.is_torn:
+            repair = recover_tail(self.state_dir)
+            repaired_bytes = repair.truncated_bytes
+            cause = RecoveryCause.TORN_TAIL
+            detail = (
+                f"{repaired_bytes} unterminated byte(s) removed from "
+                f"{repair.path.name if repair.path else 'the log'} and preserved beside "
+                "it; the record they would have formed was never committed"
+            )
+            # The reader is rebuilt on the repaired file rather than on the one
+            # that was open when the tear was found.
+            if self._log is not None:
+                self._log.close()
+                self._log = None
+
+        tail = self.log.last_record_hash
+        if self.last_record_hash and tail != self.last_record_hash:
+            cause = RecoveryCause.LOG_AHEAD_OF_STATE
+            detail = (
+                f"the log's tail is {tail} and the runner state names "
+                f"{self.last_record_hash}. The record was committed and the state file "
+                "naming it was not, so the log is one record ahead of the state"
+            )
+        elif cause is None and self._state_ahead_of_log():
+            cause = RecoveryCause.LOG_BEHIND_STATE
+            detail = (
+                "the stores hold a position the log's last record does not describe. The "
+                "state files were written and the record was not, so the log is behind "
+                "the state"
+            )
+
+        if cause is None:
+            return None
+
+        affected = self.cursor.last_minute_processed
+        minute_ns = int(affected) * _MS_TO_NS if affected is not None else self._minute_ns()
+        # The chain head is adopted from the log, which is the file that actually
+        # holds the records; the state file is the one that was behind.
+        self.last_record_hash = tail
+        self._append(
+            RecordKind.RECOVERY,
+            minute_ns,
+            {
+                "recovery": {
+                    "cause": cause.value,
+                    "detail": detail,
+                    "affected_minute": iso_minute(minute_ns),
+                    "truncated_bytes": repaired_bytes,
+                    "records_verified": verification.records,
+                    # Section 9.3: "the affected minute is excluded from the
+                    # campaign's evidence and counted in the monthly report".
+                    "evidence_excluded_minute": iso_minute(minute_ns),
+                },
+                "veto_or_rejection": {
+                    "stage": "recovery",
+                    "label": cause.value.lower(),
+                    "detail": detail,
+                },
+            },
+        )
+        self.save_state()
+        logger.warning("Runner RECOVERED: %s: %s", cause.value, detail)
+        return _Recovery(cause=cause, reason=detail, recoverable=True)
+
+    def _state_ahead_of_log(self) -> bool:
+        """Whether the stores describe a position the log's last record does not.
+
+        Section 9.3's own crash window, and the only one that leaves no trace in
+        either file's own consistency: both are complete, both verify, and the
+        two disagree about what happened. Compared on the one quantity the
+        record and the store both carry -- the hedge's leg quantities -- because
+        that is what "a position with no record" means.
+
+        A campaign with no records yet and a flat position is not this: it is a
+        campaign that has not started.
+        """
+        try:
+            verification = verify_log(self.state_dir / "decision_log")
+        except Exception:  # pragma: no cover - verify_log reports rather than raises
+            return False
+        if not verification.records:
+            return self.position.state is not HedgeState.FLAT
+        last = self._last_position_record()
+        if last is None:
+            return self.position.state is not HedgeState.FLAT
+        return {
+            "spot_qty": last.get("spot_qty"),
+            "perp_qty": last.get("perp_qty"),
+        } != {
+            "spot_qty": self._position_block()["spot_qty"],
+            "perp_qty": self._position_block()["perp_qty"],
+        }
+
+    def _last_position_record(self) -> Mapping[str, Any] | None:
+        """The newest ``position_after`` block in the log, or None if there is none."""
+        from chimera.demo.decision_log import day_files, read_records
+
+        for path in reversed(day_files(self.state_dir / "decision_log")):
+            found: Mapping[str, Any] | None = None
+            for record in read_records(path):
+                block = record.get("position_after")
+                if isinstance(block, Mapping):
+                    found = block
+            if found is not None:
+                return found
         return None
 
     # ------------------------------------------------------------------
@@ -372,6 +652,25 @@ class DemoRunner:
         if self.risk.check_kill_switch():
             self._halt("kill_switch")
             return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail="kill_switch")
+
+        # Section 6.5's funding, before anything decides. A settlement is a cash
+        # flow that has ALREADY happened by this minute's close, so booking it
+        # first is what makes the equity the rule is sized against, the equity
+        # Aegis judges, and the equity section 6.7's liquidation check reads all
+        # describe the same instant. Booking it after the decision would have the
+        # minute decided on money the position no longer had.
+        problem = self._settle_funding(minute_ms, state)
+        if problem is not None:
+            self._halt(problem)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=problem)
+
+        # Section 6.7, per minute while HEDGED or PARTIAL, and before the rule
+        # for the same reason: a touched position is flattened and halted, and a
+        # rule that had already sized an increase against it would be sizing
+        # against a position that no longer exists.
+        touched = self._liquidation_check(minute_ms, state)
+        if touched is not None:
+            return touched
 
         self._enter(RunnerState.RULE_EVALUATION)
         portfolio = self._portfolio(state)
@@ -465,6 +764,19 @@ class DemoRunner:
                     minute_ms, self.state, RecordKind.HALT, decisions=list(decisions)
                 )
 
+        # Section 8.1's RECONCILIATION row: "every 60 minutes and after any
+        # execution". Both arms land here, and a veto reaches neither -- a minute
+        # that changed nothing has nothing new to compare, and the periodic arm
+        # is what covers the long stretches of holding.
+        if executed or self._reconcile_due(minute_ms):
+            self._enter(RunnerState.RECONCILIATION)
+            reason = self._reconcile(minute_ms, state, after_execution=executed)
+            if reason is not None:
+                self._halt(reason)
+                return TickOutcome(
+                    minute_ms, self.state, RecordKind.HALT, decisions=list(decisions)
+                )
+
         # Section 8.1's RISK_CHECK exit: a veto skips EXECUTION and
         # RECONCILIATION and continues FORWARD to PERSISTENCE.
         self._enter(RunnerState.PERSISTENCE)
@@ -501,7 +813,6 @@ class DemoRunner:
             decisions=decisions,
             veto=veto,
         )
-        self._minutes_since_reconcile += 1
         self._enter(RunnerState.READY)
         return TickOutcome(
             minute_ms,
@@ -512,6 +823,401 @@ class DemoRunner:
             executed=executed,
             record_hash=record_hash,
         )
+
+    # ------------------------------------------------------------------
+    # reconciliation (section 8.1)
+    # ------------------------------------------------------------------
+    def _reconcile_due(self, minute_ms: int) -> bool:
+        """Whether this minute is one of section 8.1's hourly ones.
+
+        A pure function of the processed minute and the persisted anchor, with no
+        clock and no counter of ticks. That is what makes it survive both a
+        replay and a restart: the replay walks the same minutes and reconciles at
+        the same ones, and a process that restarts every fifty-nine minutes still
+        meets the sixtieth, because the anchor is the last minute a
+        reconciliation was PERFORMED FOR and not the last time this process
+        started.
+
+        With no anchor -- a fresh campaign, or a version 1 state file -- the
+        answer is yes. A campaign reconciles the first complete minute it sees.
+        """
+        every = int(self.config.runner_setting("reconcile_every_minutes"))
+        if every <= 0:
+            return False
+        if self.last_reconcile_minute_ms is None:
+            return True
+        return int(minute_ms) - self.last_reconcile_minute_ms >= every * 60_000
+
+    def _reconcile(
+        self, minute_ms: int, state: MarketState, *, after_execution: bool
+    ) -> str | None:
+        """Compare both legs against the venue's view. Returns a halt reason.
+
+        The comparison itself is :meth:`FuturesExecutor.reconcile`, unchanged and
+        not reimplemented: it is already the fail-closed one. A mismatch there
+        marks the symbol disputed in the store, moves every open order on it to
+        ``RECONCILIATION_REQUIRED`` -- which ``require_ready`` then refuses to
+        plan through -- and raises ``chimera_futures_reconciliation_total``. What
+        this method adds is the three things the plan asks of the runner and the
+        executor cannot do for itself: tell Aegis (section 7.3's
+        ``note_reconciliation``, which vetoes increases on the disputed symbol
+        and SURVIVES a restart, cleared only by an operator note), write the
+        evidence, and halt.
+
+        The record is written on agreement too. A reconciliation that ran and
+        agreed is the evidence that the check is alive; a log that only ever held
+        mismatches could not tell "reconciled hourly, always agreed" from "never
+        reconciled", which is exactly the state this build was in before PR-10R.
+        """
+        minute_ns = int(minute_ms) * _MS_TO_NS
+        legs = (
+            (SPOT_LEG, self.position.spot, self.position.config.spot_symbol, state.spot_close),
+            (PERP_LEG, self.position.perp, self.position.config.perp_symbol, state.mark),
+        )
+        results: list[dict[str, Any]] = []
+        mismatched: list[str] = []
+        for leg, executor, symbol, reference in legs:
+            try:
+                report = executor.reconcile(symbol, mark_price=reference)
+            except Exception as exc:
+                return f"reconciliation_error: {leg} {symbol}: {exc}"
+            agreed = report.outcome is ReconciliationOutcome.AGREED
+            if not agreed:
+                # Only ever OPENED here. `note_reconciliation(symbol, None)` is
+                # the operator's clear (section 7.2: "cleared only by operator
+                # note"), and calling it on an agreement would let two states
+                # that came back into agreement for an unexplained reason -- a
+                # later fill happening to land on the disputed quantity -- erase
+                # the dispute by themselves. `FuturesExecutor.reconcile` refuses
+                # exactly that for the store's copy; Aegis's copy is held to the
+                # same rule.
+                self.risk.note_reconciliation(symbol, report.detail)
+            results.append(
+                {
+                    "leg": leg,
+                    "symbol": symbol,
+                    "outcome": report.outcome.value,
+                    "local_side": report.local.side.value,
+                    "local_qty": str(report.local.quantity),
+                    "reported_side": report.reported.side.value,
+                    "reported_qty": str(report.reported.quantity),
+                    "detail": report.detail,
+                }
+            )
+            if not agreed:
+                mismatched.append(f"{leg}:{symbol}")
+
+        self.last_reconcile_minute_ms = int(minute_ms)
+        detail = "agreed" if not mismatched else f"mismatch on {', '.join(sorted(mismatched))}"
+        self.position.ledger.save()
+        self._append(
+            RecordKind.RECONCILIATION,
+            minute_ns,
+            {
+                "inputs": {
+                    "contract_hash": _prefixed(getattr(self.contract, "contract_hash", "")),
+                    "um_minute_digest": state.perp_digest,
+                    "spot_minute_digest": state.spot_digest,
+                    "inputs_hash": _inputs_hash(state),
+                },
+                "reconciliation": {
+                    "trigger": "after_execution" if after_execution else "periodic",
+                    "every_minutes": int(
+                        self.config.runner_setting("reconcile_every_minutes")
+                    ),
+                    "legs": results,
+                    "outcome": (
+                        ReconciliationOutcome.AGREED.value
+                        if not mismatched
+                        else ReconciliationOutcome.MISMATCH.value
+                    ),
+                },
+                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "position_after": self._position_block(),
+                "veto_or_rejection": (
+                    None
+                    if not mismatched
+                    else {
+                        "stage": "reconciliation",
+                        "label": "reconciliation_mismatch",
+                        "detail": detail,
+                    }
+                ),
+            },
+        )
+        self.save_state()
+        if mismatched:
+            # Section 8.1: "mismatch -> HALT". The dispute is already recorded in
+            # both the store and Aegis, and neither is cleared by anything but an
+            # operator note, so a restart cannot walk away from it.
+            return f"dispute: reconciliation_mismatch: {detail}"
+        return None
+
+    # ------------------------------------------------------------------
+    # funding (section 6.5)
+    # ------------------------------------------------------------------
+    def _settle_funding(self, minute_ms: int, state: MarketState) -> str | None:
+        """Book every recorded settlement this minute closed over. Returns a halt reason.
+
+        The window is section 6.9's, and :meth:`HedgedPosition.settle_funding` is
+        its authority: ``open_instant < settlement <= now``, with ``now`` the
+        minute's close. Nothing here computes a funding number -- the rate, the
+        mark and the notional all come from the recorded row and the position,
+        and this method only decides WHICH settlements are in scope and writes
+        down what was booked.
+
+        **Exactly once**, across every path a settlement can be met twice:
+
+        * two ticks -- the second sees the instant in ``CarryLedgerState.settled``
+          and does not call the primitive at all, so no second record is written;
+        * catch-up -- the same, because the window is anchored to the position's
+          open instant and not to the previous tick;
+        * a restart -- ``settled`` and the executor's ``applied_funding`` are both
+          persisted before the next process starts;
+        * a replay -- it reads the same rows in the same order from an empty
+          state directory and books the same set;
+        * a duplicated row in the settlements file -- the first copy books it and
+          the second is skipped by the same membership test, so the log holds one
+          effective record per settlement instant, which is what
+          ``reports.FUNDING_SOURCE``'s per-record differencing requires.
+
+        A settlement in scope that cannot be read -- no mark price, a rate that
+        fails the plausibility refusal, another instrument's symbol -- halts the
+        campaign. It is not skipped: skipping would leave the perpetual leg
+        holding a position whose funding this build knows it did not book, with
+        nothing in the log saying so.
+        """
+        ledger = self.position.ledger
+        perp = self.position.leg(PERP_LEG)
+        if perp.quantity == ZERO and self.position.leg(SPOT_LEG).quantity == ZERO:
+            return None  # flat: section 6.5 charges the perpetual leg, and it holds nothing
+
+        open_instant = ledger.state.open_instant_ns
+        if open_instant is None:
+            return (
+                "funding_window_unknown: this position is not flat and the ledger records "
+                "no open instant, so section 6.9's window `open_instant < settlement <= "
+                "now` cannot be formed. A ledger written before the instant was recorded "
+                "is refused rather than given a guessed lower bound"
+            )
+
+        minute_ns = int(minute_ms) * _MS_TO_NS
+        now_ns = minute_ns + MINUTE_NS
+        venue_symbol = _venue_symbol(self.contract)
+        try:
+            rows = list(self.cursor.settlements())
+        except Exception as exc:
+            return f"funding_source_unreadable: {exc}"
+
+        for row in rows:
+            try:
+                instant_ns = int(row[_SETTLEMENT_FIELD]) * _MS_TO_NS
+            except (KeyError, TypeError, ValueError) as exc:
+                return f"funding_source_unreadable: {exc}"
+            if not (open_instant < instant_ns <= now_ns):
+                continue
+            if instant_ns in ledger.state.settled:
+                continue  # already booked: no economics, and no second record
+            try:
+                settlement = settlement_from_row(
+                    row,
+                    position_symbol=self.position.config.perp_symbol,
+                    venue_symbol=venue_symbol,
+                )
+            except Exception as exc:
+                return f"funding_unbookable: {exc}"
+
+            try:
+                flow = self.position.settle_funding(
+                    settlement, open_instant_ns=open_instant, now_ns=now_ns
+                )
+            except Exception as exc:
+                return f"funding_unbookable: {exc}"
+            if instant_ns not in ledger.state.settled:
+                # The primitive declined it. It agrees with the window this
+                # method just applied, so a disagreement is a defect in one of
+                # them and is refused rather than logged as a settlement.
+                return (
+                    f"funding_not_booked: settlement {settlement.settlement_id} fell in "
+                    "this minute's window and the position did not book it"
+                )
+
+            # Aegis first, because the streak it keeps is what vetoes the next
+            # increase, and the record written below carries the risk state hash.
+            if perp.side in (PositionSide.LONG, PositionSide.SHORT):
+                self.risk.note_funding_settlement(
+                    self.position.config.perp_symbol, perp.side, float(settlement.rate)
+                )
+
+            mark = self.position.mark_to_market(state)
+            if self.position.state is HedgeState.DISPUTED:
+                return f"identity_violation: {self.position.ledger.disputed}"
+            # Section 9.3's order: state files, then the record, then the head.
+            self.position.ledger.save()
+            self._append(
+                RecordKind.FUNDING,
+                minute_ns,
+                self._funding_payload(state, settlement, flow, mark, row),
+            )
+            self.save_state()
+        return None
+
+    def _funding_payload(
+        self,
+        state: MarketState,
+        settlement: Any,
+        flow: Decimal,
+        mark: Any,
+        row: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """One settlement, in enough detail to reconstruct the flow independently.
+
+        ``ledger_effect`` carries all five fields ``reports._ledger_and_funding``
+        reads, because that function selects on the presence of the block and
+        raises on a missing one; ``funding`` is the ledger's running
+        ``net_funding`` after this settlement, which is the series the daily
+        report differences to recover the paid/received split.
+        """
+        ledger = self.position.ledger.state
+        perp = self.position.leg(PERP_LEG)
+        return {
+            "inputs": {
+                "contract_hash": _prefixed(getattr(self.contract, "contract_hash", "")),
+                "um_minute_digest": state.perp_digest,
+                "spot_minute_digest": state.spot_digest,
+                "inputs_hash": _inputs_hash(state),
+            },
+            "funding": {
+                "settlement_id": settlement.settlement_id,
+                "settlement_instant": iso_minute(
+                    (settlement.instant_ns // MINUTE_NS) * MINUTE_NS
+                ),
+                "settlement_instant_ns": int(settlement.instant_ns),
+                "leg": PERP_LEG,
+                "symbol": settlement.symbol,
+                "venue_symbol": str(row.get("symbol", "")),
+                "side": perp.side.value,
+                "rate": str(settlement.rate),
+                "mark_price": str(settlement.mark_price),
+                "quantity": str(perp.quantity),
+                "notional": str(perp.quantity * settlement.mark_price),
+                "cash_flow": str(flow),
+                # Stated rather than left to the reader's sign convention. A10
+                # fixes the cash-flow sign; this says which way it went in words.
+                "direction": (
+                    "received" if flow > ZERO else "paid" if flow < ZERO else "none"
+                ),
+                "funding_paid_total": str(ledger.funding_paid),
+                "funding_received_total": str(ledger.funding_received),
+            },
+            "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+            "position_after": self._position_block(),
+            "ledger_effect": {
+                "fees": str(ledger.fees),
+                "slippage": str(ledger.slippage),
+                "funding": str(ledger.net_funding),
+                "realised": str(ledger.realised),
+                "equity": str(mark.equity),
+            },
+            "veto_or_rejection": None,
+        }
+
+    # ------------------------------------------------------------------
+    # liquidation (section 6.7)
+    # ------------------------------------------------------------------
+    def _liquidation_check(self, minute_ms: int, state: MarketState) -> TickOutcome | None:
+        """Section 6.7's per-minute touch. Returns an outcome when it fired.
+
+        Evaluated while HEDGED or PARTIAL and not otherwise: a flat position has
+        nothing to liquidate, and section 6.7 names those two states. The
+        equity is the carry ledger's current one, which is why funding is booked
+        first -- 6.7 exists for funding-driven equity erosion, and a check run
+        against yesterday's equity would be checking the wrong number.
+
+        Order, and it is the order a crash may interrupt at any point:
+
+        1. evaluate against the recorded minute;
+        2. halt Aegis, so no increase can be planned even if step 4 fails;
+        3. write the LIQUIDATION_TOUCH record, so the log says a touch happened
+           BEFORE anything claims a flatten;
+        4. reduce both legs (reductions are permitted while halted, by design);
+        5. persist the ledger and write the OPERATOR-free position record.
+
+        3 before 4 is deliberate. A crash between them leaves a log that says
+        "touched, and does not say flattened" over stores that still hold the
+        position -- true, and recoverable. The other order would leave a log
+        claiming a flatten that the stores show never happened, which is the one
+        thing section 9.3 says a log may never do.
+        """
+        if self.position.state not in (HedgeState.HEDGED, HedgeState.PARTIAL):
+            return None
+        if state.mark is None:
+            # A minute with no mark cannot answer 6.7 on a non-flat position, and
+            # `complete` already required one, so this is unreachable through
+            # `tick`. Refused rather than read as "not touched".
+            return self._touch_halt(minute_ms, "liquidation_unknown: the minute has no mark")
+
+        equity = self.position.ledger.state.last_equity
+        if equity is None:
+            equity = self.position.mark_to_market(state).equity
+        try:
+            touched = self.position.liquidation_touched(state, equity=Decimal(equity))
+        except Exception as exc:
+            return self._touch_halt(minute_ms, f"liquidation_unknown: {exc}")
+        if not touched:
+            return None
+
+        minute_ns = int(minute_ms) * _MS_TO_NS
+        # Aegis first, and before any record: from this line on no increase can
+        # be planned even if this process dies before the flatten, because the
+        # halt is persisted by `RiskEngine.halt` itself.
+        self.risk.halt("liquidation_touch")
+        before = self._position_block()
+        self._append(
+            RecordKind.LIQUIDATION_TOUCH,
+            minute_ns,
+            {
+                "inputs": {
+                    "contract_hash": _prefixed(getattr(self.contract, "contract_hash", "")),
+                    "um_minute_digest": state.perp_digest,
+                    "spot_minute_digest": state.spot_digest,
+                    "inputs_hash": _inputs_hash(state),
+                },
+                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "position_after": before,
+                "veto_or_rejection": {
+                    "stage": "carry",
+                    "label": "liquidation_touch",
+                    "detail": (
+                        f"equity {equity} against mark {state.mark} at maintenance rate "
+                        f"{self.position.config.maintenance_margin_rate}; section 6.7's "
+                        "portfolio and isolated checks"
+                    ),
+                },
+            },
+        )
+        self.save_state()
+
+        outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
+        self.position.ledger.save()
+        # `_halt` writes the HALT record, enters the state and publishes the
+        # Aegis series. Reached through it rather than repeated here so the
+        # runner keeps exactly one place that halts and one telemetry emission
+        # for it; `risk.halt` above has already run, and `_halt` does not repeat
+        # it.
+        self._halt(f"liquidation_touch: {outcome.detail}")
+        return TickOutcome(
+            minute_ms,
+            self.state,
+            RecordKind.LIQUIDATION_TOUCH,
+            detail="liquidation_touch",
+            record_hash=self.last_record_hash,
+        )
+
+    def _touch_halt(self, minute_ms: int, reason: str) -> TickOutcome:
+        """Section 7.2's liquidation rule: unknown on a non-flat position is refused."""
+        self._halt(reason)
+        return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
 
     def _target_to_act_on(self, target: HedgeTarget) -> HedgeTarget:
         """What the position is actually asked for, which is not the raw target.
@@ -602,7 +1308,21 @@ class DemoRunner:
             self._append(
                 RecordKind.HALT,
                 self._minute_ns(),
-                {"veto_or_rejection": {"stage": "runner", "label": "halt", "detail": reason}},
+                {
+                    "veto_or_rejection": {
+                        "stage": "runner",
+                        "label": "halt",
+                        "detail": reason,
+                    },
+                    # What was held when the campaign stopped. Without it a halt
+                    # that FOLLOWS a reduction -- section 6.7's liquidation
+                    # flatten is the one that must -- leaves the log saying the
+                    # position was touched at its full size and never saying it
+                    # was closed, so the flattened position is invisible in the
+                    # evidence. Reading the stores would answer it; the log is
+                    # what an audit reads.
+                    "position_after": self._position_block(),
+                },
             )
             self.save_state()
         except Exception:  # pragma: no cover - a log failure must not mask the halt
@@ -697,6 +1417,25 @@ class DemoRunner:
         `FuturesExecutor.resolve_reconciliation` already refuses an empty one.
         Checked here too so the CLI fails before touching a store, and so the
         OPERATOR record and the executor's own record carry the same text.
+
+        **What is adopted, and how.** ``resolve_reconciliation(symbol, adopted,
+        note)`` takes the position the operator has decided is the true one. The
+        two candidates are the local view and the venue's, and this build adopts
+        the LOCAL one. That is not a preference: the venue here is
+        ``DryRunFuturesVenue``, which reports from state this process itself
+        wrote, so "the venue's view" is not independent evidence an operator
+        could have checked anything against. Adopting local leaves the position
+        exactly as the stores record it and clears only the dispute flag and the
+        orders it froze; the operator's note is the evidence, which is what
+        section 11.5 says it is. A build with a real venue must revisit this line
+        rather than this docstring.
+
+        Before PR-10R this method called ``resolve_reconciliation(symbol, note)``
+        -- two of the three required positionals. Every real invocation raised
+        ``TypeError`` before touching a store, so the one operator command that
+        can clear a dispute could not be run at all. The single test on the path
+        passed a symbol that is not a leg and returned one line earlier, which is
+        why the suite never saw it.
         """
         note = (note or "").strip()
         if not note:
@@ -710,11 +1449,29 @@ class DemoRunner:
             raise RunnerError(
                 f"{symbol!r} is not one of this position's legs ({sorted(legs)})"
             )
-        executor.resolve_reconciliation(symbol, note)
+        adopted = executor.position(symbol)
+        executor.resolve_reconciliation(symbol, adopted, note)
+        # Aegis keeps its own copy of the dispute (section 7.2's reconciliation
+        # row: "cleared only by operator note"), and it is what vetoes increases
+        # on the symbol. Clearing the store without clearing this would leave the
+        # campaign permanently unable to increase over a dispute nothing records.
+        self.risk.note_reconciliation(symbol, None)
+        if self.position.ledger.disputed is not None:
+            self.position.ledger.resolve(note, now_ns=self.clock.now_ns)
+            self.position.ledger.save()
         record_hash = self._append(
             RecordKind.OPERATOR,
             self._minute_ns(),
-            {"operator": {"command": "resolve", "symbol": symbol, "note": note}},
+            {
+                "operator": {
+                    "command": "resolve",
+                    "symbol": symbol,
+                    "note": note,
+                    "adopted_side": adopted.side.value,
+                    "adopted_qty": str(adopted.quantity),
+                },
+                "position_after": self._position_block(),
+            },
         )
         self.save_state()
         return TickOutcome(
@@ -764,25 +1521,114 @@ class DemoRunner:
         return self.run_minutes(minutes)
 
     def catch_up(self, *, now_ms: int | None = None) -> list[TickOutcome]:
-        """Process pending minutes, at most `max_catchup_minutes` of them.
+        """Process every pending minute in order; decide only the recent ones.
 
-        Section 2.2 line 119: catch-up minutes are "processed in order with
-        `catch_up=True` in the log". Section 9.1's schema has no `catch_up` key,
-        so it is written at the TOP LEVEL of the record -- the log's writer
-        permits extra keys, and section 10's parity comparison lists the fields
-        that must match without naming this one, so a flag both live and replay
-        produce identically cannot break parity. Recorded in the PR.
+        Section 2.2 line 120, in full: "minutes between the persisted cursor and
+        now are processed in order with `catch_up=True` in the log, and no
+        position change is executed for catch-up minutes older than the
+        configured `max_catchup_minutes` (default 3): older minutes are logged as
+        `SKIPPED_STALE`."
+
+        Two clauses, and before PR-10R only half of the first was implemented:
+        the runner ticked the OLDEST `max_catchup_minutes` pending minutes and
+        abandoned the rest with no record. That is the wrong end of the queue --
+        a restart after a two-hour outage decided the two-hour-old minutes at the
+        two-hour-old book and left the current ones unread -- and it left the
+        campaign's log with a hole where the abandoned minutes should be, because
+        nothing in the log said they had been passed over.
+
+        What runs now: every minute from the cursor up to `now_ms` is accounted
+        for, in order. The last `max_catchup_minutes` of them are ticked
+        normally. Every older one advances the cursor and writes one
+        `SKIPPED_STALE` record naming its age -- no rule evaluates, no Aegis
+        check runs and no position changes, which is exactly "no position change
+        is executed".
+
+        `now_ms` is the instant catching up is happening at. Without one the
+        newest minute the feed holds is used, because that is the newest minute
+        that could be decided; a caller that means something else says so.
+
+        Section 9.1's schema has no `catch_up` key, so it is written at the TOP
+        LEVEL of the record -- the log's writer permits extra keys, and section
+        10's parity comparison lists the fields that must match without naming
+        this one, so a flag both live and replay produce identically cannot break
+        parity. Recorded in the PR.
         """
         limit = int(self.config.runner_setting("max_catchup_minutes"))
+        # Read once. The window is what it was when catching up began; letting it
+        # move as minutes are processed would make the answer depend on how long
+        # the catch-up itself took, which is a wall-clock dependency by another
+        # name and would not replay.
+        newest = self._newest_minute_ms(now_ms=now_ms)
         outcomes: list[TickOutcome] = []
-        for _ in range(limit):
+        while True:
             if self.state is RunnerState.HALT:
                 break
-            minute = self.cursor.next_minute_ms(now_ms=now_ms)
+            # Bounded by `newest`, never by `now_ms` alone: with no `now_ms` the
+            # cursor's own `next_minute_ms` hands back cursor + one minute for
+            # ever, whether or not a file holds it, so the loop's end has to be
+            # the newest minute that EXISTS.
+            minute = self.cursor.next_minute_ms(now_ms=newest)
             if minute is None:
                 break
-            outcomes.append(self.tick(minute))
+            age = 0 if newest is None else (int(newest) - int(minute)) // 60_000
+            if age >= limit:
+                outcomes.append(self._skipped_stale(minute, age=age, limit=limit))
+            else:
+                outcomes.append(self.tick(minute))
         return outcomes
+
+    def _newest_minute_ms(self, *, now_ms: int | None = None) -> int | None:
+        """The newest minute catching up could decide.
+
+        `now_ms` when the caller named one, and otherwise the newest minute the
+        feed actually holds. Read from the files rather than from a clock: the
+        runner reads no clock, and a replay of the same files has to find the
+        same answer.
+        """
+        if now_ms is not None:
+            return int(now_ms)
+        return self.cursor.latest_minute_ms()
+
+    def _skipped_stale(self, minute_ms: int, *, age: int, limit: int) -> TickOutcome:
+        """One catch-up minute too old to act on. Recorded, never silently dropped.
+
+        The cursor advances because the minute HAS been dealt with: the answer
+        for it is "too old to decide", which is a fact about the campaign and not
+        a gap in it. Nothing else about the position, the ledger or Aegis moves,
+        so a SKIPPED_STALE minute cannot change what a later minute decides.
+        """
+        minute_ns = int(minute_ms) * _MS_TO_NS
+        self.clock.observe(minute_ns + MINUTE_NS)
+        record_hash = self._append(
+            RecordKind.SKIPPED_STALE,
+            minute_ns,
+            {
+                "catch_up": True,
+                "stale": {
+                    "age_minutes": int(age),
+                    "max_catchup_minutes": int(limit),
+                },
+                "veto_or_rejection": {
+                    "stage": "feed",
+                    "label": "skipped_stale",
+                    "detail": (
+                        f"the minute is {age} minute(s) behind the newest available one "
+                        f"and max_catchup_minutes is {limit}; no rule evaluated and no "
+                        "position changed"
+                    ),
+                },
+            },
+        )
+        self.cursor.mark_processed(minute_ms)
+        self.save_state()
+        return TickOutcome(
+            minute_ms,
+            self.state,
+            RecordKind.SKIPPED_STALE,
+            detail=f"stale by {age} minute(s)",
+            record_hash=record_hash,
+        )
 
     # ------------------------------------------------------------------
     # helpers
@@ -883,6 +1729,27 @@ class DemoRunner:
 # ----------------------------------------------------------------------
 # small pure helpers, kept out of the class so tests can reach them
 # ----------------------------------------------------------------------
+#: The settlement instant's field name, taken from the feed rather than repeated.
+_SETTLEMENT_FIELD = SETTLEMENT_INSTANT_FIELD
+
+
+def _venue_symbol(contract: Any) -> str:
+    """The perpetual market's symbol AS THE VENUE SPELLS IT, from the contract.
+
+    ``BTCUSDT``, not ``BTC/USDT:USDT``. It is read off the contract rather than
+    written down here so a campaign on another instrument cannot silently book
+    this one's settlements; see :func:`chimera.demo.feed.settlement_from_row` for
+    why the two spellings may never be confused.
+    """
+    try:
+        return str(contract.market(PERP_MARKET).symbol)
+    except Exception as exc:  # pragma: no cover - a contract without the market
+        raise RunnerError(
+            f"the campaign's contract does not name a {PERP_MARKET!r} market, so a "
+            f"funding settlement cannot be attributed to an instrument: {exc}"
+        ) from exc
+
+
 def _prefixed(value: str) -> str:
     """Render a bare 64-hex digest as section 9.2's ``sha256:<hex>``.
 
