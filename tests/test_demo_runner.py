@@ -440,10 +440,17 @@ def test_an_unreadable_runner_state_is_refused_rather_than_reset(tmp_path):
 # catch-up
 # ---------------------------------------------------------------------------
 def test_catch_up_decides_at_most_max_catchup_minutes(tmp_path):
-    """Section 2.2 line 120's first clause: only the recent minutes are decided."""
+    """Section 2.2 line 120's first clause: only the recent minutes are decided.
+
+    ``now_ms`` bounds the pending window. Without one the drain runs to the end
+    of the fixture's day, and since PR-10R accounts for every pending minute
+    rather than abandoning the surplus, that is 1437 SKIPPED_STALE records with
+    an fsync each -- minutes of wall clock to assert something about three.
+    """
     harness = build(tmp_path, config=None)
     limit = int(harness.runner.config.runner_setting("max_catchup_minutes"))
-    outcomes = harness.runner.catch_up()
+    first = harness.first_minute_ms()
+    outcomes = harness.runner.catch_up(now_ms=first + 9 * 60_000)
     decided = [o for o in outcomes if o.kind is not RecordKind.SKIPPED_STALE]
     assert len(decided) == limit
 
@@ -452,7 +459,8 @@ def test_catch_up_honours_a_configured_limit(tmp_path):
     state_dir = tmp_path / "state"
     config = campaign_config(state_dir, runner={"max_catchup_minutes": 2})
     harness = build(tmp_path, config=config)
-    outcomes = harness.runner.catch_up()
+    first = harness.first_minute_ms()
+    outcomes = harness.runner.catch_up(now_ms=first + 9 * 60_000)
     assert len([o for o in outcomes if o.kind is not RecordKind.SKIPPED_STALE]) == 2
 
 
@@ -1161,6 +1169,26 @@ def test_resolve_still_refuses_an_empty_note(tmp_path):
 # ---------------------------------------------------------------------------
 # PR-10R: liquidation touch (section 6.7)
 # ---------------------------------------------------------------------------
+def _erode_to_liquidation(harness, minute_ms) -> None:
+    """Drain the ledger's cash until equity sits just under section 6.7's line.
+
+    Funding-driven equity erosion is what 6.7 says the check exists for, and
+    ``free_cash`` is the field funding moves, so draining it is the real
+    mechanism. Writing ``last_equity`` directly used to work and no longer does:
+    the check marks the position at the minute it is checking, so an injected
+    equity is recomputed away -- which is the point of marking there, and which
+    means a test that injected one would silently stop forcing a touch.
+    """
+    position = harness.runner.position
+    state = harness.runner.cursor.state_for(minute_ms)
+    adverse = state.mark_high or state.mark
+    maintenance = (
+        position.leg("perp").quantity * adverse * position.config.maintenance_margin_rate
+    )
+    equity = position.mark_to_market(state).equity
+    position.ledger.state.free_cash -= equity - maintenance + D("1")
+
+
 def _touches(harness):
     return [r for r in harness.records() if r["kind"] == RecordKind.LIQUIDATION_TOUCH.value]
 
@@ -1179,8 +1207,7 @@ def test_a_liquidation_touch_halts_flattens_and_is_recorded_in_that_order(tmp_pa
     quantity = harness.runner.position.leg("perp").quantity
     assert quantity > D("0")
 
-    ledger = harness.runner.position.ledger
-    ledger.state.last_equity = D("1")  # far below Q * mark * 0.004
+    _erode_to_liquidation(harness, first + 3 * 60_000)
 
     harness.tick(first + 3 * 60_000)
 
@@ -1209,7 +1236,7 @@ def test_no_increase_is_possible_after_a_liquidation_touch(tmp_path):
     harness = build(tmp_path)
     first = harness.first_minute_ms()
     harness.run(3, start=first)
-    harness.runner.position.ledger.state.last_equity = D("1")
+    _erode_to_liquidation(harness, first + 3 * 60_000)
     harness.tick(first + 3 * 60_000)
     assert harness.runner.position.state is HedgeState.FLAT
 

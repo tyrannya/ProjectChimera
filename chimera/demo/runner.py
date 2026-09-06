@@ -1205,9 +1205,18 @@ class DemoRunner:
             # `tick`. Refused rather than read as "not touched".
             return self._touch_halt(minute_ms, "liquidation_unknown: the minute has no mark")
 
-        equity = self.position.ledger.state.last_equity
-        if equity is None:
-            equity = self.position.mark_to_market(state).equity
+        # Marked HERE, so the two sides of section 6.7's
+        # `equity < Q * mark_high * maintenance_margin_rate` describe the same
+        # minute. Reading the ledger's `last_equity` alone compared an equity
+        # marked at the PREVIOUS tick against this minute's mark -- a
+        # sixty-second lag on exactly the quantity section 6.7 exists to watch
+        # erode.
+        mark = self.position.mark_to_market(state)
+        if self.position.state is HedgeState.DISPUTED:
+            return self._touch_halt(
+                minute_ms, f"identity_violation: {self.position.ledger.disputed}"
+            )
+        equity = mark.equity
         try:
             touched = self.position.liquidation_touched(state, equity=Decimal(equity))
         except Exception as exc:
@@ -1616,6 +1625,13 @@ class DemoRunner:
         # the catch-up itself took, which is a wall-clock dependency by another
         # name and would not replay.
         newest = self._newest_minute_ms(now_ms=now_ms)
+        if newest is None:
+            # No minute exists to catch up TO. The cursor's `next_minute_ms`
+            # answers "cursor + one minute" for ever whether or not a file holds
+            # it, so without this the loop below walks forward without end
+            # writing INCOMPLETE_STATE records for minutes no recorder ever
+            # wrote -- fabricated evidence, and an unbounded log.
+            return []
         outcomes: list[TickOutcome] = []
         while True:
             if self.state is RunnerState.HALT:
