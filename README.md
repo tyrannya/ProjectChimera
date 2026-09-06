@@ -1,14 +1,17 @@
 # ProjectChimera
 
-A research and **dry-run** platform for machine-learning crypto trading, built on
-[Freqtrade](https://www.freqtrade.io/) as the execution engine.
+A research and **dry-run** platform for machine-learning crypto trading. Its
+runtime is the **demo path**: a prospective recorder of public market data, a
+deterministic runner over the minutes that recorder captured, and a dry-run
+futures venue. [Freqtrade](https://www.freqtrade.io/) was the execution engine
+and is now disconnected — kept and tested, on no runtime path.
 
 It exists to make one chain reproducible and safe to run end to end:
 
 ```
-market data → validated dataset → features → leakage-safe training
-   → versioned model → inference service → Freqtrade strategy
-   → central risk controls → dry-run trading → metrics and alerts
+public market data → append-only raw events → one normalized row per minute
+   → demo runner → rules → Aegis (central risk) → two-leg carry position
+   → chimera.futures dry-run venue → hash-chained decision log → reports
 ```
 
 > **Historical backtest performance does not guarantee future profitability.**
@@ -38,36 +41,98 @@ market data → validated dataset → features → leakage-safe training
 
 ## What works today
 
+Three tables, because "works" means three different things here. The first is
+the runtime. The second is the research machinery that produced every committed
+checkpoint. The third is code that still builds, still has tests and is on no
+runtime path at all, and saying so is the point of listing it.
+
+### The demo path — the runtime
+
+```
+chimera.recorder → data/prospective/gen3/ → chimera.demo (feed, rules, runner)
+   → chimera.risk (Aegis) → chimera.carry → chimera.futures dry-run venue
+   → chimera.demo.decision_log → replay parity
+```
+
+| Component | Status | Notes |
+| --- | --- | --- |
+| Prospective recorder (`chimera.recorder`, `tools.recorder`) | Working, **engineering data only** | Binance public market data → append-only raw events → one normalized row per minute a closed kline was captured for. No interpolation and no invented candle: a minute with no usable kline is missing, and is named as missing. Contract `btcusdt-prospective-gen3`, whose `prospective_from` is `null`, so the prospective boundary is **not** activated and nothing recorded under it is scientific evidence |
+| Demo runner (`chimera.demo.runner`, `tools.demo_run`) | Working | The state machine over recorded minutes. Its decision clock is `max(receipt_ns)` over what has been read, never the wall clock, so the same minutes replayed produce the same decisions and the same stale-feed vetoes |
+| Feed (`chimera.demo.feed`) | Working | `FeedCursor` and `MarketState`: the recorder's normalized minutes, read one at a time and read-only |
+| Rules (`chimera.demo.rules_carry`, `chimera.demo.rules_shadow`) | Working, **parameters not frozen** | One carry rule and two signal-only shadow rules. A shadow rule returns a type no position can accept, so the guarantee is carried by the type rather than by a convention. No rule carries a default parameter, and `conf/demo/pvc1.json` has `protocol_hash: null`: the protocol that would freeze them is not written, so no campaign is authorised |
+| Central risk engine + kill switch (`chimera.risk`) | Working | `RiskEngine.evaluate_entry` is the single gate on every order that increases exposure. A synchronous local check, with `RiskState` persisted so the kill switch survives a restart |
+| Two-leg carry position (`chimera.carry`) | Working, **dry-run only** | One LONG spot leg and one SHORT perpetual leg of equal quantity, as a single position: accounting, ledger, imbalance correction, partial-leg failure, restart reconstruction |
+| Futures execution (`chimera.futures`) | Working, **dry-run only** | USD-M perpetuals, isolated 1x, LONG and SHORT. No live-order path exists and no credential is required |
+| Decision log (`chimera.demo.decision_log`) | Working | Append-only, hash-chained NDJSON with a canonical byte serialization, and a verifier that tells a torn tail apart from a forged chain |
+| Replay parity (`tools.replay_parity`) | Working | Replays recorded minutes into an empty state directory and compares the two decision logs field by field. A divergence is reported, never repaired |
+| Prometheus, Grafana, Alertmanager | Working | Provisioned by the default compose stack. Every dashboard panel and every committed alert rule queries a metric this code exports, and a test asserts it |
+| Telegram notifications | Working, optional | Absent credentials disable it silently |
+
+Operate it with the Makefile targets that exist:
+
+```bash
+make recorder-run       make recorder-status
+make demo-run           make demo-status        make demo-replay-parity
+```
+
+`make demo-run` reads `conf/demo/pvc1.json` and the recorder's normalized files
+and drives the dry-run venue through `tools/demo_run.py`. It opens no socket and
+reads no credential, and `tests/test_demo_no_live_path.py` asserts both over the
+source rather than by running it. **No campaign has started, no prospective
+evidence exists, and nothing here authorises real money.**
+
+### The research pipeline
+
+Still current, still tested, and the source of every committed checkpoint. It
+runs offline from committed data and places no orders.
+
 | Component | Status | Notes |
 | --- | --- | --- |
 | Data download and validation | Working | UTC, deduplicated, gap-detected, OHLC-checked |
-| Feature engineering | Working | 14 causal, scale-free features; shared by training and strategy |
+| Feature engineering | Working | 14 causal, scale-free features; shared by training and every consumer |
 | Cost-aware labelling | Working | SHORT/HOLD/LONG against a fee + slippage threshold |
 | Chronological splits, nested walk-forward | Working | Leakage prevented by index arithmetic, asserted in tests |
 | Training (`nn.train`) | Working | CPU-first, reproducible, baselines reported alongside |
 | Model artifacts and gated promotion | Working | On-disk artifact is the source of truth |
-| Inference service (`nn.infer_service`) | Working | FastAPI, schema-validated, `/livez` + `/readyz` |
-| `NNPredictorStrategy` | Working | Fails closed to HOLD on any inference problem |
-| `SwingSpot` | Working | Simple EMA/RSI, long-only spot |
-| Central risk engine + kill switch | Working | On the entry path via `confirm_trade_entry` |
-| Futures execution (`chimera.futures`) | Working, **dry-run only** | USD-M perpetuals, isolated 1x, LONG and SHORT. No live-order path exists and no credential is required |
-| Prometheus + Grafana | Working | Every panel queries a metric this code exports |
-| Trading-mode controller (`chimera.modes`) | Working, **selects nothing today** | SCALPING / DAY_TRADING / SWING / FLAT as states. Every mode is `NOT_ELIGIBLE` under the committed evidence, so it decides `FLAT` on every bar |
-| Paper chain (`tools.paper_run`) | Working, **dry-run replay only** | Runs specialists → consensus → mode → Aegis → Hermes into the dry-run venue. A smoke, not sustained paper validation, and its report says so in fields |
-| Telegram notifications | Working, optional | Absent credentials disable it silently |
 | MLflow tracking | Optional | `--mlflow`; artifacts do not depend on it |
 | Ray Tune | Optional | `--tune-trials N`; default 0 runs a single pass |
 
-### Experimental / disabled
+### Historical — disconnected from the demo path
 
-| Component | Why |
-| --- | --- |
-| `ScalpFutures` | Needs an order-book feed this repository does not have, and depth is not available historically. Emits no entries. |
-| `ArbMM` | Freqtrade cannot execute a two-leg spread trade, and the second leg's data is absent. Emits no entries. |
+Disconnected at stage S3 by section 3.3 of the adopted plan: **kept, tested and
+reachable in the history, on no runtime path.** Their module docstrings say so,
+the `freqtrade` and `nn_infer` compose services sit behind the `legacy` profile,
+their Prometheus scrape jobs and rule file are unloaded (`conf/alerts.yml` stays
+on disk and stays tested), the Freqtrade schema and image jobs run only on
+demand, and `tests/test_retired_runtime_disconnected.py` walks the import
+closure of `chimera.demo`, `chimera.carry` and every active CLI and asserts it
+reaches none of them. **Nothing here was deleted**, and this section is what
+stops that from being invisible: deletion, if it happens at all, is a later
+reviewable change after the soak stage.
 
-Both are kept, unarmed, with the reasoning in their module docstrings. They are
-not silently broken strategies pretending to work — that was the previous state,
-and [`docs/engineering-audit.md`](docs/engineering-audit.md) records it.
+| Component | State | Why it is kept rather than deleted |
+| --- | --- | --- |
+| Freqtrade execution engine, `tools.run_bot`, `conf/<exchange>.<mode>.json` | Disconnected | The only live-capable code in the repository, and it stays double-gated. It executed no committed artifact: `artifacts/paper_smoke` and `artifacts/futures_dry_run_v1` were produced by `chimera.futures` directly |
+| `NNPredictorStrategy`, `SwingSpot` (`strategies/`) | Disconnected | Freqtrade strategies. `tests/test_strategies.py` still loads all four through Freqtrade's own resolver, which is why nothing in `strategies/` may be renamed or moved |
+| `ScalpFutures` | Disconnected, and unarmed before that | Needs an order-book feed this repository does not have, and depth is not available historically. Emits no entries |
+| `ArbMM` | Disconnected, and unarmed before that | Freqtrade cannot execute a two-leg spread trade, and the second leg's data is absent. Emits no entries. The two-leg position that does work is `chimera.carry` |
+| Inference service (`nn.infer_service`) | Disconnected | FastAPI, schema-validated, `/livez` + `/readyz`. `make smoke` still exercises it end to end, so it is still covered on every push |
+| Model registry (`nn.registry`) | Disconnected from the runtime, **not** from research | Still the artifact store `nn.train` writes through and the promotion gate it clears. Only its serving side is retired |
+| Inference client (`chimera.inference_client`) | Disconnected | The HTTP client the Freqtrade strategy used. Fail-closed by construction |
+| Trading-mode controller (`chimera.modes`) | Disconnected, and selected nothing before that | SCALPING / DAY_TRADING / SWING / FLAT as states. Every mode is `NOT_ELIGIBLE` under the committed evidence, so it decided `FLAT` on every bar |
+| Cross-timeframe consensus (`chimera.consensus`) | Disconnected | One pure function and one frozen rule. `tests/test_p7_consensus.py` runs P7's whole preregistered property battery through `decide` itself, and `tests/test_p7_evidence.py` checks that the frozen artifact still names that function as the rule that decided it. Deleting it would delete the thing the evidence was produced by |
+| Paper chain (`tools.paper_run`) | Historical, dry-run replay only | Runs specialists → consensus → mode → Aegis → Hermes into the dry-run venue. A smoke, not sustained paper validation, and its report says so in fields |
+
+Disconnected from the runtime is not disconnected from the record.
+`tests/test_p7_consensus.py`, `tests/test_trading_modes.py` and
+`tests/test_p8_preregistration.py` import `chimera.consensus` and
+`chimera.modes` to check frozen evidence and a committed preregistration, and
+they must keep passing; `tests/test_strategies.py`, `tests/test_config_and_cli.py`
+and `tests/test_risk_regressions.py` still import Freqtrade itself, which is why
+the `trade` extra is kept and why Freqtrade is still installed in CI.
+[`docs/engineering-audit.md`](docs/engineering-audit.md) records what was broken
+before the rebuild; [`docs/architecture.md`](docs/architecture.md) draws the two
+paths side by side.
 
 ---
 
@@ -90,7 +155,9 @@ onto the containers:
 
 | Extra | For | Contains |
 | --- | --- | --- |
-| `.[trade]` | Freqtrade container | freqtrade |
+| `.[demo]` | The demo path | nothing beyond the core: it reads files |
+| `.[recorder]` | The recorder's live collection layer | websockets |
+| `.[trade]` | **Historical.** The retired Freqtrade container | freqtrade |
 | `.[ml]` | Inference and training | torch, fastapi, uvicorn, ccxt |
 | `.[tracking]` | Optional | mlflow |
 | `.[tune]` | Optional | ray[tune] |
@@ -115,8 +182,11 @@ make smoke
 ```
 
 This walks synthetic candles → features → a one-epoch model → artifact → the
-inference service → a strategy decision → a risk decision, in under a minute on
-CPU. It proves the plumbing, not profitability.
+inference service → a decision → a risk decision, in under a minute on CPU. It
+proves the **research pipeline's** plumbing, not profitability, and it is the
+one place the disconnected inference service is still exercised end to end. The
+demo path has its own offline exercise, `make demo-replay-parity`, described in
+[step 8](#8-run-the-demo-path).
 
 ---
 
@@ -514,7 +584,11 @@ fields rather than only in prose. **P8**, the automatic mode router, is
 preregistered at [`docs/p8_preregistration.md`](docs/p8_preregistration.md) and
 is **not opened**: its precondition is two eligible modes, and there are none.
 
-### 5. Serve the model
+### 5. Serve the model (historical — disconnected)
+
+> **Historical.** Disconnected from the demo path at stage S3. Kept and tested;
+> not started by the default compose stack and not built by any automatically
+> triggered CI job. The runtime is [step 8](#8-run-the-demo-path).
 
 ```bash
 make infer          # uvicorn on 127.0.0.1:3000
@@ -550,7 +624,11 @@ Malformed bodies get `422`, a feature matrix of the wrong shape gets `400` with
 the expected shape and feature order in the message, and an inference failure
 gets `500` — never a fabricated score.
 
-### 6. Dry-run trading
+### 6. Dry-run trading with Freqtrade (historical — disconnected)
+
+> **Historical.** Disconnected from the demo path at stage S3. Kept and tested;
+> not started by the default compose stack and not built by any automatically
+> triggered CI job. The runtime is [step 8](#8-run-the-demo-path).
 
 ```bash
 make dry-run EXCHANGE=binance STRATEGY=NNPredictorStrategy
@@ -568,13 +646,47 @@ make docker-up
 
 - Grafana — <http://localhost:3001> (admin/admin, change it)
 - Prometheus — <http://localhost:9090>
-- Inference — <http://localhost:3000/metrics>
+
+The inference service's `/metrics` endpoint is on the `legacy` profile with the
+service itself, so `docker compose up` no longer starts it and Prometheus no
+longer scrapes it. `docker compose --profile legacy up` brings both back.
 
 Two dashboards are provisioned: **Chimera / Trading** (equity, PnL, drawdown,
 exposure, open positions, rejected entries, kill-switch state) and **Chimera / ML
 and System** (inference latency, errors, prediction and confidence
 distributions, served model version, data staleness). A test asserts that every
 panel and alert rule queries a metric this code actually exports.
+
+### 8. Run the demo path
+
+This is the runtime. Steps 1 to 6 are the research pipeline and the two retired
+services, and nothing in this step reaches either of them:
+`tests/test_retired_runtime_disconnected.py` walks the import closure of the two
+CLIs below and asserts it.
+
+```bash
+make recorder-run                 # record public market data (engineering data)
+make recorder-status              # what is on disk; reads only, writes nothing
+make demo-run                     # the runner, over the minutes already recorded
+make demo-status                  # the runner's state as JSON
+make demo-replay-parity DEMO_DAYS="YYYY-MM-DD"
+```
+
+`make recorder-run` writes under `data/`, which `.gitignore` excludes apart from
+a named whitelist of committed research files. That exclusion is the point:
+everything recorded before a committed `prospective_from` is engineering data
+and must not be committed. `make demo-run` reads `conf/demo/pvc1.json` and those
+normalized files and drives `chimera.futures`'s dry-run venue through
+`chimera.carry`; it opens no socket and reads no credential.
+`make demo-replay-parity` replays the same minutes into an empty state directory
+and compares the two decision logs field by field — the fields that must match
+and the ones that may differ are fixed in
+[`docs/replay_parity.md`](docs/replay_parity.md), and a divergence is reported
+rather than repaired.
+
+The campaign configuration is `conf/demo/pvc1.json`, and its `protocol_hash` is
+`null`: the prospective protocol is not frozen, so no campaign has started and
+no prospective evidence exists.
 
 ---
 
@@ -609,7 +721,8 @@ cover every path. CI never sets the variable and has no live-capable job.
 
 **Two different claims live here, and collapsing them would be wrong.** The
 section above is about the **legacy Freqtrade spot pathway**, which *is*
-live-capable in principle and is deliberately double-gated. The
+live-capable in principle, is deliberately double-gated, and is now disconnected
+from the runtime as well — kept, and not reachable from it. The
 **`chimera.futures` chain** is a separate statement: it has **no authenticated
 live order route at all** — no credentialed endpoint, no signing path, nothing
 that reaches a venue — and `tests/test_futures_no_live_path.py` asserts it stays
@@ -629,7 +742,8 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/architecture.md](docs/architecture.md) | Component boundaries and data flow |
 | [docs/ml_pipeline.md](docs/ml_pipeline.md) | Features, the target, splits, metrics, promotion |
 | [docs/risk_manager.md](docs/risk_manager.md) | Limits, sizing arithmetic, the kill switch |
-| [docs/dry_run.md](docs/dry_run.md) | Running dry-run, and what is verified vs. not |
+| [docs/replay_parity.md](docs/replay_parity.md) | What a replay must reproduce field by field, and what a divergence means |
+| [docs/dry_run.md](docs/dry_run.md) | **Historical.** Running the disconnected Freqtrade dry-run, and what it verified |
 | [docs/engineering-audit.md](docs/engineering-audit.md) | What was broken before this rebuild |
 | [docs/smc_v1.md](docs/smc_v1.md) | The causal market-structure information set: 39 exact definitions |
 | [docs/chart_structure_v1.md](docs/chart_structure_v1.md) | The causal classical-pattern information set: 30 exact definitions |
@@ -659,14 +773,20 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 
 ```
 chimera/       Shared, dependency-light core: features, contracts, risk, safety,
-               metrics, notifications, inference client. No torch, no freqtrade.
+               metrics, notifications. No torch, no freqtrade.
+chimera/recorder/ The prospective recorder: contract, event parsers, append-only
+               sink, minute normalizer, live streams and REST pollers.
+chimera/demo/  The demo runtime: clock, config, feed, rules, runner, decision log.
+chimera/carry/ The two-leg carry position: accounting, ledger, hedge, factory.
 chimera/futures/  Dry-run USD-M perpetual execution: positions, order state
                machine, venue constraints, fees and funding, reconciliation.
-nn/            Data pipeline, model, training, evaluation, walk-forward,
-               artifact registry, inference service.
-strategies/    Freqtrade strategies and the risk-aware base class.
-tools/         CLI entrypoints: backfill, build_features, run_bot, smoke.
-conf/          Freqtrade configs, Prometheus, Alertmanager, alert rules.
+nn/            Data pipeline, model, training, evaluation, walk-forward.
+               HISTORICAL: artifact registry, inference service.
+strategies/    HISTORICAL: Freqtrade strategies and the risk-aware base class.
+tools/         CLI entrypoints: recorder, demo_run, replay_parity, backfill,
+               build_features, smoke. HISTORICAL: run_bot.
+conf/          conf/demo/ the campaign config; Prometheus, Alertmanager, alert
+               rules. HISTORICAL: the Freqtrade profiles.
 grafana/       Datasource and dashboard provisioning.
 tests/         The test suite.
 docs/          Architecture, ML pipeline, risk, dry-run, audit.
