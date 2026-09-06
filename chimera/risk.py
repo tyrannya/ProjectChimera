@@ -382,8 +382,9 @@ class RiskEngine:
         logger.warning("Risk halt cleared by operator")
         self._persist()
 
-    def _an_ancestor_is_not_a_directory(self) -> bool:
-        """Is the kill switch's path blocked by an ancestor that is not a directory?
+    @staticmethod
+    def _an_ancestor_is_not_a_directory(path: Path | None) -> bool:
+        """Is ``path`` blocked by an ancestor that exists and is not a directory?
 
         Answers the question ``stat`` could not, for the case where the platform
         reported a missing path component as a plain "not found". An ancestor
@@ -395,9 +396,9 @@ class RiskEngine:
         Any error examining an ancestor is itself unexaminable, so it counts as
         blocked: this method never turns an unknown into a confident "no".
         """
-        if self._kill_switch_path is None:
+        if path is None:
             return False
-        for ancestor in self._kill_switch_path.parents:
+        for ancestor in path.parents:
             try:
                 mode = ancestor.stat().st_mode
             except FileNotFoundError:
@@ -452,7 +453,7 @@ class RiskEngine:
             # switch fail OPEN on exactly the unexaminable path this method
             # promises to fail closed on. Ask the ancestors directly rather than
             # reading an OS-specific errno, so both platforms answer alike.
-            blocked = self._an_ancestor_is_not_a_directory()
+            blocked = self._an_ancestor_is_not_a_directory(self._kill_switch_path)
             present, problem = (True, str(exc)) if blocked else (False, None)
         except OSError as exc:
             present, problem = True, str(exc)
@@ -555,7 +556,19 @@ class RiskEngine:
             return
         try:
             text = self._state_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            # Same platform trap as check_kill_switch: Windows reports a path
+            # blocked by a non-directory as a plain "not found", which read as
+            # "there is no state file" would start the engine on unhalted
+            # defaults -- losing the halt, the peak equity, the cooldown, the
+            # order window and any open dispute, exactly what this fail-closed
+            # rule exists to prevent. A directory that has not been created yet
+            # is still simply absent, on both platforms.
+            if self._an_ancestor_is_not_a_directory(self._state_path):
+                logger.critical(
+                    "Risk state at %s could not be read: %s", self._state_path, exc
+                )
+                self._fail_closed("unreadable persisted risk state")
             return
         except OSError as exc:
             # The path goes to the log; the halt reason stays free of it, because
