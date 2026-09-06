@@ -1371,7 +1371,19 @@ def monthly_report(
             if str(record.get("kind")) in _UNCLASSIFIED_NAMES
         }
     )
-    if present and sorted(binding.unclassified_treatment) != list(_UNCLASSIFIED_NAMES):
+    # The VALUES, not just the keys. `sorted(mapping)` sorts keys, so a binding
+    # naming all three with `""`, `None` or `17` satisfied a key-only check and
+    # wrote that straight into the frozen payload -- which is the silence this
+    # gate exists to refuse, wearing the shape of an answer. What a legal value
+    # IS stays unnamed here on purpose: the vocabulary of treatments is the
+    # protocol's to fix, and inventing one would be this report deciding the
+    # scoring rule that PR-14 owns.
+    named = sorted(
+        name
+        for name, value in binding.unclassified_treatment.items()
+        if isinstance(value, str) and value.strip()
+    )
+    if present and named != list(_UNCLASSIFIED_NAMES):
         raise ReportRefused(
             f"the month holds {present} records, and section 9.4 classifies none of "
             "HALT, RESUME or RECOVERY. The protocol must say whether each of the three "

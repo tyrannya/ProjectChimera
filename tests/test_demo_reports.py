@@ -1527,6 +1527,60 @@ def test_a_partial_treatment_is_refused_as_firmly_as_none(tmp_path):
         monthly_report(_month_log(tmp_path, extra=[halt]), "2026-09", binding=binding)
 
 
+def test_a_blank_or_non_string_treatment_is_a_silence_and_is_refused(tmp_path):
+    """The gate read `sorted(mapping)`, which sorts KEYS and never looks at values.
+
+    A binding naming all three kinds with `""`, `"  "`, `None`, `17` or `["x"]`
+    therefore passed, and the value went verbatim into the frozen payload -- the
+    silence this gate exists to refuse, wearing the shape of an answer. What a
+    legal treatment IS stays deliberately unnamed: `"banana"` still passes,
+    because fixing the vocabulary is the protocol's job and not this report's.
+    """
+    from dataclasses import replace
+
+    halt = {
+        **_base("HALT", "2026-09-19T00:03:00+00:00"),
+        "veto_or_rejection": {"stage": "runner", "label": "halt", "detail": "kill_switch"},
+    }
+    state_dir = _month_log(tmp_path, extra=[halt])
+
+    for treatment in (
+        {"HALT": "", "RESUME": "operational", "RECOVERY": "operational"},
+        {"HALT": "  ", "RESUME": "operational", "RECOVERY": "operational"},
+        {"HALT": None, "RESUME": 17, "RECOVERY": ["x"]},
+    ):
+        binding = replace(SYNTHETIC_BINDING, unclassified_treatment=treatment)
+        with pytest.raises(ReportRefused, match="HALT"):
+            monthly_report(state_dir, "2026-09", binding=binding)
+    # The two-sided control: the same month, with three real treatments, computes.
+    assert monthly_report(state_dir, "2026-09", binding=SYNTHETIC_BINDING)["quantities"]
+
+
+def test_a_treatment_this_report_does_not_recognise_still_passes(tmp_path):
+    """The other side, and it is deliberate rather than an oversight.
+
+    Naming the legal values would be PR-12 deciding what HALT, RESUME and
+    RECOVERY mean for scoring, which is exactly the decision the module refuses
+    to make and the S2 protocol exists to freeze.
+    """
+    from dataclasses import replace
+
+    binding = replace(
+        SYNTHETIC_BINDING,
+        unclassified_treatment={k: "banana" for k in ("HALT", "RESUME", "RECOVERY")},
+    )
+    halt = {
+        **_base("HALT", "2026-09-19T00:03:00+00:00"),
+        "veto_or_rejection": {"stage": "runner", "label": "halt", "detail": "kill_switch"},
+    }
+    report = monthly_report(_month_log(tmp_path, extra=[halt]), "2026-09", binding=binding)
+    assert report["unclassified_treatment"] == {
+        "HALT": "banana",
+        "RESUME": "banana",
+        "RECOVERY": "banana",
+    }
+
+
 def test_a_null_prospective_boundary_is_refused(tmp_path):
     from dataclasses import replace
 
