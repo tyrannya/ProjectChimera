@@ -54,6 +54,20 @@ jobs:
           tar -xzf /tmp/prometheus.tar.gz -C /tmp
           /tmp/prometheus-${version}.linux-amd64/promtool check rules conf/alerts.yml conf/alerts_demo.yml
 
+      - name: docker compose config
+        # Relocated here by PR-13 from the `Config validation` job, which became
+        # manual. This is not a Freqtrade check: it is the only thing that
+        # parses docker-compose.yml on a pull request, and PR-13 is the change
+        # that edits that file, so it has to keep running on every push and PR.
+        run: docker compose config --quiet
+
+      - name: docker compose config, every profile
+        # PR-13 put the retired services behind a profile. Without naming the
+        # profile, `config` no longer parses those two service definitions at
+        # all, and a syntax error in a disconnected service would go unseen
+        # until somebody tried to run it.
+        run: docker compose --profile legacy config --quiet
+
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -140,6 +154,23 @@ jobs:
 
   config:
     name: Config validation
+    # HISTORICAL, PR-13 (section 3.3): this job installs Freqtrade and validates
+    # the retired `conf/<exchange>.<mode>.json` profiles against Freqtrade's own
+    # schema. It is kept in full, runnable on demand, and off every automatic
+    # trigger. The job-level `if:` is the only mechanism that can do that:
+    # GitHub Actions has no per-job `on:`, triggers are declared once for the
+    # whole workflow, and every job is created for every matching event. The
+    # workflow's `on:` block is therefore deliberately unchanged, so `lint` and
+    # `test` still run on push and pull_request and this job stays reachable
+    # from the Actions "Run workflow" button.
+    #
+    # Nothing is lost from automatic coverage. tests/test_config_and_cli.py:55
+    # runs the same `validate_config_schema` over the same six profiles, and
+    # :142 asserts the live launcher exits 2 without the acknowledgement; both
+    # run in the `test` job on both OS legs. The one step that had no equivalent
+    # was `docker compose config`, which is why it moved into `lint` above
+    # rather than becoming manual with the rest of this job.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -185,16 +216,22 @@ jobs:
           fi
           echo "Live trading correctly refused."
 
-      - name: docker compose config
-        run: docker compose config --quiet
-
   docker:
     name: Docker build smoke
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Images are slow to build and rarely the thing that breaks, so this runs
-    # on main and on demand rather than on every pull request.
-    if: github.event_name != 'pull_request'
+    # HISTORICAL, PR-13 (section 3.3): both images built here are retired -- the
+    # Freqtrade image and the inference image. `!= 'pull_request'` still made
+    # this an automatic job, because it ran on every push to main; section 3.3
+    # asks for the retired images to be off CI's automatic triggers, and one
+    # line is the whole change. Both build steps, both cache scopes and the
+    # whole job body are kept, so the images stay reproducible on demand.
+    # Images are also slow to build and rarely the thing that breaks.
+    #
+    # NOTE for PR-12: a recorder or demo image is an ACTIVE image and must NOT
+    # be added to this job, which would put it behind a manual trigger. Give it
+    # its own job with its own trigger.
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

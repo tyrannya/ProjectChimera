@@ -2,11 +2,19 @@
 #
 #   recorder    - prospective market-data recorder, public endpoints only
 #   demo        - dry-run demo campaign runner, reads the recorder's files
-#   freqtrade   - trading engine, runs strategies through the risk layer
-#   nn_infer    - HTTP inference service the NN strategy calls
-#   prometheus  - scrapes metrics from nn_infer, freqtrade, recorder and demo
+#   prometheus  - scrapes metrics from the recorder and the demo runner
 #   grafana     - dashboards over Prometheus
 #   alertmanager- routes Prometheus alerts
+#
+# HISTORICAL, behind `profiles: ["legacy"]`, started only by
+# `docker compose --profile legacy up`:
+#   freqtrade   - the retired trading engine (section 3.3, PR-13)
+#   nn_infer    - the retired HTTP inference service
+#
+# `legacy` marks what was retired, not what is optional. A service that is part
+# of the demo path -- the recorder and the demo runner PR-12 adds -- must carry
+# no `profiles:` key at all, so that it lands in the default stack; inheriting
+# `legacy` would silently remove the demo path from `docker compose up`.
 #
 # Live trading is NOT reachable from this file: tools/run_bot.py refuses to
 # start a live config unless ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK is in the
@@ -26,8 +34,11 @@ volumes:
   demo_state:
 
 services:
-  # --- FREQTRADE (execution engine) ---------------------------------------
+  # --- FREQTRADE (HISTORICAL - not on the demo path; profile `legacy`) -----
   freqtrade:
+    # HISTORICAL - not on the demo path (PR-13, section 3.3). Kept, not
+    # deleted; started only by `docker compose --profile legacy up`.
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -58,8 +69,13 @@ services:
       retries: 3
       start_period: 60s
 
-  # --- NN INFERENCE --------------------------------------------------------
+  # --- NN INFERENCE (HISTORICAL - not on the demo path; profile `legacy`) --
   nn_infer:
+    # HISTORICAL - not on the demo path (PR-13, section 3.3). Kept, not
+    # deleted; started only by `docker compose --profile legacy up`. The
+    # `freqtrade` service that depends on it carries the same profile, so the
+    # dependency is either wholly present or wholly absent.
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: nn/Dockerfile.nn_infer

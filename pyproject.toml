@@ -22,7 +22,12 @@ dependencies = [
 # the Freqtrade image needs `trade`, the inference image needs `ml`, and only
 # a developer needs both. Installing `.[all]` is always correct if unsure.
 [project.optional-dependencies]
-# Freqtrade container: the execution engine and the strategies.
+# HISTORICAL - not on the demo path. The Freqtrade container: the retired
+# execution engine and the retired strategies. Disconnected at S3 by PR-13
+# (section 3.3 of docs/proposed_demo_implementation_master_plan.md), kept
+# because `tests/test_strategies.py`, `tests/test_config_and_cli.py` and
+# `tests/test_risk_regressions.py` import `freqtrade` at module scope and must
+# keep passing. Removed by PR-16 after S4, together with those tests.
 trade = ["freqtrade>=2024.1"]
 # Training and inference: the model, the service, and market data download.
 ml = [
@@ -59,6 +64,16 @@ benchmark = [
 recorder = [
     "websockets>=13",
 ]
+# The demo runtime: the runner, the rules, the carry position, the dry-run
+# venue, the decision log and the two CLIs that drive them. Empty on purpose,
+# and derived rather than guessed: every third-party name those modules import
+# -- numpy, pandas, prometheus-client -- is already core, and the parquet reader
+# and writer they use need `pyarrow`, which is core too. Nothing on the demo
+# path imports torch, fastapi, uvicorn, ccxt or freqtrade, and reading recorded
+# files needs no socket library, so `websockets` stays in `recorder`. The group
+# exists so that `pip install ".[demo]"` is a documented, working command and so
+# that a future demo-only dependency has one obvious home.
+demo = []
 dev = [
     "pytest>=8.0",
     # tests/test_observability.py parses the alert rules directly.
@@ -70,7 +85,7 @@ dev = [
     "mypy>=1.9",
     "pre-commit>=3.6",
 ]
-all = ["projectchimera[trade,ml,tracking,tune,benchmark,recorder,dev]"]
+all = ["projectchimera[trade,ml,tracking,tune,benchmark,recorder,demo,dev]"]
 
 [tool.setuptools.packages.find]
 # Discovered rather than listed. Each container image copies only the packages

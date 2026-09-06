@@ -625,10 +625,15 @@ def test_the_demo_profile_scrapes_the_adopted_ports():
     for job_name, endpoint in DEMO_SCRAPE_TARGETS.items():
         assert targets.get(job_name) == endpoint
     assert "/etc/prometheus/alerts_demo.yml" in prometheus["rule_files"]
-    # PR-12 is additive: taking the legacy jobs off the runtime is the
-    # disconnect change's, and removing them here first would leave
-    # conf/alerts.yml's InferenceServiceDown pointing at a job nothing scrapes.
-    assert "nn_infer" in targets and "freqtrade" in targets
+    # The observability change was additive and asserted here that the two legacy
+    # jobs were still scraped, because removing them before the retired services
+    # were profiled out would have left conf/alerts.yml's InferenceServiceDown
+    # pointing at a job nothing scrapes. This change removes both, in the same
+    # commit that drops conf/alerts.yml from `rule_files`, so the invariant that
+    # survives the integration is the one below: nothing retired is scraped, and
+    # the two demo jobs are.
+    assert "nn_infer" not in targets and "freqtrade" not in targets
+    assert set(targets) == {"prometheus", *DEMO_SCRAPE_TARGETS}
 
 
 def test_every_loaded_rule_file_is_mounted_into_prometheus():

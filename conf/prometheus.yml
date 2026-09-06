@@ -1,16 +1,27 @@
 # Only targets that exist in docker-compose.yml are scraped here. The previous
 # version scraped `freqtrade_exporter` and `drift_watcher`, neither of which is
 # a service in this repository, so those jobs were permanently down.
+#
+# PR-13 removed the `nn_infer` and `freqtrade` scrape jobs in the same change
+# that put those two services behind the `legacy` compose profile, and dropped
+# `alerts.yml` from `rule_files` for the same reason: every rule in that file
+# queries a series only those two services export, so leaving it loaded would
+# have left main holding a committed alert whose job nothing scrapes. Nothing
+# here is deleted. conf/alerts.yml stays on disk as the legacy rule set, stays
+# mounted at /etc/prometheus/alerts.yml, and stays covered by
+# tests/test_observability.py; an operator running `--profile legacy` re-adds
+# the rule file and the two jobs by hand.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
-# Both rule files are loaded. conf/alerts.yml covers the Freqtrade and
-# inference path; conf/alerts_demo.yml covers the recorder and the demo
-# runner. Retiring the former belongs to the change that takes those
-# services off the runtime, not to this one.
+# One rule file. conf/alerts_demo.yml covers the recorder and the demo runner,
+# which are what the default stack runs. conf/alerts.yml is the legacy rule set:
+# every expression in it queries a series only the retired freqtrade and
+# nn_infer services export, and those are behind the `legacy` profile with no
+# scrape job here, so loading it would leave alerts that can never fire. It stays
+# on disk, stays mounted, and stays covered by tests/test_observability.py.
 rule_files:
-  - /etc/prometheus/alerts.yml
   - /etc/prometheus/alerts_demo.yml
 
 alerting:
@@ -22,17 +33,6 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
-
-  - job_name: nn_infer
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["nn_infer:3000"]
-
-  - job_name: freqtrade
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["freqtrade:9101"]
-
   # The demo deployment. Both ports are the adopted ones and both are served by
   # the CLI rather than by the library: chimera/demo and chimera/recorder open no
   # listening socket themselves, so the /metrics endpoint exists only when

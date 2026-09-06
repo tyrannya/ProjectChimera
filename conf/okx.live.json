@@ -1,5 +1,5 @@
 {
-    "$comment": "LIVE profile for okx. Note dry_run stays TRUE in this file on purpose: pointing Freqtrade directly at any committed config must never place a real order. tools/run_bot.py --mode live is the only thing that sets dry_run=false, and only after ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK is present in the environment. It writes that setting to a private generated config, never back to this file.",
+    "$comment": "HISTORICAL - not on the demo path (disconnected by PR-13, section 3.3). LIVE profile for okx. Note dry_run stays TRUE in this file on purpose: pointing Freqtrade directly at any committed config must never place a real order. tools/run_bot.py --mode live is the only thing that sets dry_run=false, and only after ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK is present in the environment. It writes that setting to a private generated config, never back to this file.",
     "dry_run": true,
     "chimera_live_intent": true,
     "exchange": {

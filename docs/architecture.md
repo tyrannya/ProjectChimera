@@ -1,22 +1,42 @@
 # Architecture
 
-This describes the code as it is, not as it is intended to become.
+This describes the code as it is, not as it is intended to become. Two paths
+are described below and they are not equals: the **demo path** is the runtime,
+and the Freqtrade path is retired and disconnected. Where a section covers the
+retired path it says so in its heading, and it is written in the past tense on
+purpose.
 
 ## Boundaries
 
-The system has one exchange-facing execution engine (Freqtrade) and a strict
-rule about who may do what:
+The runtime has no exchange-facing execution engine at all: it reads market data
+a recorder captured and simulates fills. One retired Freqtrade path remains in
+the tree, disconnected — see [Historical, disconnected](#historical-disconnected).
+Within the runtime, a strict rule about who may do what:
 
 - **ML code never places orders.** Nothing under `nn/` imports an exchange
   client for trading, opens a position, or manages one. The inference service's
   only output is a probability vector.
-- **The strategy never trains.** It consumes predictions; it does not fit
-  anything. The one place it touches a model directly is offline backtesting,
-  where it loads a frozen artifact read-only.
-- **Every entry passes the risk engine.** `confirm_trade_entry` is the single
-  gate on the Freqtrade path, and the dry-run futures executor asks the same
-  engine before any order that increases exposure. It is a synchronous local
-  check — no network call stands between a halted account and a blocked order.
+- **The recorder computes nothing.** `chimera/recorder/` carries exchange-
+  published values across unchanged. No return, no signal, no basis, no PnL. A
+  minute it holds no usable closed kline for has no row, and no value is
+  interpolated, forward-filled or borrowed from a neighbouring minute.
+- **A rule sees a `MarketState` and nothing else.** No rule module imports an
+  executor, a venue, a position or the feed, and a shadow rule returns a
+  `SignalOnly`, which no position can accept — the guarantee is in the type
+  signature rather than in a comparison. `tests/test_demo_no_live_path.py`
+  asserts both over the AST.
+- **Every entry passes the risk engine.** `RiskEngine.evaluate_entry` is the
+  single gate: the dry-run futures executor asks it before any order that
+  increases exposure, and `chimera/carry/hedge.py` is the only translator from a
+  rule's decision into an order intent. It is a synchronous local check — no
+  network call stands between a halted account and a blocked order.
+- **The runtime cannot reach the retired layers.**
+  `tests/test_retired_runtime_disconnected.py` walks the import closure of
+  `chimera.demo`, `chimera.carry` and every active CLI and asserts it contains
+  none of `strategies`, `tools.run_bot`, `nn.infer_service`, `nn.registry`,
+  `chimera.inference_client`, `chimera.modes`, `chimera.consensus` or
+  `freqtrade`. Reachability is a claim about the import graph, so it is asserted
+  over the graph rather than by importing anything.
 - **`chimera/` never imports torch or freqtrade.** It is loaded in every
   container, so it stays light enough to be.
 
@@ -43,20 +63,29 @@ flowchart TD
         CUR[("current.json")]
     end
 
-    subgraph Serving
-        SVC["nn/infer_service.py<br/>FastAPI"]
+    subgraph DemoRuntime["Demo runtime (this is the runtime)"]
+        REC["chimera/recorder/<br/>streams, rest, sink"]
+        NORM[("data/prospective/gen3/<br/>one row per minute")]
+        FEED["chimera/demo/feed.py<br/>FeedCursor, MarketState"]
+        RUN["chimera/demo/runner.py<br/>DemoRunner"]
+        RULE["chimera/demo/rules_carry.py<br/>rules_shadow.py"]
+        RISK["chimera/risk.py<br/>RiskEngine"]
+        HEDGE["chimera/carry/hedge.py<br/>HedgedPosition"]
+        FUT["chimera/futures/<br/>executor, store,<br/>dry-run venue, fills"]
+        LOG[("chimera/demo/decision_log.py<br/>hash-chained NDJSON")]
+        PARITY["tools/replay_parity.py"]
     end
 
-    subgraph Trading
+    subgraph Historical["Historical, disconnected (dotted edges)"]
+        SVC["nn/infer_service.py<br/>FastAPI"]
         CLIENT["chimera/inference_client.py"]
         STRAT["strategies/nn_predictor_strategy.py"]
-        RISK["chimera/risk.py<br/>RiskEngine"]
         FT["Freqtrade<br/>dry-run execution"]
+        MODES["chimera/modes.py<br/>chimera/consensus.py"]
     end
 
-    subgraph FuturesDryRun["Futures (dry-run only)"]
-        HARN["tools/futures_dry_run.py<br/>replay harness"]
-        FUT["chimera/futures/<br/>executor, ledger,<br/>simulated venue"]
+    subgraph FuturesDryRun["Futures replay harness (frozen protocol)"]
+        HARN["tools/futures_dry_run.py"]
     end
 
     subgraph Observability
@@ -75,26 +104,33 @@ flowchart TD
     EVAL --> GATE
     TRAIN --> ART
     GATE -->|passed and --promote| CUR
-    CUR --> SVC
-    ART --> SVC
-    SVC <--> CLIENT
-    CLIENT --> STRAT
-    FEAT --> STRAT
-    STRAT -->|entry signal| FT
-    FT -->|confirm_trade_entry| RISK
-    RISK -->|allow + stake| FT
-    HARN --> FUT
+    REC --> NORM --> FEED --> RUN
+    RUN --> RULE
+    RULE -->|hedge target| HEDGE
+    HEDGE -->|order intent| FUT
     FUT -->|evaluate_entry| RISK
     RISK -->|allow| FUT
+    RUN --> LOG
+    LOG --> PARITY
+    HARN --> FUT
+    CUR -.-> SVC
+    ART -.-> SVC
+    SVC <-.-> CLIENT
+    CLIENT -.-> STRAT
+    FEAT -.-> STRAT
     ART -.->|backtest only, in-process| STRAT
-    STRAT --> MET
+    STRAT -.->|entry signal| FT
+    FT -.->|confirm_trade_entry| RISK
+    MODES -.-> FT
+    REC --> MET
+    RUN --> MET
     RISK --> MET
     FUT --> MET
-    SVC --> MET
+    SVC -.-> MET
     MET --> PROM --> GRAF
     PROM --> ALERT
     RISK --> TG
-    SVC --> TG
+    SVC -.-> TG
 ```
 
 ## Components
@@ -110,9 +146,13 @@ dependencies on purpose.
 | `contracts.py` | `Signal`, `TargetSpec`, `ModelMetadata`, and `decide()`. The shared vocabulary. |
 | `risk.py` | `RiskEngine`: limits, sizing, kill switch. No Freqtrade dependency. |
 | `safety.py` | The live-trading gate and environment validation. |
-| `inference_client.py` | HTTP client with caching and fail-closed semantics. |
+| `inference_client.py` | **Historical, disconnected.** HTTP client with caching and fail-closed semantics. |
 | `metrics.py` | Every Prometheus series the system exports. |
 | `notify.py` | Optional Telegram, deduplicated and rate limited. |
+| `modes.py`, `consensus.py` | **Historical, disconnected.** The trading-mode states and the cross-timeframe consensus rule. Still imported by the frozen-evidence tests, and by nothing on the runtime path. |
+| `recorder/` | The prospective recorder: contract, event parsers, append-only sink, minute normalizer, live streams and REST pollers. Computes nothing. |
+| `demo/` | The demo runtime: runner clock, campaign config, feed cursor, rules, the state machine, and the hash-chained decision log. |
+| `carry/` | The two-leg carry position: the ported accounting, the ledger, the hedged position, and the one factory permitted to construct a venue. |
 | `futures/` | Dry-run USD-M perpetual execution: positions, order state machine, venue constraints, fees and funding. |
 
 `features.py` being shared is the load-bearing decision: the training pipeline
@@ -123,9 +163,11 @@ inputs computed differently than the ones it learned from.
 `FuturesExecutionConfig(dry_run=False)` raises, and the only venue class in the
 package simulates fills in this process. Every order it plans that increases
 exposure passes `RiskEngine.evaluate_entry` first, so the boundary above holds
-for it unchanged. Nothing in `strategies/` is wired to it today;
-`tools/futures_dry_run.py` is what exercises it. The design, and the reasons
-for it, are in [`futures_execution_v1.md`](futures_execution_v1.md).
+for it unchanged. `chimera/carry/hedge.py` drives it on the runtime path, and
+`tools/futures_dry_run.py` exercises the frozen validation protocol against it.
+Nothing in `strategies/` is wired to it, and `strategies/` is itself
+disconnected. The design, and the reasons for it, are in
+[`futures_execution_v1.md`](futures_execution_v1.md).
 
 ### `nn/` — data, model, training, serving
 
@@ -141,13 +183,39 @@ for it, are in [`futures_execution_v1.md`](futures_execution_v1.md).
 | `walkforward.py` | Nested walk-forward *validation*: train -> inner validation (selection) -> outer validation (reported). |
 | `wf_diagnostics.py` | Audits and compares completed walk-forward artifacts: integrity, comparability, seed stability. |
 | `regime.py` | Dataset-backed statistics over an outer block's *scored* rows, timestamp-aligned raw OHLCV, and LONG/SHORT attribution. |
-| `registry.py` | Artifact save/load, promotion gates, `current.json`. |
-| `infer_service.py` | The FastAPI service. |
+| `registry.py` | Artifact save/load, promotion gates, `current.json`. Still what `train.py` writes through; **disconnected** from the runtime, which reads no model. |
+| `infer_service.py` | **Historical, disconnected.** The FastAPI service. |
 
-### `strategies/` — Freqtrade
+## Historical, disconnected
+
+This was the trading path, and it is not any longer. Disconnected at stage S3:
+`strategies/`, `tools/run_bot.py`, `nn/infer_service.py`, `nn/registry.py`'s
+serving side, `chimera/inference_client.py`, `chimera/modes.py`,
+`chimera/consensus.py`, the two Dockerfiles, the six `conf/<exchange>.<mode>.json`
+profiles, and Freqtrade itself.
+
+What disconnection means here is exact, and it is smaller than deletion. Every
+one of those files is still in the tree, still has its tests, and still passes
+them. What changed is reachability: their module docstrings say `HISTORICAL`,
+the `freqtrade` and `nn_infer` compose services carry `profiles: ["legacy"]` so
+`docker compose up` does not start them, their Prometheus scrape jobs and rule
+file are unloaded (`conf/alerts.yml` stays on disk and stays tested), the
+Freqtrade schema job and the image build job run only when someone asks for
+them, and the import closure of the runtime contains none of them.
+
+The one honest exception is `make smoke`, which still walks the research
+pipeline through `nn.registry` and `nn.infer_service` end to end on every push.
+That is deliberate: it is the coverage those two modules have, and taking it
+away would weaken the tree in exchange for a tidier claim. So "disconnected"
+means "not reachable from the runtime", and not "no longer executed anywhere".
+
+Deletion is a separate, later, reviewable change after the soak stage. Nothing
+here was deleted.
+
+### `strategies/` — Freqtrade (historical, disconnected)
 
 `RiskAwareStrategy` (in `strategies/common/risk_manager.py`) is the base class.
-It binds the risk engine to four Freqtrade callbacks, verified against the
+It bound the risk engine to four Freqtrade callbacks, verified against the
 installed version:
 
 | Callback | What it does |
@@ -196,8 +264,10 @@ whenever the network does.
 
 ## What is deliberately absent
 
-- No second engine that places orders. Freqtrade executes; `chimera/futures/`
-  only simulates.
+- No engine that places orders at all. `chimera/futures/` only simulates, and
+  the one engine that could place one is disconnected from the runtime.
+- No path from the runtime into the retired layers, asserted over the import
+  closure rather than left to convention.
 - No order placement from `nn/`.
 - No live-capable path in CI.
 - No metric on a dashboard that nothing exports.

@@ -1,7 +1,17 @@
 # Dry-run operation
 
-Dry-run (paper trading) is the intended and default mode. Freqtrade simulates
-fills against live market data; no order reaches an exchange.
+> **HISTORICAL - not on the demo path.** This document describes the retired
+> Freqtrade dry-run, which PR-13 disconnected at stage S3 under section 3.3 of
+> the adopted demo implementation master plan. Nothing here is the current
+> runtime: the demo path is the recorder, `chimera.demo`'s runner, Aegis,
+> `chimera.carry` and the `chimera.futures` dry-run venue, and it is described
+> in [`architecture.md`](architecture.md) and [`demo_runbook.md`](demo_runbook.md).
+> The procedure below is kept because the Freqtrade path is kept — disconnected,
+> not deleted — and it is still what you would follow to run it deliberately.
+
+Dry-run (paper trading) was the intended and default mode of that path.
+Freqtrade simulates fills against live market data; no order reaches an
+exchange.
 
 ## Prerequisites
 
