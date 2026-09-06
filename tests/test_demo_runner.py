@@ -774,8 +774,36 @@ def test_each_rule_declares_whether_it_may_size_a_position():
 # ---------------------------------------------------------------------------
 # PR-10R: funding (section 6.5)
 # ---------------------------------------------------------------------------
-def _run_to_first_settlement(harness, *, minutes: int = 485):
-    """Tick far enough for the fixture's 08:00 settlement to fall in the window."""
+#: The settlement mark every funding witness books against, pinned so the
+#: hand-traced arithmetic below does not move with the fixture's price path.
+WITNESS_MARK = "30128.33"
+
+
+def _settlements_at_hour_one(harness, *, rate: str = "0.0001", **kwargs):
+    """Put the campaign's settlement one hour in, not eight.
+
+    The cadence is fixture data: what the funding witnesses test is the window,
+    the arithmetic and the exactly-once gate, none of which depends on how far
+    apart the venue schedules settlements. At the fixture's real 8-hourly cadence
+    each of these tests had to tick 485 minutes to reach one, which put
+    `tests/test_demo_runner.py` alone past CI's whole job budget.
+
+    ``mark_price`` is pinned to :data:`WITNESS_MARK` so the settlement's own mark
+    -- and therefore every hand-computed number in these tests -- is the same
+    value it would have had at 08:00.
+    """
+    harness.feed.write_settlements(
+        [DAY],
+        hours=(1,),
+        rates={(DAY, 1): rate},
+        mark_price=WITNESS_MARK,
+        **kwargs,
+    )
+    harness.runner.cursor._settlements = None
+
+
+def _run_to_first_settlement(harness, *, minutes: int = 65):
+    """Tick past the settlement at minute 60, which is booked on minute 59."""
     first = harness.first_minute_ms()
     for index in range(minutes):
         harness.tick(first + index * 60_000)
@@ -789,20 +817,20 @@ def _funding_records(harness):
 def test_a_settlement_inside_the_window_is_booked_once_and_recorded(tmp_path):
     """Section 6.5 end to end, with the arithmetic checked by hand.
 
-    The fixture's second settlement is at 08:00 with rate 0.0001 and the
-    settlement's own mark 30128.33. The perpetual leg is SHORT 8.292 BTC, and
-    amendment A10 gives ``-sign(side) * notional * rate`` = ``+1 * 8.292 *
-    30128.33 * 0.0001`` = ``+24.982411236``: a SHORT RECEIVES a positive rate.
-    Every one of those numbers is written out rather than read back off the
-    implementation.
+    The settlement carries rate 0.0001 and its own mark 30128.33. The perpetual
+    leg is SHORT 8.292 BTC, and amendment A10 gives
+    ``-sign(side) * notional * rate`` = ``+1 * 8.292 * 30128.33 * 0.0001`` =
+    ``+24.982411236``: a SHORT RECEIVES a positive rate. Every one of those
+    numbers is written out rather than read back off the implementation.
     """
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
     _run_to_first_settlement(harness)
 
     records = _funding_records(harness)
     assert len(records) == 1
     funding = records[0]["funding"]
-    assert funding["settlement_id"] == "1789804800000"
+    assert funding["settlement_id"] == "1789779600000"
     assert funding["leg"] == "perp" and funding["side"] == "SHORT"
     assert funding["rate"] == "0.0001"
     assert funding["mark_price"] == "30128.33"
@@ -841,10 +869,10 @@ def test_a_settlement_at_the_open_instant_is_not_charged(tmp_path):
 
 def test_a_duplicated_settlement_row_books_nothing_and_writes_no_second_record(tmp_path):
     """The exactly-once gate, against a settlements file holding the row twice."""
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
-    harness.feed.write_settlements([DAY, NEXT_DAY], duplicate=[(DAY, 8)])
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness, duplicate=[(DAY, 1)])
     rows = harness.runner.cursor.settlements()
-    assert len([r for r in rows if r["funding_time_ms"] == 1789804800000]) == 2
+    assert len([r for r in rows if r["funding_time_ms"] == 1789779600000]) == 2
 
     _run_to_first_settlement(harness)
     assert len(_funding_records(harness)) == 1
@@ -853,8 +881,9 @@ def test_a_duplicated_settlement_row_books_nothing_and_writes_no_second_record(t
 
 def test_a_settlement_is_not_rebooked_by_a_later_minute(tmp_path):
     """Ticking on past a settlement does not charge it again."""
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
-    _run_to_first_settlement(harness, minutes=520)
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
+    _run_to_first_settlement(harness, minutes=100)
     assert len(_funding_records(harness)) == 1
     assert len(harness.runner.position.ledger.state.settled) == 1
 
@@ -866,15 +895,16 @@ def test_funding_survives_a_restart_across_the_settlement_boundary(tmp_path):
     the perpetual executor's ``applied_funding`` -- so the restart is the real
     test of the claim that neither of them lives only in memory.
     """
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
     first = _run_to_first_settlement(harness)
     harness.runner.shutdown("restarting")
     booked = harness.runner.position.ledger.state.settled
     received = harness.runner.position.ledger.state.funding_received
     assert len(booked) == 1
 
-    resumed = build(tmp_path, days=(DAY, NEXT_DAY), config=harness.runner.config)
-    for index in range(485, 500):
+    resumed = build(tmp_path, config=harness.runner.config)
+    for index in range(65, 80):
         resumed.tick(first + index * 60_000)
 
     assert resumed.runner.position.ledger.state.settled == booked
@@ -884,12 +914,12 @@ def test_funding_survives_a_restart_across_the_settlement_boundary(tmp_path):
 
 def test_a_settlement_with_no_mark_price_halts_rather_than_being_priced(tmp_path):
     """Amendment A4: the recorded mark is not reconstructed from anything."""
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
     path = harness.feed.normalizer.settlements_path("um")
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     for row in rows:
-        if row["funding_time_ms"] == 1789804800000:
-            row["mark_price"] = None
+        row["mark_price"] = None
     path.write_text(
         "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows) + "\n",
         encoding="utf-8",
@@ -904,7 +934,8 @@ def test_a_settlement_with_no_mark_price_halts_rather_than_being_priced(tmp_path
 
 def test_a_settlement_for_another_instrument_is_refused(tmp_path):
     """The venue symbol is checked against the contract, never relabelled."""
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
     path = harness.feed.normalizer.settlements_path("um")
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     for row in rows:
@@ -928,7 +959,8 @@ def test_a_torn_funding_booking_disputes_on_restart(tmp_path):
     save). A crash between them leaves the money moved and the carry ledger not
     knowing it, and every other check on restart passes.
     """
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
     _run_to_first_settlement(harness)
     ledger = harness.runner.position.ledger
     assert len(ledger.state.settled) == 1
@@ -938,7 +970,7 @@ def test_a_torn_funding_booking_disputes_on_restart(tmp_path):
     ledger.state.settled.clear()
     ledger.save()
 
-    assert harness.runner.position.unbooked_funding_instants() == (1789804800000000000,)
+    assert harness.runner.position.unbooked_funding_instants() == (1789779600000000000,)
     outcome = harness.runner.position.reconstruct()
     assert outcome.state is HedgeState.DISPUTED
     assert "funding_booking_torn" in (ledger.disputed or "")
@@ -1221,9 +1253,8 @@ def test_a_paid_settlement_extends_the_aegis_streak(tmp_path):
     and a genuinely adverse streak would reset the counter that is supposed to
     stop the campaign increasing through it.
     """
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
-    harness.feed.write_settlements([DAY, NEXT_DAY], rates={(DAY, 8): "-0.0001"})
-    harness.runner.cursor._settlements = None
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness, rate="-0.0001")
     _run_to_first_settlement(harness)
 
     records = _funding_records(harness)
@@ -1260,10 +1291,11 @@ def test_three_paid_settlements_raise_the_aegis_funding_halt(tmp_path):
 
 def test_a_settlement_file_whose_rows_disagree_is_refused(tmp_path):
     """A settlement is published once; two rows that disagree are not resolved."""
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
     path = harness.feed.normalizer.settlements_path("um")
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    contradiction = dict(rows[1])
+    contradiction = dict(rows[0])
     contradiction["funding_rate"] = "-0.0009"
     rows.append(contradiction)
     first = harness.first_minute_ms()
@@ -1306,13 +1338,13 @@ def test_the_settlements_file_is_reread_when_it_changes(tmp_path):
     would book it at a later minute than the one it belongs to, which a replay of
     the same files would not agree with.
     """
-    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness = build(tmp_path)
     path = harness.feed.normalizer.settlements_path("um")
     path.write_text("", encoding="utf-8")
     assert harness.runner.cursor.settlements() == []
 
-    harness.feed.write_settlements([DAY, NEXT_DAY])
-    assert len(harness.runner.cursor.settlements()) == 6, "the change was seen"
+    harness.feed.write_settlements([DAY])
+    assert len(harness.runner.cursor.settlements()) == 3, "the change was seen"
 
 
 def test_catch_up_stops_when_no_minute_exists_to_catch_up_to(tmp_path):
