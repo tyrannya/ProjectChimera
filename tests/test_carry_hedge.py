@@ -547,7 +547,9 @@ def test_a_correction_flatten_returns_the_cash_of_a_booked_entry(position):
 
     returned = ledger.free_cash - cash_before
     exit_frictions = (ledger.fees + ledger.slippage) - frictions_before
-    assert returned == principal + margin + (ledger.realised - realised_before) - exit_frictions
+    assert (
+        returned == principal + margin + (ledger.realised - realised_before) - exit_frictions
+    )
 
     # The realised half, cross-checked against the executors rather than against
     # the ledger that is under test.
