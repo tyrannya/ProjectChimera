@@ -916,13 +916,15 @@ def scenario_restart(tmp: Path, equity: float = 1_000_000.0) -> list[InvariantRe
 
     # unreadable file: fails closed, and is left where it is
     broken = tmp / "broken.json"
-    broken.write_text("{not json")
+    broken.write_text("{not json", encoding="utf-8")
     store = FuturesStore.open(broken)
     held &= _observe(
         store.outcome.value == "UNREADABLE", "an unreadable state file fails closed", notes
     )
     held &= _observe(
-        broken.read_text() == "{not json", "the unreadable file was left untouched", notes
+        broken.read_text(encoding="utf-8") == "{not json",
+        "the unreadable file was left untouched",
+        notes,
     )
     return [_result("I10", "S09_restart_recovery_boundaries", held, notes)]
 
@@ -1064,7 +1066,7 @@ def scenario_live_route(
             os.environ[LIVE_TRADING_ENV_VAR] = previous
 
     package = Path(__file__).resolve().parent.parent / "chimera" / "futures"
-    text = "\n".join(p.read_text() for p in sorted(package.glob("*.py")))
+    text = "\n".join(p.read_text(encoding="utf-8") for p in sorted(package.glob("*.py")))
     for token in (
         "api_key",
         "apiKey",
@@ -1509,7 +1511,7 @@ def verify(directory: Path) -> list[str]:
     path = directory / REPORT_NAME
     if not path.is_file():
         return [f"{path}: no report"]
-    report = json.loads(path.read_text())
+    report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("report_schema") != REPORT_SCHEMA:
         problems.append(
             f"report schema is {report.get('report_schema')!r}, not {REPORT_SCHEMA!r}"
@@ -1566,8 +1568,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / REPORT_NAME).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    (out / STATUS_NAME).write_text(to_status(report))
+    (out / REPORT_NAME).write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (out / STATUS_NAME).write_text(to_status(report), encoding="utf-8")
     print(f"{report['outcome']}: wrote {out / REPORT_NAME}")
     for record in report["invariants"]:
         if not record["held"]:

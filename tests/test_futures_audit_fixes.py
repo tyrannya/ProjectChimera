@@ -296,7 +296,7 @@ def test_flatten_refuses_on_an_unbootstrapped_executor(tmp_path):
     a flatten reason, and returned — while the venue still held the position.
     """
     path = tmp_path / "state.json"
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
     original = path.read_bytes()
     store = FuturesStore.open(path)
     executor, _, _ = build(store)

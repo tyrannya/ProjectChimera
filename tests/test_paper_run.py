@@ -251,7 +251,7 @@ def test_the_committed_smoke_report_if_present_denies_the_same_claims():
     path = REPO / "artifacts" / "paper_smoke" / "paper_run.json"
     if not path.is_file():
         pytest.skip("no smoke report is committed")
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["claims"]["sustained_paper_validation"] is False
     assert payload["claims"]["live"] is False
     assert payload["claims"]["alpha"] is False
@@ -300,7 +300,7 @@ def test_a_corrupt_state_file_stops_the_run_rather_than_being_replaced(tmp_path)
     from chimera.futures.store import LoadOutcome
 
     state = tmp_path / "state.json"
-    state.write_text("{ this is not json")
+    state.write_text("{ this is not json", encoding="utf-8")
     before = state.read_bytes()
 
     executor = build_executor(state)

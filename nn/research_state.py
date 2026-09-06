@@ -369,7 +369,7 @@ def verify(root: Path) -> list[str]:
         if not path.is_file():
             problems.append(f"{name}: front-door document is missing")
             continue
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         block = existing_block(text)
         if block is None:
             problems.append(

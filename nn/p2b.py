@@ -346,7 +346,7 @@ def load_snapshot(
         "research snapshot verified: %d checks passed against %s", len(checks), manifest_path
     )
 
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     root = manifest_path.resolve().parent.parent.parent
     spine_path = root / manifest["processed_outer_coverage"]["path"]
     raw_path = root / manifest["raw_pre_styx"]["path"]
@@ -392,7 +392,7 @@ def load_trade_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, dict[str, An
     logger.info(
         "trade snapshot verified: %d checks passed against %s", len(checks), manifest_path
     )
-    manifest = json.loads(Path(manifest_path).read_text())
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     root = Path(manifest_path).resolve().parent.parent.parent
     aggregates = pd.read_parquet(root / manifest["aggregate"]["path"])
     return aggregates, manifest
@@ -436,7 +436,7 @@ def load_derivatives_snapshot(manifest_path: Path) -> tuple[pd.DataFrame, dict[s
         len(checks),
         manifest_path,
     )
-    manifest = json.loads(Path(manifest_path).read_text())
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     root = Path(manifest_path).resolve().parent.parent.parent
     hourly = pd.read_parquet(root / manifest["hourly"]["path"])
     return hourly, manifest
@@ -566,7 +566,7 @@ def load_holdout_coverage(path: Path) -> dict[str, Any]:
             ],
             "basis": "absent",
         }
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     defect = _unusable_holdout_coverage(payload)
     if defect is not None:
         return {
@@ -1387,8 +1387,12 @@ def main(argv: list[str] | None = None) -> int:
         "folds": records,
         "summary": summarise(records, args.model),
     }
-    (out_dir / ARTIFACT_NAME).write_text(json.dumps(payload, indent=2, default=str) + "\n")
-    (out_dir / MARKDOWN_NAME.replace("benchmark", "p2b")).write_text(to_markdown(payload))
+    (out_dir / ARTIFACT_NAME).write_text(
+        json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+    )
+    (out_dir / MARKDOWN_NAME.replace("benchmark", "p2b")).write_text(
+        to_markdown(payload), encoding="utf-8"
+    )
     logger.info(
         "Wrote %d outer predictions to %s and the artifact to %s",
         len(predictions),

@@ -107,11 +107,12 @@ def _freeze(root, report):
         "manifest": "artifacts/btc_p4_stage1_SHA256SUMS.txt",
         "report_path": "artifacts/benchmark/btc_p4_stage1/stage1.json",
     }
-    (cell / "stage1.json").write_text(json.dumps(report, indent=2) + "\n")
+    (cell / "stage1.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     manifest = root / "artifacts" / "btc_p4_stage1_SHA256SUMS.txt"
     manifest.write_text(
         f"{freeze_evidence.digest(cell / 'stage1.json')}  "
-        "artifacts/benchmark/btc_p4_stage1/stage1.json\n"
+        "artifacts/benchmark/btc_p4_stage1/stage1.json\n",
+        encoding="utf-8",
     )
     return report
 
@@ -120,9 +121,11 @@ def _freeze(root, report):
 def tree(tmp_path):
     """A throwaway pre-decision ledger for exercising release/spend mechanics."""
     (tmp_path / "data" / "research").mkdir(parents=True)
-    ledger = json.loads((ROOT / p4_holdout.LEDGER_PATH).read_text())
+    ledger = json.loads((ROOT / p4_holdout.LEDGER_PATH).read_text(encoding="utf-8"))
     ledger.update({"state": UNSPENT, "checkpoint": None, "reason": None})
-    (tmp_path / p4_holdout.LEDGER_PATH).write_text(json.dumps(ledger, indent=2) + "\n")
+    (tmp_path / p4_holdout.LEDGER_PATH).write_text(
+        json.dumps(ledger, indent=2) + "\n", encoding="utf-8"
+    )
     return tmp_path
 
 
@@ -154,9 +157,9 @@ def test_a_missing_ledger_is_not_an_unspent_one(tmp_path):
     ],
 )
 def test_a_ledger_that_governs_something_else_is_refused(tree, mutate, match):
-    payload = json.loads((tree / p4_holdout.LEDGER_PATH).read_text())
+    payload = json.loads((tree / p4_holdout.LEDGER_PATH).read_text(encoding="utf-8"))
     mutate(payload)
-    (tree / p4_holdout.LEDGER_PATH).write_text(json.dumps(payload))
+    (tree / p4_holdout.LEDGER_PATH).write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HoldoutError, match=match):
         read_ledger(tree)
 
@@ -194,11 +197,11 @@ def test_a_snapshot_cut_one_block_longer_is_refused(tmp_path):
     order to decide whether to open, and nothing would have said so.
     """
     source = ROOT / "data" / "research" / "btc_usdt_1h_gen1_snapshot_manifest.json"
-    payload = json.loads(source.read_text())
+    payload = json.loads(source.read_text(encoding="utf-8"))
     payload["processed_outer_coverage"]["rows"] = HOLDOUT_ROWS[1]
     payload["processed_outer_coverage"]["row_range"] = [0, HOLDOUT_ROWS[1]]
     longer = tmp_path / "longer_manifest.json"
-    longer.write_text(json.dumps(payload))
+    longer.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HoldoutError, match="P4-HOLD"):
         assert_stage_one_snapshot(longer)
 
@@ -266,7 +269,7 @@ def test_a_report_edited_after_it_was_frozen_does_not_open_it(tree):
 def test_a_report_its_manifest_does_not_cover_does_not_open_it(tree):
     frozen = _freeze(tree, _report())
     (tree / "artifacts" / "btc_p4_stage1_SHA256SUMS.txt").write_text(
-        "0" * 64 + "  artifacts/benchmark/btc_p4_stage1/other.json\n"
+        "0" * 64 + "  artifacts/benchmark/btc_p4_stage1/other.json\n", encoding="utf-8"
     )
     with pytest.raises(HoldoutError, match="does not verify|is not covered"):
         assert_holdout_release("P4", frozen, root=tree)

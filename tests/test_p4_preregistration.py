@@ -160,9 +160,11 @@ def test_p4_local_acquisition_never_implies_holdout_acquisition():
     assert set(p4_files) <= permitted, sorted(set(p4_files) - permitted)
     assert "p4_holdout_ledger.json" in p4_files
     assert "p4_stage1_authorisation.json" in p4_files
-    authorisation = json.loads((research / "p4_stage1_authorisation.json").read_text())
+    authorisation = json.loads(
+        (research / "p4_stage1_authorisation.json").read_text(encoding="utf-8")
+    )
     assert authorisation["state"] == "authorised"
-    ledger = json.loads((research / "p4_holdout_ledger.json").read_text())
+    ledger = json.loads((research / "p4_holdout_ledger.json").read_text(encoding="utf-8"))
     assert set(ledger) == {
         "ledger_schema",
         "region",
@@ -209,12 +211,12 @@ def test_the_three_p4_arms_are_built_from_those_columns_and_nothing_else():
 
 # --- the document and the module say the same thing --------------------------
 def test_the_document_exists_and_records_the_hash():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert f"sha256:{preregistration_hash()}" in text
 
 
 def test_every_feature_appears_in_the_document_with_its_window_and_clip():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     for feature in FEATURES:
         assert f"`{feature['name']}`" in text, feature["name"]
         low, high = feature["clip"]
@@ -224,7 +226,7 @@ def test_every_feature_appears_in_the_document_with_its_window_and_clip():
 
 
 def test_the_document_states_the_decision_numbers():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert str(MIN_OUTER_TRADES) in text
     assert "5/16" in text
     assert f"{HOLDOUT_ROWS[0]}, {HOLDOUT_ROWS[1]})" in text
@@ -238,7 +240,7 @@ def test_the_document_and_the_module_agree_on_the_mechanics():
     the test exists so that changing one of them in prose alone fails here
     rather than being discovered when a run disagrees with its own design.
     """
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     rule = BLOCK_AVAILABILITY_RULE
     assert f"{rule['min_surviving_row_fraction']:.0%}" in text
     assert f"**{rule['max_contiguous_missing_hours']} hours**" in text
@@ -251,7 +253,7 @@ def test_the_document_and_the_module_agree_on_the_mechanics():
 
 
 def test_the_document_states_the_mechanical_guard_rather_than_only_promising():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert "nn/p4_holdout.py" in text
     assert "p4_holdout_ledger.json" in text
     assert "assert_holdout_release" in text
@@ -345,7 +347,9 @@ def test_the_exploratory_blocks_are_the_geometry_every_earlier_checkpoint_used()
 def test_the_committed_snapshot_cannot_reach_the_holdout():
     """The structural guarantee, checked against the committed manifest."""
     manifest = json.loads(
-        (ROOT / "data" / "research" / "btc_usdt_1h_gen1_snapshot_manifest.json").read_text()
+        (ROOT / "data" / "research" / "btc_usdt_1h_gen1_snapshot_manifest.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert manifest["processed_outer_coverage"]["rows"] == HOLDOUT_ROWS[0]
 
@@ -378,7 +382,9 @@ def test_the_trade_floor_bites_once_and_leaves_the_screen_satisfiable():
     Ten fires on P3's four-trade fold and leaves exactly the three stage 1 needs.
     """
     payload = json.loads(
-        (ROOT / "artifacts" / "benchmark" / "btc_p3_ohlcv14_xgboost" / "p2b.json").read_text()
+        (ROOT / "artifacts" / "benchmark" / "btc_p3_ohlcv14_xgboost" / "p2b.json").read_text(
+            encoding="utf-8"
+        )
     )
     trades = [
         record["outer_validation"]["xgboost"]["trading"]["n_trades"]
@@ -391,7 +397,7 @@ def test_the_trade_floor_bites_once_and_leaves_the_screen_satisfiable():
             / "benchmark"
             / "btc_p3_ohlcv14_plus_microstructure_v1_xgboost"
             / "p2b.json"
-        ).read_text()
+        ).read_text(encoding="utf-8")
     )
     other = [
         record["outer_validation"]["xgboost"]["trading"]["n_trades"]
@@ -630,7 +636,9 @@ def test_spending_the_holdout_does_not_upgrade_the_label():
 
 
 def test_the_committed_ledger_matches_the_preregistered_policy():
-    ledger = json.loads((ROOT / "data" / "research" / "p4_holdout_ledger.json").read_text())
+    ledger = json.loads(
+        (ROOT / "data" / "research" / "p4_holdout_ledger.json").read_text(encoding="utf-8")
+    )
     assert ledger["region"] == HOLDOUT_SPEND_POLICY["region"]
     assert ledger["evaluations_permitted"] == HOLDOUT_SPEND_POLICY["evaluations_permitted"]
     assert ledger["checkpoints_permitted"] == HOLDOUT_SPEND_POLICY["checkpoints_permitted"]
@@ -661,7 +669,7 @@ def test_the_best_available_label_is_not_confirmatory():
 
 
 def test_styx_is_not_a_tiebreaker_anywhere_in_the_design():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert "not** opened" in text or "**not** opened" in text
     assert preregistration()["styx"].startswith("not opened")
     for outcome in STAGE_2_OUTCOMES:
@@ -686,7 +694,7 @@ def test_the_degrees_of_freedom_are_inventoried_and_each_one_is_closed():
     ],
 )
 def test_the_document_forbids_each_named_post_hoc_move(forbidden):
-    assert forbidden in DOCUMENT.read_text()
+    assert forbidden in DOCUMENT.read_text(encoding="utf-8")
 
 
 # --- amendment A1: the duplicate policy, and the two things it must not do ----
@@ -796,7 +804,7 @@ def test_the_acquisition_groups_on_the_key_the_policy_names(monkeypatch, tmp_pat
 
 
 def test_the_document_records_the_amendment_and_preserves_the_superseded_hash():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     superseded = SUPERSEDED_HASH
     assert "3.4a" in text
     assert "Source-protocol amendment A1" in text
@@ -820,7 +828,7 @@ def test_the_document_records_the_amendment_and_preserves_the_superseded_hash():
 def test_the_document_and_the_policy_agree_on_what_is_out_of_scope():
     """Markdown wraps prose, so the section is compared with runs of whitespace
     collapsed — otherwise the assertion tests the line width rather than the claim."""
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     section = " ".join(text.split("### 3.4a", 1)[1].split("### 3.5", 1)[0].split())
     assert "no normalisation of any kind" in section
     assert "reject the acquisition" in section.lower()
@@ -836,7 +844,7 @@ def test_the_stage_one_authorisation_carries_only_the_active_hash_and_is_current
     would invite the question of which one it authorises.
     """
     path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     payload = json.loads(text)
     assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
     assert payload["state"] == "authorised"
@@ -862,7 +870,8 @@ def test_no_p4_result_can_be_produced_under_the_superseded_hash(tmp_path):
                 "authorised_at": "1970-01-01T00:00:00Z",
                 "reason": "test",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(Stage1Interlock, match="not permission to run another"):
         assert_fit_authorised(confirm=True, availability={"gate_passed": True}, root=tmp_path)
@@ -1016,7 +1025,7 @@ def test_the_acquisition_carries_no_second_copy_of_the_inception_month():
 
     month = FUNDING_ARCHIVE_INCEPTION_POLICY["first_protocol_month"]
     for name in ("nn/derivatives_sources.py", "tools/export_derivatives_snapshot.py"):
-        tree = ast.parse((ROOT / name).read_text())
+        tree = ast.parse((ROOT / name).read_text(encoding="utf-8"))
         docstrings = {
             id(node.body[0].value)
             for node in ast.walk(tree)
@@ -1036,7 +1045,7 @@ def test_the_acquisition_carries_no_second_copy_of_the_inception_month():
 
 
 def test_the_document_records_the_amendment_and_both_superseded_hashes():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert "3.4b" in text
     assert "Source-protocol amendment A2" in text
     # The measured status codes, stated factually rather than summarised.
@@ -1063,7 +1072,10 @@ def test_the_document_records_the_amendment_and_both_superseded_hashes():
 
 def test_the_document_does_not_generalise_past_what_was_observed():
     text = " ".join(
-        DOCUMENT.read_text().split("### 3.4b", 1)[1].split("### 3.5", 1)[0].split()
+        DOCUMENT.read_text(encoding="utf-8")
+        .split("### 3.4b", 1)[1]
+        .split("### 3.5", 1)[0]
+        .split()
     )
     assert "Six months were checked" in text
     assert "monthly `fundingRate` archive" in text
@@ -1073,7 +1085,7 @@ def test_the_document_does_not_generalise_past_what_was_observed():
 def test_the_stage_one_authorisation_is_rebound_to_the_active_design_and_is_currently_authorised():
     """The later Stage 1 authorisation remains bound to the A2-updated active design."""
     path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     payload = json.loads(text)
     assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
     assert payload["state"] == "authorised"
@@ -1100,7 +1112,8 @@ def test_no_p4_result_can_be_produced_under_the_pre_a2_hash(tmp_path):
                 "authorised_at": "1970-01-01T00:00:00Z",
                 "reason": "test",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(Stage1Interlock, match="not permission to run another"):
         assert_fit_authorised(confirm=True, availability={"gate_passed": True}, root=tmp_path)
@@ -1302,7 +1315,7 @@ def test_editing_the_perpetual_inception_policy_moves_both_hashes_together(monke
 
 
 def test_the_document_records_amendment_a3_and_all_three_superseded_hashes():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert "3.4c" in text
     assert "Source-protocol amendment A3" in text
     section = " ".join(text.split("### 3.4c", 1)[1].split("### 3.5", 1)[0].split())
@@ -1335,7 +1348,10 @@ def test_the_document_records_amendment_a3_and_all_three_superseded_hashes():
 
 def test_the_document_does_not_generalise_past_the_observed_perpetual_months():
     section = " ".join(
-        DOCUMENT.read_text().split("### 3.4c", 1)[1].split("### 3.5", 1)[0].split()
+        DOCUMENT.read_text(encoding="utf-8")
+        .split("### 3.4c", 1)[1]
+        .split("### 3.5", 1)[0]
+        .split()
     )
     assert "Six months were checked" in section
     assert "monthly 1h kline archive" in section
@@ -1349,7 +1365,10 @@ def test_the_document_does_not_generalise_past_the_observed_perpetual_months():
 
 def test_the_document_says_the_basis_definitions_do_not_change():
     section = " ".join(
-        DOCUMENT.read_text().split("### 3.4c", 1)[1].split("### 3.5", 1)[0].split()
+        DOCUMENT.read_text(encoding="utf-8")
+        .split("### 3.4c", 1)[1]
+        .split("### 3.5", 1)[0]
+        .split()
     )
     assert "The basis feature definitions do not change" in section
     assert "`[-0.02, 0.02]`" in section and "168-hour z-score" in section
@@ -1361,7 +1380,7 @@ def test_the_document_says_the_basis_definitions_do_not_change():
 def test_the_stage_one_authorisation_carries_the_a3_hash_and_is_currently_authorised():
     """The later Stage 1 authorisation remains bound to the A3-updated active design."""
     path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     payload = json.loads(text)
     assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
     assert payload["state"] == "authorised"
@@ -1388,7 +1407,8 @@ def test_no_p4_result_can_be_produced_under_the_pre_a3_hash(tmp_path):
                 "authorised_at": "1970-01-01T00:00:00Z",
                 "reason": "test",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(Stage1Interlock, match="not permission to run another"):
         assert_fit_authorised(confirm=True, availability={"gate_passed": True}, root=tmp_path)
@@ -1590,7 +1610,7 @@ def test_the_acquisition_reads_the_policy_rather_than_restating_it():
 
 
 def test_the_document_records_amendment_a4_and_all_four_superseded_hashes():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert "3.4d" in text
     assert "Source-protocol amendment A4" in text
     section = " ".join(text.split("### 3.4d", 1)[1].split("### 3.5", 1)[0].split())
@@ -1632,7 +1652,10 @@ def test_the_document_records_amendment_a4_and_all_four_superseded_hashes():
 
 def test_the_document_says_the_open_interest_definitions_do_not_change():
     section = " ".join(
-        DOCUMENT.read_text().split("### 3.4d", 1)[1].split("### 3.5", 1)[0].split()
+        DOCUMENT.read_text(encoding="utf-8")
+        .split("### 3.4d", 1)[1]
+        .split("### 3.5", 1)[0]
+        .split()
     )
     assert "The open-interest feature definitions do not change" in section
     assert "`[-1.0, 1.0]`" in section and "`[0.0, 10.0]`" in section
@@ -1643,7 +1666,7 @@ def test_the_document_says_the_open_interest_definitions_do_not_change():
 def test_the_stage_one_authorisation_carries_the_a4_hash_and_is_currently_authorised():
     """The later Stage 1 authorisation remains bound to the A4-updated active design."""
     path = ROOT / "data" / "research" / "p4_stage1_authorisation.json"
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     payload = json.loads(text)
     assert payload["authorisation_schema"] == "chimera.p4-stage1-authorisation/1"
     assert payload["state"] == "authorised"
@@ -1675,7 +1698,8 @@ def test_no_p4_result_can_be_produced_under_the_pre_a4_hash(tmp_path):
                 "authorised_at": "1970-01-01T00:00:00Z",
                 "reason": "test",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(Stage1Interlock, match="not permission to run another"):
         assert_fit_authorised(confirm=True, availability={"gate_passed": True}, root=tmp_path)

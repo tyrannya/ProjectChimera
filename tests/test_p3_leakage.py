@@ -537,9 +537,9 @@ def test_a_corrupt_trade_snapshot_produces_exactly_zero_fits(
 ):
     spy = FitSpy()
     monkeypatch.setattr(p2b, "fit_simple_model", spy)
-    payload = json.loads(runnable["trades"].read_text())
+    payload = json.loads(runnable["trades"].read_text(encoding="utf-8"))
     mutate(payload)
-    runnable["trades"].write_text(json.dumps(payload, indent=2) + "\n")
+    runnable["trades"].write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     with pytest.raises(SystemExit) as excinfo:
         p2b.main(argv(runnable))
@@ -556,7 +556,7 @@ def test_a_sealed_hour_stops_the_run_before_any_fit_and_says_nothing_about_it(
 
     spy = FitSpy()
     monkeypatch.setattr(p2b, "fit_simple_model", spy)
-    payload = json.loads(runnable["trades"].read_text())
+    payload = json.loads(runnable["trades"].read_text(encoding="utf-8"))
     path = runnable["tree"] / payload["aggregate"]["path"]
     frame = pd.read_parquet(path)
     marker = 424242.42
@@ -565,7 +565,7 @@ def test_a_sealed_hour_stops_the_run_before_any_fit_and_says_nothing_about_it(
     frame.loc[frame.index[-1], "high_price"] = marker
     frame.to_parquet(path, index=False)
     payload["aggregate"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-    runnable["trades"].write_text(json.dumps(payload, indent=2) + "\n")
+    runnable["trades"].write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     with pytest.raises(SystemExit) as excinfo:
         p2b.main(argv(runnable))

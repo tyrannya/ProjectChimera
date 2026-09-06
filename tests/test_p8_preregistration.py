@@ -106,7 +106,9 @@ def test_the_precondition_is_recorded_and_currently_unmet():
     status = {}
     for directory in ("btc_p6_decision", "btc_p6ext_decision"):
         decision = json.loads(
-            (REPO / "artifacts" / "benchmark" / directory / "decision.json").read_text()
+            (REPO / "artifacts" / "benchmark" / directory / "decision.json").read_text(
+                encoding="utf-8"
+            )
         )
         for row in decision["clocks"]:
             status[row["clock"]] = SpecialistStatus(row["clock"], True, bool(row["viable"]))
@@ -189,7 +191,7 @@ def test_the_architecture_puts_aegis_after_the_router():
 def test_the_hash_is_frozen_and_the_document_publishes_it():
     assert preregistration_hash() == FROZEN_HASH
     assert describe()["preregistration_hash"] == FROZEN_HASH
-    assert FROZEN_HASH in DOCUMENT.read_text()
+    assert FROZEN_HASH in DOCUMENT.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("key", sorted(payload()))
@@ -198,7 +200,7 @@ def test_every_payload_key_is_populated(key):
 
 
 def test_the_document_says_not_opened_where_a_reader_will_see_it():
-    text = _flat(DOCUMENT.read_text())
+    text = _flat(DOCUMENT.read_text(encoding="utf-8"))
     assert f"# {CHECKPOINT.lower()} — preregistration" in text
     assert "p8 is not opened" in text
     assert "the current state is not opened" in text
@@ -206,6 +208,6 @@ def test_the_document_says_not_opened_where_a_reader_will_see_it():
 
 
 def test_every_forbidden_item_appears_in_the_document():
-    section = _flat(DOCUMENT.read_text().split("## 11. Forbidden")[1])
+    section = _flat(DOCUMENT.read_text(encoding="utf-8").split("## 11. Forbidden")[1])
     for item in FORBIDDEN_AFTER_RESULTS:
         assert _flat(item) in section, f"the document does not forbid: {item}"

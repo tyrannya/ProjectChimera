@@ -240,14 +240,14 @@ def write_plan(out_dir: Path, manifest: dict[str, Any]) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / PLAN_FILE
     if path.exists():
-        existing = json.loads(path.read_text())
+        existing = json.loads(path.read_text(encoding="utf-8"))
         if existing.get("plan_hash") != manifest["plan_hash"]:
             raise SystemExit(
                 f"{path} already holds a different experiment plan "
                 f"({existing.get('plan_hash')} != {manifest['plan_hash']}). Use a new "
                 "--out directory rather than overwriting the record of what was run."
             )
-    path.write_text(json.dumps(manifest, indent=2, default=str))
+    path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     return path
 
 
@@ -511,7 +511,8 @@ def main(argv: list[str] | None = None) -> int:
             },
             indent=2,
             default=str,
-        )
+        ),
+        encoding="utf-8",
     )
 
     with (out_dir / "experiments.csv").open("w", newline="") as handle:

@@ -430,7 +430,7 @@ def load_run(path: str | Path) -> RunArtifact:
         )
 
     try:
-        payload = json.loads(artifact.read_text())
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise SystemExit(f"{artifact} is not readable JSON: {exc}") from exc
     if not isinstance(payload, dict):
@@ -2276,9 +2276,10 @@ def main(argv: list[str] | None = None) -> int:
                 indent=2,
                 default=str,
             )
-            + "\n"
+            + "\n",
+            encoding="utf-8",
         )
-        (out_dir / REPORT_MD).write_text(markdown + "\n")
+        (out_dir / REPORT_MD).write_text(markdown + "\n", encoding="utf-8")
         logger.info("Wrote diagnostics to %s", out_dir)
 
     problems = sum(len(found) for found in audits.values()) + len(mismatches)

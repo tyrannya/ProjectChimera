@@ -37,11 +37,11 @@ def write_blocks(root: Path) -> list[str]:
         path = root / name
         if not path.is_file():
             continue
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         block = existing_block(text)
         if block is None or block == expected:
             continue
-        path.write_text(text.replace(block, expected))
+        path.write_text(text.replace(block, expected), encoding="utf-8")
         written.append(name)
     return written
 

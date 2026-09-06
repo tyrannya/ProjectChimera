@@ -331,5 +331,9 @@ def test_base_config_does_not_override_strategy_timeframes():
     import json
     from pathlib import Path
 
-    base = json.loads((Path(__file__).resolve().parents[1] / "conf" / "base.json").read_text())
+    base = json.loads(
+        (Path(__file__).resolve().parents[1] / "conf" / "base.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert "timeframe" not in base

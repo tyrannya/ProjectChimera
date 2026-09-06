@@ -130,7 +130,7 @@ def declared_futures_metrics():
     on a machine where ``prometheus_client`` is missing and every metric in the
     module is a no-op stub with no name to inspect.
     """
-    tree = ast.parse(Path(metrics.__file__).read_text())
+    tree = ast.parse(Path(metrics.__file__).read_text(encoding="utf-8"))
     declared = {}
     for node in tree.body:
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
@@ -570,7 +570,7 @@ def test_a_restart_recovery_is_counted_under_the_load_outcome_it_started_from(tm
     )
 
     corrupt = tmp_path / "corrupt-state.json"
-    corrupt.write_text("{not json")
+    corrupt.write_text("{not json", encoding="utf-8")
     before_unreadable = counter_value(
         metrics.FUT_RECOVERY, outcome=LoadOutcome.UNREADABLE.value
     )

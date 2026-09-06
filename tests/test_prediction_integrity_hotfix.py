@@ -70,7 +70,7 @@ def _write_run(tmp_path, frame: pd.DataFrame, artifact: dict):
     run.mkdir(parents=True)
     path = run / "outer_predictions.parquet"
     frame.to_parquet(path, index=False)
-    (run / "walkforward.json").write_text(json.dumps(artifact) + "\n")
+    (run / "walkforward.json").write_text(json.dumps(artifact) + "\n", encoding="utf-8")
     return path
 
 
@@ -459,7 +459,7 @@ def test_the_legacy_key_contract_is_what_the_committed_artifacts_carry():
     for artifact in sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json")):
         if "_v4_" in artifact.parent.name:
             continue
-        payload = json.loads(artifact.read_text())
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
         for fold in payload["folds"]:
             for model, report in fold["outer_validation"].items():
                 trading = report["trading"]

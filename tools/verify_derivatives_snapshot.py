@@ -151,7 +151,7 @@ def verify_derivatives_snapshot(manifest_path: Path = DEFAULT_MANIFEST) -> list[
     manifest_path = Path(manifest_path)
     if not manifest_path.is_file():
         raise DerivativesSnapshotVerificationError(f"no manifest at {manifest_path}")
-    payload = json.loads(manifest_path.read_text())
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     root = manifest_path.resolve().parent.parent.parent
     checks: list[CheckResult] = []
 
@@ -495,7 +495,7 @@ def verify_derivatives_snapshot(manifest_path: Path = DEFAULT_MANIFEST) -> list[
 
     ohlcv_manifest = root / payload["alignment"]["ohlcv_manifest"]
     _require(ohlcv_manifest.is_file(), f"the OHLCV manifest {ohlcv_manifest} does not exist")
-    ohlcv = json.loads(ohlcv_manifest.read_text())
+    ohlcv = json.loads(ohlcv_manifest.read_text(encoding="utf-8"))
     _require(
         payload["alignment"]["ohlcv_processed_semantic_prefix_hash"]
         == ohlcv["processed_outer_coverage"]["semantic_prefix_hash"],

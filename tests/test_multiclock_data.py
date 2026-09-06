@@ -50,7 +50,7 @@ MANIFEST_PATH = REPO_ROOT / "data" / "research" / MANIFEST_NAME
 
 @pytest.fixture(scope="module")
 def manifest() -> dict:
-    return json.loads(MANIFEST_PATH.read_text())
+    return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
@@ -107,7 +107,9 @@ def test_committed_source_never_reaches_styx(minutes):
 def test_p4_hold_region_is_not_present(minutes):
     """The retired holdout begins at the research boundary and stays unread."""
     dates = pd.to_datetime(minutes["date"], utc=True)
-    ledger = json.loads((REPO_ROOT / "data/research/p4_holdout_ledger.json").read_text())
+    ledger = json.loads(
+        (REPO_ROOT / "data/research/p4_holdout_ledger.json").read_text(encoding="utf-8")
+    )
     assert ledger["state"] == "retired"
     assert ledger["checkpoint"] is None
     start = pd.Timestamp(ledger["region_span"].split(" .. ")[0])
@@ -354,7 +356,7 @@ def test_control_verifier_rejects_a_moved_boundary(tmp_path, manifest):
     mutated = json.loads(json.dumps(manifest))
     mutated["boundaries"]["research_visible_end"] = "2025-06-01T00:00:00+00:00"
     path = tmp_path / MANIFEST_NAME
-    path.write_text(json.dumps(mutated))
+    path.write_text(json.dumps(mutated), encoding="utf-8")
     with pytest.raises(verifier.SnapshotError, match="does not move"):
         verifier.verify(path)
 
@@ -363,7 +365,7 @@ def test_control_verifier_rejects_an_opened_boundary_claim(tmp_path, manifest):
     mutated = json.loads(json.dumps(manifest))
     mutated["boundaries"]["styx_opened"] = True
     path = tmp_path / MANIFEST_NAME
-    path.write_text(json.dumps(mutated))
+    path.write_text(json.dumps(mutated), encoding="utf-8")
     with pytest.raises(verifier.SnapshotError, match="nothing may open it"):
         verifier.verify(path)
 
@@ -372,7 +374,7 @@ def test_control_verifier_rejects_an_unenumerated_parity_claim(tmp_path, manifes
     mutated = json.loads(json.dumps(manifest))
     mutated["parity_1h"]["mismatching_bars"] = 0
     path = tmp_path / MANIFEST_NAME
-    path.write_text(json.dumps(mutated))
+    path.write_text(json.dumps(mutated), encoding="utf-8")
     with pytest.raises(verifier.SnapshotError, match="disagree and enumerates"):
         verifier.verify(path)
 

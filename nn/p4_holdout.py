@@ -98,7 +98,7 @@ def read_ledger(root: Path | None = None) -> dict[str, Any]:
             f"no P4-HOLD ledger at {path}. The region's state is what says whether it "
             "may be spent; a missing ledger is not an unspent one."
         )
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("ledger_schema") != LEDGER_SCHEMA:
         raise HoldoutError(
             f"{path} declares schema {payload.get('ledger_schema')!r}, not "
@@ -159,7 +159,7 @@ def assert_stage_one_snapshot(manifest_path: Path) -> dict[str, Any]:
     precondition.
     """
     manifest_path = Path(manifest_path)
-    payload = json.loads(manifest_path.read_text())
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     processed = payload.get("processed_outer_coverage") or {}
     row_range = list(processed.get("row_range") or [0, int(processed.get("rows", 0))])
     assert_stage_one_bound(row_range[1], what=f"the snapshot at {manifest_path}")
@@ -307,7 +307,7 @@ def check_holdout_boundary(manifest_path: Path) -> dict[str, Any]:
     """
     import pandas as pd
 
-    payload = json.loads(Path(manifest_path).read_text())
+    payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     processed = payload["processed_outer_coverage"]
     spine_end = pd.Timestamp(processed["end"]).tz_convert("UTC")
     expected = spine_end + pd.Timedelta(hours=1)
@@ -457,7 +457,7 @@ def assert_frozen_stage_one(
             f"{report_path} is not covered by {manifest}. The stage-1 numbers that open "
             "the holdout must be the frozen ones."
         )
-    on_disk = json.loads((tree / report_path).read_text())
+    on_disk = json.loads((tree / report_path).read_text(encoding="utf-8"))
     if on_disk != dict(report):
         raise HoldoutError(
             f"the stage-1 report passed to the holdout gate is not what {report_path} "
@@ -600,7 +600,7 @@ def assert_holdout_release(
 
 def _write(ledger: dict[str, Any], root: Path | None) -> dict[str, Any]:
     path = _root(root) / LEDGER_PATH
-    path.write_text(json.dumps(ledger, indent=2) + "\n")
+    path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
     return ledger
 
 

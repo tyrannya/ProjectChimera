@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import time
 
@@ -329,7 +330,15 @@ def test_the_client_waits_between_attempts_rather_than_spinning():
             return time.monotonic() - began
 
     elapsed = asyncio.run(scenario())
-    assert elapsed >= 0.2, "two attempts with a 0.2 s backoff cannot happen instantly"
+    # `asyncio.sleep(d)` does not guarantee that `time.monotonic()` advanced by a
+    # full `d`. The Windows event loop's timer has ~15.6 ms granularity and can
+    # wake fractionally early, so a genuine 0.2 s backoff was measured there at
+    # 0.187 s -- short by less than one tick. One tick of slack is allowed on
+    # that platform and none anywhere else, and the claim under test survives
+    # either way: a client that SPUN would return on the order of a millisecond,
+    # two orders of magnitude below this bound.
+    slack = 0.016 if os.name == "nt" else 0.0
+    assert elapsed >= 0.2 - slack, "two attempts with a 0.2 s backoff cannot happen instantly"
 
 
 # --- C. the proactive close before the exchange's 24-hour limit -----------------

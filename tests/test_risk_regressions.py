@@ -310,7 +310,7 @@ def test_zero_stake_clears_rather_than_recording_an_empty_position():
 def test_no_committed_config_is_independently_live_capable(path):
     """Cloning the repo and pointing Freqtrade at any committed config must not
     place real orders, even if the ProjectChimera launcher is bypassed."""
-    config = json.loads(path.read_text())
+    config = json.loads(path.read_text(encoding="utf-8"))
     assert config.get("dry_run", True) is not False, (
         f"{path.name} sets dry_run=false; a user running freqtrade directly "
         "against it would trade for real without passing the safety gate"
@@ -320,7 +320,7 @@ def test_no_committed_config_is_independently_live_capable(path):
 def test_live_profiles_still_declare_their_intent():
     """Dry-run-safe on disk, but the launcher must still know they mean live."""
     for exchange in ("binance", "bybit", "okx"):
-        config = json.loads((CONF_DIR / f"{exchange}.live.json").read_text())
+        config = json.loads((CONF_DIR / f"{exchange}.live.json").read_text(encoding="utf-8"))
         assert (
             config.get("chimera_live_intent") is True
         ), f"{exchange}.live.json must mark itself as the live profile"
@@ -476,7 +476,7 @@ def test_config_has_no_protections_key():
     "DEPRECATED: Setting 'protections' in the configuration is deprecated".
     They belong on the strategy class instead.
     """
-    base = json.loads((CONF_DIR / "base.json").read_text())
+    base = json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))
     assert "protections" not in base
 
     # And they did not simply vanish — the strategy carries them.

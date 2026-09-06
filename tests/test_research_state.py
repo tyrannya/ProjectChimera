@@ -53,7 +53,7 @@ def test_the_verifier_exits_zero_here():
 def test_every_front_door_document_carries_the_block():
     expected = render_block(checkpoint_states(ROOT))
     for name in FRONT_DOOR_DOCUMENTS:
-        assert existing_block((ROOT / name).read_text()) == expected, name
+        assert existing_block((ROOT / name).read_text(encoding="utf-8")) == expected, name
 
 
 def test_the_state_comes_from_the_artifacts_and_not_from_a_hand_written_list():
@@ -84,13 +84,13 @@ def _clone(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     for name in FRONT_DOOR_DOCUMENTS:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_text((ROOT / name).read_text())
+        (root / name).write_text((ROOT / name).read_text(encoding="utf-8"), encoding="utf-8")
     for checkpoint in CHECKPOINTS:
         source = ROOT / checkpoint.evidence
         if source.is_file():
             target = root / checkpoint.evidence
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("{}")
+            target.write_text("{}", encoding="utf-8")
         if checkpoint.preregistration and (ROOT / checkpoint.preregistration).is_file():
             target = root / checkpoint.preregistration
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,7 @@ def _clone(tmp_path: Path) -> Path:
             # replacing it with a placeholder would delete the block the clone is
             # supposed to start out carrying.
             if not target.is_file():
-                target.write_text("prereg")
+                target.write_text("prereg", encoding="utf-8")
     return root
 
 
@@ -110,7 +110,10 @@ def test_the_clone_is_clean_before_it_is_broken(tmp_path):
 def test_a_document_whose_block_is_stale_is_rejected(tmp_path):
     root = _clone(tmp_path)
     readme = root / "README.md"
-    readme.write_text(readme.read_text().replace("| **answered** |", "| **unrun** |", 1))
+    readme.write_text(
+        readme.read_text(encoding="utf-8").replace("| **answered** |", "| **unrun** |", 1),
+        encoding="utf-8",
+    )
     problems = verify(root)
     assert any("does not match the artifact tree" in problem for problem in problems)
 
@@ -126,7 +129,7 @@ def _with_a_finished_checkpoint(monkeypatch, root: Path) -> None:
     monkeypatch.setattr(research_state, "CHECKPOINTS", CHECKPOINTS + (extra,))
     aggregate = root / extra.evidence
     aggregate.parent.mkdir(parents=True, exist_ok=True)
-    aggregate.write_text("{}")
+    aggregate.write_text("{}", encoding="utf-8")
 
 
 def test_a_new_checkpoints_evidence_makes_every_document_fail(tmp_path, monkeypatch):
@@ -158,8 +161,8 @@ def test_a_document_with_no_block_at_all_is_rejected(tmp_path):
     """Deleting the declaration is not a way to stop declaring."""
     root = _clone(tmp_path)
     readme = root / "README.md"
-    block = existing_block(readme.read_text())
-    readme.write_text(readme.read_text().replace(block, ""))
+    block = existing_block(readme.read_text(encoding="utf-8"))
+    readme.write_text(readme.read_text(encoding="utf-8").replace(block, ""), encoding="utf-8")
     assert any("carries no research-state block" in p for p in verify(root))
 
 
@@ -177,7 +180,9 @@ def test_the_exact_claims_the_audited_revision_made_are_now_rejected(tmp_path, s
     """Every one of these was in a front-door document at `1183e592`."""
     root = _clone(tmp_path)
     readme = root / "README.md"
-    readme.write_text(readme.read_text() + "\n" + sentence + "\n")
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n" + sentence + "\n", encoding="utf-8"
+    )
     problems = verify(root)
     assert any("whose evidence is committed" in problem for problem in problems)
 
@@ -264,7 +269,7 @@ def test_a_terminal_declaration_may_not_outrank_evidence(tmp_path, monkeypatch):
 
     aggregate = root / closed.evidence
     aggregate.parent.mkdir(parents=True, exist_ok=True)
-    aggregate.write_text("{}")
+    aggregate.write_text("{}", encoding="utf-8")
 
     assert checkpoint_states(root)["P9"] == ANSWERED
     problems = terminal_contradictions(root)
@@ -305,7 +310,9 @@ def test_a_document_claiming_an_outcome_for_a_checkpoint_that_has_none_is_reject
     """
     root = _clone(tmp_path)
     readme = root / "README.md"
-    readme.write_text(readme.read_text() + "\n" + sentence + "\n")
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n" + sentence + "\n", encoding="utf-8"
+    )
     problems = verify(root)
     assert any("closed without ever producing a number" in problem for problem in problems)
 
@@ -323,7 +330,9 @@ def test_the_same_words_about_a_checkpoint_that_does_have_a_result_are_allowed(
     """
     root = _clone(tmp_path)
     readme = root / "README.md"
-    readme.write_text(readme.read_text() + "\n" + sentence + "\n")
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n" + sentence + "\n", encoding="utf-8"
+    )
     assert verify(root) == []
 
 
@@ -349,4 +358,4 @@ def test_the_writer_reconciles_a_checkpoint_that_was_closed_without_a_result(
     written = write_blocks(root)
     assert sorted(written) == sorted(FRONT_DOOR_DOCUMENTS)
     assert verify(root) == []
-    assert "**withdrawn**" in (root / "README.md").read_text()
+    assert "**withdrawn**" in (root / "README.md").read_text(encoding="utf-8")

@@ -90,13 +90,16 @@ def load_config(exchange: str, mode: str) -> dict[str, Any]:
     for path in (base_path, override_path):
         if not path.exists():
             raise SystemExit(f"config not found: {path}")
-    return deep_merge(json.loads(base_path.read_text()), json.loads(override_path.read_text()))
+    return deep_merge(
+        json.loads(base_path.read_text(encoding="utf-8")),
+        json.loads(override_path.read_text(encoding="utf-8")),
+    )
 
 
 def write_private(config: dict[str, Any], path: Path) -> Path:
     """Write the merged config readable by its owner only."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, indent=2))
+    path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     return path
 

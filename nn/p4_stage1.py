@@ -100,7 +100,7 @@ def read_authorisation(root: Path | None = None) -> dict[str, Any]:
             "one: the file is what records that a human decided this checkpoint may "
             "begin fitting, and under whose name."
         )
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("authorisation_schema") != AUTHORISATION_SCHEMA:
         raise Stage1Interlock(
             f"{path} declares schema {payload.get('authorisation_schema')!r}, not "

@@ -331,7 +331,8 @@ def test_a_document_under_another_schema_is_refused(tmp_path):
                 "preregistration_hash": preregistration_hash(),
                 "published_days": {day: True for day in holdout_archive_days()},
             }
-        )
+        ),
+        encoding="utf-8",
     )
     entry = load_holdout_coverage(path)
     assert entry["available"] is False
@@ -341,7 +342,7 @@ def test_a_document_under_another_schema_is_refused(tmp_path):
 def test_a_bare_available_flag_cannot_pass_the_gate(tmp_path):
     """The shape a hand-written file would take, and the shape that is refused."""
     path = tmp_path / exporter.HOLDOUT_COVERAGE_NAME
-    path.write_text(json.dumps({"label": "p4_hold", "available": True}))
+    path.write_text(json.dumps({"label": "p4_hold", "available": True}), encoding="utf-8")
     entry = load_holdout_coverage(path)
     assert entry["available"] is False
     assert availability_gate(TWO_AVAILABLE_BLOCKS, entry)["gate_passed"] is False
@@ -362,7 +363,7 @@ def test_probe_writes_the_coverage_file_and_says_where(tmp_path, monkeypatch, ca
 
     assert exporter.main(["--probe", "--out-dir", str(tmp_path)]) == 0
     written = tmp_path / exporter.HOLDOUT_COVERAGE_NAME
-    assert json.loads(written.read_text()) == established
+    assert json.loads(written.read_text(encoding="utf-8")) == established
     out = capsys.readouterr().out
     assert f"p4_hold_coverage={written}" in out
     assert "write nothing" not in exporter.build_argparser().format_help()
@@ -568,7 +569,9 @@ def test_the_preregistration_hash_did_not_move():
     """
     assert preregistration_hash() == ACTIVE_HASH
     authorisation = json.loads(
-        (ROOT / "data" / "research" / "p4_stage1_authorisation.json").read_text()
+        (ROOT / "data" / "research" / "p4_stage1_authorisation.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert authorisation["preregistration_hash"] == ACTIVE_HASH
 
@@ -607,7 +610,7 @@ def test_the_holdout_is_retired_unread_and_styx_is_untouched():
     assert "not opened, scored, or evaluated" in ledger["reason"].lower()
 
     contract = load_contract("btc-usdt-1h-gen1")
-    manifest = json.loads(OHLCV_MANIFEST.read_text())
+    manifest = json.loads(OHLCV_MANIFEST.read_text(encoding="utf-8"))
     assert manifest["contains_styx"] is False
     processed = manifest["processed_outer_coverage"]
     assert processed["row_range"] == [0, HOLDOUT_ROWS[0]]

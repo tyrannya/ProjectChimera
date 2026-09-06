@@ -468,7 +468,7 @@ def _prediction_artifact(path: Path, sealed_test_start: int) -> dict[str, Any]:
             f"{path} has no adjacent walkforward.json; prediction identity cannot be verified"
         )
     try:
-        artifact = json.loads(artifact_path.read_text())
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise RegimeDataError(f"{artifact_path} is not readable JSON: {exc}") from exc
     if not isinstance(artifact, dict):

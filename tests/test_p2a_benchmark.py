@@ -97,7 +97,7 @@ def run_dir(dataset, tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="module")
 def artifact(run_dir) -> dict[str, Any]:
-    return json.loads((run_dir / benchmark.ARTIFACT_NAME).read_text())
+    return json.loads((run_dir / benchmark.ARTIFACT_NAME).read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
@@ -327,7 +327,7 @@ def test_only_training_rows_reach_the_scaler_and_the_estimators(
     out = tmp_path / "spied"
     assert benchmark.main(["--dataset", str(dataset), "--out", str(out), *CLI]) == 0
 
-    payload = json.loads((out / benchmark.ARTIFACT_NAME).read_text())
+    payload = json.loads((out / benchmark.ARTIFACT_NAME).read_text(encoding="utf-8"))
     boundary = payload["sealed_test"]["start_row"]
     plans = {
         int(fold["fold"]): {
@@ -504,8 +504,8 @@ def test_a_rerun_at_one_seed_reproduces_the_first(dataset, run_dir, tmp_path):
     second = pd.read_parquet(again / benchmark.PREDICTIONS_NAME)
     pd.testing.assert_frame_equal(first, second)
 
-    original = json.loads((run_dir / benchmark.ARTIFACT_NAME).read_text())
-    repeat = json.loads((again / benchmark.ARTIFACT_NAME).read_text())
+    original = json.loads((run_dir / benchmark.ARTIFACT_NAME).read_text(encoding="utf-8"))
+    repeat = json.loads((again / benchmark.ARTIFACT_NAME).read_text(encoding="utf-8"))
     for payload in (original, repeat):
         payload["config"]["out"] = ""
     assert original == repeat
@@ -581,7 +581,7 @@ def test_the_comparison_runs_end_to_end(run_dir, mtst_run, dataset, tmp_path):
         )
         == 0
     )
-    report = json.loads((out / benchmark_compare.REPORT_JSON).read_text())
+    report = json.loads((out / benchmark_compare.REPORT_JSON).read_text(encoding="utf-8"))
     assert report["mtst_retrained"] is False
     assert report["sealed_test"]["evaluated"] is False
     assert report["recomputation"]["problems"] == []
@@ -599,7 +599,7 @@ def test_the_comparison_runs_end_to_end(run_dir, mtst_run, dataset, tmp_path):
         evidence = answer["mean_net_return_evidence"]
         assert evidence["temporal_folds"] >= 1
         assert "min_outer_trades" in evidence
-    markdown = (out / benchmark_compare.REPORT_MD).read_text()
+    markdown = (out / benchmark_compare.REPORT_MD).read_text(encoding="utf-8")
     assert "research evidence" in markdown
     assert "sealed test block is unopened" in markdown
 
@@ -608,9 +608,9 @@ def corrupted(run_dir: Path, tmp_path: Path, mutate) -> Path:
     """A copy of a P2a run with one field of its artifact changed."""
     target = tmp_path / run_dir.name
     target.mkdir(parents=True, exist_ok=True)
-    payload = json.loads((run_dir / benchmark.ARTIFACT_NAME).read_text())
+    payload = json.loads((run_dir / benchmark.ARTIFACT_NAME).read_text(encoding="utf-8"))
     mutate(payload)
-    (target / benchmark.ARTIFACT_NAME).write_text(json.dumps(payload))
+    (target / benchmark.ARTIFACT_NAME).write_text(json.dumps(payload), encoding="utf-8")
     return target
 
 
@@ -728,7 +728,7 @@ def test_differing_scored_rows_are_caught_even_when_the_metadata_agrees(
     target = tmp_path / "rows"
     target.mkdir()
     (target / benchmark.ARTIFACT_NAME).write_text(
-        (run_dir / benchmark.ARTIFACT_NAME).read_text()
+        (run_dir / benchmark.ARTIFACT_NAME).read_text(encoding="utf-8"), encoding="utf-8"
     )
     frame = pd.read_parquet(run_dir / benchmark.PREDICTIONS_NAME)
     frame = frame.iloc[1:].reset_index(drop=True)
@@ -750,7 +750,9 @@ def test_frozen_v4_artifacts_still_match_their_manifest():
     repository's own statement of what was frozen, so it is checked here rather
     than restated.
     """
-    manifest = (ROOT / "artifacts" / "btc_v4_SHA256SUMS.txt").read_text().splitlines()
+    manifest = (
+        (ROOT / "artifacts" / "btc_v4_SHA256SUMS.txt").read_text(encoding="utf-8").splitlines()
+    )
     entries = [line.split(maxsplit=1) for line in manifest if line.strip()]
     assert len(entries) == 17
     for expected, name in entries:

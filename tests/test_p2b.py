@@ -143,7 +143,7 @@ def cell(aligned):
 
 @pytest.fixture(scope="module")
 def real_manifest() -> dict[str, Any]:
-    return json.loads(REAL_MANIFEST.read_text())
+    return json.loads(REAL_MANIFEST.read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------- #
@@ -535,9 +535,9 @@ def snapshot_copy(tmp_path) -> Path:
 
 
 def _corrupt(manifest: Path, mutate) -> None:
-    payload = json.loads(manifest.read_text())
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
     mutate(payload)
-    manifest.write_text(json.dumps(payload, indent=2) + "\n")
+    manifest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 #: One corruption per family of claim the verifier makes, each reaching a
@@ -655,7 +655,7 @@ def test_a_seal_breach_is_reported_as_a_count_and_never_as_a_row(snapshot_copy):
     """
     raw_path = (
         snapshot_copy.parents[2]
-        / json.loads(snapshot_copy.read_text())["raw_pre_styx"]["path"]
+        / json.loads(snapshot_copy.read_text(encoding="utf-8"))["raw_pre_styx"]["path"]
     )
     frame = pd.read_parquet(raw_path)
     extra = frame.iloc[[-1]].copy()
@@ -1244,7 +1244,7 @@ def test_build_deltas_carries_an_undefined_metric_through_as_undefined():
 
 def _write_artifact(directory: Path, payload: dict[str, Any]) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / p2b.ARTIFACT_NAME).write_text(json.dumps(payload))
+    (directory / p2b.ARTIFACT_NAME).write_text(json.dumps(payload), encoding="utf-8")
     return directory
 
 

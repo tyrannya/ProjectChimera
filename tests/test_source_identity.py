@@ -40,12 +40,14 @@ def checkout(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     for name in SOURCE_ROOTS:
         (root / name).mkdir(parents=True)
-        (root / name / "__init__.py").write_text(f'"""{name}"""\n')
-    (root / "nn" / "engine.py").write_text("VALUE = 1\n")
+        (root / name / "__init__.py").write_text(f'"""{name}"""\n', encoding="utf-8")
+    (root / "nn" / "engine.py").write_text("VALUE = 1\n", encoding="utf-8")
     (root / "tests").mkdir()
-    (root / "tests" / "test_engine.py").write_text("def test_engine():\n    assert True\n")
-    (root / "README.md").write_text("# repo\n")
-    (root / ".gitignore").write_text(".venv/\n")
+    (root / "tests" / "test_engine.py").write_text(
+        "def test_engine():\n    assert True\n", encoding="utf-8"
+    )
+    (root / "README.md").write_text("# repo\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".venv/\n", encoding="utf-8")
 
     git(root.parent, "init", "-q", str(root))
     git(root, "config", "user.email", "test@example.invalid")
@@ -69,8 +71,8 @@ def test_an_in_repository_virtualenv_cannot_enter_the_digest(checkout):
     before = digest(checkout)
     site = checkout / ".venv" / "lib" / "python3.11" / "site-packages" / "sklearn"
     site.mkdir(parents=True)
-    (site / "__init__.py").write_text("__version__ = '1.9.0'\n")
-    (site / "linear_model.py").write_text("class LogisticRegression: pass\n")
+    (site / "__init__.py").write_text("__version__ = '1.9.0'\n", encoding="utf-8")
+    (site / "linear_model.py").write_text("class LogisticRegression: pass\n", encoding="utf-8")
     assert digest(checkout) == before
 
 
@@ -79,7 +81,7 @@ def test_a_site_packages_directory_under_a_source_root_cannot_enter_it_either(ch
     before = digest(checkout)
     vendored = checkout / "tools" / "site-packages" / "lightgbm"
     vendored.mkdir(parents=True)
-    (vendored / "__init__.py").write_text("__version__ = '4.7.0'\n")
+    (vendored / "__init__.py").write_text("__version__ = '4.7.0'\n", encoding="utf-8")
     git(checkout, "add", "-A")
     assert digest(checkout) == before
 
@@ -94,11 +96,11 @@ def test_a_real_virtualenv_under_a_source_root_is_still_excluded(checkout):
     before = digest(checkout)
     venv = checkout / "tools" / ".venv"
     venv.mkdir(parents=True)
-    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
     library = venv / "lib" / "python3.11" / "site-packages" / "sklearn"
     library.mkdir(parents=True)
-    (library / "__init__.py").write_text("__version__ = '1.9.0'\n")
-    (venv / "lib" / "python3.11" / "shim.py").write_text("X = 1\n")
+    (library / "__init__.py").write_text("__version__ = '1.9.0'\n", encoding="utf-8")
+    (venv / "lib" / "python3.11" / "shim.py").write_text("X = 1\n", encoding="utf-8")
 
     identity = source_identity(checkout)
     assert identity["source_digest"] == before
@@ -124,7 +126,9 @@ def test_importing_another_model_library_cannot_move_it(checkout):
 def test_a_test_only_change_does_not_move_it(checkout):
     """`tests/` is outside the roots, so a batch is not split by a new test."""
     before = digest(checkout)
-    (checkout / "tests" / "test_engine.py").write_text("def test_engine():\n    assert 1\n")
+    (checkout / "tests" / "test_engine.py").write_text(
+        "def test_engine():\n    assert 1\n", encoding="utf-8"
+    )
     git(checkout, "add", "-A")
     git(checkout, "commit", "-qm", "a test")
     assert digest(checkout) == before
@@ -132,7 +136,7 @@ def test_a_test_only_change_does_not_move_it(checkout):
 
 def test_a_documentation_commit_moves_the_revision_and_not_the_digest(checkout):
     before = source_identity(checkout)
-    (checkout / "README.md").write_text("# repo\n\nmore words\n")
+    (checkout / "README.md").write_text("# repo\n\nmore words\n", encoding="utf-8")
     git(checkout, "add", "-A")
     git(checkout, "commit", "-qm", "docs")
     after = source_identity(checkout)
@@ -144,7 +148,7 @@ def test_a_documentation_commit_moves_the_revision_and_not_the_digest(checkout):
 # --- what must move it -------------------------------------------------------
 def test_dirty_tracked_source_moves_it(checkout):
     before = digest(checkout)
-    (checkout / "nn" / "engine.py").write_text("VALUE = 2\n")
+    (checkout / "nn" / "engine.py").write_text("VALUE = 2\n", encoding="utf-8")
     after = source_identity(checkout)
     assert after["source_digest"] != before
     assert after["dirty"] is True
@@ -153,7 +157,7 @@ def test_dirty_tracked_source_moves_it(checkout):
 def test_an_untracked_python_file_under_a_source_root_moves_it(checkout):
     """A module research can import is source whether or not git knows it."""
     before = digest(checkout)
-    (checkout / "nn" / "scratch.py").write_text("HACK = True\n")
+    (checkout / "nn" / "scratch.py").write_text("HACK = True\n", encoding="utf-8")
     after = source_identity(checkout)
     assert after["source_digest"] != before
     assert after["untracked_source_files"] == 1
@@ -169,7 +173,9 @@ def test_deleting_a_tracked_module_moves_it(checkout):
 
 def test_a_committed_source_change_moves_it(checkout):
     before = digest(checkout)
-    (checkout / "chimera" / "features.py").write_text("def compute():\n    return 3\n")
+    (checkout / "chimera" / "features.py").write_text(
+        "def compute():\n    return 3\n", encoding="utf-8"
+    )
     git(checkout, "add", "-A")
     git(checkout, "commit", "-qm", "a feature")
     after = source_identity(checkout)
@@ -189,8 +195,8 @@ def test_a_tracked_module_under_a_directory_called_build_is_hashed(checkout):
     before = digest(checkout)
     evil = checkout / "nn" / "build"
     evil.mkdir(parents=True)
-    (evil / "__init__.py").write_text("")
-    (evil / "evil.py").write_text("def patch():\n    return 'owned'\n")
+    (evil / "__init__.py").write_text("", encoding="utf-8")
+    (evil / "evil.py").write_text("def patch():\n    return 'owned'\n", encoding="utf-8")
     git(checkout, "add", "-A")
     git(checkout, "commit", "-qm", "a module under a directory called build")
 
@@ -198,7 +204,9 @@ def test_a_tracked_module_under_a_directory_called_build_is_hashed(checkout):
     assert identity["source_digest"] != before
     assert identity["excluded_environment_files"] == 0
     # And it is the content that moves it, not merely the file existing.
-    (evil / "evil.py").write_text("def patch():\n    return 'owned differently'\n")
+    (evil / "evil.py").write_text(
+        "def patch():\n    return 'owned differently'\n", encoding="utf-8"
+    )
     assert digest(checkout) != identity["source_digest"]
 
 
@@ -214,7 +222,7 @@ def test_an_environment_shaped_name_alone_never_hides_project_source(checkout, d
     before = digest(checkout)
     target = checkout / "nn" / directory
     target.mkdir(parents=True)
-    (target / "helper.py").write_text("VALUE = 2\n")
+    (target / "helper.py").write_text("VALUE = 2\n", encoding="utf-8")
     git(checkout, "add", "-A")
 
     try:
@@ -227,10 +235,10 @@ def test_an_environment_shaped_name_alone_never_hides_project_source(checkout, d
 
 def test_a_gitignored_module_under_a_build_directory_is_refused(checkout):
     """Hiding it from git as well must not buy silence either."""
-    (checkout / ".gitignore").write_text(".venv/\nnn/build/\n")
+    (checkout / ".gitignore").write_text(".venv/\nnn/build/\n", encoding="utf-8")
     evil = checkout / "nn" / "build"
     evil.mkdir(parents=True)
-    (evil / "evil.py").write_text("X = 1\n")
+    (evil / "evil.py").write_text("X = 1\n", encoding="utf-8")
     with pytest.raises(SourceIdentityError, match="hidden by"):
         source_identity(checkout)
 
@@ -244,8 +252,8 @@ def test_a_gitignored_python_file_under_a_source_root_is_refused(checkout):
     ran. There is no legitimate ignored ``.py`` under a package root, so the
     right answer is a refusal rather than a wider rule.
     """
-    (checkout / ".gitignore").write_text(".venv/\nnn/private.py\n")
-    (checkout / "nn" / "private.py").write_text("SECRET = 1\n")
+    (checkout / ".gitignore").write_text(".venv/\nnn/private.py\n", encoding="utf-8")
+    (checkout / "nn" / "private.py").write_text("SECRET = 1\n", encoding="utf-8")
     with pytest.raises(SourceIdentityError, match="hidden by"):
         source_identity(checkout)
 
@@ -253,7 +261,7 @@ def test_a_gitignored_python_file_under_a_source_root_is_refused(checkout):
 def test_a_tree_that_is_not_a_checkout_has_no_source_identity(tmp_path):
     plain = tmp_path / "tarball"
     (plain / "nn").mkdir(parents=True)
-    (plain / "nn" / "engine.py").write_text("VALUE = 1\n")
+    (plain / "nn" / "engine.py").write_text("VALUE = 1\n", encoding="utf-8")
     with pytest.raises(SourceIdentityError, match="not a git checkout"):
         source_identity(plain)
 
@@ -403,7 +411,7 @@ def test_the_committed_cells_are_the_population_the_exemption_is_for():
                 / "benchmark"
                 / cell
                 / "p2b.json"
-            ).read_text()
+            ).read_text(encoding="utf-8")
         )
         assert payload["code"].get("scheme") in LEGACY_SOURCE_IDENTITY_SCHEMES
 

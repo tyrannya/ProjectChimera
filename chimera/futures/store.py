@@ -160,7 +160,7 @@ class FuturesStore:
             return cls(path=location, state=FuturesState(), outcome=LoadOutcome.MISSING)
 
         try:
-            data = json.loads(location.read_text())
+            data = json.loads(location.read_text(encoding="utf-8"))
             state = FuturesState.from_dict(data)
         # ArithmeticError is in the tuple because the likeliest corruption of all
         # is a mangled number in a persisted field, and `Decimal("0.5O")` raises

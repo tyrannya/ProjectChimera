@@ -145,10 +145,14 @@ def assert_rebuilt_to_the_oracle(incremental, oracle, cursor_root, oracle_root) 
     # The digest is a function of the minutes, and a doctored tally or resume
     # instant moves neither, so the metadata is compared too.
     left = json.loads(
-        MinuteNormalizer(oracle_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(oracle_root, CONTRACT)
+        .meta_path("um", DAY)
+        .read_text(encoding="utf-8")
     )
     right = json.loads(
-        MinuteNormalizer(cursor_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(cursor_root, CONTRACT)
+        .meta_path("um", DAY)
+        .read_text(encoding="utf-8")
     )
     assert right["streams"] == left["streams"], "a doctored tally survived into the metadata"
     assert right["digest"] == left["digest"]
@@ -570,7 +574,9 @@ def test_the_seal_is_in_nothing_that_identifies_a_recording(tmp_path):
     seal = read_cache(incremental)[CACHE_DIGEST_FIELD]
 
     document = json.loads(
-        MinuteNormalizer(cursor_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(cursor_root, CONTRACT)
+        .meta_path("um", DAY)
+        .read_text(encoding="utf-8")
     )
     text = json.dumps(document)
     assert CACHE_DIGEST_FIELD not in text
@@ -637,9 +643,11 @@ def test_a_crash_after_durable_raw_and_before_the_cache_replays_the_tail_once(
     assert restarted.status[("um", DAY)].resumed is True
     assert restarted.status[("um", DAY)].replayed_records == 3, "the tail was not read once"
     assert rendered.digest == oracle.digest
-    left = json.loads(fuller.meta_path("um", DAY).read_text("utf-8"))
+    left = json.loads(fuller.meta_path("um", DAY).read_text(encoding="utf-8"))
     right = json.loads(
-        MinuteNormalizer(cursor_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(cursor_root, CONTRACT)
+        .meta_path("um", DAY)
+        .read_text(encoding="utf-8")
     )
     assert right["streams"] == left["streams"], "a record was folded twice, or not at all"
 

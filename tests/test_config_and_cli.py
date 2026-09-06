@@ -9,6 +9,8 @@ version of Freqtrade has ever accepted, and nothing caught it.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -45,7 +47,7 @@ def validated(exchange: str, mode: str) -> dict:
 # --- config files ---------------------------------------------------------
 @pytest.mark.parametrize("path", sorted(CONF_DIR.glob("*.json")))
 def test_every_config_is_valid_json(path):
-    json.loads(path.read_text())
+    json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("exchange", EXCHANGES)
@@ -74,7 +76,7 @@ def test_live_profiles_declare_intent_without_being_live(exchange):
 def test_no_config_contains_a_literal_credential():
     """Only ``${VAR}`` placeholders, never a value."""
     for path in CONF_DIR.glob("*.json"):
-        exchange = json.loads(path.read_text()).get("exchange", {})
+        exchange = json.loads(path.read_text(encoding="utf-8")).get("exchange", {})
         for field in ("key", "secret", "password", "uid"):
             value = exchange.get(field)
             if value:
@@ -85,21 +87,24 @@ def test_no_config_contains_a_literal_credential():
 
 def test_base_config_does_not_enable_the_rest_api():
     """The REST API can start, stop and force-enter trades."""
-    base = json.loads((CONF_DIR / "base.json").read_text())
+    base = json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))
     assert base.get("api_server", {}).get("enabled", False) is False
 
 
 def test_base_config_does_not_force_entry():
-    assert json.loads((CONF_DIR / "base.json").read_text())["force_entry_enable"] is False
+    assert (
+        json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))["force_entry_enable"]
+        is False
+    )
 
 
 def test_base_config_states_a_fee():
     """Backtests without an explicit fee silently assume the exchange default."""
-    assert json.loads((CONF_DIR / "base.json").read_text())["fee"] > 0
+    assert json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))["fee"] > 0
 
 
 def test_base_config_carries_risk_limits():
-    risk = json.loads((CONF_DIR / "base.json").read_text())["risk"]
+    risk = json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))["risk"]
     for key in ("max_drawdown_pct", "risk_per_trade_pct", "max_open_positions"):
         assert key in risk
 
@@ -166,11 +171,10 @@ def test_launcher_allows_dry_run_without_credentials(tmp_path, capsys):
     )
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out)["dry_run"] is True
-    assert json.loads(config_out.read_text())["dry_run"] is True
+    assert json.loads(config_out.read_text(encoding="utf-8"))["dry_run"] is True
 
 
-def test_launcher_writes_the_merged_config_privately(tmp_path):
-    """It contains API keys; it must not be world-readable."""
+def _write_merged_config(tmp_path):
     config_out = tmp_path / "merged.json"
     main(
         [
@@ -183,6 +187,46 @@ def test_launcher_writes_the_merged_config_privately(tmp_path):
             str(config_out),
         ]
     )
+    return config_out
+
+
+def test_launcher_asks_for_owner_only_permissions_on_the_merged_config(monkeypatch, tmp_path):
+    """It contains API keys, so the launcher must restrict it -- on every platform.
+
+    This asserts the launcher's *request*, which is the part that is the same
+    everywhere. The realised mode bits are checked below, on the platforms that
+    implement them.
+    """
+    requested: list[int] = []
+    original = Path.chmod
+
+    def spy(self, mode, *args, **kwargs):
+        requested.append(mode)
+        return original(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", spy)
+    config_out = _write_merged_config(tmp_path)
+
+    assert config_out.is_file()
+    assert stat.S_IRUSR | stat.S_IWUSR in requested, (
+        "the launcher wrote a file holding API keys without asking for owner-only "
+        f"permissions; it requested {[oct(m) for m in requested]}"
+    )
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "Windows does not implement POSIX permission bits: os.chmod there toggles only "
+        "the read-only flag, and stat() reports 0o666 whatever was requested, so this "
+        "assertion cannot express the guarantee. Access is governed by inherited ACLs "
+        "instead. The request itself is asserted on every platform by the test above, "
+        "so nothing is left unchecked here -- only checked differently."
+    ),
+)
+def test_launcher_writes_the_merged_config_privately(tmp_path):
+    """It contains API keys; it must not be world-readable."""
+    config_out = _write_merged_config(tmp_path)
     assert config_out.stat().st_mode & 0o077 == 0
 
 
@@ -205,7 +249,7 @@ def test_launcher_goes_live_only_with_both_the_ack_and_a_live_config(monkeypatch
         )
         == 0
     )
-    assert json.loads(config_out.read_text())["dry_run"] is False
+    assert json.loads(config_out.read_text(encoding="utf-8"))["dry_run"] is False
 
 
 def test_live_without_credentials_is_refused_even_with_the_ack(monkeypatch, tmp_path):
@@ -242,7 +286,7 @@ def test_the_ack_does_not_make_a_test_config_live(monkeypatch, tmp_path):
             str(config_out),
         ]
     )
-    assert json.loads(config_out.read_text())["dry_run"] is True
+    assert json.loads(config_out.read_text(encoding="utf-8"))["dry_run"] is True
 
 
 def test_load_config_rejects_an_unknown_pair_of_names():
@@ -275,7 +319,7 @@ def test_env_file_is_not_committed():
 
 def test_env_example_contains_no_values():
     repo = Path(__file__).resolve().parents[1]
-    for line in (repo / ".env.example").read_text().splitlines():
+    for line in (repo / ".env.example").read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -300,7 +344,9 @@ def test_no_merge_conflict_markers_remain():
             ".toml",
         }:
             continue
-        for number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
+        for number, line in enumerate(
+            path.read_text(errors="ignore", encoding="utf-8").splitlines(), 1
+        ):
             # Only a line that *starts* with a marker is a real conflict
             # remnant. docs/engineering-audit.md quotes these sequences inline
             # while describing the ones this rebuild removed.

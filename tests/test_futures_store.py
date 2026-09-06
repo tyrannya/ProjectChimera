@@ -216,7 +216,9 @@ def test_open_on_invalid_json_reports_unreadable_and_leaves_the_file_alone(tmp_p
     """
     path = state_path(tmp_path)
     path.parent.mkdir(parents=True)
-    path.write_text('{"store_schema": "chimera.futures-execution-state/1", "posi')
+    path.write_text(
+        '{"store_schema": "chimera.futures-execution-state/1", "posi', encoding="utf-8"
+    )
     before = path.read_bytes()
 
     store = FuturesStore.open(path)
@@ -238,7 +240,8 @@ def test_open_on_a_foreign_schema_reports_unreadable_and_leaves_the_file_alone(t
     path.parent.mkdir(parents=True)
     path.write_text(
         '{"store_schema": "chimera.futures-execution-state/999", "bootstrapped": true,'
-        ' "positions": {}, "orders": {}, "ledger": {}, "flatten_reasons": []}\n'
+        ' "positions": {}, "orders": {}, "ledger": {}, "flatten_reasons": []}\n',
+        encoding="utf-8",
     )
     before = path.read_bytes()
 
@@ -257,7 +260,7 @@ def test_the_schema_a_readable_file_must_declare_is_the_one_that_is_written(tmp_
     store.save()
 
     assert STORE_SCHEMA == "chimera.futures-execution-state/1"
-    assert f'"store_schema": "{STORE_SCHEMA}"' in path.read_text()
+    assert f'"store_schema": "{STORE_SCHEMA}"' in path.read_text(encoding="utf-8")
 
 
 # --- what survives a write --------------------------------------------------

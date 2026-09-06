@@ -178,11 +178,30 @@ def kline_row_fields(instant_ms: int, price: str, high: str | None = None) -> li
     ]
 
 
+#: The earliest instant the ZIP format can represent. Any fixed value would do;
+#: what matters is that it is fixed.
+ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
 def zip_bytes(name: str, payload: bytes) -> bytes:
-    """One published object: a zip holding exactly one CSV member."""
+    """One published object: a zip holding exactly one CSV member.
+
+    The member's timestamp is PINNED. ``ZipFile.writestr`` given a plain name
+    stamps the entry with the current LOCAL time at two-second granularity, so
+    two fixtures built from identical payloads either side of a boundary produce
+    different bytes -- and therefore different ``archive_sha256`` values and a
+    different ``manifest_digest``. That made
+    ``test_the_manifest_digest_is_deterministic_across_runs`` pass on a fast
+    machine and fail on a slow one, and it would have made the same fixture
+    hash differently across a DST change or between two time zones. A fixture
+    whose bytes depend on when it was built cannot support a test about
+    determinism.
+    """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(name, payload)
+        member = zipfile.ZipInfo(name, date_time=ZIP_EPOCH)
+        member.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(member, payload)
     return buffer.getvalue()
 
 

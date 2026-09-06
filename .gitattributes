@@ -1,0 +1,13 @@
+# No file in this repository is ever line-ending converted.
+#
+# Frozen evidence is verified by hashing file *bytes* -- `tools/freeze_evidence.py`
+# digests `path.read_bytes()` -- and the 18 committed SHA256SUMS manifests cover
+# text files (`STATUS.md`, `*.json`, `*.md`) alongside the binary ones. Git for
+# Windows checks text files out with CRLF by default, which changes exactly those
+# bytes. Without this file the Windows leg of the test matrix would fail every
+# frozen manifest, and it would fail them in the one way this repository must
+# never report casually: as though the frozen evidence had moved.
+#
+# `-text` means "treat every path as binary for end-of-line purposes": no
+# conversion on checkout, none on commit, on any platform.
+* -text

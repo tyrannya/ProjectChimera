@@ -647,9 +647,11 @@ def main(argv: list[str] | None = None) -> int:
         sum(len(frame) for frame in frames),
         predictions_path,
     )
-    (out_dir / ARTIFACT_NAME).write_text(json.dumps(payload, indent=2, default=str) + "\n")
+    (out_dir / ARTIFACT_NAME).write_text(
+        json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+    )
     markdown = to_markdown(payload, contract, data.period(sealed_split))
-    (out_dir / MARKDOWN_NAME).write_text(markdown)
+    (out_dir / MARKDOWN_NAME).write_text(markdown, encoding="utf-8")
     print(markdown)
     logger.info("Wrote results to %s", out_dir)
     return 0

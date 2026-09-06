@@ -199,7 +199,7 @@ def synthetic_research_snapshot(tmp_path_factory):
             "styx_rows_exported": 0,
         },
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return {
         "root": root,
         "manifest": manifest_path,

@@ -267,7 +267,7 @@ def test_resume_clears_the_persisted_halt(tmp_path):
 
 def test_unreadable_state_file_fails_closed(tmp_path):
     state = tmp_path / "risk.json"
-    state.write_text("{not json")
+    state.write_text("{not json", encoding="utf-8")
     engine = RiskEngine(state_path=state)
     assert engine.halted, "a corrupt risk state must not silently allow trading"
 

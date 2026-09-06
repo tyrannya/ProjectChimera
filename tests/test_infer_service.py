@@ -137,9 +137,9 @@ def test_the_service_applies_its_own_scaler(client, models_dir):
     first = client.post("/predict", json=body).json()["probabilities"]
 
     path = models_dir / "test-v1" / "metadata.json"
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data["scaler_mean"] = [5.0] * N_FEATURES
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
     from nn import infer_service
 

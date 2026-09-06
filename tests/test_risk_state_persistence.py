@@ -716,3 +716,66 @@ def test_a_wipeout_is_recorded_before_it_is_halted_on(tmp_path):
     assert document["halted"] is True
     assert document["equity"] == pytest.approx(0.0)
     assert document["daily_pnl"] == pytest.approx(-10_000.0)
+
+
+def test_the_state_load_fails_closed_under_the_windows_not_found_mapping(
+    tmp_path, monkeypatch
+):
+    """The Windows error mapping for the state file, reproduced on every platform.
+
+    POSIX raises ``NotADirectoryError`` for a path blocked by a regular file, so
+    the fail-closed branch is reached there through the generic ``OSError`` arm
+    and the Windows behaviour is never exercised. Windows reports
+    ERROR_PATH_NOT_FOUND, which Python surfaces as ``FileNotFoundError`` -- the
+    same exception it uses for a state file that is simply not there yet. Under
+    that mapping the engine used to start on unhalted defaults, silently
+    discarding a persisted halt.
+    """
+    (tmp_path / "blocked").write_text("not a directory", encoding="utf-8")
+    state = tmp_path / "blocked" / "risk.json"
+    real_read_text = Path.read_text
+
+    def windows_like(self, *args, **kwargs):
+        if self == state:
+            raise FileNotFoundError(3, "The system cannot find the path specified")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", windows_like)
+
+    engine = RiskEngine(
+        RiskLimits(),
+        state_path=state,
+        clock=FakeClock(),
+        kill_switch_path=tmp_path / "no-kill-switch",
+    )
+
+    assert engine.halted, "an unexaminable state path must fail closed"
+    assert engine.state.halt_reason.startswith("unreadable persisted risk state")
+
+
+def test_a_state_file_that_is_merely_absent_still_starts_clean(tmp_path, monkeypatch):
+    """The negative control: same Windows mapping, sound filesystem.
+
+    A first run has no state file. Reading that as "unexaminable" would halt
+    every fresh deployment, so absence must stay absence on both platforms --
+    including when the naming directory has not been created yet.
+    """
+    state = tmp_path / "not_created_yet" / "risk.json"
+    real_read_text = Path.read_text
+
+    def windows_like(self, *args, **kwargs):
+        if self == state:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", windows_like)
+
+    engine = RiskEngine(
+        RiskLimits(),
+        state_path=state,
+        clock=FakeClock(),
+        kill_switch_path=tmp_path / "no-kill-switch",
+    )
+
+    assert not engine.halted
+    assert engine.state.halt_reason == ""

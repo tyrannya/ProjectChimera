@@ -105,7 +105,7 @@ def test_committed_authorisation_still_requires_runtime_gates():
 def test_command_line_confirmation_cannot_open_a_closed_interlock(tmp_path):
     root = tmp_path / "tree"
     (root / "data" / "research").mkdir(parents=True)
-    payload = json.loads(AUTHORISATION_PATH.read_text())
+    payload = json.loads(AUTHORISATION_PATH.read_text(encoding="utf-8"))
     payload.update(
         {
             "state": "not_authorised",
@@ -114,7 +114,7 @@ def test_command_line_confirmation_cannot_open_a_closed_interlock(tmp_path):
             "reason": None,
         }
     )
-    (root / AUTHORISATION_PATH).write_text(json.dumps(payload, indent=2))
+    (root / AUTHORISATION_PATH).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     with pytest.raises(Stage1Interlock, match="not_authorised"):
         assert_fit_authorised(confirm=True, availability=PASSING_AVAILABILITY, root=root)
 
@@ -122,9 +122,9 @@ def test_command_line_confirmation_cannot_open_a_closed_interlock(tmp_path):
 def _authorise(tmp_path, **overrides):
     root = tmp_path / "tree"
     (root / "data" / "research").mkdir(parents=True)
-    payload = json.loads((AUTHORISATION_PATH).read_text())
+    payload = json.loads((AUTHORISATION_PATH).read_text(encoding="utf-8"))
     payload.update({"state": AUTHORISED, "authorised_by": "a human", **overrides})
-    (root / AUTHORISATION_PATH).write_text(json.dumps(payload, indent=2))
+    (root / AUTHORISATION_PATH).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return root
 
 
@@ -170,7 +170,7 @@ def test_an_interlock_under_another_schema_does_not_authorise_anything(tmp_path)
     root = tmp_path / "tree"
     (root / "data" / "research").mkdir(parents=True)
     (root / AUTHORISATION_PATH).write_text(
-        json.dumps({"authorisation_schema": "other/1", "state": AUTHORISED})
+        json.dumps({"authorisation_schema": "other/1", "state": AUTHORISED}), encoding="utf-8"
     )
     with pytest.raises(Stage1Interlock, match="declares schema"):
         assert_fit_authorised(confirm=True, availability=PASSING_AVAILABILITY, root=root)

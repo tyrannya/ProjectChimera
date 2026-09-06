@@ -416,9 +416,11 @@ def status_markdown(payload: dict[str, Any]) -> str:
 
 def write_mode(payload: dict[str, Any], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / ARTIFACT_NAME).write_text(json.dumps(payload, indent=2) + "\n")
-    (out_dir / MARKDOWN_NAME).write_text(to_markdown(payload))
-    (out_dir / STATUS_NAME).write_text(status_markdown(payload))
+    (out_dir / ARTIFACT_NAME).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    (out_dir / MARKDOWN_NAME).write_text(to_markdown(payload), encoding="utf-8")
+    (out_dir / STATUS_NAME).write_text(status_markdown(payload), encoding="utf-8")
     return out_dir
 
 

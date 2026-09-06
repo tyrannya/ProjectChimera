@@ -299,7 +299,7 @@ def test_the_anchor_names_the_instant_the_current_generation_sealed_at(artifact)
     the current research generation was produced under — the row number is
     evidence of that, not the contract.
     """
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     sealed = payload["sealed_test"]
 
     assert payload["dataset"]["rows"] == 56726
@@ -310,7 +310,7 @@ def test_the_anchor_names_the_instant_the_current_generation_sealed_at(artifact)
 @pytest.mark.parametrize("artifact", HISTORICAL_RUNS, ids=lambda p: p.parent.name)
 def test_historical_artifacts_are_not_relabelled_as_timestamp_anchored(artifact):
     """They predate the contract. Saying otherwise would manufacture provenance."""
-    sealed = json.loads(artifact.read_text())["sealed_test"]
+    sealed = json.loads(artifact.read_text(encoding="utf-8"))["sealed_test"]
     assert "anchor_timestamp" not in sealed
 
 
@@ -321,7 +321,7 @@ def test_the_committed_v4_artifacts_are_present_to_check_against():
 @pytest.mark.parametrize("artifact", V4_RUNS, ids=lambda p: p.parent.name)
 def test_the_v4_anchor_names_the_instant_the_current_generation_sealed_at(artifact):
     """v4 appended rows after the same seal; the anchor instant did not move."""
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     sealed = payload["sealed_test"]
 
     assert sealed["start_row"] == 48217
@@ -501,11 +501,14 @@ def test_the_experiment_manifest_records_the_immutable_anchor(grown_pair, tmp_pa
         == 0
     )
 
-    manifest = json.loads((out / "experiment_plan.json").read_text())
+    manifest = json.loads((out / "experiment_plan.json").read_text(encoding="utf-8"))
     assert manifest["sealed_test"]["anchor_timestamp"] == SEALED_TEST_START_UTC.isoformat()
     assert manifest["sealed_test"]["start_row"] == grown.sealed_boundary(SYNTHETIC).start_row
     assert manifest["sealed_test"]["evaluated"] is False
-    assert json.loads((out / "experiments.json").read_text())["test_evaluated"] is False
+    assert (
+        json.loads((out / "experiments.json").read_text(encoding="utf-8"))["test_evaluated"]
+        is False
+    )
 
 
 def test_the_sealed_contract_is_part_of_the_plan_hash(grown_pair, tmp_path):
@@ -550,7 +553,7 @@ def test_training_records_both_halves_of_the_boundary(grown_pair, tmp_path):
     )
 
     version = next(p for p in models_dir.iterdir() if p.is_dir())
-    report = json.loads((version / "report.json").read_text())
+    report = json.loads((version / "report.json").read_text(encoding="utf-8"))
 
     assert report["sealed_test"]["anchor_timestamp"] == SEALED_TEST_START_UTC.isoformat()
     assert report["sealed_test"]["start_row"] == grown.sealed_boundary(SYNTHETIC).start_row
@@ -584,7 +587,7 @@ def test_every_persisted_outer_prediction_is_before_the_anchor(grown_pair, tmp_p
     assert len(stamps) > 0, "the run must have produced predictions to check"
     assert (stamps < SEALED_TEST_START_UTC).all()
 
-    results = json.loads((out / "walkforward.json").read_text())
+    results = json.loads((out / "walkforward.json").read_text(encoding="utf-8"))
     boundary = grown.sealed_boundary(SYNTHETIC)
     assert results["sealed_test"]["anchor_timestamp"] == SEALED_TEST_START_UTC.isoformat()
     assert results["sealed_test"]["start_row"] == boundary.start_row

@@ -334,7 +334,7 @@ def read_contract_file(path: str | Path) -> ResearchContract:
     """
     path = Path(path)
     try:
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ResearchContractError(f"{path} is not readable JSON: {exc}") from exc
     contract = parse_contract(payload, source=path)

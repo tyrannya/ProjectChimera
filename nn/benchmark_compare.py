@@ -187,7 +187,7 @@ def load_run(path: str | Path, *, kind: str) -> Run:
             f"(containing {expected}) or the JSON file itself."
         )
     try:
-        payload = json.loads(artifact.read_text())
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ComparabilityError(f"{artifact} is not readable JSON: {exc}") from exc
     if not isinstance(payload, dict):
@@ -1127,9 +1127,11 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / REPORT_JSON).write_text(json.dumps(report, indent=2, default=str) + "\n")
+    (out_dir / REPORT_JSON).write_text(
+        json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8"
+    )
     markdown = to_markdown(report)
-    (out_dir / REPORT_MD).write_text(markdown)
+    (out_dir / REPORT_MD).write_text(markdown, encoding="utf-8")
     print(markdown)
     logger.info("Wrote the P2a comparison to %s", out_dir)
     return 0

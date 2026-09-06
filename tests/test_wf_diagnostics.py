@@ -253,7 +253,8 @@ def write_run(
                 "summary": _summarise(fold_payloads, schema),
             },
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     return directory
 
@@ -261,9 +262,9 @@ def write_run(
 def edit(directory: Path, mutate) -> Path:
     """Apply ``mutate`` to an artifact already on disk."""
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     mutate(payload)
-    artifact.write_text(json.dumps(payload, indent=2))
+    artifact.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return directory
 
 
@@ -291,7 +292,7 @@ def test_a_missing_artifact_names_the_path_it_looked_for(tmp_path):
 
 def test_unreadable_json_is_refused(tmp_path):
     directory = write_run(tmp_path / "run")
-    (directory / wf_diagnostics.ARTIFACT_NAME).write_text('{"folds": [')
+    (directory / wf_diagnostics.ARTIFACT_NAME).write_text('{"folds": [', encoding="utf-8")
     with pytest.raises(SystemExit, match="not readable JSON"):
         wf_diagnostics.load_run(directory)
 
@@ -653,14 +654,16 @@ def test_the_cli_audits_and_aggregates_and_writes_both_files(tmp_path, capsys):
     assert "# Walk-forward regime diagnostics" in printed
     assert "btc_nested_seed_142" in printed
 
-    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))
     assert payload["comparability_problems"] == []
     assert payload["sealed_test_evaluated"] is False
     assert payload["aggregated_from"] == "outer_validation"
     assert [run["integrity_problems"] for run in payload["runs"]] == [[], []]
     assert payload["summary"]["runs"] == ["btc_nested_v1", "btc_nested_seed_142"]
     # The file on disk is the report that was printed, not a second rendering.
-    assert (out / wf_diagnostics.REPORT_MD).read_text().strip() == printed.strip()
+    assert (out / wf_diagnostics.REPORT_MD).read_text(
+        encoding="utf-8"
+    ).strip() == printed.strip()
 
 
 def test_the_cli_exits_nonzero_and_withholds_the_aggregate_on_a_broken_run(tmp_path, capsys):
@@ -674,7 +677,10 @@ def test_the_cli_exits_nonzero_and_withholds_the_aggregate_on_a_broken_run(tmp_p
     printed = capsys.readouterr().out
     assert "## Integrity problems" in printed
     assert "Outer validation across runs" not in printed
-    assert json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["summary"] is None
+    assert (
+        json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))["summary"]
+        is None
+    )
 
 
 def test_the_cli_withholds_the_aggregate_when_runs_are_not_comparable(tmp_path, capsys):
@@ -782,7 +788,7 @@ def test_the_cli_reports_on_real_artifacts(real_runs, tmp_path, capsys):
     assert "Outer validation across runs" in printed
     assert "Selection stability" in printed
 
-    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))
     assert payload["summary"]["folds"] == 2
     assert set(payload["summary"]["per_model"]) == set(walkforward.MODELS)
     for run in payload["runs"]:
@@ -1077,9 +1083,9 @@ def test_metadata_is_cross_checked_against_the_frames_own_timestamps(dataset_pai
     copied = tmp_path / "copy.parquet"
     copied.write_bytes(Path(processed).read_bytes())
     sidecar = Path(str(copied) + ".meta.json")
-    payload = json.loads(Path(str(processed) + ".meta.json").read_text())
+    payload = json.loads(Path(str(processed) + ".meta.json").read_text(encoding="utf-8"))
     payload["start"] = "2019-06-01T00:00:00+00:00"
-    sidecar.write_text(json.dumps(payload))
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(regime.RegimeDataError, match="metadata says the data starts"):
         regime.load_research_frame(
@@ -1462,7 +1468,9 @@ def test_walkforward_persists_outer_predictions_below_the_boundary(real_regime_r
         assert list(predictions.columns) == list(regime.PREDICTION_COLUMNS)
         assert predictions["row_index"].max() < real_regime_runs["boundary"]
 
-        artifact = json.loads((directory / wf_diagnostics.ARTIFACT_NAME).read_text())
+        artifact = json.loads(
+            (directory / wf_diagnostics.ARTIFACT_NAME).read_text(encoding="utf-8")
+        )
         assert artifact["outer_predictions"] == walkforward.PREDICTIONS_NAME
         # Each persisted row falls inside its own fold's outer block.
         for fold in artifact["folds"]:
@@ -1514,7 +1522,7 @@ def test_the_regime_cli_reports_every_requested_section(real_regime_runs, tmp_pa
     ):
         assert heading in printed, f"{heading} missing from the report"
 
-    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))
     analysis = payload["analysis"]
     assert payload["sealed_test_evaluated"] is False
     assert analysis["sealed_test_evaluated"] is False
@@ -1526,7 +1534,7 @@ def test_the_regime_cli_reports_every_requested_section(real_regime_runs, tmp_pa
     assert analysis["attribution"]["available"] is True
     assert (
         (out / wf_diagnostics.REPORT_MD)
-        .read_text()
+        .read_text(encoding="utf-8")
         .startswith("# Walk-forward regime diagnostics")
     )
 
@@ -1575,7 +1583,9 @@ def test_the_regime_statistics_match_a_direct_computation(real_regime_runs, tmp_
         [str(d) for d in real_regime_runs["runs"]]
         + ["--dataset", str(real_regime_runs["dataset"]), "--out", str(out)]
     )
-    analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["analysis"]
+    analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))[
+        "analysis"
+    ]
 
     frame = pd.read_parquet(real_regime_runs["dataset"])
     research = regime.load_research_frame(
@@ -1605,9 +1615,9 @@ def test_the_attribution_is_exact_on_real_persisted_predictions(real_regime_runs
         [str(d) for d in real_regime_runs["runs"]]
         + ["--dataset", str(real_regime_runs["dataset"]), "--out", str(out)]
     )
-    attribution = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["analysis"][
-        "attribution"
-    ]
+    attribution = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))[
+        "analysis"
+    ]["attribution"]
     assert attribution["available"] is True
 
     combined = pd.concat(
@@ -1615,9 +1625,11 @@ def test_the_attribution_is_exact_on_real_persisted_predictions(real_regime_runs
         ignore_index=True,
     )
     spec = TargetSpec.from_dict(
-        json.loads((real_regime_runs["runs"][0] / wf_diagnostics.ARTIFACT_NAME).read_text())[
-            "dataset"
-        ]["target_spec"]
+        json.loads(
+            (real_regime_runs["runs"][0] / wf_diagnostics.ARTIFACT_NAME).read_text(
+                encoding="utf-8"
+            )
+        )["dataset"]["target_spec"]
     )
     expected = regime.direction_attribution(combined, spec)
     assert attribution["overall"] == expected
@@ -1814,9 +1826,13 @@ def test_the_reconstruction_is_checked_against_the_recorded_sample_count(
         )
         == 0
     )
-    analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["analysis"]
+    analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))[
+        "analysis"
+    ]
     artifact = json.loads(
-        (real_regime_runs["runs"][0] / wf_diagnostics.ARTIFACT_NAME).read_text()
+        (real_regime_runs["runs"][0] / wf_diagnostics.ARTIFACT_NAME).read_text(
+            encoding="utf-8"
+        )
     )
 
     recorded = [fold["samples"]["outer_validation"] for fold in artifact["folds"]]
@@ -1832,9 +1848,11 @@ def test_a_disagreement_about_the_scored_rows_is_refused(real_regime_runs, tmp_p
     source = real_regime_runs["runs"][0]
     directory = workspace / source.name
     directory.mkdir()
-    payload = json.loads((source / wf_diagnostics.ARTIFACT_NAME).read_text())
+    payload = json.loads((source / wf_diagnostics.ARTIFACT_NAME).read_text(encoding="utf-8"))
     payload["config"]["seq_len"] = payload["config"]["seq_len"] + 8
-    (directory / wf_diagnostics.ARTIFACT_NAME).write_text(json.dumps(payload))
+    (directory / wf_diagnostics.ARTIFACT_NAME).write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
 
     with pytest.raises(SystemExit, match="disagree about which rows were evaluated"):
         wf_diagnostics.main([str(directory), "--dataset", str(real_regime_runs["dataset"])])
@@ -1860,7 +1878,7 @@ def test_deterministic_baselines_are_identical_across_seed_only_reruns(
     differ; the baselines are not.
     """
     artifacts = [
-        json.loads((directory / wf_diagnostics.ARTIFACT_NAME).read_text())
+        json.loads((directory / wf_diagnostics.ARTIFACT_NAME).read_text(encoding="utf-8"))
         for directory in real_regime_runs["runs"]
     ]
     seeds = {artifact["config"]["seed"] for artifact in artifacts}
@@ -1882,7 +1900,7 @@ def test_deterministic_baselines_are_identical_across_seed_only_reruns(
 def test_the_mtst_reports_do_differ_across_seeds(real_regime_runs):
     """The control: if nothing differed, the test above would be vacuous."""
     artifacts = [
-        json.loads((directory / wf_diagnostics.ARTIFACT_NAME).read_text())
+        json.loads((directory / wf_diagnostics.ARTIFACT_NAME).read_text(encoding="utf-8"))
         for directory in real_regime_runs["runs"]
     ]
     mtst = [
@@ -1902,7 +1920,9 @@ def test_the_diagnostics_report_zero_baseline_seed_spread(real_regime_runs, tmp_
         )
         == 0
     )
-    summary = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["summary"]
+    summary = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))[
+        "summary"
+    ]
 
     for baseline in ("majority_baseline", "momentum_baseline"):
         for metric in walkforward.SUMMARY_METRICS:
@@ -2018,7 +2038,9 @@ def test_the_separability_hypothesis_reaches_the_report(real_regime_runs, tmp_pa
         [str(d) for d in real_regime_runs["runs"]]
         + ["--dataset", str(real_regime_runs["dataset"]), "--out", str(out)]
     )
-    analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())["analysis"]
+    analysis = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))[
+        "analysis"
+    ]
 
     with_observed = [h for h in analysis["hypotheses"] if "observed" in h]
     if with_observed:
@@ -2086,7 +2108,7 @@ def test_a_clean_run_set_carries_no_legacy_warning(tmp_path, capsys):
     assert wf_diagnostics.main([str(r) for r in runs] + ["--out", str(out)]) == 0
 
     assert "predate the baseline scoring fix" not in capsys.readouterr().out
-    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))
     assert payload["legacy_baseline_scoring"] == []
 
 
@@ -2160,7 +2182,7 @@ def test_a_baseline_that_never_trades_is_not_reported_as_drift(tmp_path, capsys)
     printed = capsys.readouterr().out
     assert "predate the baseline scoring fix" not in printed
 
-    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))
     assert payload["legacy_baseline_scoring"] == []
     # Still current artifacts: the false banner was the only thing wrong.
     assert payload["metric_schema"] == wf_diagnostics.SCHEMA_CURRENT
@@ -2242,9 +2264,9 @@ def test_a_current_artifact_missing_a_metric_fails_rather_than_dropping_it(tmp_p
     directory = tmp_path / "corrupt"
     write_run(directory)
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     del payload["folds"][1]["outer_validation"]["mtst"]["trading"]["annualised_sharpe"]
-    artifact.write_text(json.dumps(payload))
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
 
     run = wf_diagnostics.load_run(directory)
     schema, problems = wf_diagnostics.classify_schema(run)
@@ -2268,9 +2290,9 @@ def test_a_current_artifact_missing_any_required_risk_field_fails_closed(tmp_pat
     directory = tmp_path / "missing_risk_field"
     write_run(directory)
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     del payload["folds"][0]["outer_validation"]["mtst"]["trading"][field]
-    artifact.write_text(json.dumps(payload))
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
 
     run = wf_diagnostics.load_run(directory)
     schema, problems = wf_diagnostics.classify_schema(run)
@@ -2284,11 +2306,11 @@ def test_a_defined_current_sharpe_with_a_different_basis_is_refused(tmp_path):
     directory = tmp_path / "wrong_basis"
     write_run(directory)
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     payload["folds"][0]["outer_validation"]["mtst"]["trading"][
         "sharpe_basis"
     ] = "a different annualisation basis"
-    artifact.write_text(json.dumps(payload))
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
 
     run = wf_diagnostics.load_run(directory)
     schema, problems = wf_diagnostics.classify_schema(run)
@@ -2303,9 +2325,9 @@ def _legacy_run_with(tmp_path, name: str, mutate) -> wf_diagnostics.RunArtifact:
     directory = tmp_path / name
     write_run(directory, schema="legacy")
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     mutate(payload["folds"][0]["outer_validation"]["mtst"]["trading"])
-    artifact.write_text(json.dumps(payload))
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
     return wf_diagnostics.load_run(directory)
 
 
@@ -2367,10 +2389,10 @@ def test_a_half_renamed_schema_fails_rather_than_being_treated_as_legacy(tmp_pat
     directory = tmp_path / "mixed"
     write_run(directory)
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     trading = payload["folds"][0]["outer_validation"]["mtst"]["trading"]
     trading["sharpe"] = 12.0  # the removed field, alongside the ones that replaced it
-    artifact.write_text(json.dumps(payload))
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
 
     run = wf_diagnostics.load_run(directory)
     schema, problems = wf_diagnostics.classify_schema(run)
@@ -2383,9 +2405,9 @@ def test_a_legacy_artifact_missing_an_unrelated_metric_still_fails(tmp_path):
     directory = tmp_path / "legacy_gap"
     write_run(directory, schema="legacy")
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     del payload["folds"][0]["outer_validation"]["mtst"]["trading"]["exposure"]
-    artifact.write_text(json.dumps(payload))
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
 
     run = wf_diagnostics.load_run(directory)
     schema, problems = wf_diagnostics.classify_schema(run)
@@ -2434,10 +2456,10 @@ def test_an_undefined_sharpe_survives_aggregation_as_undefined(tmp_path):
     directory = tmp_path / "undefined"
     write_run(directory)
     artifact = directory / wf_diagnostics.ARTIFACT_NAME
-    payload = json.loads(artifact.read_text())
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
     for fold in payload["folds"]:
         fold["outer_validation"]["mtst"]["trading"]["annualised_sharpe"] = None
-    artifact.write_text(json.dumps(payload))
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
 
     run = wf_diagnostics.load_run(directory)
     assert wf_diagnostics.classify_schema(run)[0] == wf_diagnostics.SCHEMA_CURRENT

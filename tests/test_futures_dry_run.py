@@ -36,7 +36,7 @@ def test_the_protocol_hash_is_stable_under_reserialisation():
 
 def test_the_documented_protocol_hash_matches_the_code():
     """The doc names the hash. A stale one is worse than none: it reads as checked."""
-    text = PROTOCOL_DOC.read_text()
+    text = PROTOCOL_DOC.read_text(encoding="utf-8")
     assert dry_run.protocol_hash() in text, (
         "docs/futures_dry_run_validation.md does not name the current protocol hash "
         f"{dry_run.protocol_hash()}. Regenerate the header when the protocol changes."
@@ -94,7 +94,7 @@ def test_the_committed_report_verifies_against_this_build():
 
 
 def test_the_committed_report_passed_every_declared_invariant():
-    report = json.loads((EVIDENCE / dry_run.REPORT_NAME).read_text())
+    report = json.loads((EVIDENCE / dry_run.REPORT_NAME).read_text(encoding="utf-8"))
     assert report["outcome"] == "PASS"
     declared = {i["id"] for i in dry_run.PROTOCOL["invariants"]}
     observed = {r["id"] for r in report["invariants"]}
@@ -104,33 +104,33 @@ def test_the_committed_report_passed_every_declared_invariant():
 
 def test_a_report_from_another_protocol_is_rejected(tmp_path):
     """The mechanism that makes 'frozen before evaluation' a fact rather than a claim."""
-    report = json.loads((EVIDENCE / dry_run.REPORT_NAME).read_text())
+    report = json.loads((EVIDENCE / dry_run.REPORT_NAME).read_text(encoding="utf-8"))
     report["protocol_hash"] = "sha256:" + "0" * 64
-    (tmp_path / dry_run.REPORT_NAME).write_text(json.dumps(report))
+    (tmp_path / dry_run.REPORT_NAME).write_text(json.dumps(report), encoding="utf-8")
     problems = dry_run.verify(tmp_path)
     assert any("protocol" in p for p in problems)
 
 
 def test_a_report_with_a_failed_invariant_is_rejected(tmp_path):
-    report = json.loads((EVIDENCE / dry_run.REPORT_NAME).read_text())
+    report = json.loads((EVIDENCE / dry_run.REPORT_NAME).read_text(encoding="utf-8"))
     report["invariants"][0]["held"] = False
-    (tmp_path / dry_run.REPORT_NAME).write_text(json.dumps(report))
+    (tmp_path / dry_run.REPORT_NAME).write_text(json.dumps(report), encoding="utf-8")
     problems = dry_run.verify(tmp_path)
     assert any("did not hold" in p for p in problems)
 
 
 def test_a_report_missing_an_invariant_is_rejected(tmp_path):
     """A protocol that gains an invariant must invalidate the reports predating it."""
-    report = json.loads((EVIDENCE / dry_run.REPORT_NAME).read_text())
+    report = json.loads((EVIDENCE / dry_run.REPORT_NAME).read_text(encoding="utf-8"))
     dropped = report["invariants"].pop(0)["id"]
-    (tmp_path / dry_run.REPORT_NAME).write_text(json.dumps(report))
+    (tmp_path / dry_run.REPORT_NAME).write_text(json.dumps(report), encoding="utf-8")
     problems = dry_run.verify(tmp_path)
     assert any(dropped in p and "never observed" in p for p in problems)
 
 
 def test_the_status_page_leads_with_what_the_evidence_is_not():
     """A reader who stops after the first screen must not think this is alpha evidence."""
-    status = (EVIDENCE / dry_run.STATUS_NAME).read_text()
+    status = (EVIDENCE / dry_run.STATUS_NAME).read_text(encoding="utf-8")
     assert status.startswith("# OPERATIONAL"), (
         "the first line is the artifact index's status word, and "
         "tests/test_reporting_integrity.py asserts it matches the row there"
@@ -142,7 +142,7 @@ def test_the_status_page_leads_with_what_the_evidence_is_not():
 
 
 def test_the_status_page_marks_every_metric_as_descriptive():
-    status = (EVIDENCE / dry_run.STATUS_NAME).read_text()
+    status = (EVIDENCE / dry_run.STATUS_NAME).read_text(encoding="utf-8")
     assert "not acceptance criteria" in status
     assert "may be optimised against" in status
 
@@ -152,7 +152,7 @@ def test_the_protocol_states_what_it_does_not_cover():
     covered = " ".join(dry_run.PROTOCOL["not_covered"]).lower()
     assert "real-time paper" in covered
     assert "wall-clock" in covered
-    assert "real-time paper" in PROTOCOL_DOC.read_text().lower()
+    assert "real-time paper" in PROTOCOL_DOC.read_text(encoding="utf-8").lower()
 
 
 def test_the_protocol_refuses_to_be_read_as_research_evidence():

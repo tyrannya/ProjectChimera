@@ -59,7 +59,7 @@ def load_modes(run_dirs: list[Path]) -> dict[str, dict[str, Any]]:
         artifact = directory / ARTIFACT_NAME
         if not artifact.is_file():
             continue
-        payload = json.loads(artifact.read_text())
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
         if payload.get("checkpoint") != CHECKPOINT:
             raise DecisionError(
                 f"{directory} reports checkpoint {payload.get('checkpoint')!r}; this decides "
@@ -259,8 +259,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_argparser().parse_args(argv)
     payload = build(list(args.runs))
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / DECISION_NAME).write_text(json.dumps(payload, indent=2) + "\n")
-    (args.out / STATUS_NAME).write_text(to_markdown(payload))
+    (args.out / DECISION_NAME).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    (args.out / STATUS_NAME).write_text(to_markdown(payload), encoding="utf-8")
     for row in payload["modes"]:
         logger.info("%-12s %s", row["mode"], row["verdict"])
     logger.info("P7 outcome: %s", payload["outcome"])

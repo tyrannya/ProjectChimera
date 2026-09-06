@@ -111,7 +111,7 @@ def evidence_class_of(directory: Path) -> str | None:
     """
     for path in sorted(directory.glob("*.json")):
         try:
-            payload = json.loads(path.read_text())
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             continue
         if isinstance(payload, dict) and EVIDENCE_CLASS_KEY in payload:
@@ -167,7 +167,7 @@ def digest(path: Path) -> str:
 
 def relative(path: Path) -> str:
     try:
-        return str(path.resolve().relative_to(ROOT))
+        return path.resolve().relative_to(ROOT).as_posix()
     except ValueError:
         raise SystemExit(f"{path} is outside the repository; refusing to freeze it")
 
@@ -184,7 +184,7 @@ def freeze(directories: Iterable[Path], out: Path) -> int:
         raise SystemExit("no evidence files found; refusing to write an empty manifest")
     lines = [f"{digest(path)}  {relative(path)}" for path in files]
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(lines) + "\n")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"froze {len(lines)} files into {out}")
     return 0
 
@@ -192,7 +192,7 @@ def freeze(directories: Iterable[Path], out: Path) -> int:
 def manifest_entries(manifest: Path) -> list[tuple[str, str]]:
     """``(sha256, repo-relative path)`` per covered file, in manifest order."""
     entries: list[tuple[str, str]] = []
-    for line in manifest.read_text().splitlines():
+    for line in manifest.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         expected, name = line.split(maxsplit=1)

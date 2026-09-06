@@ -82,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
                 "validation": report.to_dict(),
             },
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     logger.info("Wrote %d candles to %s", len(candles), out_path)
     return 0

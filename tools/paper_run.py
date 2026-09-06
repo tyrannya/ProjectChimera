@@ -196,7 +196,7 @@ def committed_specialist_status() -> dict[str, SpecialistStatus]:
         path = BENCHMARK / directory / "decision.json"
         if not path.is_file():
             continue
-        for row in json.loads(path.read_text())["clocks"]:
+        for row in json.loads(path.read_text(encoding="utf-8"))["clocks"]:
             status[row["clock"]] = SpecialistStatus(
                 clock=row["clock"],
                 screened=True,
@@ -463,8 +463,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = report(totals, declared, source, executor)
 
     out.mkdir(parents=True, exist_ok=True)
-    (out / REPORT_NAME).write_text(json.dumps(payload, indent=2) + "\n")
-    (out / STATUS_NAME).write_text(status_markdown(payload))
+    (out / REPORT_NAME).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    (out / STATUS_NAME).write_text(status_markdown(payload), encoding="utf-8")
     logger.info(json.dumps(payload["totals"], indent=2))
     logger.info(
         "engineering smoke only — sustained paper validation is NOT claimed. Wrote %s", out

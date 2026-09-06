@@ -18,6 +18,7 @@ paths, no network.
 
 from __future__ import annotations
 
+from pathlib import Path
 import json
 from decimal import Decimal
 
@@ -805,3 +806,91 @@ def test_a_resume_does_not_clear_a_dispute_or_a_stale_feed(tmp_path):
     }
     assert engine.state.stale_feed_since is not None
     assert not entry(engine, pair="BTC/USDT").allowed
+
+
+def test_a_switch_inside_a_directory_that_does_not_exist_yet_is_merely_absent(tmp_path):
+    """The negative control for the fail-closed rule above.
+
+    An operator who names the switch inside a directory the runner has not
+    created yet has a switch that is genuinely ABSENT, not one that cannot be
+    examined. Reading that as engaged would halt every fresh deployment.
+
+    This is the two-sided partner of
+    ``test_a_kill_switch_path_that_cannot_be_examined_fails_closed``: together
+    they pin both answers, so a fix for either cannot quietly swallow the other.
+    """
+    engine = build(tmp_path, kill_switch="not_created_yet/KILL_SWITCH")
+
+    assert engine.check_kill_switch() is False
+    assert not engine.halted
+
+
+def test_a_blockage_further_up_the_path_also_fails_closed(tmp_path):
+    """The non-directory need not be the immediate parent.
+
+    POSIX raises ``NotADirectoryError`` for any broken component; Windows
+    collapses the whole class onto ``FileNotFoundError``, so the ancestor walk
+    has to look past the immediate parent to answer alike on both.
+    """
+    (tmp_path / "blocked").write_text("not a directory", encoding="utf-8")
+
+    engine = build(tmp_path, kill_switch="blocked/deeper/still/KILL_SWITCH")
+
+    assert engine.check_kill_switch() is True
+    assert engine.halted
+    assert "could not be examined" in engine.state.halt_reason
+
+
+def test_the_switch_fails_closed_when_the_platform_reports_a_blocked_path_as_not_found(
+    tmp_path, monkeypatch
+):
+    """The Windows mapping, reproduced on every platform.
+
+    POSIX raises ``NotADirectoryError`` for a path blocked by a regular file, so
+    the fail-closed branch is reached there through the generic ``OSError`` arm
+    and the Windows behaviour is never exercised. Windows instead reports
+    ERROR_PATH_NOT_FOUND, which Python surfaces as ``FileNotFoundError`` -- the
+    same exception it uses for an ordinary absent file. Under that mapping the
+    switch used to answer a confident "absent" and fail OPEN.
+
+    Rather than leave the guarantee provable only on a Windows runner, this test
+    installs the Windows mapping directly: every ``stat`` on the switch path
+    raises ``FileNotFoundError``, exactly as it would there. The engine must
+    still refuse to call the switch absent, because an ancestor is a regular
+    file.
+    """
+    (tmp_path / "blocked").write_text("not a directory", encoding="utf-8")
+    switch = tmp_path / "blocked" / "KILL_SWITCH"
+
+    real_stat = Path.stat
+
+    def windows_like(self, *args, **kwargs):
+        if self == switch:
+            raise FileNotFoundError(3, "The system cannot find the path specified")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", windows_like)
+
+    engine = build(tmp_path, kill_switch="blocked/KILL_SWITCH")
+
+    assert engine.check_kill_switch() is True, "an unexaminable switch must fail closed"
+    assert engine.halted
+    assert "could not be examined" in engine.state.halt_reason
+
+
+def test_the_windows_mapping_does_not_halt_a_switch_that_is_only_absent(tmp_path, monkeypatch):
+    """The negative control for the test above: same mapping, sound filesystem."""
+    switch = tmp_path / "KILL_SWITCH"
+    real_stat = Path.stat
+
+    def windows_like(self, *args, **kwargs):
+        if self == switch:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", windows_like)
+
+    engine = build(tmp_path, kill_switch="KILL_SWITCH")
+
+    assert engine.check_kill_switch() is False
+    assert not engine.halted

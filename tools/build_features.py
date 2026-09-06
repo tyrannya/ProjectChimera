@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     sidecar = Path(str(args.candles) + ".meta.json")
     if not sidecar.exists():
         sidecar = Path(args.candles).with_suffix(".parquet.meta.json")
-    provenance = json.loads(sidecar.read_text()) if sidecar.exists() else {}
+    provenance = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else {}
     exchange = args.exchange or provenance.get("exchange", "")
     pair = args.pair or provenance.get("pair", "")
     timeframe = args.timeframe or provenance.get("timeframe", "")
