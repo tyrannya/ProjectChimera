@@ -52,6 +52,7 @@ __all__ = [
     "MUST_MATCH",
     "OPERATIONAL_KINDS",
     "EXCLUDING_KINDS",
+    "EXCLUDING_RECOVERY_CAUSES",
     "ParityReport",
     "Divergence",
     "compare_logs",
@@ -84,11 +85,22 @@ OPERATIONAL_KINDS: frozenset[str] = frozenset(
     {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME"}
 )
 
-#: Kinds whose presence in the LIVE log excludes their minute from the
-#: comparison, with the reason reported. See :func:`_excluded_minutes`. This is
-#: not a third kind-set with a third meaning: it is section 10's own
-#: "explained and excluded once", made executable.
+#: Kinds whose presence in the LIVE log can exclude their minute from the
+#: comparison, with the reason reported. This is not a third kind-set with a
+#: third meaning: it is section 10's own "explained and excluded once", made
+#: executable. :func:`_excluded_minutes` READS it, so widening or narrowing this
+#: set changes what the tool does rather than only what it says it does.
 EXCLUDING_KINDS: frozenset[str] = frozenset({"SKIPPED_STALE", "RECOVERY"})
+
+#: The RECOVERY causes whose affected minute has no comparable record in the live
+#: log, and only those.
+#:
+#: ``LOG_BEHIND_STATE`` is section 9.3's own -- the record was never written, so
+#: there is nothing to compare -- and ``TORN_TAIL``'s record was never committed.
+#: ``LOG_AHEAD_OF_STATE`` is deliberately absent: there the record WAS committed
+#: and is complete, canonical and correctly linked, so excluding its minute would
+#: drop real evidence and let a replay that decided it differently pass unseen.
+EXCLUDING_RECOVERY_CAUSES: frozenset[str] = frozenset({"LOG_BEHIND_STATE", "TORN_TAIL"})
 
 EXIT_PARITY = 0
 EXIT_DIVERGED = 1
@@ -317,6 +329,8 @@ def _excluded_minutes(live: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     excluded: dict[str, str] = {}
     for record in live:
         kind = str(record.get("kind"))
+        if kind not in EXCLUDING_KINDS:
+            continue
         minute = str(record.get("minute", ""))
         if not minute:
             continue
@@ -327,12 +341,16 @@ def _excluded_minutes(live: Sequence[Mapping[str, Any]]) -> dict[str, str]:
                 f"({stale.get('age_minutes')} minute(s) old, limit "
                 f"{stale.get('max_catchup_minutes')}); a replay is never late"
             )
-        elif kind == "RECOVERY":
+        else:  # RECOVERY
             recovery = record.get("recovery") or {}
+            cause = str(recovery.get("cause", ""))
+            if cause not in EXCLUDING_RECOVERY_CAUSES:
+                # The record for this minute was committed and is complete, so it
+                # is compared like any other. See EXCLUDING_RECOVERY_CAUSES.
+                continue
             affected = str(recovery.get("evidence_excluded_minute") or minute)
             excluded[affected] = (
-                "section 9.3 excludes the minute a crash left inconsistent "
-                f"({recovery.get('cause')})"
+                "section 9.3 excludes the minute a crash left inconsistent " f"({cause})"
             )
     return excluded
 
@@ -427,6 +445,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     replay_state = Path(scratch) / "replay_state"
     replay_state.mkdir(parents=True, exist_ok=True)
 
+    from chimera.demo.runner import RunnerState
     from tools.demo_run import _load, _software  # noqa: F401 - reused, not duplicated
 
     payload = json.loads(Path(args.config).read_text(encoding="utf-8"))
@@ -437,7 +456,25 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     namespace = argparse.Namespace(config=patched, root=scratch, profile=args.profile)
     runner = _load(namespace)
-    runner.start(allow_dirty=True)
+    # `--allow-dirty` only where SELF_CHECK admits it. It refuses the flag on a
+    # CAMPAIGN profile outright ("allow_dirty is for soak runs, whose records are
+    # operational rather than evidence"), so passing it unconditionally made the
+    # replay leg HALT before its first minute on the tool's own default profile
+    # -- and every live record was then reported as `live_only`, a DIVERGED
+    # verdict with nothing in the output saying the replay never started.
+    #
+    # Refusing a dirty tree here is the right answer rather than a limitation: a
+    # replay is a reproduction of evidence, and it has to run from the revision
+    # that produced it.
+    campaign = runner.config.profile.value == "CAMPAIGN"
+    state = runner.start(allow_dirty=not campaign)
+    if state is RunnerState.HALT:
+        print(
+            f"the replay runner halted before its first minute: {runner.halt_reason}. "
+            "A parity verdict from a replay that never ran would be meaningless",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED
     first = runner.cursor.next_minute_ms()
     if first is None:
         print("the scratch copy carries no minutes", file=sys.stderr)

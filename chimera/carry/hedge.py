@@ -68,6 +68,18 @@ PERP = "perp"
 #: once rather than written out at each comparison.
 _MS_TO_NS = 1_000_000
 
+#: One minute in nanoseconds.
+#:
+#: A :class:`CarryMarketState`'s ``minute_ns`` is the minute's OPEN, and a leg
+#: fills at ``spot_close``/``perp_close`` -- the minute's CLOSE. So a position
+#: comes into existence at ``minute_ns + _MINUTE_NS``, and that, not the open, is
+#: the instant section 6.9's window opens at. Recording the open instead made the
+#: window sixty seconds wider than the position's life at exactly one moment, its
+#: own opening: a hedge opened in the minute ending at a settlement was charged
+#: that settlement, which is precisely the case "a settlement exactly at the open
+#: instant is NOT charged" exists to exclude.
+_MINUTE_NS = 60_000_000_000
+
 
 class HedgeError(CarryError):
     """The hedge cannot be planned, applied or reconstructed."""
@@ -107,6 +119,9 @@ class CarryMarketState(Protocol):
 
     @property
     def mark(self) -> Decimal: ...
+
+    @property
+    def mark_high(self) -> Decimal | None: ...
 
 
 @dataclass(frozen=True)
@@ -419,7 +434,8 @@ class HedgedPosition:
         outcome = self._settle(filled=tuple(filled), unfilled=tuple(unfilled))
         self._book(outcome, frictions)
         self.ledger.note_open_instant(
-            flat=outcome.state is HedgeState.FLAT, instant_ns=state.minute_ns
+            flat=outcome.state is HedgeState.FLAT,
+            instant_ns=state.minute_ns + _MINUTE_NS,
         )
         return outcome
 
@@ -542,7 +558,8 @@ class HedgedPosition:
         self.pending_quantity = ZERO
         outcome = self._settle(detail="hedge correction timed out; flattened")
         self.ledger.note_open_instant(
-            flat=outcome.state is HedgeState.FLAT, instant_ns=state.minute_ns
+            flat=outcome.state is HedgeState.FLAT,
+            instant_ns=state.minute_ns + _MINUTE_NS,
         )
         return outcome
 
@@ -557,7 +574,8 @@ class HedgedPosition:
         self.pending_quantity = ZERO
         outcome = self._settle(detail=f"emergency reduce: {cause.value}")
         self.ledger.note_open_instant(
-            flat=outcome.state is HedgeState.FLAT, instant_ns=state.minute_ns
+            flat=outcome.state is HedgeState.FLAT,
+            instant_ns=state.minute_ns + _MINUTE_NS,
         )
         return outcome
 
@@ -641,11 +659,30 @@ class HedgedPosition:
     # -- liquidation -------------------------------------------------------
 
     def liquidation_touched(self, state: CarryMarketState, *, equity: Decimal) -> bool:
-        """Section 6.7's two checks. A touch is a hedge-level event, not a venue."""
+        """Section 6.7's two checks. A touch is a hedge-level event, not a venue.
+
+        The portfolio test is section 6.7's, verbatim:
+        ``equity < Q * mark_high * maintenance_margin_rate``. The mark HIGH is
+        the most adverse mark the minute can be shown to have reached, and using
+        the close instead would put the threshold strictly below the adopted one
+        -- a spike that section 6.7 calls a touch would read as "not touched".
+
+        The fallback when a minute carries no high is the close, and it is P13's
+        own, ported rather than invented: ``chimera.carry.accounting.Quote``'s
+        ``liquidation_touch`` uses "the mark high where the source provides it
+        and falls back to the mark close. There is no third tier." A non-flat
+        position on a minute carrying neither is refused below, with the rest of
+        the unknown-information cases.
+        """
         quantity = min(self.leg(SPOT).quantity, self.leg(PERP).quantity)
         if quantity == ZERO:
             return False
-        maintenance = quantity * state.mark * self.config.maintenance_margin_rate
+        adverse = getattr(state, "mark_high", None) or state.mark
+        if adverse is None:
+            # Section 7.2's liquidation rule: unknown information on a non-flat
+            # position is refused, never read as "far away".
+            return True
+        maintenance = quantity * adverse * self.config.maintenance_margin_rate
         if equity < maintenance:
             return True
         margin = self.perp.margin(self.config.perp_symbol, state.mark)

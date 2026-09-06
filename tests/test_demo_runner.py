@@ -66,42 +66,78 @@ def test_a_root_with_no_days_refuses_to_start(tmp_path):
 def test_a_log_ahead_of_the_runner_state_recovers_rather_than_halting(tmp_path):
     """Section 9.3: the runner appends a RECOVERY record naming it and continues.
 
-    This is the crash where the record was committed and the runner-state file
-    naming it was not. Before PR-10R the runner halted here and called the
-    condition ``log_behind_state``, which says the opposite of what happened --
-    the log is one record AHEAD of the state -- and which section 9.3 does not
-    ask for: it asks for a RECOVERY record and for the campaign to go on.
+    The crash is the one section 9.3's own write order produces: the record was
+    committed and the runner-state file naming it was not, so the log is one
+    record AHEAD of the state. Before PR-10R the runner halted here and called it
+    ``log_behind_state``, which says the opposite of what happened.
+
+    **Driven through `start()`, which is the only entry point there is.** An
+    earlier revision of this test set `last_record_hash` by hand after startup
+    and called `_recover_log()` directly; it passed while the real path was
+    broken, because `_append(STARTUP)` had already overwritten the persisted head
+    with the hash of the record the runner itself had just written.
     """
     harness = build(tmp_path)
-    harness.run(1)
-    harness.runner.last_record_hash = "sha256:" + "b" * 64
-    assert harness.runner.self_check() is None, "a complete, correctly linked log is sound"
+    harness.run(2)
+    config = harness.runner.config
+    records = harness.records()
+    state_path = harness.state_dir / "runner_state.json"
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["last_record_hash"] = records[-2]["record_hash"]
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    recovery = harness.runner._recover_log()
-    assert recovery is not None and recovery.recoverable
-    assert recovery.cause is RecoveryCause.LOG_AHEAD_OF_STATE
-    written = [r for r in harness.records() if r["kind"] == RecordKind.RECOVERY.value]
-    assert len(written) == 1
-    assert written[0]["recovery"]["cause"] == "LOG_AHEAD_OF_STATE"
+    resumed = build(tmp_path, config=config)
+
+    written = [r for r in resumed.records() if r["kind"] == RecordKind.RECOVERY.value]
+    assert len(written) == 1, "the crash window is recorded, not passed over in silence"
+    assert written[0]["recovery"]["cause"] == RecoveryCause.LOG_AHEAD_OF_STATE.value
     assert written[0]["recovery"]["evidence_excluded_minute"]
+    assert resumed.runner.state is RunnerState.READY, "and the campaign continues"
+
+
+def test_a_lost_record_over_a_moved_ledger_is_recovered(tmp_path):
+    """Section 9.3's own window: the state files were written, the record was not.
+
+    A crash between `ledger.save()` and the FUNDING append moves no quantity, so
+    a detector that compared only the legs could not see it -- and the carry
+    ledger and the decision log would then disagree by one settlement for the
+    rest of the campaign, with the daily report summing the log.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    config = harness.runner.config
+    ledger = harness.runner.position.ledger
+    # Exactly what the crash leaves: the ledger booked, nothing recorded.
+    ledger.state.funding_received += D("24.982411236")
+    ledger.state.settled.append(1789804800000000000)
+    ledger.save()
+
+    resumed = build(tmp_path, config=config)
+
+    written = [r for r in resumed.records() if r["kind"] == RecordKind.RECOVERY.value]
+    assert len(written) == 1
+    assert written[0]["recovery"]["cause"] == RecoveryCause.LOG_BEHIND_STATE.value
+    assert "funding" in written[0]["recovery"]["detail"]
 
 
 def test_a_forged_record_is_refused_and_never_repaired(tmp_path):
     """Section 9.3's other half: a COMPLETE record that is wrong is not a crash."""
     harness = build(tmp_path)
     harness.run(2)
+    config = harness.runner.config
     day = sorted((harness.state_dir / "decision_log").glob("*.ndjson"))[-1]
     lines = day.read_text(encoding="utf-8").splitlines()
     tampered = json.loads(lines[-1])
     tampered["ledger_effect"]["equity"] = "999999999.00"
     lines[-1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
-    before = day.read_bytes()
     day.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    problem = harness.runner._check_log_head()
-    assert problem is not None and "log_forged" in problem
-    # And nothing was repaired: the bytes on disk are the tampered ones still.
-    assert day.read_bytes() != before
+    resumed = build(tmp_path, config=config, start=False)
+    state = resumed.runner.start()
+
+    assert state is RunnerState.HALT
+    assert "log_forged" in (resumed.runner.halt_reason or "")
+    # And nothing was repaired: the tampered bytes are still on disk.
     assert (
         json.loads(day.read_text(encoding="utf-8").splitlines()[-1])["ledger_effect"]["equity"]
         == "999999999.00"
@@ -109,21 +145,42 @@ def test_a_forged_record_is_refused_and_never_repaired(tmp_path):
 
 
 def test_a_torn_tail_is_repaired_and_the_repair_is_recorded(tmp_path):
-    """A crash between the write and the fsync: recoverable, and evidenced."""
+    """A crash between the write and the fsync: recoverable, and evidenced.
+
+    Through `start()`. Appending opens the log and `DecisionLog.open` refuses a
+    torn tail, so before PR-10R's ordering fix this raised
+    `DecisionLogTailError` out of `start()` and the campaign died on a traceback
+    -- with `recover_tail`, written for exactly this, never called.
+    """
     harness = build(tmp_path)
     harness.run(2)
-    harness.runner._log.close()
-    harness.runner._log = None
+    config = harness.runner.config
+    harness.runner.shutdown("crash drill")
     day = sorted((harness.state_dir / "decision_log").glob("*.ndjson"))[-1]
     with open(day, "ab") as handle:
         handle.write(b'{"schema":"chimera.decision-record/1","seq":99')
 
-    recovery = harness.runner._recover_log()
-    assert recovery is not None and recovery.recoverable
-    assert recovery.cause is RecoveryCause.TORN_TAIL
+    resumed = build(tmp_path, config=config)
+
+    assert resumed.runner.state is RunnerState.READY
     assert (day.with_name(day.name + ".truncated")).is_file()
-    written = [r for r in harness.records() if r["kind"] == RecordKind.RECOVERY.value]
-    assert len(written) == 1 and written[0]["recovery"]["truncated_bytes"] > 0
+    written = [r for r in resumed.records() if r["kind"] == RecordKind.RECOVERY.value]
+    assert len(written) == 1
+    assert written[0]["recovery"]["cause"] == RecoveryCause.TORN_TAIL.value
+    assert written[0]["recovery"]["truncated_bytes"] > 0
+
+
+def test_a_clean_restart_recovers_nothing(tmp_path):
+    """The two-sided control: no crash, no RECOVERY record."""
+    harness = build(tmp_path)
+    harness.run(2)
+    config = harness.runner.config
+    harness.runner.shutdown("clean stop")
+
+    resumed = build(tmp_path, config=config)
+
+    assert resumed.runner.state is RunnerState.READY
+    assert [r for r in resumed.records() if r["kind"] == RecordKind.RECOVERY.value] == []
 
 
 # ---------------------------------------------------------------------------
@@ -769,7 +826,11 @@ def test_a_settlement_at_the_open_instant_is_not_charged(tmp_path):
     opened_at = harness.first_minute_ms()
     harness.run(30, start=opened_at)
     assert harness.runner.position.state is HedgeState.HEDGED
-    assert harness.runner.position.ledger.state.open_instant_ns == opened_at * 1_000_000
+    # The minute's CLOSE, not its open: a leg fills at `perp_close`, so that is
+    # when the position came into existence and when its funding window opens.
+    assert harness.runner.position.ledger.state.open_instant_ns == (
+        opened_at * 1_000_000 + 60_000_000_000
+    )
     assert harness.runner.position.ledger.state.settled == []
     assert _funding_records(harness) == []
 
@@ -1144,3 +1205,176 @@ def test_a_flat_position_is_never_liquidation_checked(tmp_path):
     harness.run(1)
     assert _touches(harness) == []
     assert harness.runner.state is not RunnerState.HALT
+
+
+def test_a_paid_settlement_extends_the_aegis_streak(tmp_path):
+    """The other funding direction, end to end, and the Aegis sign with it.
+
+    A10: for a SHORT perpetual leg a NEGATIVE rate is one the position pays, and
+    the cost Aegis scores is ``sign(side) * rate`` -- the negation of the cash
+    flow -- so a paid settlement extends `funding_adverse_streak`. Without this
+    test the sign on the Aegis path could be inverted with the whole suite green,
+    and a genuinely adverse streak would reset the counter that is supposed to
+    stop the campaign increasing through it.
+    """
+    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness.feed.write_settlements([DAY, NEXT_DAY], rates={(DAY, 8): "-0.0001"})
+    harness.runner.cursor._settlements = None
+    _run_to_first_settlement(harness)
+
+    records = _funding_records(harness)
+    assert len(records) == 1
+    funding = records[0]["funding"]
+    assert funding["rate"] == "-0.0001"
+    assert funding["cash_flow"] == "-24.982411236"
+    assert funding["direction"] == "paid"
+    ledger = harness.runner.position.ledger.state
+    assert ledger.funding_paid == D("24.982411236")
+    assert ledger.funding_received == D("0")
+    assert ledger.net_funding == D("-24.982411236")
+    # And Aegis scored it as adverse, which is what the funding halt counts.
+    assert harness.risk.state.funding_adverse_streak == 1
+    assert harness.risk.state.funding_halt is False
+
+
+def test_three_paid_settlements_raise_the_aegis_funding_halt(tmp_path):
+    """Section 7.2's funding halt: after N adverse settlements, no increase."""
+    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    harness.feed.write_settlements(
+        [DAY, NEXT_DAY],
+        rates={(DAY, 8): "-0.0001", (DAY, 16): "-0.0001", (NEXT_DAY, 0): "-0.0001"},
+    )
+    harness.runner.cursor._settlements = None
+    first = harness.first_minute_ms()
+    for index in range(1445):
+        harness.tick(first + index * 60_000)
+
+    assert len(_funding_records(harness)) == 3
+    assert harness.risk.state.funding_adverse_streak == 3
+    assert harness.risk.state.funding_halt is True
+
+
+def test_a_settlement_file_whose_rows_disagree_is_refused(tmp_path):
+    """A settlement is published once; two rows that disagree are not resolved."""
+    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    path = harness.feed.normalizer.settlements_path("um")
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    contradiction = dict(rows[1])
+    contradiction["funding_rate"] = "-0.0009"
+    rows.append(contradiction)
+    path.write_text(
+        "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows) + "\n",
+        encoding="utf-8",
+    )
+    harness.runner.cursor._settlements = None
+
+    _run_to_first_settlement(harness)
+    assert harness.runner.state is RunnerState.HALT
+    assert "feed_unreadable" in (harness.runner.halt_reason or "")
+    assert "disagree" in (harness.runner.halt_reason or "")
+
+
+def test_an_unreadable_settlement_row_halts_rather_than_raising(tmp_path):
+    """A feed the runner cannot read is a halt, never a traceback out of tick."""
+    harness = build(tmp_path)
+    path = harness.feed.normalizer.settlements_path("um")
+    path.write_text('{"funding_time_ms": "not-a-number", "symbol": "BTCUSDT"}\n', "utf-8")
+    harness.runner.cursor._settlements = None
+
+    outcome = harness.tick(harness.first_minute_ms())
+
+    assert outcome.kind is RecordKind.HALT
+    assert harness.runner.state is RunnerState.HALT
+    assert "feed_unreadable" in (harness.runner.halt_reason or "")
+    assert harness.records()[-1]["kind"] == RecordKind.HALT.value
+
+
+def test_the_settlements_file_is_reread_when_it_changes(tmp_path):
+    """A settlement the recorder writes mid-run is not invisible for the process.
+
+    The cursor used to read the file once for its whole life, so a settlement
+    appended after that read was never booked by this process -- and a later one
+    would book it at a later minute than the one it belongs to, which a replay of
+    the same files would not agree with.
+    """
+    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    path = harness.feed.normalizer.settlements_path("um")
+    path.write_text("", encoding="utf-8")
+    assert harness.runner.cursor.settlements() == []
+
+    harness.feed.write_settlements([DAY, NEXT_DAY])
+    assert len(harness.runner.cursor.settlements()) == 6, "the change was seen"
+
+
+def test_catch_up_stops_when_no_minute_exists_to_catch_up_to(tmp_path):
+    """The cursor answers "one minute later" for ever; the loop must not.
+
+    With the perpetual days gone and a cursor still on disk, an unguarded drain
+    walks forward without end writing INCOMPLETE_STATE records for minutes no
+    recorder ever wrote -- fabricated evidence, and an unbounded log.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    before = len(harness.records())
+    for parquet in (harness.root / "normalized" / "um" / "1m").glob("*.parquet"):
+        parquet.unlink()
+    harness.runner.cursor._days.clear()
+
+    assert harness.runner.catch_up() == []
+    assert len(harness.records()) == before, "and nothing was written about them"
+
+
+def test_a_liquidation_price_that_cannot_be_computed_is_refused(tmp_path):
+    """Section 7.2: `None` from a non-flat position vetoes, never reads as "far"."""
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(3, start=first)
+    margin = harness.runner.position.perp.margin
+
+    def no_distance(symbol, mark_price):
+        state = margin(symbol, mark_price)
+        return None if state is None else replace(state, liquidation_price=None)
+
+    harness.runner.position.perp.margin = no_distance  # type: ignore[assignment]
+    harness.tick(first + 3 * 60_000)
+
+    assert len(_touches(harness)) == 1
+    assert harness.runner.state is RunnerState.HALT
+    assert harness.runner.position.state is HedgeState.FLAT
+
+
+def test_the_liquidation_check_reads_this_minute_and_the_mark_high(tmp_path):
+    """Section 6.7's own formula: `equity < Q * mark_high * maintenance_margin_rate`.
+
+    Both halves matter. The mark HIGH is the most adverse mark the minute can be
+    shown to have reached, and the close is never above it, so reading the close
+    put the threshold strictly below the adopted one. The equity is marked at the
+    minute being checked, not carried over from the previous one.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(3, start=first)
+    state = harness.runner.cursor.state_for(first + 3 * 60_000)
+    assert state.mark_high is not None and state.mark_high >= state.mark
+    assert "mark_high" in state.canonical()
+
+    quantity = harness.runner.position.leg("perp").quantity
+    rate = harness.runner.position.config.maintenance_margin_rate
+    # Between the two thresholds: below the HIGH's, at or above the CLOSE's.
+    # Reading the close would answer "not touched" on a minute section 6.7 calls
+    # a touch, so this is the case the two conventions disagree on.
+    assert harness.runner.position.liquidation_touched(
+        _MarkState(state, equity_mark=state.mark_high),
+        equity=quantity * state.mark_high * rate - D("1"),
+    )
+
+
+class _MarkState:
+    """A minute with one field overridden, for the two-sided liquidation control."""
+
+    def __init__(self, state, *, equity_mark):
+        self._state = state
+        self.mark_high = equity_mark
+
+    def __getattr__(self, name):
+        return getattr(self._state, name)

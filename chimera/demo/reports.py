@@ -197,6 +197,7 @@ HALT_CAUSES: tuple[tuple[str, str], ...] = (
     ("funding_unbookable:", "funding_unbookable"),
     ("funding_not_booked:", "funding_unbookable"),
     ("funding_source_unreadable:", "funding_unbookable"),
+    ("feed_unreadable:", "feed_unreadable"),
     ("reconciliation_error:", "reconciliation_error"),
     ("store_error:", "store_error"),
     ("max daily loss", "daily_loss"),
@@ -841,12 +842,11 @@ LIQUIDATION_NOTE = (
     "runner evaluates section 6.7's check on every complete minute the position "
     "is HEDGED or PARTIAL, so on this build an empty block means the check ran "
     "and did not fire; input_coverage is where 'none happened' and 'none can be "
-    "written' are told apart. The check reads the recorded mark CLOSE, because "
-    "that is what MarketState carries; section 6.7 writes the portfolio test "
-    "against the mark HIGH, which is the more conservative of the two and which "
-    "no recorded minute reaching the runner exposes. The difference cannot be "
-    "reached from price alone at 1x and is recorded here rather than closed by "
-    "changing the check."
+    "written' are told apart. The portfolio test is section 6.7's own, against "
+    "the recorded mark HIGH -- the most adverse mark the minute can be shown to "
+    "have reached -- falling back to the mark close only on a minute that "
+    "carries no high, which is chimera.carry.accounting.Quote's ported rule and "
+    "not a new one. A non-flat position on a minute carrying neither is refused."
 )
 
 #: The six operator commands this report groups by, plus the collapse target.

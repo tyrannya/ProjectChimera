@@ -133,6 +133,13 @@ RULES_FIELD = "rules"
 #: config's identity.
 PATH_SETTINGS: frozenset[str] = frozenset({"state_dir"})
 
+#: Runner settings that name a COUNT OF MINUTES and must be positive. A
+#: non-positive value on any of them switches a section 8.1 behaviour off
+#: instead of pacing it; see :meth:`DemoConfig.runner_setting`.
+_POSITIVE_SETTINGS: frozenset[str] = frozenset(
+    {"max_catchup_minutes", "reconcile_every_minutes", "ready_grace_seconds"}
+)
+
 #: Section 7.4's proposed demo limits, by name. Every one is required: a limit
 #: that could be omitted would fall back to a default nobody reviewed, and the
 #: reviewer of a campaign config has to be able to read every bound off the file
@@ -257,9 +264,24 @@ class DemoConfig:
             raise DemoConfigError(
                 f"{name!r} is not a runner setting; they are {sorted(RUNNER_DEFAULTS)}"
             )
-        if self.runner is not None and name in self.runner:
-            return self.runner[name]
-        return RUNNER_DEFAULTS[name]
+        value = (
+            self.runner[name]
+            if self.runner is not None and name in self.runner
+            else RUNNER_DEFAULTS[name]
+        )
+        if name in _POSITIVE_SETTINGS and int(value) <= 0:
+            # Refused rather than silently obeyed. Section 8.1 reconciles "every
+            # 60 minutes"; a zero or negative cadence turns that arm off, leaving
+            # a held position -- which section 6.4 forbids re-hedging -- executing
+            # nothing and therefore never reconciled again. A campaign that had
+            # quietly stopped checking its own position against the venue would
+            # look identical to one that kept agreeing.
+            raise DemoConfigError(
+                f"runner setting {name!r} is {value}; it must be a positive number of "
+                "minutes. A non-positive value disables the behaviour rather than "
+                "configuring it"
+            )
+        return value
 
     def rule_params(self, rule_id: str) -> Mapping[str, Any]:
         """The parameters for one rule, or an empty mapping.

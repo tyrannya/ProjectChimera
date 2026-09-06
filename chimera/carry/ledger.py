@@ -456,6 +456,11 @@ class CarryLedger:
     def note_open_instant(self, *, flat: bool, instant_ns: int) -> None:
         """Move section 6.9's funding window with the position it belongs to.
 
+        ``instant_ns`` is the instant the position came into EXISTENCE, which is
+        the minute's CLOSE -- the price a leg fills at. The caller converts; this
+        method stores what it is given and never guesses which end of a minute it
+        was handed.
+
         Set when a flat position becomes non-flat, cleared when it returns to
         flat, and left alone in between -- so a position that is increased,
         corrected or rebalanced keeps the instant it was OPENED at, which is what

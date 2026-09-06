@@ -97,6 +97,35 @@ def common_step_size(table: Mapping[str, Mapping[str, Any]] | None = None) -> De
     )
 
 
+def _venue(
+    source: StaticConstraintSource, model: RecordedQuoteFillModel, store: FuturesStore
+) -> DryRunFuturesVenue:
+    """One leg's simulated venue, with its view restored from the leg's store.
+
+    Section 6.8 records the fact this exists for: **the venue is in-memory.** It
+    holds the simulated account's positions in a dict that a new process starts
+    empty, while the store on disk still holds what the account was left
+    holding. Section 8.1 then reconciles the two every sixty minutes, and
+    `FuturesExecutor.reconcile` asks the venue -- so without this the first
+    reconciliation after any restart compares a held position against an empty
+    simulator, reports MISMATCH, disputes both legs and halts the campaign. A
+    restart is a normal event this design expects (section 2.1), so a build that
+    could not survive one would have no campaign at all.
+
+    What is restored is only what this process's predecessor already persisted,
+    so the reconciliation it makes possible is still a real check: within a
+    process the venue applies fills to its own position as it reports them
+    (`DryRunFuturesVenue.submit`), and a fill the executor dropped still shows up
+    as a disagreement. Nothing is adopted INTO the executor here -- that is
+    `recover()`'s job, and section 6.8 has it read the stores for the same
+    reason.
+    """
+    venue = DryRunFuturesVenue(source=source, fill_model=model)
+    for symbol, position in store.state.positions.items():
+        venue.apply_settlement(symbol, position)
+    return venue
+
+
 def build_hedged_position(
     *,
     risk: RiskEngine,
@@ -127,13 +156,13 @@ def build_hedged_position(
 
     execution = FuturesExecutionConfig(dry_run=True, leverage=Decimal("1"))
     spot = FuturesExecutor(
-        venue=DryRunFuturesVenue(source=source, fill_model=model),
+        venue=_venue(source, model, spot_store),
         risk=risk,
         store=spot_store,
         config=execution,
     )
     perp = FuturesExecutor(
-        venue=DryRunFuturesVenue(source=source, fill_model=model),
+        venue=_venue(source, model, perp_store),
         risk=risk,
         store=perp_store,
         config=execution,

@@ -612,11 +612,20 @@ class DryRunFuturesVenue:
         return events
 
     def apply_settlement(self, symbol: str, position: Position) -> None:
-        """Force the venue's view, for tests that need local and reported to differ.
+        """Force the venue's view.
 
-        Named for what it is. Production code has no reason to call it, and a
-        reconciliation mismatch that the executor could create for itself would
-        not be a mismatch.
+        Named for what it is. The executor never calls it: a reconciliation
+        mismatch the executor could create for itself would not be a mismatch.
+
+        Two callers are legitimate. Tests that need local and reported to
+        differ, and :func:`chimera.carry.factory.build_hedged_position`, which
+        RESTORES this simulator's view from each leg's persisted store when a
+        process starts. That is not the executor adopting an unverified claim
+        and it is not a mismatch being papered over -- it is the simulated
+        account not becoming flat because the process that was simulating it
+        restarted. Without it every reconciliation after a restart compares a
+        held position against an empty simulator and reports a mismatch that
+        never happened.
         """
         self.positions[symbol] = position
 

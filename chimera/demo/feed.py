@@ -175,6 +175,14 @@ class MarketState:
     spot_close: Decimal | None = None
     perp_close: Decimal | None = None
     mark: Decimal | None = None
+    #: The minute's mark HIGH, which section 6.7's liquidation test is written
+    #: against: ``equity < Q * mark_high * maintenance_margin_rate``. The
+    #: recorder has always stored it -- ``columns_for("um")`` carries
+    #: ``mark_open/high/low/close`` -- and dropping it here made the demo's
+    #: liquidation check read the CLOSE, which is never above the high, so the
+    #: threshold sat strictly below the adopted one and the deviation was in the
+    #: unsafe direction.
+    mark_high: Decimal | None = None
     index: Decimal | None = None
 
     spot_ohlcv: Mapping[str, Decimal | None] = field(default_factory=dict)
@@ -211,6 +219,10 @@ class MarketState:
             "spot_close": render(self.spot_close),
             "perp_close": render(self.perp_close),
             "mark": render(self.mark),
+            # In the hashed inputs because it DECIDES something: section 6.7's
+            # liquidation touch is evaluated against it, so a decision minute
+            # that omitted it would hash away one of its own inputs.
+            "mark_high": render(self.mark_high),
             "index": render(self.index),
             "book_spot": render(dict(self.book_spot)),
             "book_perp": render(dict(self.book_perp)),
@@ -367,6 +379,8 @@ class FeedCursor:
         self._normalizer = MinuteNormalizer(self.root, contract)
         self._days: dict[tuple[str, str], _Day | None] = {}
         self._settlements: list[Mapping[str, Any]] | None = None
+        #: ``(size, mtime_ns)`` of the settlements file when it was last read.
+        self._settlements_stamp: tuple[int, int] | None = None
         state = dict(state or {})
         last = state.get("last_minute_processed")
         self._last_minute_ms: int | None = int(last) if last is not None else None
@@ -418,17 +432,59 @@ class FeedCursor:
 
     # --- funding ----------------------------------------------------------
     def settlements(self) -> Sequence[Mapping[str, Any]]:
-        """Every recorded funding settlement, oldest first. Read once."""
-        if self._settlements is None:
-            path = self._normalizer.settlements_path(PERP_MARKET)
-            rows: list[Mapping[str, Any]] = []
-            if path.is_file():
-                for line in path.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line:
-                        rows.append(json.loads(line))
-            rows.sort(key=lambda r: _settlement_ms(r))
-            self._settlements = rows
+        """Every recorded funding settlement, oldest first.
+
+        Re-read whenever the file has changed, and cached in between. It used to
+        be read exactly once for the life of the cursor -- and the cursor lives
+        as long as the runner -- so every settlement the recorder wrote after
+        that first read was invisible to the process. On the funding path that
+        is not a stale number: a settlement missed on the minute it belongs to is
+        booked by a later process at a later minute, so the live log and a replay
+        of the same files disagree about which minute it fell in, which is a
+        parity divergence with no cause visible in either log.
+
+        Staleness is judged on ``(st_size, st_mtime_ns)``, and that is not a
+        decision input: it decides only WHEN the file is re-read. Which
+        settlements are booked stays section 6.9's window plus the persisted
+        dedup, so a replay over the finished file books exactly the same set at
+        exactly the same minutes.
+
+        Two rows for one settlement instant that DISAGREE are refused. The
+        recorder already refuses to write them (a settlement is published once),
+        and every other unusable row on this path is refused rather than
+        resolved by file order; a self-contradicting one would otherwise be
+        booked as whichever copy sorted first.
+        """
+        path = self._normalizer.settlements_path(PERP_MARKET)
+        try:
+            stat = path.stat()
+            stamp: tuple[int, int] | None = (stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            stamp = None
+        if self._settlements is not None and stamp == self._settlements_stamp:
+            return self._settlements
+
+        rows: list[Mapping[str, Any]] = []
+        if path.is_file():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        rows.sort(key=lambda r: _settlement_ms(r))
+        seen: dict[int, Mapping[str, Any]] = {}
+        for row in rows:
+            instant = _settlement_ms(row)
+            first = seen.get(instant)
+            if first is not None and dict(first) != dict(row):
+                raise FeedError(
+                    f"two funding settlement rows for instant {instant} disagree: "
+                    f"{first!r} versus {row!r}. A settlement is published once, so the "
+                    "runner refuses the file rather than booking whichever copy sorted "
+                    "first"
+                )
+            seen.setdefault(instant, row)
+        self._settlements = rows
+        self._settlements_stamp = stamp
         return self._settlements
 
     def last_settlement_at_or_before(self, minute_open_ms: int) -> Mapping[str, Any] | None:
@@ -545,6 +601,7 @@ class FeedCursor:
             spot_close=spot.decimal("kline_close") if spot else None,
             perp_close=perp.decimal("kline_close") if perp else None,
             mark=perp.decimal("mark_close") if perp else None,
+            mark_high=perp.decimal("mark_high") if perp else None,
             index=perp.decimal("index_close") if perp else None,
             spot_ohlcv=ohlcv(spot),
             perp_ohlcv=ohlcv(perp),

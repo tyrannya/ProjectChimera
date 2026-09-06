@@ -615,11 +615,20 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
     tree = runner_tree()
     statements = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Expr)}
     calls = telemetry_calls(tree)
-    # Eight, named: on_state, on_log_write_error, on_record, on_minute,
-    # on_reporting, on_halt, on_position, on_shutdown. The count is written out
-    # so that an emission added without a reader thinking about where it sits in
-    # the tick is a failing test rather than a silent ninth call.
-    assert len(calls) == 8, f"expected eight emission points, found {len(calls)}"
+    # Nine, named: on_state, on_log_write_error, on_record, on_minute,
+    # on_reporting, on_halt, on_position (twice), on_shutdown. The count is
+    # written out so that an emission added without a reader thinking about where
+    # it sits in the tick is a failing test rather than a silent extra call.
+    #
+    # It was eight until PR-10R added the second `on_position`, in the liquidation
+    # flatten. That path reduces the hedge to flat and then HALTS, so unlike every
+    # other position change there is no next minute at which REPORTING would
+    # refresh the gauges: without the emission `chimera_demo_hedge_state` reports
+    # HEDGED for as long as the halted process is scraped, on a position that is
+    # flat. The operator `flatten` command already carried the same emission for
+    # the same reason; the liquidation path is the second place the hedge moves
+    # with no tick to follow it.
+    assert len(calls) == 9, f"expected nine emission points, found {len(calls)}"
     assert {call.func.attr for call in calls} == {
         "on_state",
         "on_log_write_error",
@@ -911,10 +920,14 @@ def test_the_runner_writes_aegis_shared_series(tmp_path):
     assert value_of(metrics.RISK_HALTED) == 0.0
     assert value_of(metrics.DRAWDOWN) == pytest.approx(risk.current_drawdown())
     # A literal, like the halted flag above and for the same reason: the streak is
-    # provably 0 on this build (nothing calls RiskEngine.note_funding_settlement),
-    # so comparing the gauge to the snapshot is 0.0 == 0.0 whatever the emitter
-    # does. The literal is what will start failing the day the runner settles
-    # funding and the two stop agreeing by accident.
+    # 0 on THIS run, so comparing the gauge to the snapshot would be 0.0 == 0.0
+    # whatever the emitter does. It is 0 because this campaign is a few minutes
+    # long and the fixture's settlements are eight hours apart, so none falls
+    # inside the position's funding window -- not because nothing can move it.
+    # PR-10R wired RiskEngine.note_funding_settlement; a run that books an
+    # ADVERSE settlement does move the streak, which
+    # tests/test_demo_runner.py::test_a_paid_settlement_extends_the_aegis_streak
+    # asserts.
     assert risk.snapshot()["funding_adverse_streak"] == 0
     assert value_of(metrics.DEMO_FUNDING_ADVERSE_STREAK) == 0.0
 

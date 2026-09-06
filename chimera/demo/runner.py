@@ -42,6 +42,7 @@ from chimera.carry.hedge import HedgedPosition, HedgeState
 from chimera.demo.clock import RunnerClock
 from chimera.demo.config import DemoConfig
 from chimera.demo.decision_log import (
+    LOG_DIR_NAME,
     DecisionLog,
     RecordKind,
     iso_minute,
@@ -177,11 +178,19 @@ class RecoveryCause(str, Enum):
 
 @dataclass(frozen=True)
 class _Recovery:
-    """What :meth:`DemoRunner._recover_log` found, so `start` can branch on it."""
+    """What :meth:`DemoRunner._triage_log` found, carried to the RECOVERY record.
+
+    Triage runs before the log can be appended to, so what it learns has to
+    survive until there is somewhere to write it down.
+    """
 
     cause: RecoveryCause
     reason: str
     recoverable: bool
+    truncated_bytes: int = 0
+    records_verified: int = 0
+    #: The chain head the log actually ends on, adopted when the state file lagged.
+    adopted_head: str = ""
 
 
 @dataclass
@@ -378,6 +387,19 @@ class DemoRunner:
                 )
             self.clock.observe(first * _MS_TO_NS + MINUTE_NS)
 
+        # Triage the log BEFORE the first append, and the order is the whole
+        # point. Appending opens the log, and `DecisionLog.open` refuses a tail
+        # that does not verify -- so a crash that left a torn tail made every
+        # branch of the recovery path below unreachable through the only entry
+        # point there is: `start()` raised `DecisionLogTailError` and the
+        # campaign died on a traceback. Triage also has to read the PERSISTED
+        # chain head before the STARTUP record replaces it, or section 9.3's
+        # "its record_hash equals last_record_hash" compares the runner's own
+        # STARTUP record against itself and can never disagree.
+        triage = self._triage_log()
+        if triage is not None and not triage.recoverable:
+            return self._halt(triage.reason)
+
         self._append(
             RecordKind.STARTUP,
             self._minute_ns(),
@@ -407,9 +429,8 @@ class DemoRunner:
             return self._halt(problem)
 
         self._enter(RunnerState.RECOVER)
-        recovery = self._recover_log()
-        if recovery is not None and not recovery.recoverable:
-            return self._halt(recovery.reason)
+        if triage is not None:
+            self._write_recovery(triage)
         outcome = self.position.reconstruct()
         if outcome.state is HedgeState.DISPUTED:
             return self._halt(f"dispute: {outcome.detail}")
@@ -439,9 +460,6 @@ class DemoRunner:
                 "allow_dirty was requested for a CAMPAIGN profile. --allow-dirty is for "
                 "soak runs, whose records are operational rather than evidence"
             )
-        problem = self._check_log_head()
-        if problem is not None:
-            return problem
         try:
             self.position.spot.store.state  # noqa: B018 - loadable is the assertion
             self.position.perp.store.state  # noqa: B018
@@ -454,67 +472,46 @@ class DemoRunner:
     # ------------------------------------------------------------------
     # section 9.3: what a crash left behind, and what may be done about it
     # ------------------------------------------------------------------
-    def _check_log_head(self) -> str | None:
-        """SELF_CHECK's log clause. Returns a halt reason, or None if recoverable.
+    def _triage_log(self) -> "_Recovery | None":
+        """What a crash left behind, decided BEFORE anything is appended.
 
-        Section 9.3 asks SELF_CHECK for three things: that the last line parses,
-        that its ``record_hash`` equals the persisted ``last_record_hash``, and
-        that the chain is intact. Two of the ways those can fail are ordinary
-        crashes and one is not, and the difference decides whether the campaign
-        continues.
-
-        * A **torn tail** is a crash between the write and the ``fsync``. The
-          bytes were never finished, so no record claims anything.
-        * A **head disagreement** is a crash in section 9.3's own write window --
-          state files, then the record, then ``last_record_hash`` -- and every
-          record in the file is complete and correctly linked.
-        * Anything else is a COMPLETE record that is wrong: corruption or
-          tampering. There is no crash that produces one, and continuing past it
-          would extend a chain nothing can stand behind.
-
-        The first two return None here and are handled by :meth:`_recover_log`,
-        which writes the RECOVERY record section 9.3 asks for. The third halts.
-        """
-        verification = verify_log(self.state_dir / "decision_log")
-        if verification.is_forged:
-            return (
-                "log_forged: a complete decision record does not verify "
-                f"({verification.summary()}). A crash cannot produce one, so it is not "
-                "repaired, not truncated and not continued past"
-            )
-        return None
-
-    def _recover_log(self) -> "_Recovery | None":
-        """Section 9.3's RECOVER: repair what a crash left, and say so in the log.
-
-        Returns None when there was nothing to recover. Otherwise a
+        Returns None when there is nothing to recover. Otherwise a
         :class:`_Recovery` naming what was found; ``recoverable`` is False only
-        for a forgery, which :meth:`_check_log_head` has already refused.
+        for a forgery.
 
-        Two causes, and the plan names one of them. Section 9.3 says "a missing
-        final record (crash between state write and log write) is reported as
-        ``LOG_BEHIND_STATE``". Read against the write order in the same
-        paragraph, that is the window where the state files are on disk and the
-        record is not -- the log is BEHIND the state.
+        Three things have to happen here rather than later, and each of them was
+        wrong when they happened later:
 
-        The condition this runner used to report under that name was the other
-        one: the log's tail hash not matching the persisted
-        ``last_record_hash``. That happens when the record IS on disk and the
-        runner-state file naming it is not, so the log is one record AHEAD of the
-        state. The name was inverted, and both conditions are real, so PR-10R
-        does not rename anything: it adds ``LOG_AHEAD_OF_STATE`` for the
-        condition that was previously mislabelled, keeps ``LOG_BEHIND_STATE``
-        for the one section 9.3 defines, and reports whichever actually
-        occurred. Section 9.3's consequence -- the affected minute is excluded
-        from the campaign's evidence and counted in the monthly report -- is
-        carried on the record for both.
+        * **The torn tail is repaired first.** Opening the log for writing
+          refuses a tail that does not verify, so a repair attempted after the
+          first append never runs.
+        * **The persisted chain head is read before it moves.**
+          :meth:`_append` assigns ``self.last_record_hash``, so a comparison made
+          after the STARTUP record compares that record against itself.
+        * **The store and ledger are compared against the log before
+          ``reconstruct()``**, because that is the only moment at which the two
+          sides can still disagree about the crash.
+
+        Section 9.3 names one cause and this build names four, because four are
+        distinguishable and only one of them is section 9.3's. ``LOG_BEHIND_STATE``
+        keeps section 9.3's meaning -- the state files are on disk and the record
+        is not. ``LOG_AHEAD_OF_STATE`` is the opposite window, which this runner
+        used to report under section 9.3's name; the inverted label is replaced
+        rather than redefined. ``TORN_TAIL`` is a crash between the write and the
+        ``fsync``, and ``LOG_FORGED`` is a complete record that is wrong, which no
+        crash produces and nothing here repairs.
         """
-        root = self.state_dir / "decision_log"
-        verification = verify_log(root, expected_last_hash=self.last_record_hash or None)
+        root = self.state_dir / LOG_DIR_NAME
+        persisted_head = self.last_record_hash
+        verification = verify_log(root)
         if verification.is_forged:
             return _Recovery(
                 cause=RecoveryCause.LOG_FORGED,
-                reason=f"log_forged: {verification.summary()}",
+                reason=(
+                    "log_forged: a complete decision record does not verify "
+                    f"({verification.summary()}). A crash cannot produce one, so it is "
+                    "not repaired, not truncated and not continued past"
+                ),
                 recoverable=False,
             )
 
@@ -530,98 +527,133 @@ class DemoRunner:
                 f"{repair.path.name if repair.path else 'the log'} and preserved beside "
                 "it; the record they would have formed was never committed"
             )
-            # The reader is rebuilt on the repaired file rather than on the one
-            # that was open when the tear was found.
-            if self._log is not None:
-                self._log.close()
-                self._log = None
+            verification = verify_log(root)
 
-        tail = self.log.last_record_hash
-        if self.last_record_hash and tail != self.last_record_hash:
+        tail = verification.last_record_hash or ""
+        if cause is None and persisted_head and tail != persisted_head:
+            # Only when nothing else was found. A torn tail leaves the head
+            # disagreeing too, and reporting that as LOG_AHEAD_OF_STATE would
+            # lose the truncation -- the more specific cause, and the one whose
+            # bytes were removed.
             cause = RecoveryCause.LOG_AHEAD_OF_STATE
             detail = (
-                f"the log's tail is {tail} and the runner state names "
-                f"{self.last_record_hash}. The record was committed and the state file "
-                "naming it was not, so the log is one record ahead of the state"
+                f"the log's tail is {tail} and the runner state names {persisted_head}. "
+                "The record was committed and the state file naming it was not, so the "
+                "log is one record ahead of the state"
             )
-        elif cause is None and self._state_ahead_of_log():
-            cause = RecoveryCause.LOG_BEHIND_STATE
-            detail = (
-                "the stores hold a position the log's last record does not describe. The "
-                "state files were written and the record was not, so the log is behind "
-                "the state"
-            )
+        elif cause is None:
+            behind = self._state_ahead_of_log()
+            if behind:
+                cause = RecoveryCause.LOG_BEHIND_STATE
+                detail = (
+                    f"{behind} The state files were written and the record was not, so "
+                    "the log is behind the state"
+                )
 
         if cause is None:
             return None
+        return _Recovery(
+            cause=cause,
+            reason=detail,
+            recoverable=True,
+            truncated_bytes=repaired_bytes,
+            records_verified=verification.records,
+            # The chain head is adopted from the log, which is the file that
+            # actually holds the records; the state file is the one that lagged.
+            adopted_head=tail,
+        )
 
+    def _write_recovery(self, triage: "_Recovery") -> None:
+        """Section 9.3's RECOVERY record, written once the log is appendable."""
+        if triage.adopted_head:
+            self.last_record_hash = triage.adopted_head
         affected = self.cursor.last_minute_processed
         minute_ns = int(affected) * _MS_TO_NS if affected is not None else self._minute_ns()
-        # The chain head is adopted from the log, which is the file that actually
-        # holds the records; the state file is the one that was behind.
-        self.last_record_hash = tail
         self._append(
             RecordKind.RECOVERY,
             minute_ns,
             {
                 "recovery": {
-                    "cause": cause.value,
-                    "detail": detail,
+                    "cause": triage.cause.value,
+                    "detail": triage.reason,
                     "affected_minute": iso_minute(minute_ns),
-                    "truncated_bytes": repaired_bytes,
-                    "records_verified": verification.records,
+                    "truncated_bytes": triage.truncated_bytes,
+                    "records_verified": triage.records_verified,
                     # Section 9.3: "the affected minute is excluded from the
                     # campaign's evidence and counted in the monthly report".
                     "evidence_excluded_minute": iso_minute(minute_ns),
                 },
                 "veto_or_rejection": {
                     "stage": "recovery",
-                    "label": cause.value.lower(),
-                    "detail": detail,
+                    "label": triage.cause.value.lower(),
+                    "detail": triage.reason,
                 },
             },
         )
         self.save_state()
-        logger.warning("Runner RECOVERED: %s: %s", cause.value, detail)
-        return _Recovery(cause=cause, reason=detail, recoverable=True)
+        logger.warning("Runner RECOVERED: %s: %s", triage.cause.value, triage.reason)
 
-    def _state_ahead_of_log(self) -> bool:
-        """Whether the stores describe a position the log's last record does not.
+    def _state_ahead_of_log(self) -> str:
+        """What the persisted state holds that the log's last record does not.
 
-        Section 9.3's own crash window, and the only one that leaves no trace in
-        either file's own consistency: both are complete, both verify, and the
-        two disagree about what happened. Compared on the one quantity the
-        record and the store both carry -- the hedge's leg quantities -- because
-        that is what "a position with no record" means.
+        Section 9.3's own crash window, and the only one that leaves both files
+        internally consistent: each verifies, each is complete, and the two
+        disagree about what happened. Returns a description, or an empty string
+        when they agree.
 
-        A campaign with no records yet and a flat position is not this: it is a
-        campaign that has not started.
+        Two things are compared, because a position change is not the only thing
+        a lost record can hide. The **legs** catch a fill that was persisted and
+        never recorded; the **ledger** catches a funding settlement or a set of
+        frictions that was booked and never recorded -- which moves no quantity
+        at all, and which the leg comparison alone therefore cannot see.
+
+        Both sides are read from files that are already loaded: the executors'
+        stores and the carry ledger. ``self.position.state`` is deliberately NOT
+        consulted -- it is an in-memory attribute that reads FLAT on a freshly
+        constructed runner whatever the stores hold, and reading it here (before
+        ``reconstruct()`` has run) made every branch of this answer False.
         """
-        try:
-            verification = verify_log(self.state_dir / "decision_log")
-        except Exception:  # pragma: no cover - verify_log reports rather than raises
-            return False
-        if not verification.records:
-            return self.position.state is not HedgeState.FLAT
-        last = self._last_position_record()
-        if last is None:
-            return self.position.state is not HedgeState.FLAT
-        return {
-            "spot_qty": last.get("spot_qty"),
-            "perp_qty": last.get("perp_qty"),
-        } != {
-            "spot_qty": self._position_block()["spot_qty"],
-            "perp_qty": self._position_block()["perp_qty"],
-        }
+        last_position = self._last_block("position_after")
+        legs = self._position_block()
+        if last_position is None:
+            if legs["spot_qty"] != "0" or legs["perp_qty"] != "0":
+                return (
+                    f"the stores hold {legs['spot_qty']} spot and {legs['perp_qty']} perp "
+                    "and no record in the log describes a position."
+                )
+        else:
+            for field_name in ("spot_qty", "perp_qty"):
+                if str(last_position.get(field_name)) != legs[field_name]:
+                    return (
+                        f"the stores hold {field_name}={legs[field_name]} and the log's "
+                        f"last position record says {last_position.get(field_name)}."
+                    )
 
-    def _last_position_record(self) -> Mapping[str, Any] | None:
-        """The newest ``position_after`` block in the log, or None if there is none."""
+        last_ledger = self._last_block("ledger_effect")
+        if last_ledger is not None:
+            ledger = self.position.ledger.state
+            booked = {
+                "funding": str(ledger.net_funding),
+                "fees": str(ledger.fees),
+                "slippage": str(ledger.slippage),
+                "realised": str(ledger.realised),
+            }
+            for field_name, value in booked.items():
+                if str(last_ledger.get(field_name)) != value:
+                    return (
+                        f"the carry ledger holds {field_name}={value} and the log's last "
+                        f"ledger record says {last_ledger.get(field_name)}."
+                    )
+        return ""
+
+    def _last_block(self, name: str) -> Mapping[str, Any] | None:
+        """The newest ``name`` block in the log, or None if no record carries one."""
         from chimera.demo.decision_log import day_files, read_records
 
-        for path in reversed(day_files(self.state_dir / "decision_log")):
+        for path in reversed(day_files(self.state_dir / LOG_DIR_NAME)):
             found: Mapping[str, Any] | None = None
             for record in read_records(path):
-                block = record.get("position_after")
+                block = record.get(name)
                 if isinstance(block, Mapping):
                     found = block
             if found is not None:
@@ -637,7 +669,18 @@ class DemoRunner:
         self.clock.observe(minute_ns + MINUTE_NS)
 
         self._enter(RunnerState.DATA_READY)
-        state = self.cursor.state_for(minute_ms, now_ns=self.clock.now_ns)
+        try:
+            state = self.cursor.state_for(minute_ms, now_ns=self.clock.now_ns)
+        except Exception as exc:
+            # A feed the runner cannot read is a halt, never a traceback out of
+            # the tick loop. `state_for` reads the funding settlements too (for
+            # the minute's `funding_last` input), so an unreadable settlements
+            # row reaches this line before `_settle_funding` ever runs -- and a
+            # process that died here would leave no HALT record, no reason and no
+            # saved state, which is the one outcome section 8.1 has no row for.
+            reason = f"feed_unreadable: {exc}"
+            self._halt(reason)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
         self.risk.note_feed(minute_ns + MINUTE_NS, self.clock.now_ns)
         # Counted here, before anything is decided about the minute, because the
         # quantity is "minutes attempted": a minute that halts inside a rule is
@@ -1200,6 +1243,14 @@ class DemoRunner:
 
         outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
         self.position.ledger.save()
+        # A liquidation flatten moves the hedge and then HALTS, so unlike every
+        # other position change there is no next minute to refresh the gauges at.
+        # Without this `chimera_demo_hedge_state{state="HEDGED"}` stays 1 for as
+        # long as the process is scraped, on a position that is flat -- an
+        # operator reading the dashboard during the incident sees a live hedged
+        # position that no longer exists. The operator `flatten` command guards
+        # the same hazard for the same reason.
+        self.telemetry.on_position(self.position)
         # `_halt` writes the HALT record, enters the state and publishes the
         # Aegis series. Reached through it rather than repeated here so the
         # runner keeps exactly one place that halts and one telemetry emission
