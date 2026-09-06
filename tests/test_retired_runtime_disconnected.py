@@ -71,6 +71,43 @@ RETIRED = (
     "freqtrade",
 )
 
+#: Section 3.3's marker, verbatim. An ASCII hyphen, not an en dash: the plan
+#: writes it with a hyphen and a reader grepping for it will type one.
+HISTORICAL_MARKER = "HISTORICAL - not on the demo path"
+
+#: Every file section 3.3's DISCONNECTED column names, and how its marker is
+#: carried. Python modules put it on the first line of the module docstring;
+#: Dockerfiles put it in a leading comment; the six exchange configs are JSON,
+#: which has no comment syntax, so it goes in the `$comment` value that was
+#: already there. Written out rather than globbed, because the point of the list
+#: is that it is section 3.3's list.
+MARKED_PY: tuple[str, ...] = (
+    "strategies/__init__.py",
+    "strategies/common/__init__.py",
+    "strategies/arb_mm.py",
+    "strategies/common/risk_manager.py",
+    "strategies/nn_predictor_strategy.py",
+    "strategies/scalp_futures.py",
+    "strategies/swing_spot.py",
+    "tools/run_bot.py",
+    "nn/infer_service.py",
+    "nn/registry.py",
+    "chimera/inference_client.py",
+    "chimera/modes.py",
+    "chimera/consensus.py",
+)
+
+MARKED_TEXT: tuple[str, ...] = ("Dockerfile", "nn/Dockerfile.nn_infer")
+
+MARKED_JSON: tuple[str, ...] = (
+    "conf/binance.live.json",
+    "conf/binance.test.json",
+    "conf/bybit.live.json",
+    "conf/bybit.test.json",
+    "conf/okx.live.json",
+    "conf/okx.test.json",
+)
+
 #: The active entrypoints, as repository-relative paths. ``tools/demo_report.py``
 #: is PR-12's and does not exist on this branch; the parametrized guard skips a
 #: path that is absent so that the check strengthens by itself the day PR-12
@@ -223,7 +260,34 @@ def imported_dotted_names(tree: ast.AST, package: str, known: set[str]) -> set[s
                 child = f"{module}.{alias.name}"
                 if child in known:
                     found.add(child)
+        elif isinstance(node, ast.Call):
+            # `importlib.import_module("chimera.modes")` and
+            # `__import__("freqtrade")` are genuine runtime edges that carry no
+            # ast.Import node at all. A guard that walked only the import
+            # statements let one planted inside `CarryRule.evaluate` -- executed
+            # on every evaluated minute -- pass as disconnected. Only a literal
+            # argument can be resolved here, and a computed one is caught by
+            # test_no_demo_module_imports_by_computed_name below instead.
+            target = _dynamic_import_target(node)
+            if target:
+                found.add(resolve_dotted(target, known))
     return found
+
+
+#: The two ways a module is imported by name rather than by statement.
+DYNAMIC_IMPORT_CALLS: tuple[str, ...] = ("import_module", "__import__")
+
+
+def _dynamic_import_target(node: ast.Call) -> str | None:
+    """The literal module name a dynamic import call names, if it names one."""
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if name not in DYNAMIC_IMPORT_CALLS or not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return None
 
 
 def import_closure(seeds: list[str], modules: dict[str, Path]) -> set[str]:
@@ -392,7 +456,10 @@ def retired_ci_steps(spec: dict) -> list[str]:
     """
     offenders = []
     for job_name, job in automatic_jobs(spec).items():
-        rendered = json.dumps(job.get("steps", []), sort_keys=True)
+        # The WHOLE job, not job["steps"]: a Freqtrade dependency can also
+        # arrive as a job-level `container:`, `services:`, `env:` or
+        # `defaults.run`, none of which is a step.
+        rendered = json.dumps(job, sort_keys=True, default=str)
         named = [token for token in RETIRED_CI_TOKENS if token in rendered]
         offenders.extend(f"{job_name}: {token}" for token in named)
     return sorted(offenders)
@@ -615,7 +682,12 @@ def test_the_legacy_alert_rules_are_unloaded_and_still_on_disk():
     mounted into the container, and stays covered by
     tests/test_observability.py:104.
     """
-    assert (prometheus_spec().get("rule_files") or []) == []
+    # The invariant is that conf/alerts.yml is NOT loaded, not that nothing is:
+    # the observability change adds /etc/prometheus/alerts_demo.yml to this same
+    # list, and asserting emptiness here would make these two changes
+    # unmergeable in either order.
+    loaded = prometheus_spec().get("rule_files") or []
+    assert not any("alerts.yml" in rule_file for rule_file in loaded), loaded
     assert (REPO / "conf" / "alerts.yml").is_file(), "PR-13 deletes nothing"
     mounts = compose_spec()["services"]["prometheus"]["volumes"]
     assert any("conf/alerts.yml" in mount for mount in mounts)
@@ -655,7 +727,13 @@ def test_no_automatically_triggered_ci_job_has_a_freqtrade_or_retired_image_step
     requires to keep running.
     """
     spec = workflow_spec()
-    assert set(automatic_jobs(spec)) == {"lint", "test"}
+    # The invariant is about the RETIRED jobs, not about the exact job list: the
+    # comment this PR leaves in ci.yml tells the observability change to add an
+    # active-image job of its own, and pinning the set would fail on it from a
+    # test about Freqtrade.
+    automatic = set(automatic_jobs(spec))
+    assert {"lint", "test"} <= automatic, automatic
+    assert not automatic & {"config", "docker"}, automatic
     assert retired_ci_steps(spec) == [], (
         "the Freqtrade schema job and the retired image builds are manual "
         f"(if: {MANUAL_ONLY}) after PR-13; found {retired_ci_steps(spec)}"
@@ -760,3 +838,102 @@ def test_the_existing_no_live_path_guards_still_forbid_freqtrade():
     ):
         text = (REPO / relative).read_text(encoding="utf-8")
         assert '"freqtrade"' in text, f"{relative}:{constant} no longer forbids freqtrade"
+
+
+# --------------------------------------------------------------------------- #
+# section 3.3's marker, which is the deliverable
+# --------------------------------------------------------------------------- #
+def test_every_retired_python_module_opens_with_the_historical_marker():
+    """Section 3.3's rule, executed rather than asserted in a PR description.
+
+    "module docstrings gain a first line `HISTORICAL - not on the demo path`" is
+    the disconnect column's own wording and this PR's core deliverable, and it
+    had no test: deleting the line from `chimera/modes.py` passed the whole
+    suite. Read through `ast.get_docstring` rather than off the raw text, so a
+    marker that sits in a comment above the docstring -- where no reader of
+    `help()` or of the rendered API docs would ever see it -- does not count.
+    """
+    missing = []
+    for relative in MARKED_PY:
+        path = REPO / relative
+        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        docstring = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8")))
+        first = (docstring or "").splitlines()[0] if docstring else ""
+        if not first.startswith(HISTORICAL_MARKER):
+            missing.append(f"{relative}: {first!r}")
+    assert not missing, f"the section 3.3 marker is absent from: {missing}"
+
+
+def test_every_retired_dockerfile_and_config_carries_the_marker():
+    """The two surfaces where a module docstring is not available.
+
+    JSON has no comment syntax at all, so the marker goes in the `$comment` the
+    file already had -- amended in place, with no key added and none removed, so
+    that Freqtrade's own schema still validates the file.
+    """
+    for relative in MARKED_TEXT:
+        path = REPO / relative
+        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        head = path.read_text(encoding="utf-8").splitlines()[:12]
+        assert any(HISTORICAL_MARKER in line for line in head), relative
+
+    for relative in MARKED_JSON:
+        path = REPO / relative
+        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["$comment"].startswith(HISTORICAL_MARKER), relative
+
+
+def test_the_marker_list_is_section_3_3s_disconnect_column():
+    """The list cannot quietly shrink to the files that happen to comply."""
+    assert len(MARKED_PY) == 13
+    assert len(MARKED_TEXT) == 2
+    assert len(MARKED_JSON) == 6
+    # Every retired importable module in RETIRED has at least one marked file.
+    for dotted in RETIRED:
+        if dotted == "freqtrade":
+            continue  # third-party; nothing of ours to mark
+        prefix = dotted.replace(".", "/")
+        assert any(
+            relative == f"{prefix}.py" or relative.startswith(f"{prefix}/")
+            for relative in MARKED_PY
+        ), f"{dotted} is in RETIRED but no marked file corresponds to it"
+
+
+def test_the_marker_guard_catches_a_removed_marker(tmp_path):
+    """The negative control: a module whose docstring lost its first line."""
+    planted = tmp_path / "planted.py"
+    planted.write_text('"""Some other first line.\n\nBody.\n"""\n', encoding="utf-8")
+    docstring = ast.get_docstring(ast.parse(planted.read_text(encoding="utf-8")))
+    assert not docstring.splitlines()[0].startswith(HISTORICAL_MARKER)
+
+
+def test_no_demo_module_imports_by_computed_name():
+    """A dynamic import the closure walker cannot resolve is refused outright.
+
+    `import_module(name)` with a variable argument names no module the walker can
+    read, so it would pass every closure guard above while being able to reach
+    anything at runtime. There is none on the demo path today and there is no
+    reason for one; a module that needs it can say so in a review.
+    """
+    modules = first_party_modules()
+    seeds = package_seeds("chimera.demo", modules) + package_seeds("chimera.carry", modules)
+    assert seeds, "chimera/demo is missing; the guard would be vacuous"
+    paths = {
+        dotted: modules[dotted]
+        for dotted in import_closure(seeds, modules)
+        if dotted in modules
+    }
+
+    offenders = []
+    for dotted, path in sorted(paths.items()):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name not in DYNAMIC_IMPORT_CALLS or not node.args:
+                continue
+            if not isinstance(node.args[0], ast.Constant):
+                offenders.append(f"{dotted}:{node.lineno}")
+    assert not offenders, f"a demo-path module imports by computed name: {offenders}"
