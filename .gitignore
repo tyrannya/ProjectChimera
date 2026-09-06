@@ -110,6 +110,23 @@ artifacts/benchmark/*/*
 !artifacts/diagnostics/*/STATUS.md
 !artifacts/walkforward/*/STATUS.md
 !artifacts/benchmark/*/STATUS.md
+
+# Prospective campaign artifacts (adopted plan section 11.4). Allow-listed the way
+# the other checkpoints are: `artifacts/*` above ignores everything, and git cannot
+# re-include a file whose parent directory is excluded, so each level is named.
+# Nothing under here is committed by the change that adds it: the monthly report
+# refuses to run while conf/demo/pvc1.json carries protocol_hash=null, so there is
+# nothing to commit, and committing an artifact anyway would be committing a result
+# that no preregistered protocol governs.
+!artifacts/prospective/
+artifacts/prospective/*
+!artifacts/prospective/*/
+artifacts/prospective/*/*
+!artifacts/prospective/*/*/
+artifacts/prospective/*/*/*
+!artifacts/prospective/*/*/report.json
+!artifacts/prospective/*/*/STATUS.md
+!artifacts/pvc1_*_SHA256SUMS.txt
 mlruns/
 !mlruns/.gitkeep
 ray_results/
