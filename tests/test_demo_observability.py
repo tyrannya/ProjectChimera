@@ -867,8 +867,18 @@ def test_a_paid_settlement_moves_only_the_paid_direction(tmp_path):
     harness.runner.position.ledger.book_funding(1, Decimal("-4.20"))
     _report(harness)
 
-    assert value_of(metrics.DEMO_FUNDING, direction="paid") - paid_before == 4.20
-    assert value_of(metrics.DEMO_FUNDING, direction="received") == received_before
+    # `approx` on the DELTA, not on the value. These counters are floats and are
+    # cumulative across the whole session, so once the runner actually settles
+    # funding the baseline is no longer near zero and the difference of two large
+    # floats is 4.200000000000003 rather than 4.2. The quantity under test is the
+    # delta and the direction it moved; the exactness of float subtraction at an
+    # arbitrary accumulated offset is not.
+    assert value_of(metrics.DEMO_FUNDING, direction="paid") - paid_before == pytest.approx(
+        4.20
+    )
+    assert value_of(metrics.DEMO_FUNDING, direction="received") == pytest.approx(
+        received_before
+    )
 
 
 @requires_prometheus
@@ -882,8 +892,10 @@ def test_a_received_settlement_moves_only_the_received_direction(tmp_path):
     harness.runner.position.ledger.book_funding(2, Decimal("1.75"))
     _report(harness)
 
-    assert value_of(metrics.DEMO_FUNDING, direction="received") - received_before == 1.75
-    assert value_of(metrics.DEMO_FUNDING, direction="paid") == paid_before
+    assert value_of(
+        metrics.DEMO_FUNDING, direction="received"
+    ) - received_before == pytest.approx(1.75)
+    assert value_of(metrics.DEMO_FUNDING, direction="paid") == pytest.approx(paid_before)
 
 
 @requires_prometheus
