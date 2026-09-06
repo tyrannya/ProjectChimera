@@ -83,14 +83,50 @@ fire. What remains true of the panel is narrower and still worth knowing: the
 telemetry pre-creates both `direction` children at 0 so `rate()` and `increase()`
 are defined from the first scrape, so **a flat zero on that panel does not
 distinguish "no settlement has fallen inside this position's window yet" from "the
-position was flat across every settlement so far".** The daily report's `funding`
-block, which carries one record per settlement with its rate, mark, notional and
-signed cash flow, is where those are told apart.
+position was flat across every settlement so far".** Neither does the daily
+report: its `funding` block carries `net`, `paid`, `received`, a count of
+settlement minutes and a count of `FUNDING` records, and both cases produce zeros
+in all of them. Telling them apart means reading the recorder's
+`settlements.ndjson` against the position's own open and flat intervals, and
+nothing in this build does that for you.
+
+The per-settlement detail -- settlement id, rate, mark price, quantity, notional,
+signed cash flow and direction -- is in the **`FUNDING` records of the decision
+log**, one per settlement, not in the daily report.
 
 Section 8.1 of the adopted plan describes a continuous `READY` loop and the
 runner has the state machine for one; the CLI does not run it. That is a runner
 gap, recorded here rather than hidden behind a restart policy that makes a
 bounded pass look like a service.
+
+A fourth, about which profile can reach any of this. `tools/demo_run.py::_software`
+calls `nn.source_identity.source_identity()` with no argument, and that function
+requires a `root`. The `TypeError` is caught by the surrounding
+`except Exception`, which reports `dirty: True` — so **every** run declares a
+dirty tree, however clean the checkout is. `SELF_CHECK` then refuses a `CAMPAIGN`
+profile, and `--allow-dirty` is itself refused for `CAMPAIGN`, so on that profile
+the runner reaches `HALT` and no `DECISION`, `FUNDING`, `RECONCILIATION`,
+`LIQUIDATION_TOUCH`, `SKIPPED_STALE` or `INCOMPLETE_STATE` record is ever
+written. Every record kind this build can produce is reachable on `SOAK` and
+`TEST`; on `CAMPAIGN`, `STARTUP` and `HALT` are the whole set. The fix belongs to
+the change that owns `tools/demo_run.py`, and is a single argument.
+
+A fifth, for anyone reading a `PARTIAL`. `HedgedPosition.correct()` implements
+section 6.3's correction policy — a bounded retry, then a
+`HEDGE_CORRECTION` flatten — and the runner never calls it. A position left with
+one leg filled is retried implicitly by the next minute's `plan()` at a re-sized
+quantity, with no correction timeout and no cap on how long it stays one-legged;
+`liquidation_touched` reads `min(spot, perp)`, which is zero for such a position,
+so it is not liquidation-checked either. Flatten it by hand (section 7) rather
+than waiting for a timeout that does not exist.
+
+A sixth, about one halt reason you will not see. `CarryLedger.check_identity`
+compares `Q x (entry_basis - current_basis)` against `spot_pnl + perp_pnl`, and
+both sides are computed from the same four ledger fields — it is an algebraic
+identity, residual exactly zero for any inputs, and it never reads the legs'
+stores. It cannot detect "a leg that is wrong by a fill", which is what section
+6.5 introduces it for, so `identity_violation` is unreachable and its absence is
+not evidence that the legs agree.
 
 ## 1. Preconditions
 

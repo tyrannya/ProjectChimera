@@ -33,12 +33,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from chimera.carry.hedge import HedgedPosition, HedgeState
+from chimera.carry.hedge import PERP, SPOT, HedgedPosition, HedgeState
 from chimera.demo.clock import RunnerClock
 from chimera.demo.config import DemoConfig
 from chimera.demo.decision_log import (
@@ -191,6 +192,11 @@ class _Recovery:
     records_verified: int = 0
     #: The chain head the log actually ends on, adopted when the state file lagged.
     adopted_head: str = ""
+    #: The minute the log's newest committed record carries, read during triage
+    #: for the same reason the chain head is: `_append(STARTUP)` writes a record
+    #: of its own, so by the time the RECOVERY record is written the "newest
+    #: record" is the runner's own STARTUP and no longer the crash's.
+    committed_minute_ms: int | None = None
 
 
 @dataclass
@@ -256,6 +262,20 @@ class DemoRunner:
 
         persisted = self._load_state()
         self.cursor = FeedCursor(self.root, contract, persisted)
+        # `save_state` has always written `clock_now_ns`, and until now nothing
+        # read it back -- a persisted field with no consumer, the same shape of
+        # defect as the reconcile counter that was incremented and never read.
+        # It matters for the operator commands: `tools/demo_run.py` runs
+        # `resolve` and `resume` without `start()`, so on a fresh process the
+        # clock had observed nothing and `now_ns` raised at the moment the
+        # OPERATOR record was written. Carrying the instant over is what
+        # `RunnerClock` itself proposes -- "construct the clock with the start_ns
+        # carried over from persisted state" -- and it is the campaign's own last
+        # decision instant, never a guess. `observe` only ever moves forward, so
+        # a `start()` that then reads the feed still wins.
+        carried = persisted.get("clock_now_ns")
+        if carried is not None and not self.clock.started:
+            self.clock.observe(int(carried))
         self.last_record_hash: str = persisted.get("last_record_hash", "")
         #: The minute the last reconciliation was performed for, or None when
         #: none has been. A version 1 state file carries no such field, and its
@@ -503,6 +523,7 @@ class DemoRunner:
         """
         root = self.state_dir / LOG_DIR_NAME
         persisted_head = self.last_record_hash
+        committed_minute_ms = self._last_record_minute_ms()
         verification = verify_log(root)
         if verification.is_forged:
             return _Recovery(
@@ -561,13 +582,59 @@ class DemoRunner:
             # The chain head is adopted from the log, which is the file that
             # actually holds the records; the state file is the one that lagged.
             adopted_head=tail,
+            committed_minute_ms=committed_minute_ms,
         )
+
+    def _last_record_minute_ms(self) -> int | None:
+        """The minute the newest committed record carries, or None on an empty log."""
+        from chimera.demo.decision_log import day_files, read_records
+
+        for path in reversed(day_files(self.state_dir / LOG_DIR_NAME)):
+            newest: str | None = None
+            for record in read_records(path):
+                minute = record.get("minute")
+                if isinstance(minute, str) and minute:
+                    newest = minute
+            if newest is not None:
+                return int(datetime.fromisoformat(newest).timestamp() * 1000)
+        return None
+
+    def _affected_minute_ms(self, triage: "_Recovery") -> int | None:
+        """The minute the crash actually left in doubt.
+
+        Not ``last_minute_processed``, which is what this used to be and is the
+        last minute that COMPLETED. ``mark_processed`` runs before ``_append``
+        and ``save_state`` runs after it, so a crash anywhere in that window
+        leaves the persisted cursor naming the previous minute. Excluding that
+        one from the parity comparison dropped a minute whose record is
+        committed, complete and comparable -- the exact harm
+        :data:`EXCLUDING_RECOVERY_CAUSES` refuses ``LOG_AHEAD_OF_STATE`` to avoid
+        -- while the minute the crash really touched was left in and diverged.
+
+        For ``LOG_AHEAD_OF_STATE`` the log itself holds the answer, so it is read
+        rather than derived: the committed record's own minute.
+        """
+        if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE:
+            if triage.committed_minute_ms is not None:
+                return triage.committed_minute_ms
+        return self.cursor.next_minute_ms()
 
     def _write_recovery(self, triage: "_Recovery") -> None:
         """Section 9.3's RECOVERY record, written once the log is appendable."""
         if triage.adopted_head:
             self.last_record_hash = triage.adopted_head
-        affected = self.cursor.last_minute_processed
+        affected = self._affected_minute_ms(triage)
+        if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE and affected is not None:
+            # The record for this minute is committed and complete; only the
+            # state file naming it was lost. Leaving the cursor behind it made
+            # `catch_up` decide the minute a second time, so the log ended up
+            # holding TWO DECISION records for one minute -- one saying the
+            # position opened and one, from a now-flat re-decision, saying it did
+            # not. That is evidence corruption, and parity reported it as an
+            # unexplainable `live_only` record. Adopting the log's minute is the
+            # same choice as adopting the log's chain head, for the same reason:
+            # the log is the file that actually holds the records.
+            self.cursor.mark_processed(affected)
         minute_ns = int(affected) * _MS_TO_NS if affected is not None else self._minute_ns()
         self._append(
             RecordKind.RECOVERY,
@@ -581,7 +648,21 @@ class DemoRunner:
                     "records_verified": triage.records_verified,
                     # Section 9.3: "the affected minute is excluded from the
                     # campaign's evidence and counted in the monthly report".
-                    "evidence_excluded_minute": iso_minute(minute_ns),
+                    #
+                    # Null for LOG_AHEAD_OF_STATE, and that is the whole point of
+                    # separating the causes. There the record WAS committed and
+                    # is complete, canonical and correctly linked, so there is
+                    # nothing to exclude and excluding it would drop real
+                    # evidence -- which is exactly why
+                    # `tools/replay_parity.py::EXCLUDING_RECOVERY_CAUSES` leaves
+                    # that cause out. Writing a minute here that the parity tool
+                    # then declines to read would be two files disagreeing about
+                    # what this campaign excluded.
+                    "evidence_excluded_minute": (
+                        None
+                        if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE
+                        else iso_minute(minute_ns)
+                    ),
                 },
                 "veto_or_rejection": {
                     "stage": "recovery",
@@ -1506,14 +1587,31 @@ class DemoRunner:
         if not note:
             raise RunnerError("resolve requires an operator note stating what was checked")
         legs = {
-            self.position.config.spot_symbol: self.position.spot,
-            self.position.config.perp_symbol: self.position.perp,
+            self.position.config.spot_symbol: (SPOT, self.position.spot),
+            self.position.config.perp_symbol: (PERP, self.position.perp),
         }
-        executor = legs.get(symbol)
-        if executor is None:
+        if symbol not in legs:
             raise RunnerError(
                 f"{symbol!r} is not one of this position's legs ({sorted(legs)})"
             )
+        leg_name, executor = legs[symbol]
+        # Nothing above this line has changed anything; nothing below may change
+        # anything until the record it will be written into is reachable. The
+        # clock is the one part of that which can fail: `tools/demo_run.py`
+        # constructs the runner without one and does not `start()` for this
+        # command, so `now_ns` raised -- AFTER the store had been saved and
+        # Aegis's dispute cleared, and out through an `except RunnerError` that
+        # does not catch it. The safety-critical dispute was cleared with no
+        # OPERATOR record, which is the one outcome section 8.3 forbids. Reading
+        # the clock first turns that into a refusal that changes nothing.
+        try:
+            now_ns = self.clock.now_ns
+        except Exception as exc:  # RunnerClockError, and anything else it grows
+            raise RunnerError(
+                f"resolve cannot be recorded: the runner clock has no observation ({exc}). "
+                "Clearing a dispute that no record explains is worse than not clearing it, "
+                "so nothing has been changed."
+            ) from exc
         adopted = executor.position(symbol)
         executor.resolve_reconciliation(symbol, adopted, note)
         # Aegis keeps its own copy of the dispute (section 7.2's reconciliation
@@ -1521,8 +1619,19 @@ class DemoRunner:
         # on the symbol. Clearing the store without clearing this would leave the
         # campaign permanently unable to increase over a dispute nothing records.
         self.risk.note_reconciliation(symbol, None)
-        if self.position.ledger.disputed is not None:
-            self.position.ledger.resolve(note, now_ns=self.clock.now_ns)
+        # Only the RECONCILIATION dispute, and only when the ledger is the real
+        # one. This used to clear whatever the carry ledger happened to be
+        # disputing, which is not the same question: `ledger_unreadable` says the
+        # file could not be parsed, `ledger_capital_mismatch` that it disagrees
+        # with the configuration, `funding_booking_torn` that a settlement is
+        # booked on one side only. Clearing those here cleared a flag and fixed
+        # nothing -- and on an unreadable ledger it also SAVED, overwriting the
+        # only record of the campaign's cash with a placeholder that says it
+        # never traded. `CarryLedger.save` now refuses that outright; this stops
+        # asking.
+        dispute = self.position.ledger.disputed
+        if dispute is not None and dispute.startswith(f"{leg_name}_reconciliation_mismatch"):
+            self.position.ledger.resolve(note, now_ns=now_ns)
             self.position.ledger.save()
         record_hash = self._append(
             RecordKind.OPERATOR,

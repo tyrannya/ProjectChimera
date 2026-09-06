@@ -168,7 +168,7 @@
           "refId": "A"
         }
       ],
-      "description": "The runner books each recorded funding settlement, so these series move. A flat zero still is not evidence that the position paid no funding: the telemetry pre-creates both direction children at 0 so rate() and increase() are defined from the first scrape, and a position that was flat across a settlement looks the same here as one no settlement has reached yet. The daily report's funding block carries one record per settlement and tells those apart."
+      "description": "The runner books each recorded funding settlement, so these series move. A flat zero still is not evidence that the position paid no funding: the telemetry pre-creates both direction children at 0 so rate() and increase() are defined from the first scrape, and a position that was flat across a settlement looks the same here as one no settlement has reached yet. The daily report does not tell those apart either: its funding block carries totals and counts, zero in both cases. Per-settlement detail is in the decision log's FUNDING records."
     },
     {
       "id": 6,

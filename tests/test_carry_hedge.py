@@ -48,7 +48,39 @@ def minute(index: int = 0, *, spot: str = "30000", perp: str = "30030", complete
     )
 
 
-def book(model: RecordedQuoteFillModel, at: Minute, *, bid="30000", ask="30001", size="50"):
+class BothLegModels:
+    """Every leg's fill model, driven together.
+
+    The tests in this file are fill-mechanics tests: they install ONE book and
+    read the spread, the slippage and the resulting entry basis straight off it,
+    so giving both legs that same book is the point rather than an oversight.
+    ``-13.00`` below is the cost of crossing one spread twice, not a basis.
+
+    Production does NOT share a model. ``build_hedged_position`` builds one per
+    leg and ``HedgedPosition.install_quote`` gives each its own side of the
+    market; the witness that the spot leg fills inside the SPOT book lives in
+    ``tests/test_demo_runner.py``, where there are two books to tell apart.
+    """
+
+    def __init__(self, models):
+        self._models = tuple(models)
+        assert self._models, "a position with no fill models cannot be quoted"
+
+    def set_quote(self, quote, now_ns):
+        for model in self._models:
+            model.set_quote(quote, now_ns)
+
+    @property
+    def now_ns(self):
+        return self._models[0].now_ns
+
+    @now_ns.setter
+    def now_ns(self, value):
+        for model in self._models:
+            model.now_ns = value
+
+
+def book(model: BothLegModels, at: Minute, *, bid="30000", ask="30001", size="50"):
     model.set_quote(
         TopOfBook(
             instant_ns=at.minute_ns,
@@ -71,7 +103,7 @@ def position(tmp_path):
     )
     hedged.spot.recover({})
     hedged.perp.recover({})
-    hedged.model = model  # type: ignore[attr-defined]
+    hedged.model = BothLegModels(hedged.fill_models.values())  # type: ignore[attr-defined]
     return hedged
 
 
@@ -376,6 +408,7 @@ def test_hedged_always_means_zero_imbalance_under_random_fill_and_fault_sequence
     )
     hedged.spot.recover({})
     hedged.perp.recover({})
+    model = BothLegModels(hedged.fill_models.values())
 
     seen = set()
     for index in range(40):
@@ -481,3 +514,42 @@ def test_the_hand_traced_long_spot_short_perp_example(position):
     )
     assert marked.equity - ledger.capital == from_components
     assert from_components == D("-30.00150000") - ledger.slippage
+
+
+def test_a_correction_flatten_returns_the_cash_of_a_booked_entry(position):
+    """The correction path books a reduction too, not only the emergency one.
+
+    `flatten_for_correction` is reachable from a HEDGED position: a rebalance
+    that leaves one leg behind goes PARTIAL, and an exhausted correction
+    flattens. Before `book_reduction` existed neither flatten path told the carry
+    ledger anything, so `free_cash` kept the whole entry debit and every later
+    equity reading was wrong by roughly the position's notional.
+
+    The oracle is the ENTRY record plus the legs' own realised PnL -- neither of
+    them written by the code under test.
+    """
+    open_hedge(position, "0.500")
+    ledger = position.ledger.state
+    assert ledger.quantity == D("0.500") and ledger.spot_entry is not None
+    principal = ledger.quantity * ledger.spot_entry
+    margin = ledger.perp_margin
+    cash_before = ledger.free_cash
+    frictions_before = ledger.fees + ledger.slippage
+    realised_before = ledger.realised
+
+    later = minute(1)
+    book(position.model, later)
+    position.flatten_for_correction(later)
+
+    assert position.state is HedgeState.FLAT
+    assert ledger.quantity == D("0") and ledger.perp_margin == D("0")
+    assert ledger.spot_entry is None and ledger.entry_basis is None
+
+    returned = ledger.free_cash - cash_before
+    exit_frictions = (ledger.fees + ledger.slippage) - frictions_before
+    assert returned == principal + margin + (ledger.realised - realised_before) - exit_frictions
+
+    # The realised half, cross-checked against the executors rather than against
+    # the ledger that is under test.
+    legs_realised = position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl
+    assert ledger.realised == legs_realised

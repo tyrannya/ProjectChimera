@@ -88,7 +88,11 @@ class Harness:
     """A runner and everything it was built from, so a test can reach in."""
 
     runner: DemoRunner
-    model: RecordedQuoteFillModel
+    #: One fill model per leg, keyed by leg name -- the mapping the position
+    #: itself holds. Never one shared model: the spot leg prices from the spot
+    #: book and the perpetual from its own, so a test that tightens a fill
+    #: setting has to say which leg it means.
+    models: Mapping[str, RecordedQuoteFillModel]
     root: Path
     state_dir: Path
     feed: SyntheticFeed
@@ -154,10 +158,7 @@ def build(
         kill_switch_path=state_dir / "KILL_SWITCH",
     )
     risk.update_equity(float(CAPITAL))
-    model = RecordedQuoteFillModel()
-    position = build_hedged_position(
-        risk=risk, capital=CAPITAL, state_dir=state_dir, fill_model=model
-    )
+    position = build_hedged_position(risk=risk, capital=CAPITAL, state_dir=state_dir)
     position.spot.recover({})
     position.perp.recover({})
 
@@ -185,7 +186,7 @@ def build(
         software={"revision": "synthetic", "dirty": False, "python": "3.11"},
         telemetry=telemetry,
     )
-    harness = Harness(runner, model, root, state_dir, feed, risk)
+    harness = Harness(runner, dict(position.fill_models or {}), root, state_dir, feed, risk)
     if start:
         runner.start()
     return harness

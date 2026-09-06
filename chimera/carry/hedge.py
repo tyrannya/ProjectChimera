@@ -47,7 +47,7 @@ import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from chimera.carry.accounting import ZERO, CarryError, FundingSettlement
 from chimera.carry.ledger import CarryLedger
@@ -310,11 +310,22 @@ class HedgedPosition:
     risk: RiskEngine
     ledger: CarryLedger
     config: HedgeConfig = field(default_factory=HedgeConfig)
-    #: The fill model both legs price against, when there is one. Held here
+    #: One fill model per leg, keyed by :data:`SPOT` / :data:`PERP`. Held here
     #: because :meth:`install_quote` is the runner's obligation and the runner
     #: reaches execution through this object; ``None`` leaves a caller that
-    #: installs its own quotes (the tests) exactly as it was.
-    fill_model: Any = None
+    #: installs its own quotes exactly as it was.
+    #:
+    #: Per leg and never shared. ``RecordedQuoteFillModel`` carries one book and
+    #: one clock, and :mod:`chimera.futures.fills` states the pairing rule in
+    #: terms -- "a snapshot carries no symbol, so pairing the two is the caller's
+    #: job: one venue and one fill model per leg". A single shared model priced
+    #: the spot leg off whichever book :meth:`install_quote` happened to pick,
+    #: which is the perpetual's: the spot leg then filled at a price no spot book
+    #: ever showed, and the ledger recorded an entry basis that was wrong by the
+    #: whole real basis -- in the synthetic day, ``-13.06`` against a true
+    #: ``+30.00``. The basis is the quantity a carry position exists to capture,
+    #: so getting it from the wrong book is not a rounding difference.
+    fill_models: Mapping[str, Any] | None = None
     state: HedgeState = HedgeState.FLAT
     #: How many minutes the current PARTIAL has been under correction.
     correction_minutes: int = 0
@@ -359,7 +370,7 @@ class HedgedPosition:
     # -- the book both legs price against ---------------------------------
 
     def install_quote(self, state: CarryMarketState) -> None:
-        """Install this minute's book on the fill model, and move its clock.
+        """Install each leg's own book on that leg's fill model, and move its clock.
 
         :class:`~chimera.futures.fills.RecordedQuoteFillModel` states the
         obligation and names the runner as the one who owes it: "the runner
@@ -380,28 +391,34 @@ class HedgedPosition:
         snapshot belongs to; stamping the open would hand the model a book from
         the future and refuse every order in the run.
         """
-        model = self.fill_model
-        if model is None:
+        models = self.fill_models
+        if not models:
             return
         now_ns = int(state.minute_ns) + _MINUTE_NS
-        book = getattr(state, "book_perp", None) or getattr(state, "book_spot", None)
-        bid = (book or {}).get("bid")
-        ask = (book or {}).get("ask")
-        if bid is None or ask is None:
-            # No book this minute. The clock still moves, so the previously
-            # installed one ages and is refused rather than filling for ever.
-            model.now_ns = now_ns
-            return
-        model.set_quote(
-            TopOfBook(
-                instant_ns=now_ns,
-                bid=bid,
-                bid_qty=(book or {}).get("bid_qty") or ZERO,
-                ask=ask,
-                ask_qty=(book or {}).get("ask_qty") or ZERO,
-            ),
-            now_ns,
-        )
+        for leg, attribute in ((SPOT, "book_spot"), (PERP, "book_perp")):
+            model = models.get(leg)
+            if model is None:
+                continue
+            book = getattr(state, attribute, None) or {}
+            bid, ask = book.get("bid"), book.get("ask")
+            if bid is None or ask is None:
+                # No book for this leg this minute. Its clock still moves, so the
+                # previously installed one ages and is refused rather than
+                # filling for ever. Per leg: the spot book can be absent on a
+                # minute the perpetual's arrived, and ageing both because one is
+                # missing would refuse a leg that had a good book.
+                model.now_ns = now_ns
+                continue
+            model.set_quote(
+                TopOfBook(
+                    instant_ns=now_ns,
+                    bid=bid,
+                    bid_qty=book.get("bid_qty") or ZERO,
+                    ask=ask,
+                    ask_qty=book.get("ask_qty") or ZERO,
+                ),
+                now_ns,
+            )
 
     # -- planning ----------------------------------------------------------
 
@@ -600,8 +617,44 @@ class HedgedPosition:
         _ = larger
         return self.apply(self.plan(HedgeTarget(wanted), state), state, equity=equity)
 
+    def _realised_by_leg(self) -> dict[str, Decimal]:
+        """Each leg's cumulative realised PnL, as its own executor reports it."""
+        return {
+            SPOT: self.spot.ledger.realised_pnl,
+            PERP: self.perp.ledger.realised_pnl,
+        }
+
+    def _book_close(self, before: Mapping[str, Decimal]) -> Decimal:
+        """Return the closed quantity's cash to the carry ledger.
+
+        Called after a flatten, with the legs' realised PnL as it stood BEFORE
+        it. The difference is what those legs realised closing, and
+        :meth:`CarryLedger.book_reduction` turns it and the recorded entry into
+        the cash the position gives back. Without this the entry debit stayed on
+        the books for ever and every equity reading after a close was wrong by
+        roughly the position's notional.
+
+        Silent when there is nothing booked to unwind -- a PARTIAL that never
+        reached HEDGED has no entry in this ledger, because `book_entry` runs
+        only on the first HEDGED cycle.
+        """
+        state = self.ledger.state
+        if state.quantity <= ZERO or state.spot_entry is None:
+            return ZERO
+        held = min(self.leg(SPOT).quantity, self.leg(PERP).quantity)
+        closed = state.quantity - held
+        if closed <= ZERO:
+            return ZERO
+        after = self._realised_by_leg()
+        return self.ledger.book_reduction(
+            quantity_closed=closed,
+            spot_realised=after[SPOT] - before[SPOT],
+            perp_realised=after[PERP] - before[PERP],
+        )
+
     def flatten_for_correction(self, state: CarryMarketState) -> HedgeOutcome:
         """Reduce whichever leg is filled back to flat, and say why it closed."""
+        realised_before = self._realised_by_leg()
         for name in (PERP, SPOT):
             executor, symbol = self._executor(name)
             reference = state.spot_close if name == SPOT else state.perp_close
@@ -609,6 +662,7 @@ class HedgedPosition:
             self.ledger.note_leg_mark(name, state.minute_ns)
         self.correction_minutes = 0
         self.pending_quantity = ZERO
+        self._book_close(realised_before)
         outcome = self._settle(detail="hedge correction timed out; flattened")
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,
@@ -619,12 +673,14 @@ class HedgedPosition:
     def emergency_reduce(self, cause: FlattenCause, state: CarryMarketState) -> HedgeOutcome:
         """Flatten the perpetual first, then the spot (section 6.8)."""
         self.state = HedgeState.CLOSING
+        realised_before = self._realised_by_leg()
         for name in (PERP, SPOT):
             executor, symbol = self._executor(name)
             reference = state.spot_close if name == SPOT else state.perp_close
             executor.emergency_flatten(symbol, cause, reference)
             self.ledger.note_leg_mark(name, state.minute_ns)
         self.pending_quantity = ZERO
+        self._book_close(realised_before)
         outcome = self._settle(detail=f"emergency reduce: {cause.value}")
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,

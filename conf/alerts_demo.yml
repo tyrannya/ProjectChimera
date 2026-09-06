@@ -31,8 +31,11 @@
 # chimera_demo_funding_total at 0 so rate() and increase() are defined from the
 # first scrape, so the panel still cannot distinguish "no settlement has fallen
 # inside this position's window yet" from "the position was flat across it". The
-# daily report's funding block, which carries one record per settlement, is where
-# that distinction is available.
+# daily report does not distinguish them either -- its funding block carries
+# totals and two counts, all zero in both cases. The per-settlement detail is in
+# the decision log's FUNDING records; separating the two cases needs the
+# recorder's settlements file read against the position's open intervals, which
+# nothing in this build does.
 groups:
   - name: chimera-demo-recorder
     rules:

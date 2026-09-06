@@ -68,6 +68,32 @@ are aligned by `(minute, kind, ordinal)` and their contents are not compared,
 because "the replay may have fewer restarts". Dropping a `STARTUP` is not a
 parity failure; dropping a `DECISION` is.
 
+> **Known limitation, not fixed here: a live run with more restarts than its
+> replay diverges on `seq` regardless of any exclusion.** Section 10's table
+> requires `seq` to match byte-for-byte *and* permits the replay to have fewer
+> restarts, and those two cannot both hold: `seq` is one counter over **every**
+> record, operational kinds included (`DecisionLog.append` assigns it before it
+> knows the kind), so each extra live `STARTUP`/`SHUTDOWN`/`RECOVERY` shifts the
+> `seq` of every record after it. A clean restart in the middle of a run
+> therefore produces one `seq` divergence per subsequent record, and because
+> every `RECOVERY` is by construction preceded by a restart, the explained
+> exclusions below cannot turn such a run into `PARITY` — they remove the
+> crashed minute, not the offset.
+>
+> This is inherited, not introduced: `seq` was already in `MUST_MATCH` at
+> `e02b871`, taken verbatim from section 10. It is recorded rather than repaired
+> because both available repairs are worse than the disclosure. Dropping `seq`
+> from the comparison weakens a frozen must-match field, and renumbering the
+> live log to hide its restarts would edit committed evidence. Reconciling the
+> two halves of section 10's own table is a decision for the plan, not for this
+> tool; until it is made, treat a restarted run's `seq` divergences as expected
+> and read the other fields.
+>
+> The same applies to a run whose live catch-up skipped minutes: the replay
+> decides them, so it opens its position earlier and every later `signal`,
+> `position_after` and `ledger_effect` differs. A minute-level exclusion cannot
+> undo a state divergence that propagates.
+
 **Everything else is compared, including the kinds PR-10R made reachable.**
 `FUNDING`, `RECONCILIATION`, `LIQUIDATION_TOUCH`, `SKIPPED_STALE` and
 `INCOMPLETE_STATE` all go through the full must-match comparison. None of them is
@@ -82,6 +108,18 @@ overwrote the earlier one on both sides, so the earlier one was compared to
 nothing and a replay that emitted fewer of them produced no `replay_only` entry
 at all. Where a minute produces one record of a kind, which is every case before
 PR-10R, the ordinal is `0` and the key is the old one.
+
+**The Aegis day, and the wall clock.** `risk` is a must-match block, and
+`RiskEngine` rolls its trading day on `datetime.fromtimestamp(self._clock())` --
+the real wall clock -- while `tools/demo_run.py` and the test harness both
+construct it without a clock. `day_start_equity` and `daily_pnl` are therefore
+functions of *when the process ran*, not of the minutes it read. A live campaign
+crossing a UTC midnight rolls them; a replay of the same minutes on a later date
+does not, so every record after the first day differs in the `risk` block and the
+daily-loss rule is evaluated over a different window. `runner_now_ns` excludes
+`day` from the hash but not those two fields. Pre-existing and disclosed here
+rather than repaired, because giving Aegis the runner's clock changes a frozen
+risk path that is not this change's to move.
 
 **The environment.** If the two runs declare a different `software.python` or
 `software.libs`, the whole run is labelled **`ENVIRONMENT_PARITY`** and reported

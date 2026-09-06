@@ -331,9 +331,33 @@ class CarryLedger:
         return cls(path=location, state=state, outcome=LoadOutcome.LOADED)
 
     def save(self, *, now_ns: int | None = None) -> None:
-        """Write atomically: temp -> flush -> fsync -> replace."""
+        """Write atomically: temp -> flush -> fsync -> replace.
+
+        **A ledger that loaded UNREADABLE never writes itself back.** :meth:`open`
+        promises it in terms -- "the file is left untouched: it is the only record
+        of what this position did, and a ledger that resets itself is
+        indistinguishable from one that never traded" -- and until this guard
+        that promise held only for as long as nobody called ``save()``. The
+        placeholder :meth:`open` returns carries ``free_cash == capital`` and no
+        position, so persisting it destroys the cash record and replaces it with
+        a ledger that says the campaign never traded. The operator ``resolve``
+        command did exactly that: it cleared the ``ledger_unreadable`` dispute and
+        saved, so the one command that exists to be the safe path was the one that
+        erased the evidence.
+
+        Refusing is louder than skipping: a caller that silently did not persist
+        would believe it had.
+        """
         if self.path is None:
             return
+        if self.outcome is LoadOutcome.UNREADABLE:
+            raise LedgerError(
+                f"refusing to overwrite the carry ledger at {self.path}: it could not be "
+                f"read ({self.state.disputed}), so this object holds a placeholder and "
+                "not what the position did. Writing it would replace the only record of "
+                "the campaign's cash with one that says it never traded. Repair or move "
+                "the file by hand, with the damaged bytes preserved."
+            )
         self.state.updated_at = _now_text(now_ns)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
@@ -409,6 +433,96 @@ class CarryLedger:
         self.state.free_cash -= quantity * spot_fill
         self.state.free_cash -= perp_margin
         self.state.free_cash -= spot_fee + perp_fee + spot_slippage + perp_slippage
+
+    def book_reduction(
+        self,
+        *,
+        quantity_closed: Decimal,
+        spot_realised: Decimal = ZERO,
+        perp_realised: Decimal = ZERO,
+        spot_fee: Decimal = ZERO,
+        perp_fee: Decimal = ZERO,
+        spot_slippage: Decimal = ZERO,
+        perp_slippage: Decimal = ZERO,
+    ) -> Decimal:
+        """Return a closed position's cash. The inverse of :meth:`book_entry`.
+
+        Nothing booked a reduction before this existed. :meth:`book_entry` debited
+        ``quantity x spot_entry`` for the inventory and ``perp_margin`` for the
+        margin, and no method ever credited either back: ``emergency_reduce`` and
+        ``flatten_for_correction`` moved both legs to flat and touched the carry
+        ledger only to stamp the leg marks. So after any close ``free_cash`` still
+        carried the whole entry debit while the legs it had paid for were gone,
+        and :meth:`HedgedPosition.mark_to_market` -- ``free_cash + quantity x
+        spot_close + perp_margin + perp_pnl`` -- read roughly a quarter of capital
+        too low. That number is not only reported: it is handed to
+        ``risk.update_equity``, so the first ordinary exit of a campaign booked a
+        ~25% drawdown against a 5% limit and Aegis halted on a loss that never
+        happened, with the phantom equity written into the evidence log as
+        ``ledger_effect`` and ``position_after``.
+
+        **Exit prices are never needed and never taken.** The executors already
+        realise each leg's PnL against their own fills, so the cash to return is
+        the principal at COST plus that realised difference:
+
+            spot LONG   sold at exit  ->  Q x spot_entry + realised_spot
+            perp SHORT  margin back   ->  perp_margin    + realised_perp
+
+        which is exactly ``Q x spot_exit`` and ``perp_margin + Q x (perp_entry -
+        perp_exit)``. Taking the realised numbers from the legs rather than
+        recomputing them from a mark is what keeps this ledger and the executors'
+        from being able to disagree.
+
+        A partial reduction releases margin in proportion; closing the whole
+        quantity clears the entry state, so a later re-open books a fresh entry
+        instead of being mistaken for one already open.
+
+        Returns the realised PnL booked, for the caller to record.
+        """
+        state = self.state
+        if quantity_closed <= ZERO:
+            raise LedgerError(f"a reduction closes a positive quantity, got {quantity_closed}")
+        if state.quantity <= ZERO or state.spot_entry is None:
+            raise LedgerError(
+                "there is no booked entry to reduce: the carry ledger holds no open "
+                "quantity, so returning cash for one would credit capital that was "
+                "never debited"
+            )
+        if quantity_closed > state.quantity:
+            raise LedgerError(
+                f"cannot close {quantity_closed} of a booked {state.quantity}: a "
+                "reduction larger than the position would return more cash than the "
+                "entry ever took"
+            )
+
+        flat = quantity_closed == state.quantity
+        principal = quantity_closed * state.spot_entry
+        margin_released = (
+            state.perp_margin if flat else state.perp_margin * quantity_closed / state.quantity
+        )
+
+        # Frictions and realisation are attributed per leg through the one method
+        # that does that, so a reduction cannot grow a second opinion about which
+        # leg a fee belongs to. `book_costs` moves free_cash by `realised - fee -
+        # slippage`; the principal and the margin are this method's own.
+        self.book_costs(
+            leg="spot", fee=spot_fee, slippage=spot_slippage, realised=spot_realised
+        )
+        self.book_costs(
+            leg="perp", fee=perp_fee, slippage=perp_slippage, realised=perp_realised
+        )
+
+        state.free_cash += principal + margin_released
+        state.perp_margin -= margin_released
+        state.quantity -= quantity_closed
+        if flat:
+            state.quantity = ZERO
+            state.spot_entry = None
+            state.perp_entry = None
+            state.perp_margin = ZERO
+            state.entry_basis = None
+            state.current_basis = None
+        return spot_realised + perp_realised
 
     def book_funding(self, instant_ns: int, flow: Decimal) -> Decimal:
         """Book one settlement's signed flow. Returns 0 if already booked.

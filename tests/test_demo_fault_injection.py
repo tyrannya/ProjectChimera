@@ -165,7 +165,8 @@ def test_a_venue_that_will_not_fill_leaves_the_position_flat_not_one_sided(tmp_p
     whose failure mechanism has quietly gone away asserts nothing.
     """
     harness = build(tmp_path)
-    harness.model.max_reference_deviation_bps = D("0")
+    for model in harness.models.values():
+        model.max_reference_deviation_bps = D("0")
     harness.run(2)
     assert harness.runner.position.imbalance() == D("0")
     assert harness.runner.position.leg("spot").is_flat

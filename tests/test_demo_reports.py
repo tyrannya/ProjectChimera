@@ -1791,3 +1791,43 @@ def test_the_research_state_block_has_no_pvc1_row():
         if line.startswith("| `") and "`" in line
     ]
     assert tuple(ids) == THIRTEEN_CHECKPOINTS
+
+
+# ---------------------------------------------------------------------------
+# PR-10R follow-up: the disclosures have to describe the report that exists
+# ---------------------------------------------------------------------------
+#: Every file that tells an operator where to look when the funding panel reads
+#: a flat zero. Each is a place a claim about the daily report can go stale.
+FUNDING_DISCLOSURE_SOURCES = (
+    "docs/demo_runbook.md",
+    "conf/alerts_demo.yml",
+    "grafana/provisioning/dashboards/demo.json",
+)
+
+
+def test_no_disclosure_claims_the_daily_report_carries_per_settlement_detail():
+    """The report's funding block holds totals and counts. Three files said otherwise.
+
+    The runbook, the alert file and the dashboard panel all told an operator that
+    "the daily report's funding block carries one record per settlement with its
+    rate, mark, notional and signed cash flow", and that reading it distinguishes
+    "no settlement has fallen inside this position's window yet" from "the
+    position was flat across every settlement". It carries neither: `net`,
+    `paid`, `received`, `settlement_minutes`, `sign_convention`, `source` and
+    `records_of_kind_FUNDING`, all of which are zero in both of those cases.
+
+    An operator sent to evidence that does not exist is worse off than one told
+    plainly that it does not: PR-10R exists because stale disclosures outlived
+    the code they described, so this is the executable version of the fix.
+    """
+    for relative in FUNDING_DISCLOSURE_SOURCES:
+        text = (REPO / relative).read_text(encoding="utf-8")
+        for claim in (
+            "funding block, which carries one record per settlement",
+            "funding block carries one record per settlement",
+        ):
+            assert claim not in text, (
+                f"{relative} claims the daily report's funding block holds one record "
+                f"per settlement; it holds exactly {FUNDING_FIELDS}, which "
+                "test_the_daily_report_has_exactly_the_adopted_shape pins"
+            )
