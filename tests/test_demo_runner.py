@@ -10,15 +10,19 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from decimal import Decimal as D
+from pathlib import Path
 
 import pytest
 
 from chimera.carry.hedge import HedgeState
 from chimera.demo.decision_log import RecordKind
-from chimera.demo.fixtures import MinuteShape
+from chimera.demo.fixtures import MinuteShape, SyntheticFeed
 from chimera.demo.rules import HedgeTarget, RuleError, RuleRegistry
 from chimera.demo.runner import RecoveryCause, RunnerError, RunnerState
+from chimera.recorder.contract import load_recorder_contract
 from tests.demo_harness import CARRY_PARAMS, DAY, NEXT_DAY, build, campaign_config
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
@@ -1262,13 +1266,17 @@ def test_a_settlement_file_whose_rows_disagree_is_refused(tmp_path):
     contradiction = dict(rows[1])
     contradiction["funding_rate"] = "-0.0009"
     rows.append(contradiction)
+    first = harness.first_minute_ms()
+    harness.run(2, start=first)  # a good file for the first minutes
     path.write_text(
         "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows) + "\n",
         encoding="utf-8",
     )
-    harness.runner.cursor._settlements = None
 
-    _run_to_first_settlement(harness)
+    # Driven through `DemoRunner.tick` rather than the harness helper, which
+    # installs the minute's quote by reading the feed itself and would meet the
+    # refusal before the runner did.
+    harness.runner.tick(first + 2 * 60_000)
     assert harness.runner.state is RunnerState.HALT
     assert "feed_unreadable" in (harness.runner.halt_reason or "")
     assert "disagree" in (harness.runner.halt_reason or "")
@@ -1277,11 +1285,12 @@ def test_a_settlement_file_whose_rows_disagree_is_refused(tmp_path):
 def test_an_unreadable_settlement_row_halts_rather_than_raising(tmp_path):
     """A feed the runner cannot read is a halt, never a traceback out of tick."""
     harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(2, start=first)
     path = harness.feed.normalizer.settlements_path("um")
     path.write_text('{"funding_time_ms": "not-a-number", "symbol": "BTCUSDT"}\n', "utf-8")
-    harness.runner.cursor._settlements = None
 
-    outcome = harness.tick(harness.first_minute_ms())
+    outcome = harness.runner.tick(first + 2 * 60_000)
 
     assert outcome.kind is RecordKind.HALT
     assert harness.runner.state is RunnerState.HALT
@@ -1378,3 +1387,76 @@ class _MarkState:
 
     def __getattr__(self, name):
         return getattr(self._state, name)
+
+
+def test_the_production_entry_point_actually_fills(tmp_path):
+    """The runner installs the minute's book, so a campaign can open a position.
+
+    Driven through `tools.demo_run._load` -- the production construction path --
+    rather than through `tests/demo_harness.py`, because the harness installed
+    the quote itself and that is exactly what hid this.
+
+    `RecordedQuoteFillModel` names the runner as the caller that must install a
+    book and advance the model's clock every cycle. Nothing did: through the CLI
+    the model held no quote and a clock of zero, every order was refused
+    `no_fresh_quote`, and the campaign stayed FLAT for ever -- so every path this
+    PR made reachable was unreachable in production for a second reason, because
+    no position was ever opened to fund, reconcile or liquidate.
+    """
+    import argparse
+
+    from tests.demo_harness import CARRY_PARAMS, MOMENTUM_PARAMS, SHADOW_PARAMS
+    from tools.demo_run import _load
+
+    recorder = tmp_path / "recorder"
+    state_dir = tmp_path / "state"
+    contract = load_recorder_contract("btcusdt-prospective-gen3")
+    feed = SyntheticFeed(recorder, contract)
+    feed.write_days([DAY])
+    feed.write_settlements([DAY])
+
+    payload = json.loads((REPO / "conf" / "demo" / "pvc1.json").read_text("utf-8"))
+    payload["profile"] = "SOAK"
+    payload["runner"] = {**payload.get("runner", {}), "state_dir": str(state_dir)}
+    payload["rules"] = {
+        "R1_carry": dict(CARRY_PARAMS),
+        "R2_frozen_logistic": dict(SHADOW_PARAMS),
+        "R3_daily_momentum": dict(MOMENTUM_PARAMS),
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    runner = _load(argparse.Namespace(config=config_path, root=recorder, profile="SOAK"))
+    runner.start(allow_dirty=True)
+    first = runner.cursor.next_minute_ms()
+    for index in range(4):
+        runner.tick(first + index * 60_000)
+
+    assert runner.position.state is HedgeState.HEDGED
+    assert runner.position.leg("spot").quantity > D("0")
+    assert runner.position.imbalance() == D("0.000")
+
+
+def test_a_minute_with_no_book_still_moves_the_fill_model_clock(tmp_path):
+    """ "The caller must advance now_ns every decision cycle, whether or not a
+    new book arrived" -- otherwise a stale book never ages out and fills for ever.
+    """
+    from chimera.demo.faults import Fault, FaultSchedule, ScheduledFault
+
+    schedule = FaultSchedule([ScheduledFault(2, Fault.MISSING_BOOK)])
+    harness = build(
+        tmp_path,
+        shapes={
+            f"spot:{DAY}": schedule.minute_shapes("spot"),
+            f"um:{DAY}": schedule.minute_shapes("um"),
+        },
+    )
+    first = harness.first_minute_ms()
+    harness.run(2, start=first)
+    before = harness.runner.position.fill_model.now_ns
+
+    harness.runner.tick(first + 2 * 60_000)
+
+    after = harness.runner.position.fill_model.now_ns
+    assert after > before, "the clock moved on a minute that carried no book"
+    assert after == (first + 2 * 60_000) * 1_000_000 + 60_000_000_000

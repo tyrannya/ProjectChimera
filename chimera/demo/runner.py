@@ -689,6 +689,11 @@ class DemoRunner:
         # is decision-derived, and nothing reads it back.
         self.telemetry.on_minute(minute_ns=minute_ns, missing=state.missing)
 
+        # The minute's book, on the model both legs fill against, and the model's
+        # clock moved whether or not one arrived. Before the incomplete branch,
+        # because a minute with no book still has to age the previous one.
+        self.position.install_quote(state)
+
         if not state.complete:
             return self._incomplete(minute_ms, state)
 

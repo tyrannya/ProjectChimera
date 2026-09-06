@@ -172,5 +172,9 @@ def build_hedged_position(
         perp=perp,
         risk=risk,
         ledger=ledger,
+        # One model prices every leg of a minute, and the position is what the
+        # runner reaches execution through, so it is what carries the model the
+        # runner has to install each minute's book on.
+        fill_model=model,
         config=config or HedgeConfig(spot_symbol=SPOT_SYMBOL, perp_symbol=PERP_SYMBOL),
     )

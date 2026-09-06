@@ -52,6 +52,7 @@ from typing import Any, Protocol, runtime_checkable
 from chimera.carry.accounting import ZERO, CarryError, FundingSettlement
 from chimera.carry.ledger import CarryLedger
 from chimera.futures.domain import OrderState, PositionSide, TargetPosition
+from chimera.futures.fills import TopOfBook
 from chimera.futures.executor import FlattenCause, FuturesExecutor
 from chimera.futures.store import LoadOutcome
 from chimera.risk import RiskEngine
@@ -309,6 +310,11 @@ class HedgedPosition:
     risk: RiskEngine
     ledger: CarryLedger
     config: HedgeConfig = field(default_factory=HedgeConfig)
+    #: The fill model both legs price against, when there is one. Held here
+    #: because :meth:`install_quote` is the runner's obligation and the runner
+    #: reaches execution through this object; ``None`` leaves a caller that
+    #: installs its own quotes (the tests) exactly as it was.
+    fill_model: Any = None
     state: HedgeState = HedgeState.FLAT
     #: How many minutes the current PARTIAL has been under correction.
     correction_minutes: int = 0
@@ -349,6 +355,53 @@ class HedgedPosition:
         self.state = HedgeState.DISPUTED
         self.risk.halt(f"carry_dispute: {reason}")
         logger.critical("Carry position DISPUTED: %s", reason)
+
+    # -- the book both legs price against ---------------------------------
+
+    def install_quote(self, state: CarryMarketState) -> None:
+        """Install this minute's book on the fill model, and move its clock.
+
+        :class:`~chimera.futures.fills.RecordedQuoteFillModel` states the
+        obligation and names the runner as the one who owes it: "the runner
+        installs the decision minute's book with ``set_quote`` before each
+        cycle", and "**the caller must advance** ``now_ns`` **every decision
+        cycle, whether or not a new book arrived**".
+
+        Nothing met it. ``set_quote`` had no caller outside the test harness, so
+        through the production entry point the model held no quote and a clock of
+        zero, every order was refused ``no_fresh_quote``, and a campaign never
+        opened a position at all -- the same defect as a settlement primitive
+        with no caller, on the execution path instead of the evidence path.
+
+        The clock moves on every cycle, including a minute that carried no book:
+        that is what lets the freshness rule fire on a stale one instead of
+        ageing it against a clock that stopped. ``instant_ns`` is the minute's
+        CLOSE, which is the convention ``set_quote`` requires and the instant the
+        snapshot belongs to; stamping the open would hand the model a book from
+        the future and refuse every order in the run.
+        """
+        model = self.fill_model
+        if model is None:
+            return
+        now_ns = int(state.minute_ns) + _MINUTE_NS
+        book = getattr(state, "book_perp", None) or getattr(state, "book_spot", None)
+        bid = (book or {}).get("bid")
+        ask = (book or {}).get("ask")
+        if bid is None or ask is None:
+            # No book this minute. The clock still moves, so the previously
+            # installed one ages and is refused rather than filling for ever.
+            model.now_ns = now_ns
+            return
+        model.set_quote(
+            TopOfBook(
+                instant_ns=now_ns,
+                bid=bid,
+                bid_qty=(book or {}).get("bid_qty") or ZERO,
+                ask=ask,
+                ask_qty=(book or {}).get("ask_qty") or ZERO,
+            ),
+            now_ns,
+        )
 
     # -- planning ----------------------------------------------------------
 
