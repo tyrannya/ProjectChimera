@@ -522,3 +522,119 @@ def test_a_faults_block_that_cannot_be_hashed_fails_when_the_file_is_read() -> N
         expected_profile=ConfigProfile.SOAK,
     )
     assert one.config_hash != two.config_hash
+
+
+# ---------------------------------------------------------------------------
+# PR-10: the runner and rules blocks, and the S2 rule-parameter gate.
+# ---------------------------------------------------------------------------
+def _campaign_payload() -> dict:
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    return json.loads((root / "conf" / "demo" / "pvc1.json").read_text(encoding="utf-8"))
+
+
+def test_a_campaign_carrying_rule_parameters_without_a_frozen_protocol_is_refused():
+    """Section 17's S3 STOP list, enforced mechanically rather than trusted.
+
+    "Any rule parameter chosen from recorded data" is forbidden, and the S2
+    protocol that freezes R1's parameters is PR-14's. A campaign configuration
+    may therefore carry rule parameters only once it also carries the hash of
+    the protocol that froze them. Until then it cannot run -- which is the
+    intended outcome, because section 17 starts the campaign at S3, after S2.
+    """
+    payload = {**_campaign_payload(), "rules": {"R1_carry": {"min_basis": "10"}}}
+    assert payload["protocol_hash"] is None, "the committed campaign is not frozen yet"
+    with pytest.raises(DemoConfigError, match="protocol_hash is null"):
+        parse_demo_config(payload)
+
+
+def test_the_same_campaign_is_accepted_once_the_protocol_is_frozen():
+    """The negative control: the gate is about the PROTOCOL, not about rules."""
+    payload = {
+        **_campaign_payload(),
+        "protocol_hash": "sha256:" + "a" * 64,
+        "rules": {"R1_carry": {"min_basis": "10"}},
+    }
+    config = parse_demo_config(payload)
+    assert config.rule_params("R1_carry") == {"min_basis": "10"}
+
+
+def test_a_test_profile_may_carry_rule_parameters_without_one():
+    """A TEST profile's records are not evidence, so the gate does not apply."""
+    payload = {
+        **_campaign_payload(),
+        "profile": "TEST",
+        "rules": {"R1_carry": {"min_basis": "10"}},
+    }
+    config = parse_demo_config(payload, expected_profile=ConfigProfile.TEST)
+    assert config.rule_params("R1_carry") == {"min_basis": "10"}
+
+
+def test_the_committed_campaign_config_still_carries_no_rule_parameters():
+    """PR-10 must not have chosen any. Asserted against the committed file."""
+    payload = _campaign_payload()
+    assert "rules" not in payload
+    assert payload["protocol_hash"] is None
+    config = parse_demo_config(payload)
+    assert config.rule_params("R1_carry") == {}
+
+
+def test_a_rule_parameter_is_part_of_the_hashed_identity():
+    base = parse_demo_config(
+        {**_campaign_payload(), "profile": "TEST"}, expected_profile=ConfigProfile.TEST
+    )
+    with_params = parse_demo_config(
+        {
+            **_campaign_payload(),
+            "profile": "TEST",
+            "rules": {"R1_carry": {"min_basis": "10"}},
+        },
+        expected_profile=ConfigProfile.TEST,
+    )
+    assert config_hash(base) != config_hash(with_params)
+
+
+def test_the_state_directory_is_not_part_of_the_hashed_identity():
+    """`canonical_material` promises no path anywhere; two hosts must hash alike."""
+
+    def build(where: str):
+        return parse_demo_config(
+            {**_campaign_payload(), "profile": "TEST", "runner": {"state_dir": where}},
+            expected_profile=ConfigProfile.TEST,
+        )
+
+    assert config_hash(build("/srv/a/state")) == config_hash(build("/srv/b/state"))
+
+
+def test_max_catchup_minutes_is_part_of_the_hashed_identity():
+    """The negative control for the test above: a path is excluded, a rule is not.
+
+    `max_catchup_minutes` decides how many minutes a restart processes, which
+    changes which decisions exist at all, so it belongs in the identity.
+    """
+
+    def build(limit: int):
+        return parse_demo_config(
+            {
+                **_campaign_payload(),
+                "profile": "TEST",
+                "runner": {"max_catchup_minutes": limit},
+            },
+            expected_profile=ConfigProfile.TEST,
+        )
+
+    assert config_hash(build(3)) != config_hash(build(5))
+
+
+def test_an_unknown_runner_setting_is_refused_rather_than_defaulted():
+    with pytest.raises(DemoConfigError, match="unknown key"):
+        parse_demo_config({**_campaign_payload(), "runner": {"grace": 5}})
+
+
+def test_a_runner_setting_that_is_not_one_is_refused_when_read():
+    config = parse_demo_config(_campaign_payload())
+    with pytest.raises(DemoConfigError, match="is not a runner setting"):
+        config.runner_setting("grace")
+    assert config.runner_setting("max_catchup_minutes") == 3

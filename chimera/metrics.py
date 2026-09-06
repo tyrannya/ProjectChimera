@@ -410,3 +410,33 @@ def serve_metrics(port: int) -> None:
     """Expose /metrics on ``port``. Safe to call when the client is missing."""
     start_http_server(port)
     logger.info("Prometheus metrics served on port %d", port)
+
+
+# --- the demo runner (PR-10) -------------------------------------------------
+# Section 14 row 10 puts "observability beyond basic metrics" OUT OF SCOPE, and
+# section 12.2 assigns this module's full runner series to PR-12. These are the
+# three that section 8.1 actually requires to exist: STARTUP "open metrics
+# endpoint" and REPORTING "metrics" cannot be satisfied by nothing. Anything
+# richer -- per-rule counters, latency histograms, the funding and basis series
+# of section 11.1 -- is deliberately left to PR-12 rather than half-built here.
+DEMO_UP = Gauge(f"{_PREFIX}_demo_up", "1 while the demo runner process is live")
+DEMO_STATE = Gauge(
+    f"{_PREFIX}_demo_state",
+    "1 for the runner's current section 8.1 state, 0 for the others",
+    ["state"],
+)
+DEMO_HEARTBEAT = Gauge(
+    f"{_PREFIX}_demo_heartbeat_timestamp",
+    "RunnerClock instant of the last completed tick, in seconds",
+)
+
+
+def set_demo_state(state: str, *, states: "tuple[str, ...]") -> None:
+    """Set the current state to 1 and every other to 0.
+
+    Written as an explicit sweep rather than one labelled gauge, because a
+    dashboard that saw two states at 1 -- which is what a stale label leaves
+    behind -- would show a runner in two places at once.
+    """
+    for name in states:
+        DEMO_STATE.labels(state=name).set(1.0 if name == state else 0.0)

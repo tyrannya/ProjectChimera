@@ -101,6 +101,38 @@ DOCUMENTARY_FIELDS: tuple[str, ...] = ("description",)
 #: refused at every depth inside one. See the module docstring.
 FAULTS_FIELD = "faults"
 
+#: The runner's own operating parameters (PR-10). Optional: a configuration that
+#: omits it runs on the defaults named in :data:`RUNNER_DEFAULTS`, every one of
+#: which is an operational timing rather than anything a decision depends on.
+RUNNER_FIELD = "runner"
+
+#: Section 2.2 line 119 names ``max_catchup_minutes`` and gives it 3; section
+#: 8.1's READY row gives the grace 5 seconds. These are the runner's pace, not
+#: its judgement -- no threshold here can change what a rule decides.
+RUNNER_DEFAULTS: Mapping[str, Any] = {
+    "max_catchup_minutes": 3,
+    "ready_grace_seconds": 5,
+    "reconcile_every_minutes": 60,
+    "state_dir": "state/demo",
+}
+
+#: The rule-parameter block (PR-10). Carries the values `CarryRule` and the
+#: shadow rules refuse to invent for themselves.
+#:
+#: **Refused in a CAMPAIGN profile while ``protocol_hash`` is null.** Section
+#: 17's S3 STOP list forbids "any rule parameter chosen from recorded data", and
+#: the protocol that freezes these values is the S2 protocol, which PR-14 owns.
+#: So a campaign configuration may carry rule parameters only once it also
+#: carries the hash of the protocol that froze them. Until then a campaign
+#: cannot run, which is the correct outcome: section 17 starts the campaign at
+#: S3, after S2.
+RULES_FIELD = "rules"
+
+#: Runner settings that are PATHS, and are therefore excluded from the hashed
+#: material. See :func:`canonical_material` for why a path may never enter a
+#: config's identity.
+PATH_SETTINGS: frozenset[str] = frozenset({"state_dir"})
+
 #: Section 7.4's proposed demo limits, by name. Every one is required: a limit
 #: that could be omitted would fall back to a default nobody reviewed, and the
 #: reviewer of a campaign config has to be able to read every bound off the file
@@ -207,6 +239,39 @@ class DemoConfig:
     limits: DemoLimits
     faults: Mapping[str, Any] | None = None
     description: str = ""
+    #: The runner's operating pace (PR-10). None means every default applies.
+    runner: Mapping[str, Any] | None = None
+    #: Rule parameters (PR-10). None means no rule can be constructed, which is
+    #: the correct state for a campaign whose S2 protocol is not yet frozen.
+    rules: Mapping[str, Any] | None = None
+
+    def runner_setting(self, name: str) -> Any:
+        """One runner setting, or its default. Refuses a name that is not one.
+
+        A typo must not silently become a default: `runner_setting("grace")`
+        raising is how a misspelled key in a config that the parser already
+        accepted -- because the parser only sees keys that are present -- still
+        cannot quietly change the runner's pace.
+        """
+        if name not in RUNNER_DEFAULTS:
+            raise DemoConfigError(
+                f"{name!r} is not a runner setting; they are {sorted(RUNNER_DEFAULTS)}"
+            )
+        if self.runner is not None and name in self.runner:
+            return self.runner[name]
+        return RUNNER_DEFAULTS[name]
+
+    def rule_params(self, rule_id: str) -> Mapping[str, Any]:
+        """The parameters for one rule, or an empty mapping.
+
+        Empty rather than raising, so the REFUSAL belongs to the rule: each rule
+        names the keys it needs and says why it has no defaults, which is a
+        better error than a generic "no parameters configured" from here.
+        """
+        if self.rules is None:
+            return {}
+        block = self.rules.get(rule_id)
+        return dict(block) if isinstance(block, Mapping) else {}
 
     def __post_init__(self) -> None:
         """A campaign configuration carries no fault schedule, whoever built it.
@@ -273,6 +338,24 @@ def canonical_material(config: DemoConfig) -> str:
     }
     if config.faults is not None:
         material[FAULTS_FIELD] = dict(config.faults)
+    # The rule parameters are decision-relevant in the plainest sense. The runner
+    # block is hashed too -- `max_catchup_minutes` decides how many minutes a
+    # restart processes, which changes which decisions exist at all -- but
+    # WITHOUT `state_dir`, which is a path.
+    #
+    # This function's contract above says "no path anywhere", and the reason is
+    # load-bearing rather than tidy: two hosts running the same campaign keep
+    # their state in different directories, and a config hash that moved with
+    # the directory would make their decision records incomparable. It would
+    # also make a replay in a temporary directory disagree with the live run it
+    # is supposed to reproduce byte for byte, which is exactly what section 10
+    # compares.
+    if config.runner is not None:
+        hashed_runner = {k: v for k, v in config.runner.items() if k not in PATH_SETTINGS}
+        if hashed_runner:
+            material[RUNNER_FIELD] = hashed_runner
+    if config.rules is not None:
+        material[RULES_FIELD] = dict(config.rules)
     return canonical_json(material)
 
 
@@ -394,13 +477,16 @@ def parse_demo_config(
     if missing:
         raise DemoConfigError(f"{where}missing required field(s) {sorted(missing)}")
     permitted = set(REQUIRED_FIELDS) | set(DOCUMENTARY_FIELDS)
+    permitted.add(RUNNER_FIELD)
+    permitted.add(RULES_FIELD)
     if expected_profile in FAULT_PROFILES:
         permitted.add(FAULTS_FIELD)
     unknown = sorted(set(payload) - permitted)
     if unknown:
         raise DemoConfigError(
             f"{where}unknown field(s) {unknown}. A demo configuration carries exactly "
-            f"{sorted(REQUIRED_FIELDS)} plus {sorted(DOCUMENTARY_FIELDS)}; an unrecognised "
+            f"{sorted(REQUIRED_FIELDS)} plus {sorted(DOCUMENTARY_FIELDS)} plus "
+            f"{sorted((RUNNER_FIELD, RULES_FIELD))}; an unrecognised "
             "key is refused rather than ignored, because an ignored key can be a "
             "misspelling of one that governs a decision"
         )
@@ -473,6 +559,39 @@ def parse_demo_config(
                 "is a configuration that has none"
             ) from exc
 
+    runner = payload.get(RUNNER_FIELD)
+    if runner is not None and not isinstance(runner, Mapping):
+        raise DemoConfigError(f"{where}{RUNNER_FIELD} must be a JSON object")
+    if runner is not None:
+        unknown_runner = sorted(set(runner) - set(RUNNER_DEFAULTS))
+        if unknown_runner:
+            raise DemoConfigError(
+                f"{where}{RUNNER_FIELD} carries unknown key(s) {unknown_runner}; it takes "
+                f"exactly {sorted(RUNNER_DEFAULTS)}"
+            )
+
+    rules = payload.get(RULES_FIELD)
+    if rules is not None and not isinstance(rules, Mapping):
+        raise DemoConfigError(f"{where}{RULES_FIELD} must be a JSON object keyed by rule id")
+    if rules is not None and profile is ConfigProfile.CAMPAIGN and protocol_hash is None:
+        raise DemoConfigError(
+            f"{where}this CAMPAIGN configuration carries {RULES_FIELD} while protocol_hash "
+            "is null. Rule parameters are frozen by the S2 protocol, and section 17's S3 "
+            "STOP list forbids any rule parameter chosen from recorded data; a campaign "
+            "may carry parameters only once it also carries the hash of the protocol that "
+            "froze them. Until then the campaign cannot run, which is the intended "
+            "outcome -- the campaign starts at S3, after S2"
+        )
+    for block in (runner, rules):
+        if block is None:
+            continue
+        try:
+            canonical_json(dict(block))
+        except DecisionLogError as exc:
+            raise DemoConfigError(
+                f"{where}a configuration block cannot be serialised canonically: {exc}"
+            ) from exc
+
     return DemoConfig(
         campaign_id=campaign_id,
         profile=profile,
@@ -480,6 +599,8 @@ def parse_demo_config(
         limits=parse_demo_limits(payload["limits"], where=where),
         faults=None if faults is None else dict(faults),
         description=description,
+        runner=None if runner is None else dict(runner),
+        rules=None if rules is None else dict(rules),
     )
 
 

@@ -1,4 +1,6 @@
 .DEFAULT_GOAL := help
+DEMO_CONFIG ?= conf/demo/pvc1.json
+
 .PHONY: help setup lint format test smoke sample backfill features \
 	verify-research-snapshot verify-research-state train research experiment walkforward \
 	multiclock-acquire verify-multiclock-snapshot \
@@ -13,6 +15,7 @@
 	p7-mode p7-btc p7-decide \
 	paper-smoke \
 	recorder-preflight recorder-run recorder-status recorder-acceptance \
+	demo-run demo-status \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -140,6 +143,12 @@ paper-smoke:  ## Engineering smoke of Pythia -> mode -> Aegis -> Hermes -> dry-r
 
 recorder-preflight:  ## Can this network receive every stream acceptance needs? No recorder code
 	$(PYTHON) -m tools.recorder_preflight
+
+demo-run:  ## Run the demo runner over recorded minutes (dry-run venue; no live route)
+	$(PYTHON) -m tools.demo_run --config $(DEMO_CONFIG) --root $(RECORDER_BASE_DIR) run
+
+demo-status:  ## Print the demo runner's state as JSON
+	$(PYTHON) -m tools.demo_run --config $(DEMO_CONFIG) --root $(RECORDER_BASE_DIR) status
 
 recorder-run:  ## Record public Binance market data until interrupted (engineering data)
 	$(PYTHON) -m tools.recorder --base-dir $(RECORDER_BASE_DIR) run
