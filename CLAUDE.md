@@ -9,7 +9,10 @@ For any multi-file implementation, research checkpoint, audit, migration, or pro
 1. Read `docs/claude_code_operating_guide.md`.
 2. Read `docs/current_development_plan.md` and `docs/current_development_plan_post_audit.md`.
 3. Read `docs/research_roadmap.md` and the preregistration/closure documents relevant to the checkpoint being touched.
-4. Reconstruct current Git/research state from repository evidence. Do not trust chat summaries, PR prose, or prior agent reports when the repository can answer the question.
+4. Read `docs/agent_context/active_context.md`, `docs/agent_context/known_blockers.md`, and `docs/agent_context/architecture_index.md` as navigation aids.
+5. Reconstruct current Git/research state from repository evidence. Do not trust handoff files, chat summaries, PR prose, or prior agent reports when the repository can answer the question.
+
+The files under `docs/agent_context/` are deliberately non-authoritative. Git state, adopted governance documents, frozen contracts and executable guardrails override them. At the end of a substantial task that changes durable repository state, update `active_context.md` narrowly with the verified main/PR state, unresolved load-bearing blockers and the immediate next action. Put durable engineering architecture decisions in `docs/decisions/` rather than growing the handoff into a diary.
 
 ## Authority order
 
@@ -61,6 +64,7 @@ For the current structural-carry checkpoint, the executor recommendation is **Op
 - Inspect third-party skill contents/security before installation. Prefer primary-source/reputable skills with little semantic overlap.
 - Skill descriptions consume startup context; skill bodies load when invoked. Avoid dozens of overlapping `research`, `review`, `planning`, or `testing` skills.
 - Enable only MCP servers/tools that materially help the task. Extra tool descriptions consume context and increase accidental action surface.
+- `context7` is the project-scoped documentation MCP. Use it when exact third-party library/API behavior or version-specific syntax matters. Resolve documentation for the version actually installed/pinned by this repository rather than defaulting to latest. Repository version constraints and primary official documentation outrank Context7. Never use Context7 to infer ProjectChimera scientific, accounting, governance or source-contract semantics.
 - Current P13 candidate skills, to be revalidated before use: `research`, `backtest-expert`, `dimensional-analysis`, `python-testing-patterns`.
 
 ## Subagents and workflows
@@ -84,6 +88,8 @@ For the current structural-carry checkpoint, the executor recommendation is **Op
 The project is often operated through Claude Code on the web/mobile cloud surface. Do not assume a local terminal, local environment variables, local MCP servers, or machine-local auto memory unless the user explicitly says the session is local/Remote Control.
 
 Repository files are the durable cross-session/cross-environment memory. Auto memory is supplementary, not the source of truth.
+
+The project-scoped `.mcp.json` intentionally uses a remote HTTP Context7 server so documentation lookup does not depend on a machine-local MCP process. Claude Code may require one-time approval of project-scoped MCP servers before first use.
 
 ## General coding behavior
 
