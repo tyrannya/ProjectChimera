@@ -15,7 +15,14 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
-rule_files: []
+# One rule file. conf/alerts_demo.yml covers the recorder and the demo runner,
+# which are what the default stack runs. conf/alerts.yml is the legacy rule set:
+# every expression in it queries a series only the retired freqtrade and
+# nn_infer services export, and those are behind the `legacy` profile with no
+# scrape job here, so loading it would leave alerts that can never fire. It stays
+# on disk, stays mounted, and stays covered by tests/test_observability.py.
+rule_files:
+  - /etc/prometheus/alerts_demo.yml
 
 alerting:
   alertmanagers:
@@ -26,3 +33,16 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
+  # The demo deployment. Both ports are the adopted ones and both are served by
+  # the CLI rather than by the library: chimera/demo and chimera/recorder open no
+  # listening socket themselves, so the /metrics endpoint exists only when
+  # tools.recorder or tools.demo_run is asked for one.
+  - job_name: recorder
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["recorder:9102"]
+
+  - job_name: demo
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["demo:9103"]

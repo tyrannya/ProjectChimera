@@ -1,6 +1,8 @@
 # ProjectChimera stack. Every service is dry-run/research only.
 #
-#   prometheus  - scrapes metrics from the services that are running
+#   recorder    - prospective market-data recorder, public endpoints only
+#   demo        - dry-run demo campaign runner, reads the recorder's files
+#   prometheus  - scrapes metrics from the recorder and the demo runner
 #   grafana     - dashboards over Prometheus
 #   alertmanager- routes Prometheus alerts
 #
@@ -28,6 +30,8 @@ volumes:
   prometheus_data:
   grafana_data:
   model_artifacts:
+  recorder_data:
+  demo_state:
 
 services:
   # --- FREQTRADE (HISTORICAL - not on the demo path; profile `legacy`) -----
@@ -94,6 +98,97 @@ services:
       retries: 3
       start_period: 20s
 
+  # --- PROSPECTIVE RECORDER ------------------------------------------------
+  # Public market data only. The recorder subscribes to no authenticated
+  # endpoint, so there is no credential to pass in and none is read: no
+  # env_file, no environment block, no secret mount.
+  #
+  # `recorder` and `demo` carry NO `profiles:` key, deliberately. They are the
+  # demo deployment, so they are what `docker compose up` starts; a profile
+  # would make the default stack an observability stack watching nothing, and
+  # conf/prometheus.yml's two new jobs would scrape services the default stack
+  # never starts -- permanently-down jobs, which is the exact defect the header
+  # of that file records and was written to prevent. They must not gain the
+  # `legacy` profile either: the change that takes the retired runtime off the
+  # default stack puts `legacy` on `freqtrade` and `nn_infer`, and a service
+  # listing a profile starts only under it, so `legacy` here would remove the
+  # demo path from `docker compose up` altogether. Neither retired service is
+  # deleted by this change; after it, every scrape job in conf/prometheus.yml
+  # still names a service the default topology starts.
+  recorder:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.recorder
+    image: chimera/recorder:local
+    container_name: chimera_recorder
+    restart: unless-stopped
+    command:
+      - "--base-dir"
+      - "/var/lib/chimera/data"
+      - "--log-level"
+      - "INFO"
+      - "run"
+      - "--metrics-port"
+      - "9102"
+    networks:
+      - bot_net
+    ports:
+      - "127.0.0.1:9102:9102"
+    volumes:
+      - recorder_data:/var/lib/chimera/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9102/metrics', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # --- DEMO RUNNER ---------------------------------------------------------
+  # Dry-run venue only. No credential reaches this container and there is none
+  # to give it: chimera/demo and chimera/carry import no network module and hold
+  # no credential marker, which tests/test_demo_no_live_path.py asserts. The
+  # recorder's storage root is mounted read-only, because the runner reads the
+  # recorder's files and writes only under its own state volume.
+  #
+  # It cannot start yet, and that is correct rather than broken: the committed
+  # conf/demo/pvc1.json carries protocol_hash=null and therefore no rules block,
+  # so the runner refuses to construct R1_carry rather than choose a parameter
+  # the protocol has not frozen. Until the protocol is preregistered, start
+  # `recorder prometheus grafana alertmanager` and leave this service out.
+  # docs/demo_runbook.md section 0.1 says the same thing to the operator.
+  demo:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.demo
+    image: chimera/demo:local
+    container_name: chimera_demo
+    restart: unless-stopped
+    command:
+      - "--config"
+      - "/chimera/conf/demo/pvc1.json"
+      - "--root"
+      - "/var/lib/chimera/data"
+      - "run"
+      - "--metrics-port"
+      - "9103"
+    depends_on:
+      recorder:
+        condition: service_healthy
+    networks:
+      - bot_net
+    ports:
+      - "127.0.0.1:9103:9103"
+    volumes:
+      - ./conf:/chimera/conf:ro
+      - recorder_data:/var/lib/chimera/data:ro
+      - demo_state:/chimera/state
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9103/metrics', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
   # --- PROMETHEUS ----------------------------------------------------------
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -107,6 +202,7 @@ services:
     volumes:
       - ./conf/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./conf/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./conf/alerts_demo.yml:/etc/prometheus/alerts_demo.yml:ro
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"

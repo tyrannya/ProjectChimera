@@ -42,9 +42,16 @@ from websockets.asyncio.client import connect
 #: SUBSCRIBE for any stream, then pushes public traffic only, which is why a
 #: preflight aimed at it reports bookTicker flooding while kline and markPrice
 #: stay silent. Probing the two current bases separately is the point of this.
+#:
+#: Spot moved under amendment A11 (``docs/amendment_a11_spot_ws_transport.md``):
+#: the previous single base is reset by the egress network before any frame is
+#: exchanged, confirmed network-layer rather than Binance-side by an identical
+#: reset against an unrelated host on the same non-standard port. The base
+#: below is Binance's own documented market-data-only websocket host and
+#: delivers the same frames.
 UM_MARKET_WS = "wss://fstream.binance.com/market/ws"
 UM_PUBLIC_WS = "wss://fstream.binance.com/public/ws"
-SPOT_WS = "wss://stream.binance.com:9443/ws"
+SPOT_WS = "wss://data-stream.binance.vision:443/ws"
 
 #: What the acceptance run needs from each endpoint: the venue's stream name,
 #: the event type its frames carry, and the recorder stream id it feeds. A

@@ -121,9 +121,12 @@ def test_resolve_refuses_a_symbol_that_is_not_a_leg(tmp_path):
 def test_the_cli_opens_no_socket_and_reads_no_credential():
     """Checked over the AST, not the text.
 
-    The module's own docstring states that it opens no socket, and a guard that
-    could not tell prose from code would forbid saying so -- the same trap as
-    `tests/test_demo_no_live_path.py`'s shadow-rule check.
+    The module's own docstring discusses sockets and credentials, and a guard
+    that could not tell prose from code would forbid saying so -- the same trap
+    as `tests/test_demo_no_live_path.py`'s shadow-rule check. The one socket the
+    CLI may open is the Prometheus scrape endpoint `run --metrics-port` asks
+    for, which `prometheus_client` opens and which none of the modules named
+    below is imported to reach.
     """
     import ast
 
