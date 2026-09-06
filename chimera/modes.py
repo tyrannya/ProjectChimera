@@ -1,4 +1,14 @@
-"""Trading modes: temporal operating states, and the rules for entering them.
+"""HISTORICAL - not on the demo path.
+
+Disconnected at S3 by PR-13 under section 3.3 of
+``docs/proposed_demo_implementation_master_plan.md``. Kept, tested and reachable
+in the history; not imported by ``chimera.demo``, ``chimera.carry``,
+``chimera.recorder`` or any active CLI, and not started by the default compose
+stack. ``tests/test_retired_runtime_disconnected.py`` asserts that
+structurally. Deletion, if it happens at all, is PR-16 after S4 -- not this
+change.
+
+Trading modes: temporal operating states, and the rules for entering them.
 
 A **mode** here is a trading *style* — how fast a decision is taken and which
 clocks it reads. It is not an instrument, a venue, a margin type or a strategy

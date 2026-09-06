@@ -1,3 +1,8 @@
+# HISTORICAL - not on the demo path.
+#
+# Disconnected at S3 by PR-13 (section 3.3). This image is not built by any
+# automatically-triggered CI job and is not part of the default compose stack;
+# the `freqtrade` service that uses it is behind the `legacy` profile.
 # Freqtrade container: execution engine, strategies and the risk layer.
 FROM freqtradeorg/freqtrade:stable
 

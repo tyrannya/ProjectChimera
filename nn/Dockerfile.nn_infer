@@ -1,3 +1,8 @@
+# HISTORICAL - not on the demo path.
+#
+# Disconnected at S3 by PR-13 (section 3.3). This image is not built by any
+# automatically-triggered CI job and is not part of the default compose stack;
+# the `nn_infer` service that uses it is behind the `legacy` profile.
 # Inference service. Build from the repository root:
 #   docker build -f nn/Dockerfile.nn_infer -t chimera-nn-infer .
 FROM python:3.11-slim
