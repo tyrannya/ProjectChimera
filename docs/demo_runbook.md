@@ -28,10 +28,26 @@ by hash. `tools/demo_run.py` builds `CarryParams.from_config(...)` for
 `R1_carry` and that raises on an empty mapping. So `make demo-run` against the
 committed file stops before the runner exists. That is the correct outcome:
 choosing rule parameters before the protocol is frozen is choosing them from
-recorded data. The sections below are the procedure the campaign will follow
-once the protocol is preregistered and both the hash and the parameters are
-committed; until then they are exercised against a `TEST` or `SOAK`
-configuration the operator writes and does not commit.
+recorded data.
+
+This is not only `run`. `status`, `flatten`, `resume` and `resolve` all build the
+runner through the same `_load(...)`, so against the committed file every one of
+them exits with the same `RuleError` naming the eight absent `R1_carry`
+parameters — including the kill-switch procedure in section 8. Read that error as
+"no campaign is configured", not as a fault. `tools/demo_report.py --day` is the
+exception and works against any configuration, because a report reads persisted
+files and never constructs a runner.
+
+The `demo` container in `docker-compose.yml` is subject to the same thing: it is
+part of the default stack because it is part of the demo deployment, but until a
+campaign configuration with frozen parameters exists it exits on start and
+`restart: unless-stopped` retries it. Before the protocol is frozen, start
+`recorder prometheus grafana alertmanager` and leave `demo` out.
+
+The sections below are the procedure the campaign will follow once the protocol
+is preregistered and both the hash and the parameters are committed; until then
+they are exercised against a `TEST` or `SOAK` configuration the operator writes
+and does not commit.
 
 **0.2 A `CAMPAIGN` run stops at `SELF_CHECK` on this build.**
 `tools/demo_run.py::_software()` cannot establish the source identity — it calls

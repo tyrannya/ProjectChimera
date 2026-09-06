@@ -369,6 +369,34 @@ DEMO_PANEL_EXPRESSIONS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+#: The only sources the demo containers may mount. `./conf` is read-only and
+#: holds the campaign configuration; the rest are docker-managed named volumes.
+#: Anything else -- `./.env`, `./user_data`, an absolute host path -- is a way to
+#: put a credential inside a container that must not have one.
+ALLOWED_BIND_SOURCES: frozenset[str] = frozenset({"./conf", "recorder_data", "demo_state"})
+
+#: Tokens that must appear in no deployment artifact for the demo path. The
+#: acknowledgement token is the one that actually unlocks live trading in
+#: `chimera/safety.py`; the rest are the shapes a credential arrives in.
+FORBIDDEN_DEPLOYMENT_TOKENS: tuple[str, ...] = (
+    "I_UNDERSTAND_THE_RISK",
+    "ENABLE_LIVE_TRADING",
+    "API_KEY",
+    "API_SECRET",
+    "BINANCE_KEY",
+    "BINANCE_SECRET",
+    "EnvironmentFile",
+    "run_bot",
+)
+
+#: Every supervision artifact this repository ships for the demo path.
+DEPLOYMENT_ARTIFACTS: tuple[str, ...] = (
+    "deploy/systemd/chimera-demo.service",
+    "deploy/systemd/chimera-recorder.service",
+    "deploy/docker/Dockerfile.demo",
+    "deploy/docker/Dockerfile.recorder",
+)
+
 DEMO_SCRAPE_TARGETS: dict[str, str] = {"recorder": "recorder:9102", "demo": "demo:9103"}
 
 #: Every compose service, so the set fails both when one is deleted and when a
@@ -623,6 +651,16 @@ def test_the_demo_services_carry_no_credential_and_no_live_flag():
         # retired services out and states that a demo-path service carries no
         # profile, and this assertion is what keeps that statement true.
         assert "profiles" not in service, f"{name} is behind a compose profile"
+        # `volumes` too, and this is the gap the first version left: the most
+        # direct way to hand a container a credential is to bind-mount the host
+        # path that holds one. `./.env`, `./user_data` (which is where the kill
+        # switch and any operator secret live) and any absolute host path are
+        # refused; the named volumes and the read-only `./conf` mount are what
+        # these two services legitimately need.
+        for mount in service.get("volumes", []):
+            source = mount.split(":")[0]
+            assert not source.startswith("/"), f"{name} bind-mounts host path {source}"
+            assert source in ALLOWED_BIND_SOURCES, f"{name} mounts {source}"
     # freqtrade is the one service the live flag belongs to, and it sets it
     # blank. Any other service naming it would be a second way to reach a live
     # venue from this file, which is the thing that must not appear.
@@ -713,3 +751,54 @@ def test_the_shared_risk_series_are_scoped_to_the_demo_job():
                     f"{where} selects {series} without a job matcher; the retired "
                     "Freqtrade container writes the same series"
                 )
+
+
+def test_no_demo_deployment_artifact_can_be_given_a_credential():
+    """The compose guard above reads one file; this reads the other four.
+
+    A unit file and a Dockerfile are deployment surface exactly as compose is,
+    and both were unguarded: `EnvironmentFile=-/etc/chimera/exchange.env` plus
+    `Environment=ENABLE_LIVE_TRADING=I_UNDERSTAND_THE_RISK` in the unit, and
+    `ENV BINANCE_KEY=... ENABLE_LIVE_TRADING=...` in the image, both shipped
+    green. The demo path has no authenticated endpoint to reach, so there is
+    nothing here that a credential could legitimately be for.
+    """
+    for relative in DEPLOYMENT_ARTIFACTS:
+        path = ROOT / relative
+        assert path.is_file(), f"{relative} is missing"
+        # Comments are where these tokens are legitimately discussed -- the unit
+        # explains at length why it carries no EnvironmentFile -- so the scan is
+        # over directives only.
+        directives = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        for token in FORBIDDEN_DEPLOYMENT_TOKENS:
+            offenders = [line for line in directives if token in line]
+            assert not offenders, f"{relative} names {token}: {offenders}"
+
+
+def test_every_demo_image_runs_as_a_named_non_root_user():
+    """A root container that also mounts the recorder's data is a wider blast
+    radius than anything the demo path needs."""
+    for relative in ("deploy/docker/Dockerfile.demo", "deploy/docker/Dockerfile.recorder"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        users = re.findall(r"^USER\s+(\S+)", text, re.MULTILINE)
+        assert users, f"{relative} never drops privileges"
+        assert users[-1] not in {"root", "0"}, f"{relative} ends as {users[-1]}"
+
+
+def test_no_demo_image_copies_the_retired_live_capable_launcher():
+    """`tools/run_bot.py` is the only live-capable entrypoint in the tree.
+
+    `COPY tools/ ./tools/` put it inside both dry-run images. An image that
+    cannot import it cannot be argued into running it.
+    """
+    for relative in ("deploy/docker/Dockerfile.demo", "deploy/docker/Dockerfile.recorder"):
+        copied = re.findall(
+            r"^COPY\s+(\S+)", (ROOT / relative).read_text(encoding="utf-8"), re.MULTILINE
+        )
+        assert "tools/" not in copied, f"{relative} copies the whole tools tree"
+        assert "tools/run_bot.py" not in copied, f"{relative} copies the launcher"
+        assert "strategies/" not in copied, f"{relative} copies the retired strategies"

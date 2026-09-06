@@ -126,7 +126,21 @@ artifacts/prospective/*/*
 artifacts/prospective/*/*/*
 !artifacts/prospective/*/*/report.json
 !artifacts/prospective/*/*/STATUS.md
-!artifacts/pvc1_*_SHA256SUMS.txt
+# The manifest the freeze writes beside the artifact. The glob matches the
+# campaign id and the month rather than the literal `pvc1_`, because the report
+# names the file from `config.campaign_id`, and a campaign called anything else
+# would have committed its report while silently dropping the manifest that
+# binds the bytes to it.
+!artifacts/*_[0-9][0-9][0-9][0-9]-[0-9][0-9]_SHA256SUMS.txt
+
+# The runner's working state: the decision log, the carry ledger, both futures
+# stores, the risk state and the replay-parity verdicts, under the `state_dir`
+# that conf/demo/pvc1.json names (`state/demo`). It is a live, rewritten
+# directory a campaign appends to every minute, and it is NOT the evidence
+# artifact -- the frozen monthly report above is. Ignored so an operator running
+# a campaign in a checkout does not see the log as untracked and does not commit
+# a half-written one; the evidence route out of it is the freeze, deliberately.
+state/
 mlruns/
 !mlruns/.gitkeep
 ray_results/

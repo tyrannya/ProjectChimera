@@ -133,6 +133,13 @@ services:
   # no credential marker, which tests/test_demo_no_live_path.py asserts. The
   # recorder's storage root is mounted read-only, because the runner reads the
   # recorder's files and writes only under its own state volume.
+  #
+  # It cannot start yet, and that is correct rather than broken: the committed
+  # conf/demo/pvc1.json carries protocol_hash=null and therefore no rules block,
+  # so the runner refuses to construct R1_carry rather than choose a parameter
+  # the protocol has not frozen. Until the protocol is preregistered, start
+  # `recorder prometheus grafana alertmanager` and leave this service out.
+  # docs/demo_runbook.md section 0.1 says the same thing to the operator.
   demo:
     build:
       context: .

@@ -282,7 +282,10 @@ def test_the_runbook_starts_the_services_the_default_topology_carries():
     that selects nothing and start no demo at all. Every service the runbook
     hands to `docker compose` must be one a bare `up` brings with it.
     """
-    text = prose(RUNBOOK.read_text(encoding="utf-8"))
+    # The RAW text, not prose(): prose() joins the document into one line, so the
+    # per-line loop below ran exactly once over the whole runbook and every
+    # service named anywhere in it landed in a single bucket.
+    text = RUNBOOK.read_text(encoding="utf-8")
     compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     default = {
         name for name, service in compose["services"].items() if not service.get("profiles")
@@ -290,13 +293,16 @@ def test_the_runbook_starts_the_services_the_default_topology_carries():
     for service in ("recorder", "demo"):
         assert service in default, f"{service} is not in the default topology"
 
+    scanned = 0
     for line in text.splitlines():
         if "docker compose" not in line:
             continue
+        scanned += 1
         assert "--profile" not in line, f"the runbook passes a profile: {line!r}"
         named = [word for word in line.split() if word in compose["services"]]
         for word in named:
             assert word in default, f"the runbook starts profiled service {word!r}"
+    assert scanned, "no `docker compose` line was scanned at all"
 
 
 def test_the_runbook_records_that_a_campaign_cannot_start_today():

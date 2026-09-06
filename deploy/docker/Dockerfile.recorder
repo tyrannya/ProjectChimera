@@ -20,7 +20,12 @@ ENV PYTHONUNBUFFERED=1 \
 # anyway, so copying it would add a file that changes nothing.
 COPY pyproject.toml ./
 COPY chimera/ ./chimera/
-COPY tools/ ./tools/
+# Named, not the whole tree: `tools/run_bot.py` is the retired live-capable
+# launcher, and an image that cannot import it cannot be argued into
+# running it. This is the same rule the package copy above follows.
+COPY tools/__init__.py ./tools/__init__.py
+COPY tools/recorder.py ./tools/recorder.py
+COPY tools/recorder_preflight.py ./tools/recorder_preflight.py
 
 # `.[recorder]` rather than `.`: the websocket client is the one thing live
 # collection adds over the offline core.

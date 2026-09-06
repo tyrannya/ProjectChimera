@@ -39,6 +39,21 @@ jobs:
       - name: pre-commit
         run: pre-commit run --all-files --show-diff-on-failure
 
+      - name: promtool check rules
+        # Section 15's CI row, and the acceptance criterion for the alert files.
+        # The suite can check that an expression names an exported series; only
+        # promtool can check that it is PromQL at all. Section 11.2's adopted
+        # DiskLow expression was `min(a, b) < 10e9`, which parses as an
+        # aggregation given two arguments and is rejected here -- so without this
+        # step the rule file could ship in a form Prometheus refuses to load,
+        # taking every other rule in the file down with it.
+        run: |
+          version=2.53.0
+          curl -sSLo /tmp/prometheus.tar.gz \
+            "https://github.com/prometheus/prometheus/releases/download/v${version}/prometheus-${version}.linux-amd64.tar.gz"
+          tar -xzf /tmp/prometheus.tar.gz -C /tmp
+          /tmp/prometheus-${version}.linux-amd64/promtool check rules conf/alerts.yml conf/alerts_demo.yml
+
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

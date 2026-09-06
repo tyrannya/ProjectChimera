@@ -33,6 +33,11 @@
 # by pretending a bounded pass is a service.
 
 [Unit]
+# A [Unit] directive, not a [Service] one: systemd has read it from [Unit]
+# since v229 and logs "Unknown key name" for it anywhere else. It was in
+# [Service], where it did nothing, and the default 5-starts-in-10s limit
+# still applied -- which is what the Restart comment below exists to avoid.
+StartLimitIntervalSec=0
 Description=Chimera demo runner (dry-run venue, no credentials, no live route)
 Documentation=file:/opt/chimera/docs/demo_runbook.md
 # The runner reads what the recorder has already written, so it is useless
@@ -79,7 +84,6 @@ RestartSec=30s
 RestartPreventExitStatus=3
 # Do not give up after repeated restarts: at one pass per thirty seconds a
 # healthy campaign trips any default start limit within minutes.
-StartLimitIntervalSec=0
 
 # The runner needs its checkout, its own state directory and read access to the
 # recorder's data. Nothing else, so nothing else is reachable. ProtectSystem=
@@ -97,7 +101,11 @@ RestrictSUIDSGID=true
 RestrictNamespaces=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-ReadWritePaths=/opt/chimera/state
+# Prefixed with `-`: a path that does not exist yet is skipped rather than
+# failing the mount namespace. Without it the unit dies 226/NAMESPACE on a
+# fresh checkout, because the state directory is created by the first run
+# and ProtectSystem=strict forbids the runner from creating it.
+ReadWritePaths=-/opt/chimera/state
 
 StandardOutput=journal
 StandardError=journal
