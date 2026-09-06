@@ -156,9 +156,17 @@ def test_a_kill_switch_mid_run_halts_and_stops_the_loop(tmp_path):
 
 
 def test_a_venue_that_will_not_fill_leaves_the_position_flat_not_one_sided(tmp_path):
-    """No book installed, so the fill model refuses: both legs stay flat."""
+    """A venue that refuses every order leaves both legs flat, never one of them.
+
+    The refusal is the fill model's own reference-deviation guard, tightened to
+    zero so no fill can sit far enough from the decision reference to be
+    accepted. It used to be "run without installing a book", which stopped
+    working the moment the runner started installing one itself -- and a test
+    whose failure mechanism has quietly gone away asserts nothing.
+    """
     harness = build(tmp_path)
-    harness.run(2, quote=False)
+    harness.model.max_reference_deviation_bps = D("0")
+    harness.run(2)
     assert harness.runner.position.imbalance() == D("0")
     assert harness.runner.position.leg("spot").is_flat
     assert harness.runner.position.leg("perp").is_flat
