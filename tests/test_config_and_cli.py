@@ -9,6 +9,8 @@ version of Freqtrade has ever accepted, and nothing caught it.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -172,8 +174,7 @@ def test_launcher_allows_dry_run_without_credentials(tmp_path, capsys):
     assert json.loads(config_out.read_text(encoding="utf-8"))["dry_run"] is True
 
 
-def test_launcher_writes_the_merged_config_privately(tmp_path):
-    """It contains API keys; it must not be world-readable."""
+def _write_merged_config(tmp_path):
     config_out = tmp_path / "merged.json"
     main(
         [
@@ -186,6 +187,46 @@ def test_launcher_writes_the_merged_config_privately(tmp_path):
             str(config_out),
         ]
     )
+    return config_out
+
+
+def test_launcher_asks_for_owner_only_permissions_on_the_merged_config(monkeypatch, tmp_path):
+    """It contains API keys, so the launcher must restrict it -- on every platform.
+
+    This asserts the launcher's *request*, which is the part that is the same
+    everywhere. The realised mode bits are checked below, on the platforms that
+    implement them.
+    """
+    requested: list[int] = []
+    original = Path.chmod
+
+    def spy(self, mode, *args, **kwargs):
+        requested.append(mode)
+        return original(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", spy)
+    config_out = _write_merged_config(tmp_path)
+
+    assert config_out.is_file()
+    assert stat.S_IRUSR | stat.S_IWUSR in requested, (
+        "the launcher wrote a file holding API keys without asking for owner-only "
+        f"permissions; it requested {[oct(m) for m in requested]}"
+    )
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "Windows does not implement POSIX permission bits: os.chmod there toggles only "
+        "the read-only flag, and stat() reports 0o666 whatever was requested, so this "
+        "assertion cannot express the guarantee. Access is governed by inherited ACLs "
+        "instead. The request itself is asserted on every platform by the test above, "
+        "so nothing is left unchecked here -- only checked differently."
+    ),
+)
+def test_launcher_writes_the_merged_config_privately(tmp_path):
+    """It contains API keys; it must not be world-readable."""
+    config_out = _write_merged_config(tmp_path)
     assert config_out.stat().st_mode & 0o077 == 0
 
 

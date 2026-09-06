@@ -314,3 +314,38 @@ def test_pyyaml_is_declared_rather_than_inherited():
     """tests/test_observability.py imports yaml directly."""
     pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert "PyYAML" in pyproject, "PyYAML is imported by the suite but never declared"
+
+
+def test_zip_fixtures_do_not_depend_on_when_they_were_built():
+    """A fixture whose bytes move with the clock cannot support a determinism test.
+
+    ``ZipFile.writestr`` given a plain member NAME stamps the entry with the
+    current LOCAL time at two-second granularity. ``tests/p13_synthetic.py``
+    builds published-object fixtures that way, and
+    ``test_the_manifest_digest_is_deterministic_across_runs`` builds two of them
+    and asserts their digests agree -- so on a machine slow enough for the two
+    calls to straddle a boundary the digests differed and the test failed. It
+    did exactly that on a CI runner while passing locally. Pinning the member
+    timestamp also removes a DST and time-zone dependence that would have shown
+    up as a Windows-only difference.
+    """
+    from tests.p13_synthetic import ZIP_EPOCH, zip_bytes
+
+    assert ZIP_EPOCH == (1980, 1, 1, 0, 0, 0)
+    payload = b"open,high,low,close\n1,2,0,1\n"
+    assert zip_bytes("a.csv", payload) == zip_bytes("a.csv", payload)
+
+    # And the pin is what does it: an unpinned member carries a moving stamp.
+    import io
+    import zipfile
+
+    def unpinned() -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("a.csv", payload)
+        return buffer.getvalue()
+
+    stamped = zipfile.ZipFile(io.BytesIO(unpinned())).infolist()[0].date_time
+    pinned = zipfile.ZipFile(io.BytesIO(zip_bytes("a.csv", payload))).infolist()[0].date_time
+    assert pinned == ZIP_EPOCH
+    assert stamped != ZIP_EPOCH, "the control is inert: the unpinned member was not stamped"
