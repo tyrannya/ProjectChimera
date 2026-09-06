@@ -1356,6 +1356,27 @@ def monthly_report(
             f"definition frozen in the same change. {_NOTHING_WRITTEN}"
         )
 
+    # Every excluded minute, in the spelling the log actually uses. The filter
+    # below is plain set membership on raw strings, so a protocol naming an
+    # excluded minute as `...Z` -- which `require_iso_minute` refuses and which
+    # `decision_log` never writes -- would match nothing, exclude nothing, and
+    # still be echoed into the frozen artifact as though it had been applied.
+    # An exclusion that silently does not apply is the most dangerous kind of
+    # wrong: it reports MORE minutes than the protocol authorises, under a
+    # record that says otherwise.
+    malformed = []
+    for value in binding.excluded_minutes:
+        try:
+            require_iso_minute(value, field_name="excluded_minutes")
+        except (DecisionLogError, TypeError, ValueError) as exc:
+            malformed.append(f"{value!r} ({exc})")
+    if malformed:
+        raise ReportRefused(
+            f"the protocol excludes {malformed}, which are not minutes in the "
+            "spelling the decision log writes, so excluding them would remove "
+            f"nothing while the artifact recorded that it had. {_NOTHING_WRITTEN}"
+        )
+
     log_dir = _log_dir(state_dir)
     records, _files, _scanned, _no_minute = _scan(log_dir)
     excluded = set(binding.excluded_minutes)

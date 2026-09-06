@@ -1665,6 +1665,40 @@ def test_a_treatment_this_report_does_not_recognise_still_passes(tmp_path):
     }
 
 
+def test_an_excluded_minute_in_a_spelling_the_log_never_writes_is_refused(tmp_path):
+    """An exclusion that silently applies to nothing is worse than a wrong number.
+
+    The filter is plain set membership on raw strings. `decision_log` refuses a
+    `Z` suffix, a naive stamp and a local offset, and writes `...+00:00` only, so
+    a protocol excluding `2026-09-19T00:01:00Z` would match no record, remove no
+    minute, and still be copied into the frozen artifact as an exclusion that had
+    been applied -- reporting MORE minutes than the protocol authorises under a
+    record saying otherwise.
+    """
+    from dataclasses import replace
+
+    state_dir = _month_log(tmp_path)
+    for spelling in (
+        "2026-09-19T00:01:00Z",
+        "2026-09-19 00:01:00+00:00",
+        "2026-09-19T00:01:00",
+        "2026-09-19T00:01:30+00:00",
+        "not-a-minute",
+    ):
+        binding = replace(SYNTHETIC_BINDING, excluded_minutes=(spelling,))
+        with pytest.raises(ReportRefused, match="spelling"):
+            monthly_report(state_dir, "2026-09", binding=binding)
+
+    # The two-sided control: the canonical spelling is accepted AND applied.
+    canonical = replace(
+        SYNTHETIC_BINDING,
+        excluded_minutes=("2026-09-19T00:01:00+00:00",),
+        quantities=("minutes_processed",),
+    )
+    report = monthly_report(state_dir, "2026-09", binding=canonical)
+    assert report["quantities"]["minutes_processed"] == 2, "the exclusion did not apply"
+
+
 def test_a_null_prospective_boundary_is_refused(tmp_path):
     from dataclasses import replace
 

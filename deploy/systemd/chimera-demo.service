@@ -106,6 +106,14 @@ MemoryDenyWriteExecute=true
 # fresh checkout, because the state directory is created by the first run
 # and ProtectSystem=strict forbids the runner from creating it.
 ReadWritePaths=-/opt/chimera/state
+# StateDirectory is what actually CREATES it. `ReadWritePaths=-` tolerates the
+# directory being absent, which stops the unit dying 226/NAMESPACE on a fresh
+# host, but tolerating an absent directory is not the same as having one: the
+# runner would then fail on its first write instead, which is a worse place to
+# discover it. systemd creates /var/lib/chimera-demo before the process starts,
+# owned by User=, and the ExecStart paths above may point at it or at the
+# operator's own /opt/chimera/state once they have created that themselves.
+StateDirectory=chimera-demo
 
 StandardOutput=journal
 StandardError=journal

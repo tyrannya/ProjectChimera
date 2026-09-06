@@ -375,6 +375,15 @@ DEMO_PANEL_EXPRESSIONS: dict[str, tuple[str, ...]] = {
 #: put a credential inside a container that must not have one.
 ALLOWED_BIND_SOURCES: frozenset[str] = frozenset({"./conf", "recorder_data", "demo_state"})
 
+#: Mounts each demo service may hold only read-only. `./conf` is configuration
+#: for both; `recorder_data` is the recorder's storage root, which the recorder
+#: owns and the runner only reads -- a runner able to write there could edit the
+#: minutes it is about to decide from.
+READ_ONLY_FOR: dict[str, tuple[str, ...]] = {
+    "recorder": ("./conf",),
+    "demo": ("./conf", "recorder_data"),
+}
+
 #: Tokens that must appear in no deployment artifact for the demo path. The
 #: acknowledgement token is the one that actually unlocks live trading in
 #: `chimera/safety.py`; the rest are the shapes a credential arrives in.
@@ -658,9 +667,17 @@ def test_the_demo_services_carry_no_credential_and_no_live_flag():
         # refused; the named volumes and the read-only `./conf` mount are what
         # these two services legitimately need.
         for mount in service.get("volumes", []):
-            source = mount.split(":")[0]
+            parts = mount.split(":")
+            source, mode = parts[0], parts[2] if len(parts) > 2 else ""
             assert not source.startswith("/"), f"{name} bind-mounts host path {source}"
             assert source in ALLOWED_BIND_SOURCES, f"{name} mounts {source}"
+            # And the MODE, so the compose file's own prose -- "the recorder's
+            # storage root is mounted read-only, because the runner reads the
+            # recorder's files" -- is executable rather than a comment. A runner
+            # that could write into the recorder's root could edit the minutes it
+            # is about to decide from.
+            if source in READ_ONLY_FOR.get(name, ()):
+                assert mode == "ro", f"{name} mounts {source} without :ro"
     # freqtrade is the one service the live flag belongs to, and it sets it
     # blank. Any other service naming it would be a second way to reach a live
     # venue from this file, which is the thing that must not appear.
