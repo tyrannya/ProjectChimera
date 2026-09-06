@@ -52,6 +52,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -381,6 +382,31 @@ class RiskEngine:
         logger.warning("Risk halt cleared by operator")
         self._persist()
 
+    def _an_ancestor_is_not_a_directory(self) -> bool:
+        """Is the kill switch's path blocked by an ancestor that is not a directory?
+
+        Answers the question ``stat`` could not, for the case where the platform
+        reported a missing path component as a plain "not found". An ancestor
+        that simply does not exist yet is not a blockage -- a switch named inside
+        a directory the operator has not created is genuinely absent, and says so
+        on both platforms. An ancestor that exists and is *not* a directory is a
+        filesystem that has stopped making sense, and the switch fails closed.
+
+        Any error examining an ancestor is itself unexaminable, so it counts as
+        blocked: this method never turns an unknown into a confident "no".
+        """
+        if self._kill_switch_path is None:
+            return False
+        for ancestor in self._kill_switch_path.parents:
+            try:
+                mode = ancestor.stat().st_mode
+            except FileNotFoundError:
+                continue  # not created yet; keep looking for one that is
+            except OSError:
+                return True  # cannot even examine it
+            return not stat.S_ISDIR(mode)
+        return False
+
     def check_kill_switch(self) -> bool:
         """Look for the kill-switch file and halt if it is there.
 
@@ -417,8 +443,17 @@ class RiskEngine:
         problem: str | None = None
         try:
             self._kill_switch_path.stat()
-        except FileNotFoundError:
-            present = False
+        except FileNotFoundError as exc:
+            # Windows maps BOTH "the file is not there" (ERROR_FILE_NOT_FOUND)
+            # and "a component of the path is missing or is not a directory"
+            # (ERROR_PATH_NOT_FOUND) onto FileNotFoundError, where POSIX raises
+            # NotADirectoryError for the second and sends it to the branch
+            # below. Reading the merged Windows error as "absent" would make the
+            # switch fail OPEN on exactly the unexaminable path this method
+            # promises to fail closed on. Ask the ancestors directly rather than
+            # reading an OS-specific errno, so both platforms answer alike.
+            blocked = self._an_ancestor_is_not_a_directory()
+            present, problem = (True, str(exc)) if blocked else (False, None)
         except OSError as exc:
             present, problem = True, str(exc)
         else:
