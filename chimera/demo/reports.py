@@ -1032,7 +1032,21 @@ def daily_report(
     """
     day = _require_day(day)
     log_dir = _log_dir(state_dir)
+    if not log_dir.is_dir():
+        raise ReportRefused(
+            f"{log_dir} is not a directory, so there is no decision log to report on. "
+            "A report over an absent log would say 0 minutes processed and 'chain "
+            "intact', which is what a day the runner sat idle also says -- and the "
+            "difference between them is the whole question. Check the state_dir in "
+            "the configuration."
+        )
     records, files, scanned, without_minute = _scan(log_dir)
+    if not files:
+        raise ReportRefused(
+            f"{log_dir} holds no day file at all. The runner writes a STARTUP record "
+            "the first time it starts, so an empty log directory means it never ran "
+            "against this state directory rather than that it ran and did nothing."
+        )
     dated = [(_day_of(record), record) for record in records]
 
     selected = [record for date, record in dated if date == day]
@@ -1056,6 +1070,7 @@ def daily_report(
             "records_scanned": scanned,
             "records_selected": len(selected),
             "records_without_minute": without_minute,
+            "day_file_present": f"{day}.ndjson" in {path.name for path in files},
             "selection_rule": SELECTION_RULE,
         },
         "campaign": _campaign_block(selected),

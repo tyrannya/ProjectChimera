@@ -137,6 +137,7 @@ DAILY_FIELDS = (
 #: ``records_without_minute`` -- is the only place a record the log admits but no
 #: day can claim is visible at all.
 GENERATED_FROM_FIELDS = (
+    "day_file_present",
     "day_files",
     "log_dir",
     "records_scanned",
@@ -293,6 +294,42 @@ def test_the_daily_report_counts_the_records_the_log_holds(tmp_path):
 
     assert {k: v for k, v in report["records_by_kind"].items() if v} == dict(expected)
     assert report["generated_from"]["records_selected"] == sum(expected.values())
+
+
+def test_a_daily_report_over_an_absent_log_refuses_rather_than_reporting_zeros(tmp_path):
+    """A directory with no log is not a day on which nothing happened.
+
+    Before this, a report over a state directory that held no `decision_log/` at
+    all returned `chain.ok = True`, `"0 record(s), chain intact"`, every count
+    zero and exit 0 -- indistinguishable from a day the runner sat idle. That is
+    the same silent zero `input_coverage` exists to prevent, and the likeliest
+    way to meet it is the likeliest operator mistake: the wrong `state_dir`.
+    """
+    empty = tmp_path / "nothing"
+    empty.mkdir()
+    with pytest.raises(ReportRefused, match="no decision log"):
+        daily_report(empty, DAY)
+
+    # A log directory that exists but holds no day file is the same fact, said
+    # differently: the runner writes STARTUP the first time it starts, so an
+    # empty directory means it never ran here.
+    (empty / "decision_log").mkdir()
+    with pytest.raises(ReportRefused, match="never ran"):
+        daily_report(empty, DAY)
+
+
+def test_a_day_with_no_file_of_its_own_is_reported_and_flagged(tmp_path):
+    """The other side: a log that exists, and a day inside it that has no file.
+
+    That IS a real zero -- the campaign is running and this day has no records --
+    so it is reported rather than refused, with `day_file_present` false so the
+    two cases cannot be confused by a reader of the JSON.
+    """
+    harness = _campaign(tmp_path)
+    report = daily_report(harness.state_dir, "2020-01-01")
+    assert report["generated_from"]["day_file_present"] is False
+    assert report["minutes"]["processed"] == 0
+    assert daily_report(harness.state_dir, DAY)["generated_from"]["day_file_present"] is True
 
 
 def test_all_twelve_kinds_are_present_and_zero_filled(tmp_path):
@@ -946,6 +983,53 @@ HALT_CAUSE_ORACLE = (
     ("risk halted", "risk_halted"),
     ("something nobody wrote a prefix for", "other"),
 )
+
+
+#: The three modules that construct a halt reason. Read out of the tree rather
+#: than restated, because the point of the test below is that the table in
+#: `reports.py` and these files cannot drift apart silently.
+HALT_SITE_SOURCES: tuple[str, ...] = (
+    "chimera/demo/runner.py",
+    "chimera/risk.py",
+    "chimera/carry/hedge.py",
+)
+
+
+def test_every_halt_cause_prefix_still_exists_at_a_halt_site():
+    """`HALT_CAUSES` says every prefix is quoted from a live `halt(...)` call.
+
+    Nothing checked that. The prefixes are matched against a free-text reason, so
+    a reason that is reworded -- `carry_dispute: ` to `carry-dispute: `, say --
+    stops matching, silently collapses to `other`, and the daily report's
+    `reconciliation.dispute_halts` quietly becomes 0 while every test stays
+    green. A count that goes to zero because a message was reworded is worse
+    than no count.
+
+    Read as text across the three modules that build a reason, because the
+    reasons are f-strings and the prefix is the literal part; what matters is
+    that the literal still occurs where a halt is raised.
+    """
+    from chimera.demo.reports import HALT_CAUSE_OTHER, HALT_CAUSES
+
+    corpus = "\n".join(
+        (REPO / relative).read_text(encoding="utf-8") for relative in HALT_SITE_SOURCES
+    )
+    missing = [prefix for prefix, _label in HALT_CAUSES if prefix not in corpus]
+    assert not missing, (
+        "HALT_CAUSES names prefixes that no longer appear at any halt site, so a "
+        f"real halt would now collapse to {HALT_CAUSE_OTHER!r}: {missing}"
+    )
+
+
+def test_the_halt_prefix_guard_catches_a_reworded_reason():
+    """The negative control, without editing the tree: a prefix nothing raises."""
+    from chimera.demo.reports import HALT_CAUSES
+
+    corpus = "\n".join(
+        (REPO / relative).read_text(encoding="utf-8") for relative in HALT_SITE_SOURCES
+    )
+    assert "carry-dispute: " not in corpus, "the reworded spelling must not exist"
+    assert any(prefix == "carry_dispute:" for prefix, _ in HALT_CAUSES)
 
 
 @pytest.mark.parametrize("detail,label", HALT_CAUSE_ORACLE)
