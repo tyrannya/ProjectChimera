@@ -167,7 +167,8 @@
           "legendFormat": "{{direction}}",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Flat zero on this build is NOT evidence that the position paid no funding: the runner does not settle funding yet, so both series are structurally 0. See docs/demo_runbook.md and the daily report's input_coverage block."
     },
     {
       "id": 6,

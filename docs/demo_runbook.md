@@ -73,6 +73,17 @@ must not mistake for faults:
   `conf/alerts_demo.yml` cannot be read as liveness on this build;
 * `systemctl status chimera-demo` shows the unit inactive between passes.
 
+A third, of the same kind and worth reading before you trust a funding number:
+the runner does not settle funding on this build -- `HedgedPosition.settle_funding`
+has no caller -- so `CarryLedger.funding_paid` and `funding_received` never move.
+The `FundingAdverseStreak` alert therefore cannot fire, and the dashboard's
+"Funding paid and received" panel draws two flat zero lines rather than "No data".
+**Do not read that panel as evidence that a hedged carry position is paying no
+funding.** The perp leg accrues funding at the venue whatever this repository
+plots. The daily report says the same thing in its `input_coverage` block, which
+is the authority; wiring the settlement is a runner change and is not in the
+observability work that added the panel.
+
 Section 8.1 of the adopted plan describes a continuous `READY` loop and the
 runner has the state machine for one; the CLI does not run it. That is a runner
 gap, recorded here rather than hidden behind a restart policy that makes a

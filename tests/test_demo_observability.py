@@ -910,9 +910,13 @@ def test_the_runner_writes_aegis_shared_series(tmp_path):
     assert risk.snapshot()["halted"] is False, "the clean fixture must not halt"
     assert value_of(metrics.RISK_HALTED) == 0.0
     assert value_of(metrics.DRAWDOWN) == pytest.approx(risk.current_drawdown())
-    assert value_of(metrics.DEMO_FUNDING_ADVERSE_STREAK) == float(
-        risk.snapshot()["funding_adverse_streak"]
-    )
+    # A literal, like the halted flag above and for the same reason: the streak is
+    # provably 0 on this build (nothing calls RiskEngine.note_funding_settlement),
+    # so comparing the gauge to the snapshot is 0.0 == 0.0 whatever the emitter
+    # does. The literal is what will start failing the day the runner settles
+    # funding and the two stop agreeing by accident.
+    assert risk.snapshot()["funding_adverse_streak"] == 0
+    assert value_of(metrics.DEMO_FUNDING_ADVERSE_STREAK) == 0.0
 
 
 @requires_prometheus
