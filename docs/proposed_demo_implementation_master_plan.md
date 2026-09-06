@@ -113,7 +113,7 @@ For every arrow:
 
 | arrow | producer -> consumer | data structure / interface | sync or async | failure semantics | persistence | idempotency | timestamp semantics | restart behaviour |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| exchange -> A | Binance -> `StreamClient` **(new)** | JSON frames on `wss://fstream.binance.com/market/ws/...`, `wss://fstream.binance.com/public/ws/...` and `wss://stream.binance.com:9443/ws/...`; REST JSON | async (asyncio) | disconnect -> reconnect with backoff; 24h forced disconnect expected; ping/pong honoured | none | exchange provides `E` event time and, for klines, `t`/`T`; duplicates possible after reconnect | canonical time = exchange time; receipt time = local monotonic and wall clock, both recorded | resubscribe; REST gap-fill for klines and funding since the last recorded canonical time |
+| exchange -> A | Binance -> `StreamClient` **(new)** | JSON frames on `wss://fstream.binance.com/market/ws/...`, `wss://fstream.binance.com/public/ws/...` and `wss://data-stream.binance.vision:443/ws/...`; REST JSON | async (asyncio) | disconnect -> reconnect with backoff; 24h forced disconnect expected; ping/pong honoured | none | exchange provides `E` event time and, for klines, `t`/`T`; duplicates possible after reconnect | canonical time = exchange time; receipt time = local monotonic and wall clock, both recorded | resubscribe; REST gap-fill for klines and funding since the last recorded canonical time |
 | A -> B | `StreamClient` -> `RawSink` **(new)** | `RawEvent(stream, canonical_ns, receipt_ns, payload_json)` | sync append inside the async loop (single writer per stream) | write error -> recorder halts that stream, health metric flips, alert | append-only NDJSON per stream per UTC day; fsync every second and on rotation | event dedup key = (stream, exchange update id or (`t`,`T`) or `E`+payload hash); duplicates written to a `dup` counter, not to the file | file day boundary by canonical time; a late event for a closed day goes to `<day>.late.ndjson` | on start, the sink re-opens today's file in append mode and reads its last line to recover the dedup horizon |
 | B -> C | `RawSink` files -> `MinuteNormalizer` **(new)** | closed-minute records per stream | sync, runs inside the recorder after each closed minute and on day close | a minute with no closed kline -> recorded as missing, never interpolated | Parquet per stream per day plus `.meta.json` with row count, digest, gap list | recomputation from raw is deterministic; the digest is the identity | minute key = kline open time `t` (UTC, ms); bookTicker and mark aggregated by canonical event time into the minute containing them | normalizer re-derives the current day from raw on start; previous days are immutable once their `.sha256` exists |
 | C -> D | normalized files -> `FeedCursor` **(new)** | `MinuteRecord` per market per minute | sync polling (the runner sleeps until the next expected close plus a grace window, then reads) | file missing or minute missing -> runner marks the feed stale; Aegis stale-feed veto; no decision on invented data | cursor position persisted in runner state (`last_minute_processed`) | processing the same minute twice is prevented by the cursor and by the decision log's `(rule_id, minute)` uniqueness | decision minute = kline open time; a decision is made only for minutes whose kline is closed and whose bookTicker snapshot at close exists | on restart the cursor resumes from the persisted minute; minutes between the persisted cursor and now are processed in order with `catch_up=True` in the log, and no position change is executed for catch-up minutes older than the configured `max_catchup_minutes` (default 3): older minutes are logged as `SKIPPED_STALE` |
@@ -226,7 +226,7 @@ changes.
 | `um.markPrice_1m` | USD-M perp | derived from `um.markPrice`; reconciliation via REST `GET /fapi/v1/markPriceKlines?symbol=BTCUSDT&interval=1m` | as above | minute key | n/a | the per-minute mark high is what the liquidation touch reads (section 6) |
 | `um.funding` | USD-M perp | REST `GET /fapi/v1/fundingRate?symbol=BTCUSDT&startTime=&endTime=&limit=1000`, polled 60 s after each expected settlement (00:00, 08:00, 16:00 UTC) and hourly as a catch-up; current state from `GET /fapi/v1/premiumIndex?symbol=BTCUSDT` every minute | `fundingTime` | settlement id = `fundingTime` (UTC ms) | ordered by `fundingTime`; a settlement is final when returned by `fundingRate` | fields kept: `fundingRate`, `fundingTime`, `markPrice` (the exchange's own notional base; captured here and **not** verified by the funding archive, which publishes no settlement mark price — amendment A4), `rateType` if present |
 | `um.bookTicker` | USD-M perp | websocket `btcusdt@bookTicker` | `E` (event), `T` (transaction), update id `u` | per event; per-minute snapshot = last event with `E` before the minute close | ordered by `u`; an event with `u` not greater than the last kept is a duplicate or out of order and is counted, not stored | fields: b, B, a, A; mandatory to record, and **not** in `required_for_coverage` because no contemporary first-party archive publishes a minute denominator for it — amendment A5 |
-| `spot.kline_1m` | spot BTCUSDT | websocket `btcusdt@kline_1m` on `wss://stream.binance.com:9443/ws`; gap-fill REST `GET /api/v3/klines` | as `um.kline_1m` | minute key | as above | same field set |
+| `spot.kline_1m` | spot BTCUSDT | websocket `btcusdt@kline_1m` on `wss://data-stream.binance.vision:443/ws` (amendment A11); gap-fill REST `GET /api/v3/klines` | as `um.kline_1m` | minute key | as above | same field set |
 | `spot.bookTicker` | spot BTCUSDT | websocket `btcusdt@bookTicker` | `u` only (spot bookTicker has no event time); receipt time used for minute assignment with the update id as the order | last event before minute close by receipt time | ordered by `u` | optional for the coverage gate; required for spot-leg fills |
 
 Receipt timestamp: `time.time_ns()` at frame receipt and `time.monotonic_ns()`
@@ -249,13 +249,45 @@ a canonical timestamp.
 > network restriction; probing the two current bases from the same host
 > delivered all five websocket streams. The recorder therefore opens one
 > connection per *endpoint* (`um-market-ws`, `um-public-ws`, `spot-ws`), not one
-> per market. Spot is unaffected and keeps `wss://stream.binance.com:9443/ws`.
+> per market. Spot kept `wss://stream.binance.com:9443/ws` at the time of this
+> amendment; that endpoint is superseded by amendment A11 below.
 >
 > This changes transport only. No stream id, event schema, canonical timestamp,
 > minute key, missingness rule, coverage rule, reconciliation boundary or
 > contract value changes, and the contract hash is unchanged: `canonical_material`
 > in `chimera/recorder/contract.py` hashes no endpoint. `prospective_from`
 > remains unset.
+
+> **Amendment A11, 2026-09-06 — spot websocket transport correction, pre-acquisition.**
+> `wss://stream.binance.com:9443/ws` is reset by the egress network before any
+> WebSocket frame is exchanged, confirmed for both the recorder's own
+> reconciliation-style SUBSCRIBE and a plain TLS connection to the same
+> host:port, and identically for an unrelated host on the same non-standard
+> port — a network-layer block on port 9443, not a Binance-side refusal (the
+> same host on port 443 answers with Binance's own `HTTP 451` restricted-
+> location response instead, which is a separate, still-open matter and not
+> what this amendment addresses). `wss://data-stream.binance.vision:443/ws` is
+> Binance's own documented "market data messages only" WebSocket base
+> (`web-socket-streams.md`, official `binance-spot-api-docs`) and was verified
+> from this environment to complete a genuine WebSocket handshake, accept a
+> combined `SUBSCRIBE` to `btcusdt@kline_1m` and `btcusdt@bookTicker`, and
+> deliver live frames of both kinds with payload shapes identical to the
+> venue's documented spot `kline` and `bookTicker` frames — the same shapes
+> `chimera/recorder/events.py`'s spot parsers already read. `spot.kline_1m`'s
+> REST gap-fill path (`GET /api/v3/klines` on `https://api.binance.com`) is
+> untouched by this amendment and is not asserted to work; it remains subject
+> to the same `HTTP 451` restricted-location response `api.binance.com`
+> returns generally, and gap-filling a missed minute on that path is not
+> claimed here.
+>
+> This changes transport only, exactly as A3 did. No stream id, event schema,
+> canonical timestamp, minute key, missingness rule, coverage rule,
+> reconciliation boundary or contract value changes, and the contract hash is
+> unchanged: `canonical_material` in `chimera/recorder/contract.py` hashes no
+> endpoint — the websocket base is a Python constant in
+> `chimera/recorder/streams.py`, not a contract field. `prospective_from`
+> remains unset. See `docs/amendment_a11_spot_ws_transport.md` for the full
+> record.
 
 ### 4.2 Reconnect, duplicates, missing, late
 
