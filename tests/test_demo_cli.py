@@ -1,0 +1,167 @@
+"""`tools/demo_run.py`: section 8.3's six subcommands and the mandatory notes."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from chimera.demo.config import config_hash
+from tests.demo_harness import CARRY_PARAMS, DAY, build, campaign_config
+from tools import demo_run
+
+SIX = ("run", "status", "flatten", "resume", "resolve", "report")
+
+
+def written_config(tmp_path: Path, harness) -> Path:
+    """The harness's own config, on disk, so the CLI parses what the tests ran."""
+    config = harness.runner.config
+    payload = json.loads(
+        (Path(__file__).parents[1] / "conf/demo/pvc1.json").read_text("utf-8")
+    )
+    payload.update(
+        {
+            "profile": config.profile.value,
+            "runner": {"state_dir": str(harness.state_dir)},
+            "rules": {"R1_carry": dict(CARRY_PARAMS)},
+        }
+    )
+    path = tmp_path / "cli_config.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_exactly_the_six_subcommands_the_plan_names():
+    parser = demo_run.build_parser()
+    actions = [
+        a for a in parser._actions if getattr(a, "choices", None) and a.dest == "command"
+    ]
+    assert actions, "the parser must declare subcommands"
+    assert tuple(sorted(actions[0].choices)) == tuple(sorted(SIX))
+
+
+@pytest.mark.parametrize("command", ["flatten", "resume", "resolve"])
+def test_the_note_is_required_by_the_parser(command):
+    """argparse refuses the command outright, before anything is touched."""
+    argv = ["--config", "x", "--root", "y", command]
+    if command == "resolve":
+        argv += ["--symbol", "BTC/USDT"]
+    with pytest.raises(SystemExit):
+        demo_run.build_parser().parse_args(argv)
+
+
+@pytest.mark.parametrize("note", ["", "   ", "\t\n"])
+def test_a_whitespace_only_note_is_refused(note):
+    """Required is not the same as meaningful; a blank note explains nothing."""
+    with pytest.raises(SystemExit, match="non-empty"):
+        demo_run._require_note(note, "flatten")
+
+
+def test_a_real_note_survives_stripped():
+    assert demo_run._require_note("  checked both legs  ", "flatten") == "checked both legs"
+
+
+def test_status_reports_the_runner_without_changing_it(tmp_path, capsys):
+    harness = build(tmp_path)
+    harness.run(2)
+    before = harness.runner.cursor.last_minute_processed
+    payload = demo_run._status(harness.runner)
+    assert payload["hedge_state"] == harness.runner.position.state.value
+    assert payload["protocol_frozen"] is False
+    assert payload["imbalance"] == "0.000"
+    assert harness.runner.cursor.last_minute_processed == before
+
+
+def test_report_counts_a_days_records(tmp_path, capsys):
+    harness = build(tmp_path)
+    harness.run(3)
+    harness.runner.shutdown("done")
+    config_path = written_config(tmp_path, harness)
+
+    code = demo_run.main(
+        ["--config", str(config_path), "--profile", "TEST", "report", "--day", DAY]
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["day"] == DAY
+    assert payload["records"] >= 5
+    assert payload["kinds"]["DECISION"] == 3
+
+
+def test_report_on_a_day_with_no_log_says_so_rather_than_failing(tmp_path, capsys):
+    harness = build(tmp_path)
+    config_path = written_config(tmp_path, harness)
+    assert (
+        demo_run.main(
+            [
+                "--config",
+                str(config_path),
+                "--profile",
+                "TEST",
+                "report",
+                "--day",
+                "2019-01-01",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["records"] == 0
+
+
+def test_resolve_refuses_a_symbol_that_is_not_a_leg(tmp_path):
+    from chimera.demo.runner import RunnerError
+
+    harness = build(tmp_path)
+    harness.run(1)
+    with pytest.raises(RunnerError, match="not one of this position's legs"):
+        harness.runner.resolve("DOGE/USDT", "a note")
+
+
+def test_the_cli_opens_no_socket_and_reads_no_credential():
+    """Checked over the AST, not the text.
+
+    The module's own docstring states that it opens no socket, and a guard that
+    could not tell prose from code would forbid saying so -- the same trap as
+    `tests/test_demo_no_live_path.py`'s shadow-rule check.
+    """
+    import ast
+
+    tree = ast.parse((Path(__file__).parents[1] / "tools" / "demo_run.py").read_text("utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported.add((node.module or "").split(".")[0])
+    assert not imported & {"socket", "ssl", "requests", "urllib", "ccxt", "http"}
+
+    # A credential read is a call or an attribute access, never a docstring.
+    reads = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)} | {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    }
+    assert "environ" not in reads and "getenv" not in reads
+    constants = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    code_strings = [c for c in constants if "\n" not in c]  # docstrings are multi-line
+    for marker in ("API_KEY", "API_SECRET"):
+        assert not [c for c in code_strings if marker in c]
+
+
+def test_the_config_hash_does_not_move_with_the_state_directory(tmp_path):
+    """A path may not enter a campaign's identity; two hosts must hash alike."""
+    a = campaign_config(tmp_path / "host_a")
+    b = campaign_config(tmp_path / "host_b")
+    assert config_hash(a) == config_hash(b)
+
+
+def test_the_config_hash_does_move_with_a_rule_parameter(tmp_path):
+    """The negative control: identity ignores paths, never parameters."""
+    a = campaign_config(tmp_path / "s")
+    b = campaign_config(
+        tmp_path / "s", rules={"R1_carry": {**CARRY_PARAMS, "min_basis": "999"}}
+    )
+    assert config_hash(a) != config_hash(b)

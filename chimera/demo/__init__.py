@@ -1,7 +1,7 @@
 """The demo runtime: the parts of Minimum Viable Chimera that are not the market.
 
-Three modules today, and they are the three things every later part of the demo
-has to be able to depend on before it can be written at all:
+The plumbing every other part depends on, and, since PR-10, the runner that runs
+on it:
 
 ``chimera.demo.clock``
     :class:`~chimera.demo.clock.RunnerClock`. The decision clock is
@@ -19,10 +19,31 @@ has to be able to depend on before it can be written at all:
     with section 9.2's canonical serialization and a verifier that tells a torn
     tail apart from a forged chain (section 9).
 
-**What is deliberately not here yet.** The feed, the rules, the runner state
-machine, replay, fault injection, observability and the reports are later
-packages. None of what is here decides anything, trades anything or computes an
-economic quantity; it is the plumbing those parts will run on.
+``chimera.demo.feed``
+    :class:`~chimera.demo.feed.FeedCursor` and :class:`MarketState`: the
+    recorder's normalized minutes, read one at a time and read-only, with the
+    recorder's own digest function narrowed to the single minute a decision was
+    made from (section 2.2's D -> E edge).
+
+``chimera.demo.rules``, ``rules_carry``, ``rules_shadow``
+    the rule contract and the three rules. A rule sees a `MarketState` and a
+    read-only portfolio view and nothing else; a shadow rule returns a
+    `SignalOnly`, which no executor can accept. **No rule carries a default
+    parameter**: the S2 protocol freezes those and it is PR-14's, so a rule
+    refuses to be constructed without explicit values (section 17's S3 STOP).
+
+``chimera.demo.runner``
+    :class:`~chimera.demo.runner.DemoRunner`: section 8.1's state machine. It
+    owns sequencing and evidence and no arithmetic -- sizing is the rule's,
+    execution the position's, permission Aegis's, cash the ledger's.
+
+``chimera.demo.fixtures``, ``chimera.demo.faults``
+    synthetic days and fault schedules, for tests and soak drills only. Nothing
+    on the production path imports either, and a test asserts that.
+
+**What is deliberately not here yet.** Replay parity (PR-11), the daily and
+monthly reports and the full observability series (PR-12), and the prospective
+protocol itself (PR-14).
 
 **And nothing here is a scientific authorisation.** The demo's prospective
 protocol is preregistered by PR-14, not by this package: ``protocol_hash`` in
@@ -42,6 +63,16 @@ from chimera.demo.config import (
     load_demo_config,
     parse_demo_config,
 )
+from chimera.demo.feed import FeedCursor, FeedError, MarketState, MinuteRecord
+from chimera.demo.rules import (
+    HedgeTarget,
+    Rule,
+    RuleDecision,
+    RuleError,
+    RuleRegistry,
+    SignalOnly,
+)
+from chimera.demo.runner import DemoRunner, RunnerError, RunnerState, TickOutcome
 from chimera.demo.decision_log import (
     DECISION_RECORD_SCHEMA,
     EVIDENCE_KINDS,
@@ -70,28 +101,42 @@ from chimera.demo.decision_log import (
 )
 
 __all__ = [
-    "CONFIG_SCHEMA",
-    "DECISION_RECORD_SCHEMA",
-    "EVIDENCE_KINDS",
-    "LIMIT_FIELDS",
-    "OPERATIONAL_KINDS",
-    "UNCLASSIFIED_KINDS",
-    "ZERO_PREV_HASH",
     "AppendedRecord",
+    "CONFIG_SCHEMA",
     "ChainDefect",
     "ChainFault",
     "ChainVerification",
     "ConfigProfile",
+    "DECISION_RECORD_SCHEMA",
     "DecisionLog",
     "DecisionLogError",
     "DecisionLogTailError",
     "DemoConfig",
     "DemoConfigError",
     "DemoLimits",
+    "DemoRunner",
+    "EVIDENCE_KINDS",
+    "FeedCursor",
+    "FeedError",
+    "HedgeTarget",
+    "LIMIT_FIELDS",
+    "MarketState",
+    "MinuteRecord",
+    "OPERATIONAL_KINDS",
     "RecordKind",
+    "Rule",
+    "RuleDecision",
+    "RuleError",
+    "RuleRegistry",
     "RunnerClock",
     "RunnerClockError",
+    "RunnerError",
+    "RunnerState",
+    "SignalOnly",
     "TailRepair",
+    "TickOutcome",
+    "UNCLASSIFIED_KINDS",
+    "ZERO_PREV_HASH",
     "canonical_json",
     "canonical_line",
     "compute_record_hash",
