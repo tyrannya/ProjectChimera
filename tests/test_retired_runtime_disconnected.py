@@ -44,6 +44,7 @@ import ast
 import copy
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -311,8 +312,29 @@ def import_closure(seeds: list[str], modules: dict[str, Path]) -> set[str]:
             continue
         package = name if path.name == "__init__.py" else name.rpartition(".")[0]
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        work.extend(imported_dotted_names(tree, package, known) - seen)
+        reached = imported_dotted_names(tree, package, known)
+        # Python executes every ancestor package's `__init__.py` on the way to a
+        # module, so `import chimera.futures.executor` runs `chimera/__init__.py`
+        # and `chimera/futures/__init__.py` first. Without this the closure held
+        # the leaf and not the packages, and a `from chimera.modes import ...` in
+        # chimera/futures/__init__.py, chimera/recorder/__init__.py,
+        # tools/__init__.py or nn/__init__.py was executed by the real runtime
+        # and invisible to every guard in this file.
+        for reached_name in list(reached):
+            reached |= ancestor_packages(reached_name, known)
+        work.extend(reached - seen)
     return seen
+
+
+def ancestor_packages(dotted: str, known: set[str]) -> set[str]:
+    """Every package `import dotted` would execute on its way to `dotted`."""
+    found: set[str] = set()
+    parts = dotted.split(".")
+    for depth in range(1, len(parts)):
+        prefix = ".".join(parts[:depth])
+        if prefix in known:
+            found.add(prefix)
+    return found
 
 
 def retired_hits(closure: set[str]) -> list[str]:
@@ -328,7 +350,13 @@ def package_seeds(prefix: str, modules: dict[str, Path]) -> list[str]:
     at the package root alone would be almost empty and would prove almost
     nothing.
     """
-    return sorted(m for m in modules if m == prefix or m.startswith(prefix + "."))
+    seeds = {m for m in modules if m == prefix or m.startswith(prefix + ".")}
+    # ...and the packages Python executes to reach them. `chimera/__init__.py`
+    # imports nothing today, but a retired import added to it would be run by
+    # every demo-path module and must not be outside the closure.
+    for name in list(seeds):
+        seeds |= ancestor_packages(name, set(modules))
+    return sorted(seeds)
 
 
 def synthetic_modules(root: Path, sources: dict[str, str]) -> dict[str, Path]:
@@ -426,6 +454,21 @@ def dangling_default_dependencies(spec: dict) -> list[str]:
 
 def scraped_hosts(prometheus: dict) -> set[str]:
     """Every host Prometheus is configured to scrape, port stripped."""
+    # Only `static_configs` can be read from the file. Any other discovery
+    # mechanism names its targets somewhere this function cannot see, so a job
+    # using one would contribute NO hosts and the guard below would pass on a
+    # legacy target reinstated under a neutral job name. Refuse instead of
+    # silently seeing nothing.
+    unreadable = sorted(
+        f"{job.get('job_name')}: {key}"
+        for job in prometheus["scrape_configs"]
+        for key in job
+        if key.endswith("_sd_configs") and key != "static_sd_configs"
+    )
+    assert not unreadable, (
+        "a scrape job discovers its targets by a mechanism this guard cannot "
+        f"read, so it would be invisible to it: {unreadable}"
+    )
     return {
         target.split(":")[0]
         for job in prometheus["scrape_configs"]
@@ -443,7 +486,22 @@ def scrape_targets_outside(prometheus: dict, allowed: set[str]) -> list[str]:
 def automatic_jobs(spec: dict) -> dict[str, dict]:
     """The jobs that run on ``push`` and ``pull_request`` without being asked."""
     jobs = spec["jobs"].items()
-    return {n: j for n, j in jobs if str(j.get("if", "")).strip() != MANUAL_ONLY}
+    return {n: j for n, j in jobs if not is_manual_only(j.get("if", ""))}
+
+
+def is_manual_only(condition: Any) -> bool:
+    """Whether a job `if:` says "only on workflow_dispatch".
+
+    GitHub Actions treats `if: X` and `if: ${{ X }}` as the same condition, and
+    the wrapped form is the one most contributors write. Comparing to one exact
+    string would turn CI red on a rewrite that changed nothing about when the job
+    runs -- and the obvious way out of that failure is to loosen the matcher,
+    which is how a guard stops guarding.
+    """
+    text = str(condition).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    return text == MANUAL_ONLY
 
 
 def retired_ci_steps(spec: dict) -> list[str]:
@@ -705,7 +763,7 @@ def test_the_prometheus_guard_catches_a_reinstated_legacy_scrape_job():
 # ---------------------------------------------------------------------------
 # (5) CI
 # ---------------------------------------------------------------------------
-def test_no_automatically_triggered_ci_job_has_a_freqtrade_or_retired_image_step():
+def test_no_automatic_ci_job_has_a_freqtrade_specific_step_though_the_library_is_installed():
     """Exactly what it says, and deliberately not more.
 
     The claim is about STEPS: no job that runs on ``push`` or
@@ -742,7 +800,7 @@ def test_no_automatically_triggered_ci_job_has_a_freqtrade_or_retired_image_step
     # And the manual jobs are still there, with every step they had.
     for job_name in ("config", "docker"):
         job = spec["jobs"][job_name]
-        assert job["if"].strip() == MANUAL_ONLY
+        assert is_manual_only(job["if"])
         assert job["steps"], f"{job_name} lost its steps; PR-13 deletes nothing"
 
     # The workflow's own triggers are untouched, so the historical validation
@@ -831,13 +889,23 @@ def test_the_existing_no_live_path_guards_still_forbid_freqtrade():
 
     assert "freqtrade" in demo_guard.NETWORK_ROOTS
 
-    for relative, constant in (
-        ("tests/test_futures_no_live_path.py", "FORBIDDEN_IMPORTS"),
-        ("tests/test_recorder_no_network.py", "FORBIDDEN_IMPORTS"),
-        ("tests/test_recorder_no_network.py", "LIVE_FORBIDDEN_IMPORTS"),
+    # The CONSTANTS, imported, not the file text. Scanning the whole file for the
+    # literal `"freqtrade"` was satisfied by any other mention of the word --
+    # including one left behind in a comment -- so deleting the entry from
+    # `LIVE_FORBIDDEN_IMPORTS`, or commenting it out, passed.
+    from tests import test_futures_no_live_path as futures_guard
+    from tests import test_recorder_no_network as recorder_guard
+
+    for module, constant in (
+        (futures_guard, "FORBIDDEN_IMPORTS"),
+        (recorder_guard, "FORBIDDEN_IMPORTS"),
+        (recorder_guard, "LIVE_FORBIDDEN_IMPORTS"),
     ):
-        text = (REPO / relative).read_text(encoding="utf-8")
-        assert '"freqtrade"' in text, f"{relative}:{constant} no longer forbids freqtrade"
+        forbidden = getattr(module, constant)
+        assert "freqtrade" in forbidden, (
+            f"{module.__name__}.{constant} no longer forbids freqtrade; this PR's "
+            "disconnect argument rests on it doing so"
+        )
 
 
 # --------------------------------------------------------------------------- #
