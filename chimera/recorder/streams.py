@@ -89,10 +89,19 @@ logger = logging.getLogger(__name__)
 #: no close: a client left there looks connected and healthy while recording
 #: nothing. Which endpoint a stream is published on is therefore a fact about
 #: the stream, and :data:`WEBSOCKET_STREAMS` below records it per stream rather
-#: than per market. Spot was not migrated and keeps its single base.
+#: than per market. Spot was not migrated, but it moved hosts under amendment
+#: A11 (``docs/amendment_a11_spot_ws_transport.md``): the previous single base
+#: is reset by the egress network before any frame is exchanged — confirmed
+#: network-layer rather than Binance-side by an identical reset against an
+#: unrelated host on the same non-standard port, distinct from the
+#: ``HTTP 451`` restricted-location response the same host returns on port
+#: 443. The base below is Binance's own documented market-data-only websocket
+#: host and was verified to deliver the same ``kline`` and ``bookTicker``
+#: frames this module already parses. Transport only: no stream id, payload
+#: field, or timestamp semantic changes.
 UM_MARKET_WS_BASE = "wss://fstream.binance.com/market/ws"
 UM_PUBLIC_WS_BASE = "wss://fstream.binance.com/public/ws"
-SPOT_WS_BASE = "wss://stream.binance.com:9443/ws"
+SPOT_WS_BASE = "wss://data-stream.binance.vision:443/ws"
 
 #: The venue's own stream-name suffixes. A recorder stream id (``um.kline_1m``)
 #: is this repository's name for a thing; these are Binance's, and the two are

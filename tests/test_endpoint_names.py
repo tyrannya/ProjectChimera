@@ -120,7 +120,7 @@ def test_the_three_websocket_bases_are_the_ones_the_venue_publishes_now():
     """USD-M has been two endpoints since 2026-04-23; spot is still one."""
     assert UM_MARKET_WS_BASE == "wss://fstream.binance.com/market/ws"
     assert UM_PUBLIC_WS_BASE == "wss://fstream.binance.com/public/ws"
-    assert SPOT_WS_BASE == "wss://stream.binance.com:9443/ws"
+    assert SPOT_WS_BASE == "wss://data-stream.binance.vision:443/ws"
     bases = (UM_MARKET_WS_BASE, UM_PUBLIC_WS_BASE, SPOT_WS_BASE)
     assert len(set(bases)) == 3, "each endpoint is its own connection"
     for base in bases:
