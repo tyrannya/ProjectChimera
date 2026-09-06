@@ -500,8 +500,24 @@ def test_the_import_guard_catches_all_three_spellings(tmp_path):
 
 
 def test_no_runtime_module_reads_a_metric_value():
+    """Including the CLIs, which is where PR-12 put the only new metrics import.
+
+    `tools/demo_run.py` is the module this PR newly gives a `chimera.metrics`
+    import -- for `serve_metrics` -- and it is also the module that decides
+    `--allow-dirty` and hands the runner its telemetry. Leaving it out of this
+    scan left the one obvious place a metric could be read back into a decision
+    unguarded, and a planted `if DEMO_EQUITY._value.get() >= 0.0` there passed
+    the whole suite.
+    """
     offenders = {}
-    for path in python_sources(DEMO, CARRY, FUTURES, REPO / "chimera" / "risk.py"):
+    active_clis = (
+        REPO / "tools" / "demo_run.py",
+        REPO / "tools" / "demo_report.py",
+        REPO / "tools" / "replay_parity.py",
+    )
+    for path in python_sources(
+        DEMO, CARRY, FUTURES, REPO / "chimera" / "risk.py", *active_clis
+    ):
         hits = metric_reads(ast.parse(path.read_text(encoding="utf-8")))
         if hits:
             offenders[path.relative_to(REPO).as_posix()] = hits
@@ -541,7 +557,7 @@ def test_every_telemetry_observation_method_returns_none():
         for child in ast.walk(node):
             if isinstance(child, ast.Return):
                 assert child.value is None, f"{node.name} returns a value"
-    assert seen == 14, f"expected seven methods on each of the two classes, saw {seen}"
+    assert seen == 16, f"expected eight methods on each of the two classes, saw {seen}"
 
 
 def test_the_telemetry_module_calls_no_mutating_method():
@@ -599,7 +615,21 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
     tree = runner_tree()
     statements = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Expr)}
     calls = telemetry_calls(tree)
-    assert len(calls) == 7, f"expected seven emission points, found {len(calls)}"
+    # Eight, named: on_state, on_log_write_error, on_record, on_minute,
+    # on_reporting, on_halt, on_position, on_shutdown. The count is written out
+    # so that an emission added without a reader thinking about where it sits in
+    # the tick is a failing test rather than a silent ninth call.
+    assert len(calls) == 8, f"expected eight emission points, found {len(calls)}"
+    assert {call.func.attr for call in calls} == {
+        "on_state",
+        "on_log_write_error",
+        "on_record",
+        "on_minute",
+        "on_reporting",
+        "on_halt",
+        "on_position",
+        "on_shutdown",
+    }
     for call in calls:
         method = call.func.attr
         assert id(call) in statements, (
@@ -725,6 +755,84 @@ def test_the_hedge_state_gauge_shows_exactly_one_state(tmp_path):
 
 
 @requires_prometheus
+def test_the_runner_state_gauge_shows_exactly_one_state(tmp_path):
+    """The twin of the hedge sweep above, and it was missing.
+
+    `set_demo_state` sweeps every state to 0 before setting one to 1, and
+    `RunnerHalted` reads `chimera_demo_state{state="HALT"}`. Replacing the sweep
+    with a single `labels(state=state).set(1.0)` leaves the previous state at 1
+    for ever -- a runner that looks halted long after it resumed, or one that
+    never looks halted at all -- and no test noticed.
+    """
+    harness = demo_harness.build(tmp_path)
+    harness.run(4)
+    values = {
+        state: value_of(metrics.DEMO_STATE, state=state) for state in RUNNER_STATE_VALUES
+    }
+    live = [state for state, value in values.items() if value == 1.0]
+    assert live == [harness.runner.state.value], values
+    assert sorted(values.values()) == [0.0] * (len(RUNNER_STATE_VALUES) - 1) + [1.0]
+
+
+@requires_prometheus
+def test_the_gauge_values_are_the_quantities_they_are_named_for(tmp_path):
+    """Read against the position and the ledger, never against the gauge itself.
+
+    Every one of these was mutated to a constant, or to a neighbouring quantity,
+    against the suite as it stood, and none of it failed: the writer check is an
+    AST scan, so it proves the module reaches for the object and says nothing
+    about what it stores. `chimera_demo_net_pnl` set to absolute equity is the
+    one that matters most -- the dashboard line called "net PnL" would then be
+    the account balance, off by the whole starting capital.
+    """
+    harness = demo_harness.build(tmp_path)
+    outcomes = harness.run(6)
+    last_minute = harness.first_minute_ms() + (len(outcomes) - 1) * 60_000
+    position = harness.runner.position
+    ledger = position.ledger.state
+    # Re-derive the mark from the same minute the last tick reported on, through
+    # the position's own accounting rather than from anything the emitter did.
+    mark = position.mark_to_market(harness.runner.cursor.state_for(last_minute))
+
+    assert value_of(metrics.DEMO_UP) == 1.0
+    assert value_of(metrics.DEMO_EQUITY) == pytest.approx(float(mark.equity))
+    assert value_of(metrics.DEMO_NET_PNL) == pytest.approx(float(mark.equity - ledger.capital))
+    assert value_of(metrics.DEMO_NET_PNL) != pytest.approx(
+        float(mark.equity)
+    ), "net PnL equals absolute equity; the starting capital was not subtracted"
+    assert value_of(metrics.DEMO_BASIS) == pytest.approx(float(mark.basis))
+    assert value_of(metrics.DEMO_HEARTBEAT) > 0.0
+
+
+@requires_prometheus
+def test_the_decision_counter_tells_an_actionable_rule_from_a_shadow_one(tmp_path):
+    """`kind` is the label the counter exists for, and nothing read it.
+
+    Hard-coding it to "signal_only" reports every real decision as a shadow
+    signal, which is the difference between a rule that traded and one that
+    watched.
+    """
+    harness = demo_harness.build(tmp_path)
+    harness.run(6)
+    seen = {
+        (labels[0], labels[1]): metrics.DEMO_DECISIONS.labels(
+            rule=labels[0], kind=labels[1]
+        )._value.get()
+        for labels in metrics.DEMO_DECISIONS._metrics
+    }
+    assert seen, "no decision was counted at all"
+    kinds = {kind for (_rule, kind) in seen}
+    assert kinds <= set(demo_telemetry.SIGNAL_KINDS)
+    # The fixture's rule registry holds the carry rule, which is actionable, so
+    # the actionable label must actually have been used -- a counter that only
+    # ever wrote the shadow label would satisfy the subset check above.
+    actionable = demo_telemetry.SIGNAL_KINDS[0]
+    assert any(
+        value > 0 for (_rule, kind), value in seen.items() if kind == actionable
+    ), f"no actionable decision was counted; saw {seen}"
+
+
+@requires_prometheus
 def test_a_flat_leg_reports_nan_rather_than_zero_liquidation_distance(tmp_path):
     """Zero would read as "liquidation is 100% away"; NaN is unorderable, so no
     alert can conclude anything at all about a leg that has no position."""
@@ -791,16 +899,45 @@ def test_the_runner_writes_aegis_shared_series(tmp_path):
     """Ruling D8: section 11.1 names these three for the demo deployment too.
 
     Read against the risk engine, not against the metric, so a deleted `.set()`
-    fails rather than agreeing with itself.
+    fails rather than agreeing with itself. The halted flag is asserted against a
+    LITERAL 0.0 here and against a literal 1.0 in the halt test below, because
+    comparing it to `1.0 if risk.snapshot()["halted"] else 0.0` on a clean run is
+    `0.0 == 0.0` whatever the emitter does -- the tautology this pair replaces.
     """
     harness = demo_harness.build(tmp_path)
     harness.run(8)
     risk = harness.runner.risk
-    assert value_of(metrics.RISK_HALTED) == (1.0 if risk.snapshot()["halted"] else 0.0)
+    assert risk.snapshot()["halted"] is False, "the clean fixture must not halt"
+    assert value_of(metrics.RISK_HALTED) == 0.0
     assert value_of(metrics.DRAWDOWN) == pytest.approx(risk.current_drawdown())
     assert value_of(metrics.DEMO_FUNDING_ADVERSE_STREAK) == float(
         risk.snapshot()["funding_adverse_streak"]
     )
+
+
+@requires_prometheus
+def test_a_halt_raises_the_shared_halted_gauge(tmp_path):
+    """The other side of the gauge, and the one `RunnerHalted` is named for.
+
+    Every `_halt(...)` path returns before REPORTING, so before `on_halt` existed
+    the demo runner could only ever write 0 here and the first disjunct of
+    `RunnerHalted` was dead on the one deployment it is named for -- leaving the
+    retired Freqtrade container, which writes the same series, as the only thing
+    that could raise it. Hence the `job="demo"` matcher on that disjunct and
+    hence this test.
+    """
+    harness = demo_harness.build(tmp_path)
+    harness.run(2)
+    assert value_of(metrics.RISK_HALTED) == 0.0
+
+    (harness.state_dir / "KILL_SWITCH").touch()
+    outcome = harness.tick(harness.runner.cursor.next_minute_ms())
+
+    assert outcome.kind is RecordKind.HALT
+    assert harness.runner.state is RunnerState.HALT
+    assert harness.runner.risk.snapshot()["halted"] is True
+    assert value_of(metrics.RISK_HALTED) == 1.0
+    assert value_of(metrics.DEMO_STATE.labels(state="HALT")) == 1.0
 
 
 @requires_prometheus

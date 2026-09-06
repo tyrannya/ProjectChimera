@@ -291,6 +291,84 @@ DEMO_DASHBOARD_SERIES: dict[str, tuple[str, str]] = {
 #: The adopted scrape endpoints. 9102 for the recorder and 9103 for the runner,
 #: both from the master plan's deployment table, both written out here rather
 #: than read back out of conf/prometheus.yml.
+#: Every demo alert's EXACT expression and `for` clause, hand-written here.
+#:
+#: The series-name checks below cannot see any of what actually decides whether
+#: an alert fires: a label matcher, a threshold, or the direction of a
+#: comparison. Each of these mutations was tried against the suite as it stood
+#: and none of them failed a test -- `state="HALT"` to `state="HALTED"`, a
+#: label value `RunnerState` cannot produce; the stale-stream matcher to
+#: `um.kline_5m|spot.kline_5m`, two stream ids the gen3 contract does not have,
+#: with the threshold moved from 180 seconds to 18000; and the funding panel
+#: netted with `sum(...)`. An alert disarmed that way still parses, still names
+#: only exported series, and never fires again.
+#:
+#: So the expression is pinned literally. Editing one here is meant to be
+#: deliberate: change the rule file and this table together, and say in the
+#: commit message why the alert should now fire differently.
+DEMO_ALERT_EXPRESSIONS: dict[str, tuple[str, str]] = {
+    "RecorderStreamStale": (
+        'chimera_recorder_last_event_age_seconds{stream=~"um.kline_1m|spot.kline_1m'
+        '|um.markPrice|um.bookTicker"} > 180',
+        "2m",
+    ),
+    "RecorderDown": ("time() - chimera_recorder_heartbeat_timestamp > 120", "0m"),
+    "DataGapToday": ("chimera_recorder_missing_minutes_total > 7", "0m"),
+    "ClockSkew": ("abs(chimera_recorder_clock_skew_ms) > 5000", "5m"),
+    "RunnerDown": ("time() - chimera_demo_heartbeat_timestamp > 120", "0m"),
+    # `job="demo"` is load-bearing: chimera_risk_halted is written by the retired
+    # Freqtrade path too, and without the matcher an alert named for the runner
+    # can be satisfied by a series the legacy container wrote.
+    "RunnerHalted": (
+        'chimera_risk_halted{job="demo"} == 1 or chimera_demo_state{state="HALT"} == 1',
+        "0m",
+    ),
+    "ReconciliationMismatch": (
+        'increase(chimera_futures_reconciliation_total{outcome="MISMATCH"}[10m]) > 0',
+        "0m",
+    ),
+    "HedgeImbalance": ("abs(chimera_demo_hedge_imbalance_btc) > 0", "5m"),
+    "FundingAdverseStreak": ("chimera_demo_funding_adverse_streak >= 2", "0m"),
+    # Section 11.2 writes this as `min(a, b) < 10e9`, which is not valid PromQL:
+    # `min` aggregates one instant vector and takes no second argument, and
+    # `promtool check rules` -- an acceptance criterion for this PR -- rejects it.
+    # The disjunction has the same firing semantics and names which disk fired.
+    "DiskLow": (
+        "chimera_recorder_disk_free_bytes < 10e9 or chimera_demo_disk_free_bytes < 10e9",
+        "5m",
+    ),
+}
+
+#: Every demo panel's EXACT queries, for the same reason and against the same
+#: demonstrated mutation: `chimera_demo_funding_total` netted to
+#: `sum(chimera_demo_funding_total)` passes a metric-name oracle, because `sum`
+#: is filtered out as a PromQL builtin, while collapsing the `direction` label
+#: that amendment A10 exists to keep apart.
+DEMO_PANEL_EXPRESSIONS: dict[str, tuple[str, ...]] = {
+    "Runner state and heartbeat": (
+        "chimera_demo_state",
+        "time() - chimera_demo_heartbeat_timestamp",
+    ),
+    "Recorder stream ages": ("chimera_recorder_last_event_age_seconds",),
+    "Equity and net PnL": ("chimera_demo_equity", "chimera_demo_net_pnl"),
+    "Hedge state and imbalance": (
+        "chimera_demo_hedge_state",
+        "chimera_demo_hedge_imbalance_btc",
+    ),
+    "Funding paid and received": ("chimera_demo_funding_total",),
+    "Fees and slippage (both legs combined)": (
+        "chimera_futures_trading_fees_total",
+        "histogram_quantile(0.9, sum(rate(chimera_futures_slippage_bps_bucket[1h])) by (le))",
+    ),
+    "Vetoes by reason": (
+        "sum(increase(chimera_futures_risk_vetoes_total[1h])) by (reason)",
+        'sum(increase(chimera_rejected_entries_total{job="demo"}[1h])) by (reason)',
+    ),
+    "Reconciliation outcomes": (
+        "sum(increase(chimera_futures_reconciliation_total[1h])) by (outcome)",
+    ),
+}
+
 DEMO_SCRAPE_TARGETS: dict[str, str] = {"recorder": "recorder:9102", "demo": "demo:9103"}
 
 #: Every compose service, so the set fails both when one is deleted and when a
@@ -554,3 +632,84 @@ def test_the_demo_services_carry_no_credential_and_no_live_flag():
         assert "ENABLE_LIVE_TRADING" not in yaml.safe_dump(
             service
         ), f"{name} names the live flag"
+
+
+def test_every_demo_alert_expression_is_the_one_that_was_reviewed():
+    """Matchers, thresholds and comparison directions, pinned literally.
+
+    Everything else in this file checks that an alert names a series something
+    exports. None of it can tell an armed alert from a disarmed one.
+    """
+    actual = {rule["alert"]: (rule["expr"], rule["for"]) for rule in demo_alert_rules()}
+    assert actual == DEMO_ALERT_EXPRESSIONS
+
+
+def test_every_demo_alert_label_value_is_one_the_code_can_produce():
+    """A matcher on a label value nothing emits is an alert that cannot fire.
+
+    Read out of the code and the committed contract rather than restated, so a
+    renamed state or a changed stream set fails here instead of going quiet.
+    """
+    from chimera.demo.runner import RunnerState
+    from chimera.recorder.contract import load_recorder_contract
+
+    states = {state.value for state in RunnerState}
+    streams = set(load_recorder_contract("btcusdt-prospective-gen3").streams)
+
+    text = (CONF_DIR / "alerts_demo.yml").read_text(encoding="utf-8")
+    for value in re.findall(r'state="([^"]+)"', text):
+        assert value in states, f"no RunnerState is {value!r}"
+    for matcher in re.findall(r'stream=~"([^"]+)"', text):
+        for value in matcher.split("|"):
+            assert value in streams, f"{value!r} is not a gen3 contract stream"
+    for value in re.findall(r'job="([^"]+)"', text):
+        prometheus = yaml.safe_load((CONF_DIR / "prometheus.yml").read_text(encoding="utf-8"))
+        jobs = {job["job_name"] for job in prometheus["scrape_configs"]}
+        assert value in jobs, f"no prometheus job is named {value!r}"
+
+
+def test_the_label_value_guard_catches_a_state_nothing_can_emit():
+    from chimera.demo.runner import RunnerState
+
+    assert "HALTED" not in {state.value for state in RunnerState}
+    assert "HALT" in {state.value for state in RunnerState}
+
+
+def test_every_demo_panel_query_is_the_one_that_was_reviewed():
+    """Panel semantics, not just panel metric names.
+
+    A panel that aggregates away the label a reader needs -- `direction` on the
+    funding panel above all, which amendment A10 exists to keep apart -- still
+    names an exported series.
+    """
+    board = json.loads((DASHBOARD_DIR / "demo.json").read_text(encoding="utf-8"))
+    actual = {
+        panel["title"]: tuple(target["expr"] for target in panel["targets"])
+        for panel in board["panels"]
+    }
+    assert actual == DEMO_PANEL_EXPRESSIONS
+
+
+def test_the_shared_risk_series_are_scoped_to_the_demo_job():
+    """chimera_risk_halted and chimera_rejected_entries_total have two writers.
+
+    The retired Freqtrade path writes both, and until it is deleted a demo alert
+    or panel that selects them unqualified reads whichever container answered.
+    """
+    board = json.loads((DASHBOARD_DIR / "demo.json").read_text(encoding="utf-8"))
+    expressions = [(rule["alert"], rule["expr"]) for rule in demo_alert_rules()]
+    expressions += [
+        (panel["title"], target["expr"])
+        for panel in board["panels"]
+        for target in panel["targets"]
+    ]
+    # Only the queries, never the surrounding prose: the rule file's header
+    # names chimera_risk_halted while explaining exactly this, and a raw text
+    # scan would read that sentence as an unqualified selector.
+    for series in ("chimera_risk_halted", "chimera_rejected_entries_total"):
+        for where, expr in expressions:
+            for occurrence in re.findall(re.escape(series) + r"(\{[^}]*\})?", expr):
+                assert "job=" in (occurrence or ""), (
+                    f"{where} selects {series} without a job matcher; the retired "
+                    "Freqtrade container writes the same series"
+                )

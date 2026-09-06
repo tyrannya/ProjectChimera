@@ -77,7 +77,7 @@ groups:
           description: "The heartbeat is stamped from wall time at each state change, so this is a liveness question. How far behind the feed the runner is has its own series, chimera_demo_last_minute_age_seconds."
 
       - alert: RunnerHalted
-        expr: chimera_risk_halted == 1 or chimera_demo_state{state="HALT"} == 1
+        expr: chimera_risk_halted{job="demo"} == 1 or chimera_demo_state{state="HALT"} == 1
         for: 0m
         labels:
           severity: critical

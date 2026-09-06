@@ -134,6 +134,8 @@ class NullTelemetry:
 
     def on_position(self, position: Any) -> None: ...
 
+    def on_halt(self, risk: Any) -> None: ...
+
     def on_reporting(
         self,
         *,
@@ -267,6 +269,34 @@ class RunnerTelemetry:
         set_hedge_state(position.state.value, states=self._hedge_states)
         DEMO_HEDGE_IMBALANCE.set(float(position.imbalance()))
 
+    def on_halt(self, risk: Any) -> None:
+        """Republish the Aegis series after a halt has been recorded.
+
+        Every `_halt(...)` path in the runner returns before REPORTING, so
+        without this call `chimera_risk_halted` written by the demo runner could
+        only ever be 0 -- and `RunnerHalted`'s first disjunct would be dead on
+        the one deployment the alert is named for. The call sits at the end of
+        `_halt`, after the HALT record and the runner state file are on disk, so
+        it observes a halt that has already happened and cannot cause one.
+        """
+        self._publish_aegis(risk)
+
+    def _publish_aegis(self, risk: Any) -> None:
+        """The three shared risk series, read-only from the engine.
+
+        Shared with the retired Freqtrade path, which writes the same three
+        names. That is why `conf/alerts_demo.yml` and the demo dashboard select
+        them with `job="demo"`: without the matcher an alert named for the
+        runner could be satisfied by a series the legacy container wrote.
+        """
+        snapshot = risk.snapshot()
+        RISK_HALTED.set(1.0 if snapshot["halted"] else 0.0)
+        # `snapshot` deliberately omits the drawdown, because it is a function of
+        # two fields that are in it; the engine's own accessor is therefore the
+        # single definition rather than a second one computed here.
+        DRAWDOWN.set(risk.current_drawdown())
+        DEMO_FUNDING_ADVERSE_STREAK.set(float(snapshot["funding_adverse_streak"]))
+
     def on_reporting(
         self,
         *,
@@ -298,13 +328,7 @@ class RunnerTelemetry:
         self._publish_funding(ledger)
         self._publish_liquidation(position, mark, market)
 
-        snapshot = risk.snapshot()
-        RISK_HALTED.set(1.0 if snapshot["halted"] else 0.0)
-        # `snapshot` deliberately omits the drawdown, because it is a function of
-        # two fields that are in it; the engine's own accessor is therefore the
-        # single definition rather than a second one computed here.
-        DRAWDOWN.set(risk.current_drawdown())
-        DEMO_FUNDING_ADVERSE_STREAK.set(float(snapshot["funding_adverse_streak"]))
+        self._publish_aegis(risk)
 
         if veto is not None:
             label = str(veto.get("label", ""))

@@ -1302,6 +1302,69 @@ def test_the_cli_builds_no_protocol_binding_from_the_committed_config():
     assert demo_report._binding_from(config) is None
 
 
+def _config_with_protocol_hash(tmp_path: Path, digest: str) -> Path:
+    """The committed campaign config, with a protocol hash written into it.
+
+    A file exactly like the one a well-meaning operator would produce after
+    reading that `protocol_hash` is what says the protocol is frozen: the hash
+    is filled in and nothing else is, because nothing else has anywhere to go
+    in a campaign configuration.
+    """
+    payload = json.loads((REPO / "conf" / "demo" / "pvc1.json").read_text(encoding="utf-8"))
+    payload["protocol_hash"] = digest
+    path = tmp_path / "pvc1_with_hash.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_a_protocol_hash_alone_is_refused_rather_than_completed_from_defaults(tmp_path):
+    """The other half of the gate, and the half that could fabricate evidence.
+
+    `protocol_hash=null` refusing is the easy half: nothing has been claimed. The
+    dangerous half is a hash that IS present, because a binding needs the
+    contract hash, the prospective boundary, the campaign start, the source
+    identity, the protocol-named quantities, the excluded minutes and a treatment
+    for each unclassified kind -- none of which a campaign configuration holds.
+    Filling those in from defaults would be this tool choosing the terms of the
+    evidence and then stamping `evidence_class: prospective` on the result.
+
+    Written because gutting the refusal -- returning a binding instead of
+    raising -- passed every other test in this file.
+    """
+    from chimera.demo.config import ConfigProfile, load_demo_config
+    from tools import demo_report
+
+    path = _config_with_protocol_hash(tmp_path, "sha256:" + "a" * 64)
+    config = load_demo_config(path, expected_profile=ConfigProfile.CAMPAIGN)
+    assert config.protocol_hash == "sha256:" + "a" * 64
+    assert config.protocol_frozen is True
+
+    with pytest.raises(ReportRefused) as excinfo:
+        demo_report._binding_from(config)
+    message = str(excinfo.value)
+    assert "Nothing was written." in message
+
+
+def test_a_freeze_under_a_bare_protocol_hash_writes_nothing(tmp_path, monkeypatch, capsys):
+    """End to end, through the CLI, with the filesystem as the witness."""
+    from tools import demo_report
+
+    path = _config_with_protocol_hash(tmp_path, "sha256:" + "a" * 64)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    code = demo_report.main(["--config", str(path), "--month", "2026-10", "--freeze"])
+
+    assert code == 2
+    assert "Nothing was written." in capsys.readouterr().err
+    # The filesystem, not the exit code, is what says nothing was written: a
+    # refusal that had already created the directory would still exit 2.
+    assert list(workdir.iterdir()) == []
+    assert not (workdir / "artifacts").exists()
+    assert not (workdir / "artifacts" / "prospective").exists()
+
+
 def test_a_synthetic_protocol_binding_reaches_the_prospective_payload(tmp_path):
     report = monthly_report(_month_log(tmp_path), "2026-09", binding=SYNTHETIC_BINDING)
     assert report["evidence_class"] == "prospective"

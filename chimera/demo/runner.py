@@ -607,6 +607,10 @@ class DemoRunner:
             self.save_state()
         except Exception:  # pragma: no cover - a log failure must not mask the halt
             logger.critical("HALT (%s) could not be written to the decision log", reason)
+        # After the record and the state file, never before: every `_halt` path
+        # returns before REPORTING, so this is the only place the Aegis series
+        # can learn that the engine is halted.
+        self.telemetry.on_halt(self.risk)
         logger.critical("Runner HALTED: %s", reason)
         return self.state
 

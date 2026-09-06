@@ -229,7 +229,7 @@
           "refId": "A"
         },
         {
-          "expr": "sum(increase(chimera_rejected_entries_total[1h])) by (reason)",
+          "expr": "sum(increase(chimera_rejected_entries_total{job=\"demo\"}[1h])) by (reason)",
           "legendFormat": "runner {{reason}}",
           "refId": "B"
         }
