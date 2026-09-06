@@ -44,8 +44,8 @@ from chimera.demo.config import DemoConfig
 from chimera.demo.decision_log import DecisionLog, RecordKind, iso_minute
 from chimera.demo.feed import FeedCursor, MarketState, plain_json
 from chimera.demo.rules import HedgeTarget, RuleDecision, RuleError, RuleRegistry
+from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.executor import FlattenCause, ReconciliationRequired
-from chimera.metrics import DEMO_HEARTBEAT, DEMO_UP, set_demo_state
 from chimera.recorder.sink import write_json_atomic
 from chimera.risk import RiskEngine
 
@@ -128,6 +128,7 @@ class DemoRunner:
         rules: RuleRegistry,
         capital: Decimal,
         software: Mapping[str, Any] | None = None,
+        telemetry: Any | None = None,
     ) -> None:
         self.config = config
         self.root = Path(root)
@@ -141,6 +142,17 @@ class DemoRunner:
 
         self.state_dir = Path(config.runner_setting("state_dir"))
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        # Built before the first `_enter`, because `_enter` publishes through it.
+        # Injectable so a test can drive the same campaign through a no-op
+        # emitter and compare the two decision logs byte for byte; the runner
+        # never reads anything back off it, so what is injected cannot decide.
+        self.telemetry = (
+            telemetry
+            if telemetry is not None
+            else RunnerTelemetry(
+                state_dir=self.state_dir, states=_STATE_NAMES, rules=self.rules.ids
+            )
+        )
         self._enter(RunnerState.STARTUP)
         self.halt_reason: str | None = None
 
@@ -150,7 +162,6 @@ class DemoRunner:
         self._log: DecisionLog | None = None
         self._minutes_since_reconcile = 0
         self._config_hash = _config_hash(config)
-        DEMO_UP.set(1.0)
         self._enter(RunnerState.STARTUP)
 
     def _enter(self, state: RunnerState) -> RunnerState:
@@ -160,11 +171,14 @@ class DemoRunner:
         metrics; a state gauge updated at each call site would eventually miss
         one, and a dashboard showing the wrong state during an incident is worse
         than one showing none.
+
+        What is published is the state's NAME, by value, to something that
+        returns nothing. `self.state` is already set when the call is made, so
+        even an emitter that raised could not leave the runner in a state it does
+        not believe it is in.
         """
         self.state = state
-        set_demo_state(state.value, states=_STATE_NAMES)
-        if self.clock.started:
-            DEMO_HEARTBEAT.set(self.clock.now_ns / 1_000_000_000)
+        self.telemetry.on_state(state.value)
         return state
 
     # ------------------------------------------------------------------
@@ -230,8 +244,17 @@ class DemoRunner:
             "software": self.software,
             **dict(payload),
         }
-        appended = self.log.append(record)
+        try:
+            appended = self.log.append(record)
+        except Exception:
+            # Counted, then re-raised unchanged. A failed append is a failure of
+            # the evidence and the runner's behaviour on it is not this line's to
+            # change; without the counter the failure is visible only in a log
+            # file nobody is watching at 03:00.
+            self.telemetry.on_log_write_error()
+            raise
         self.last_record_hash = appended.record_hash
+        self.telemetry.on_record(kind.value)
         return appended.record_hash
 
     # ------------------------------------------------------------------
@@ -336,6 +359,12 @@ class DemoRunner:
         self._enter(RunnerState.DATA_READY)
         state = self.cursor.state_for(minute_ms, now_ns=self.clock.now_ns)
         self.risk.note_feed(minute_ns + MINUTE_NS, self.clock.now_ns)
+        # Counted here, before anything is decided about the minute, because the
+        # quantity is "minutes attempted": a minute that halts inside a rule is
+        # still one the runner took on, and a counter that skipped it would read
+        # healthiest exactly when the campaign was failing. Nothing in this call
+        # is decision-derived, and nothing reads it back.
+        self.telemetry.on_minute(minute_ns=minute_ns, missing=state.missing)
 
         if not state.complete:
             return self._incomplete(minute_ms, state)
@@ -459,6 +488,19 @@ class DemoRunner:
         self.save_state()
 
         self._enter(RunnerState.REPORTING)
+        # Section 8.1's REPORTING state, and the only place a decision-derived
+        # number reaches Prometheus. It runs after the DECISION record and the
+        # runner state file are both on disk, so every series it moves describes
+        # a minute that is already evidence; the emitter returns nothing and the
+        # tick's outcome below does not mention it.
+        self.telemetry.on_reporting(
+            position=self.position,
+            risk=self.risk,
+            mark=mark,
+            market=state,
+            decisions=decisions,
+            veto=veto,
+        )
         self._minutes_since_reconcile += 1
         self._enter(RunnerState.READY)
         return TickOutcome(
@@ -594,6 +636,9 @@ class DemoRunner:
             },
         )
         self.save_state()
+        # A flatten moves the hedge without a tick, so the position gauges would
+        # otherwise keep showing the pre-flatten size until the next minute.
+        self.telemetry.on_position(self.position)
         return TickOutcome(
             minute,
             self.state,
@@ -686,6 +731,10 @@ class DemoRunner:
         if self._log is not None:
             self._log.close()
             self._log = None
+        # Last, and after the log is closed: `chimera_demo_up` says the process
+        # stopped on purpose, which is what tells a clean shutdown apart from the
+        # scrape failure of a process that died mid-record.
+        self.telemetry.on_shutdown()
         return TickOutcome(
             self.cursor.last_minute_processed or 0,
             self.state,

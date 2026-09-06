@@ -142,6 +142,7 @@ def build(
     config: DemoConfig | None = None,
     with_shadow: bool = True,
     start: bool = True,
+    telemetry: Any | None = None,
 ) -> Harness:
     root = tmp_path / "recorder"
     state_dir = tmp_path / "state"
@@ -187,6 +188,7 @@ def build(
         rules=rules,
         capital=CAPITAL,
         software={"revision": "synthetic", "dirty": False, "python": "3.11"},
+        telemetry=telemetry,
     )
     harness = Harness(runner, model, root, state_dir, feed, risk)
     if start:

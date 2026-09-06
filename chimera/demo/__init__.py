@@ -37,13 +37,19 @@ on it:
     owns sequencing and evidence and no arithmetic -- sizing is the rule's,
     execution the position's, permission Aegis's, cash the ledger's.
 
+``chimera.demo.telemetry``
+    section 11.1's Prometheus series, and the only module on this path permitted
+    to import :mod:`chimera.metrics`. It writes; it reads nothing back and
+    returns nothing, so no campaign decision can be a function of its own
+    monitoring -- which is asserted structurally and by a byte comparison of two
+    identical campaigns run with and without it.
+
 ``chimera.demo.fixtures``, ``chimera.demo.faults``
     synthetic days and fault schedules, for tests and soak drills only. Nothing
     on the production path imports either, and a test asserts that.
 
 **What is deliberately not here yet.** Replay parity (PR-11), the daily and
-monthly reports and the full observability series (PR-12), and the prospective
-protocol itself (PR-14).
+monthly reports (PR-12), and the prospective protocol itself (PR-14).
 
 **And nothing here is a scientific authorisation.** The demo's prospective
 protocol is preregistered by PR-14, not by this package: ``protocol_hash`` in
