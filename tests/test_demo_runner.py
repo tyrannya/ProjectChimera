@@ -1411,40 +1411,67 @@ def test_a_liquidation_price_that_cannot_be_computed_is_refused(tmp_path):
     assert harness.runner.position.state is HedgeState.FLAT
 
 
-def test_the_liquidation_check_reads_this_minute_and_the_mark_high(tmp_path):
+def test_the_liquidation_check_reads_the_mark_high_and_not_the_close(tmp_path):
     """Section 6.7's own formula: `equity < Q * mark_high * maintenance_margin_rate`.
 
-    Both halves matter. The mark HIGH is the most adverse mark the minute can be
-    shown to have reached, and the close is never above it, so reading the close
-    put the threshold strictly below the adopted one. The equity is marked at the
-    minute being checked, not carried over from the previous one.
+    Two-sided, on a minute where the two conventions genuinely DISAGREE. The
+    synthetic fixture writes ``mark_high == mark_close``, so a test taken from it
+    unaltered cannot tell them apart -- and would pass just as happily against
+    the close-reading this fixes. The high is therefore raised explicitly, and
+    the equity placed between the two thresholds:
+
+    * below ``Q * mark_high * rate``  -> section 6.7 says TOUCHED;
+    * at or above ``Q * mark_close * rate`` -> the close-reading says not.
+
+    The close is never above the high, so reading it put the threshold strictly
+    below the adopted one -- a deviation in the unsafe direction.
     """
     harness = build(tmp_path)
     first = harness.first_minute_ms()
     harness.run(3, start=first)
     state = harness.runner.cursor.state_for(first + 3 * 60_000)
     assert state.mark_high is not None and state.mark_high >= state.mark
-    assert "mark_high" in state.canonical()
+    assert "mark_high" in state.canonical(), "and it is one of the hashed inputs"
 
-    quantity = harness.runner.position.leg("perp").quantity
-    rate = harness.runner.position.config.maintenance_margin_rate
-    # Between the two thresholds: below the HIGH's, at or above the CLOSE's.
-    # Reading the close would answer "not touched" on a minute section 6.7 calls
-    # a touch, so this is the case the two conventions disagree on.
-    assert harness.runner.position.liquidation_touched(
-        _MarkState(state, equity_mark=state.mark_high),
-        equity=quantity * state.mark_high * rate - D("1"),
-    )
+    position = harness.runner.position
+    quantity = position.leg("perp").quantity
+    rate = position.config.maintenance_margin_rate
+    spiked = _MarkState(state, mark_high=state.mark * D("2"))
+    between = quantity * state.mark * rate * D("1.5")
+    assert between < quantity * spiked.mark_high * rate, "below the high's threshold"
+    assert between > quantity * state.mark * rate, "and above the close's"
+
+    assert position.liquidation_touched(spiked, equity=between) is True
+    # The control: the same equity on the same minute WITHOUT the spike is not a
+    # touch, so the assertion above is about the high and nothing else.
+    assert position.liquidation_touched(state, equity=between) is False
+
+
+def test_a_minute_carrying_neither_mark_is_refused_on_a_held_position(tmp_path):
+    """ "There is no third tier": no high and no close on a non-flat position."""
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(3, start=first)
+    state = harness.runner.cursor.state_for(first + 3 * 60_000)
+    blind = _MarkState(state, mark_high=None, mark=None)
+    assert harness.runner.position.liquidation_touched(blind, equity=D("1")) is True
 
 
 class _MarkState:
-    """A minute with one field overridden, for the two-sided liquidation control."""
+    """A minute with named fields overridden, for the two-sided liquidation control.
 
-    def __init__(self, state, *, equity_mark):
+    The synthetic fixture writes one value into every mark column, so a minute
+    taken from it cannot distinguish the high from the close. This lets a test
+    say which one it means.
+    """
+
+    def __init__(self, state, **overrides):
         self._state = state
-        self.mark_high = equity_mark
+        self._overrides = overrides
 
     def __getattr__(self, name):
+        if name in self._overrides:
+            return self._overrides[name]
         return getattr(self._state, name)
 
 
@@ -1519,3 +1546,40 @@ def test_a_minute_with_no_book_still_moves_the_fill_model_clock(tmp_path):
     after = harness.runner.position.fill_model.now_ns
     assert after > before, "the clock moved on a minute that carried no book"
     assert after == (first + 2 * 60_000) * 1_000_000 + 60_000_000_000
+
+
+def test_a_restart_reconciles_against_a_venue_that_still_knows_the_position(tmp_path):
+    """Section 8.1's hourly check must survive a restart, and this is why it can.
+
+    The dry-run venue holds the simulated account's positions in memory, so a new
+    process starts with an empty one while the stores still hold what the account
+    was left holding. `FuturesExecutor.reconcile` asks the venue -- so before
+    PR-10R restored the venue's view from each leg's store, the FIRST periodic
+    reconciliation after ANY restart compared a held position against an empty
+    simulator, reported MISMATCH on both legs, disputed them and halted the
+    campaign. A restart is a normal event this design expects (section 2.1), so
+    that made a campaign unable to survive one.
+
+    Asserted on the OUTCOME, not on the cadence: a test that only checked when
+    the reconciliation happened passed throughout.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(3, start=first)
+    assert harness.runner.position.state is HedgeState.HEDGED
+    held = harness.runner.position.leg("perp").quantity
+    config = harness.runner.config
+    harness.runner.shutdown("restart drill")
+
+    resumed = build(tmp_path, config=config)
+    assert resumed.runner.position.state is HedgeState.HEDGED
+    resumed.runner.last_reconcile_minute_ms = None  # force the periodic arm now
+    resumed.runner.tick(first + 3 * 60_000)
+
+    assert resumed.runner.state is not RunnerState.HALT, resumed.runner.halt_reason
+    record = _reconciliations(resumed)[-1]["reconciliation"]
+    assert record["outcome"] == "AGREED"
+    for leg in record["legs"]:
+        assert leg["outcome"] == "AGREED", leg
+        assert leg["reported_qty"] == str(held), "the venue still knows the position"
+    assert resumed.risk.state.reconciliation_disputed == {}
