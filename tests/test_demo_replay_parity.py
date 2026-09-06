@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from chimera.demo.faults import Fault, FaultSchedule, ScheduledFault
-from tests.demo_harness import DAY, build
+from tests.demo_harness import DAY, NEXT_DAY, build
 from tools.replay_parity import (
     ENVIRONMENT_PARITY,
     MUST_MATCH,
@@ -96,7 +96,43 @@ def test_a_changed_must_match_field_is_caught(tmp_path, faulted_shapes):
     assert "999.999" in report.divergences[0].render()
 
 
-@pytest.mark.parametrize("field_name", [f for f in MUST_MATCH if f not in ("kind", "minute")])
+#: Section 10's must-match list, written out INDEPENDENTLY of the tool's own
+#: constant. Parametrising over `MUST_MATCH` made this vacuous in exactly the
+#: direction that matters: deleting a field from the tool's list deleted its
+#: test case too, so the suite stayed green while the comparison silently
+#: stopped checking it. A mutation witness found that; this literal is the fix.
+SECTION_10_MUST_MATCH: tuple[str, ...] = (
+    "kind",
+    "minute",
+    "seq",
+    "runner_now_ns",
+    "inputs",
+    "rule",
+    "signal",
+    "requested_action",
+    "risk",
+    "execution",
+    "position_after",
+    "ledger_effect",
+    "veto_or_rejection",
+)
+
+
+def test_the_tools_must_match_list_is_exactly_section_10s():
+    """The list itself, pinned. Removing a field from the tool now fails here."""
+    assert tuple(sorted(MUST_MATCH)) == tuple(sorted(SECTION_10_MUST_MATCH))
+
+
+def test_the_tools_operational_kinds_are_exactly_section_10s():
+    """The set itself, pinned, for the same reason."""
+    assert OPERATIONAL_KINDS == frozenset(
+        {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME"}
+    )
+
+
+@pytest.mark.parametrize(
+    "field_name", [f for f in SECTION_10_MUST_MATCH if f not in ("kind", "minute")]
+)
 def test_every_must_match_field_is_actually_compared(tmp_path, field_name):
     """Each field in section 10's list, perturbed one at a time.
 
@@ -112,6 +148,17 @@ def test_every_must_match_field_is_actually_compared(tmp_path, field_name):
     report = compare_logs(records, tampered)
     assert not report.ok, f"{field_name} is in MUST_MATCH but is not compared"
     assert any(d.field_name == field_name for d in report.divergences)
+
+
+def test_a_decision_dropped_from_the_replay_is_still_a_failure(tmp_path):
+    """The negative control for the operational-kinds rule: only those are forgiven."""
+    live = run_campaign(tmp_path / "live", minutes=8)
+    records = live.records()
+    fewer = [r for r in records if r["kind"] != "DECISION"] + [
+        r for r in records if r["kind"] == "DECISION"
+    ][1:]
+
+    assert not compare_logs(records, fewer).ok, "a missing DECISION is a parity failure"
 
 
 def test_a_missing_record_is_reported_rather_than_ignored(tmp_path):
@@ -146,7 +193,11 @@ def test_operational_kinds_are_aligned_rather_than_compared(tmp_path):
     """ "The replay may have fewer restarts."" """
     live = run_campaign(tmp_path / "live", minutes=8)
     records = live.records()
-    without_startup = [r for r in records if r["kind"] not in OPERATIONAL_KINDS]
+    # The kind is NAMED, not taken from the constant under test: building the
+    # fixture from `OPERATIONAL_KINDS` made this vacuous, because emptying the
+    # set left nothing dropped and the comparison trivially passed.
+    without_startup = [r for r in records if r["kind"] != "STARTUP"]
+    assert len(without_startup) < len(records), "the fixture must actually drop one"
 
     report = compare_logs(records, without_startup)
     assert report.ok, "dropping a STARTUP record must not be a parity failure"
@@ -200,14 +251,27 @@ def test_runner_now_ns_is_compared_with_tolerance_zero(tmp_path):
 # the scratch copy
 # ---------------------------------------------------------------------------
 def test_the_scratch_copy_carries_the_days_asked_for_and_no_others(tmp_path):
-    harness = build(tmp_path / "live", days=(DAY,))
+    """Two days written, ONE asked for.
+
+    An earlier version globbed for a day that never existed upstream, so a copy
+    that took everything still passed it. The unasked-for day has to be present
+    in the source for its absence in the scratch copy to mean anything.
+    """
+    harness = build(tmp_path / "live", days=(DAY, NEXT_DAY))
+    source = harness.root / "normalized" / "um" / "1m"
+    assert (source / f"{NEXT_DAY}.parquet").is_file(), "the fixture must write both days"
+
     scratch = tmp_path / "scratch"
     copy_range(harness.root, scratch, [DAY])
 
-    assert (scratch / "normalized" / "um" / "1m" / f"{DAY}.parquet").is_file()
+    copied = scratch / "normalized" / "um" / "1m"
+    assert (copied / f"{DAY}.parquet").is_file()
     assert (scratch / "normalized" / "spot" / "1m" / f"{DAY}.parquet").is_file()
     assert (scratch / "funding" / "um" / "settlements.ndjson").is_file()
-    assert not list((scratch / "normalized" / "um" / "1m").glob("2099*"))
+    assert not (copied / f"{NEXT_DAY}.parquet").exists(), (
+        "a day the caller did not ask for must not be copied: the range is what "
+        "a parity run is about"
+    )
 
 
 def test_the_scratch_copy_leaves_the_recorders_tree_untouched(tmp_path):
