@@ -159,9 +159,23 @@ def _run_month(args: argparse.Namespace, config: DemoConfig) -> int:
     if not args.freeze:
         return EXIT_OK
 
-    from tools.freeze_evidence import freeze
+    from tools.freeze_evidence import freeze, refuse_existing, relative
 
     out_dir = PROSPECTIVE_ROOT / config.campaign_id / args.month
+    manifest = Path("artifacts") / f"{config.campaign_id}_{args.month}_SHA256SUMS.txt"
+
+    # Both of `freeze`'s refusals, asked BEFORE anything is on disk. `freeze`
+    # asks them too, but it runs after the two writes below, and by then the
+    # damage is done: re-freezing a month that is already frozen would replace
+    # the frozen report.json with today's bytes and only then refuse, leaving a
+    # committed manifest that names a digest no file matches -- a frozen result
+    # quietly becoming whatever the code does today, which is the one thing the
+    # refusal exists to prevent. The second call is what makes a run from a
+    # working directory outside the repository refuse before it scatters an
+    # artifact carrying `evidence_class: prospective` somewhere unmanifested.
+    refuse_existing(manifest)
+    relative(out_dir)
+
     out_dir.mkdir(parents=True, exist_ok=True)
     # newline="\n" on both: a frozen artifact is identified by the SHA-256 of
     # its bytes, and the default text mode would translate every newline to
@@ -174,10 +188,7 @@ def _run_month(args: argparse.Namespace, config: DemoConfig) -> int:
         newline="\n",
     )
     (out_dir / "STATUS.md").write_text(status, encoding="utf-8", newline="\n")
-    freeze(
-        [out_dir],
-        out=Path("artifacts") / f"{config.campaign_id}_{args.month}_SHA256SUMS.txt",
-    )
+    freeze([out_dir], out=manifest)
     return EXIT_OK
 
 

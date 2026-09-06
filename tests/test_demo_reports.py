@@ -1377,6 +1377,111 @@ def test_a_synthetic_protocol_binding_reaches_the_prospective_payload(tmp_path):
     assert "answers no research question" in status
 
 
+def _freeze_with(monkeypatch, tmp_path, binding, month="2026-09"):
+    """Drive the real monthly write block under an explicitly SYNTHETIC protocol.
+
+    The block is unreachable through the committed configuration, because the
+    protocol is not frozen and the gate refuses -- which is exactly why nothing
+    executed `mkdir`, either `write_text`, or `freeze` until this helper existed.
+    The binding is patched in at the gate, so everything downstream of it is the
+    shipped code running verbatim.
+    """
+    from tools import demo_report
+
+    workdir = tmp_path / "cwd"
+    (workdir / "state").mkdir(parents=True)
+    state_dir = _month_log(workdir, ())
+    payload = json.loads((REPO / "conf" / "demo" / "pvc1.json").read_text(encoding="utf-8"))
+    payload.setdefault("runner", {})["state_dir"] = str(state_dir)
+    config_path = workdir / "synthetic.json"
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # `freeze_evidence.ROOT` is derived from its own `__file__`, so every path
+    # under tmp_path is "outside the repository" to it. Pointing it at the
+    # synthetic tree is what lets the write block run at all without putting a
+    # file carrying `evidence_class: prospective` into the real artifacts/.
+    from tools import freeze_evidence
+
+    monkeypatch.setattr(freeze_evidence, "ROOT", workdir.resolve())
+    monkeypatch.setattr(demo_report, "_binding_from", lambda config: binding)
+    monkeypatch.chdir(workdir)
+    code = demo_report.main(["--config", str(config_path), "--month", month, "--freeze"])
+    return demo_report, workdir, config_path, code
+
+
+def test_a_synthetic_freeze_writes_the_artifact_and_its_manifest(tmp_path, monkeypatch):
+    """The write block, executed. Nothing had ever run it."""
+    _, workdir, _, code = _freeze_with(monkeypatch, tmp_path, SYNTHETIC_BINDING)
+    assert code == 0
+    out_dir = workdir / "artifacts" / "prospective" / "pvc1" / "2026-09"
+    assert (out_dir / "report.json").is_file()
+    assert (out_dir / "STATUS.md").is_file()
+    assert (workdir / "artifacts" / "pvc1_2026-09_SHA256SUMS.txt").is_file()
+    written = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
+    assert written["evidence_class"] == "prospective"
+
+
+def test_refreezing_a_frozen_month_refuses_before_it_touches_the_frozen_bytes(
+    tmp_path, monkeypatch
+):
+    """The ordering defect, and the reason the refusal moved ahead of the writes.
+
+    `freeze` refuses to overwrite a manifest, but it was called AFTER both
+    `write_text` calls: a second run replaced the frozen report.json with today's
+    bytes and only then raised, leaving a committed manifest naming a digest no
+    file matches. A frozen result had quietly become whatever the code does
+    today, which is the one thing that refusal exists to prevent.
+    """
+    from dataclasses import replace
+
+    demo_report, workdir, config_path, code = _freeze_with(
+        monkeypatch, tmp_path, SYNTHETIC_BINDING
+    )
+    assert code == 0
+    frozen = workdir / "artifacts" / "prospective" / "pvc1" / "2026-09" / "report.json"
+    manifest = workdir / "artifacts" / "pvc1_2026-09_SHA256SUMS.txt"
+    before = frozen.read_bytes()
+    manifest_before = manifest.read_bytes()
+
+    # A second run whose report would differ, so an overwrite is detectable.
+    other = replace(SYNTHETIC_BINDING, quantities=("minutes_processed", "decisions"))
+    monkeypatch.setattr(demo_report, "_binding_from", lambda config: other)
+    with pytest.raises(SystemExit) as excinfo:
+        demo_report.main(["--config", str(config_path), "--month", "2026-09", "--freeze"])
+
+    assert "already exists" in str(excinfo.value)
+    assert frozen.read_bytes() == before, "the frozen report was overwritten"
+    assert manifest.read_bytes() == manifest_before
+
+    from tools.freeze_evidence import check
+
+    monkeypatch.chdir(workdir)
+    assert check(manifest) == [], "the manifest no longer describes the bytes"
+
+
+def test_a_freeze_from_outside_the_repository_refuses_before_writing(tmp_path, monkeypatch):
+    """`relative()` refuses a path outside the repository -- but only once
+    `freeze` reached it, which was after both writes, so an artifact carrying
+    `evidence_class: prospective` was already on disk with no manifest at all."""
+    from tools import demo_report
+
+    outside = tmp_path / "outside"
+    (outside / "state").mkdir(parents=True)
+    state_dir = _month_log(outside, ())
+    payload = json.loads((REPO / "conf" / "demo" / "pvc1.json").read_text(encoding="utf-8"))
+    payload.setdefault("runner", {})["state_dir"] = str(state_dir)
+    config_path = outside / "synthetic.json"
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(demo_report, "_binding_from", lambda config: SYNTHETIC_BINDING)
+    monkeypatch.chdir(outside)
+    with pytest.raises(SystemExit) as excinfo:
+        demo_report.main(["--config", str(config_path), "--month", "2026-09", "--freeze"])
+
+    assert "outside the repository" in str(excinfo.value)
+    assert not (outside / "artifacts").exists(), "an unmanifested artifact was left behind"
+
+
 def test_the_monthly_report_computes_only_the_quantities_the_protocol_names(tmp_path):
     from dataclasses import replace
 

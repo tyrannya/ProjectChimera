@@ -358,9 +358,11 @@ protocol would be a result whose rules were chosen after the data existed.
 
 When a protocol has been preregistered and a campaign has actually run, the
 freeze writes the month and a checksum manifest beside the other manifests under
-`artifacts/`. `tools.freeze_evidence` refuses to overwrite an existing manifest.
-A corrected month is therefore a **new** manifest under a new name, with the
-superseded one kept; it is never a regenerated one.
+`artifacts/`. `tools.freeze_evidence` refuses to overwrite an existing manifest,
+and the report asks for that refusal *before* it writes anything, so a second
+`--freeze` of a month that is already frozen leaves the frozen bytes exactly as
+they were. A corrected month is therefore a **new** manifest under a new name,
+with the superseded one kept; it is never a regenerated one.
 
 Nothing in this section has happened. No prospective artifact exists in this
 repository, no research-question row has been added for one, and this document

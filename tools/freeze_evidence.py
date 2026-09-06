@@ -172,13 +172,26 @@ def relative(path: Path) -> str:
         raise SystemExit(f"{path} is outside the repository; refusing to freeze it")
 
 
-def freeze(directories: Iterable[Path], out: Path) -> int:
+def refuse_existing(out: Path) -> None:
+    """The overwrite refusal, askable before the caller has written anything.
+
+    Additive, and the reason it exists is a real ordering bug rather than tidiness:
+    a caller that writes its artifact first and calls :func:`freeze` afterwards
+    learns of this refusal only once it has already replaced the frozen bytes,
+    leaving a committed manifest naming a digest no file matches. The policy text
+    lives here once so that the early check and the late one cannot drift into
+    disagreeing about what is refused.
+    """
     if out.exists():
         raise SystemExit(
             f"{out} already exists. A frozen manifest is a statement about what a past "
             "run produced; regenerating it in place is how a result quietly becomes "
             "whatever the code does today. Write a new manifest under a new name."
         )
+
+
+def freeze(directories: Iterable[Path], out: Path) -> int:
+    refuse_existing(out)
     files = evidence_files(directories)
     if not files:
         raise SystemExit("no evidence files found; refusing to write an empty manifest")
