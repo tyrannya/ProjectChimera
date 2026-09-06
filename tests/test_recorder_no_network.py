@@ -147,6 +147,7 @@ ENDPOINT_TOKENS = (
     "stream.binance.com",
     "fstream.binance.com",
     "data.binance.vision",
+    "data-stream.binance.vision",
     "/fapi/",
     "/api/v3/",
     "wss://",
