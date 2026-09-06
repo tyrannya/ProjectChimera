@@ -1102,7 +1102,9 @@ def test_the_engine_transcribes_the_specs_order_step_for_step() -> None:
     this file under either order. Comparing the two lists is the only thing that
     would have said no.
     """
-    section = SPEC_DOCUMENT.read_text().split("## 8. Order of operations within a candle")
+    section = SPEC_DOCUMENT.read_text(encoding="utf-8").split(
+        "## 8. Order of operations within a candle"
+    )
     assert len(section) == 2, "smc_v1.md no longer has a §8 to transcribe"
     declared = _numbered_verbs(section[1].split("###")[0], r"^(\d)\. \*\*(\w+)\*\*")
     implemented = _numbered_verbs(nn.smc.__doc__ or "", r"^(\d)\. (\w+)")

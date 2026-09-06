@@ -517,7 +517,7 @@ def test_the_sealed_instant_is_resolved_from_the_contract_not_restated():
     assert prereg.STYX_SEALED_INSTANT == (
         load_contract("btc-usdt-1h-gen1").sealed_test_start.isoformat()
     )
-    source = (ROOT / "nn" / "p13_preregistration.py").read_text()
+    source = (ROOT / "nn" / "p13_preregistration.py").read_text(encoding="utf-8")
     assert "2025-08-27T23:00:00" not in source
 
 
@@ -613,7 +613,7 @@ def test_the_gate_states_that_its_hurdle_is_zero_yield_cash():
 
 def test_the_human_document_quotes_the_hash_the_module_computes():
     """The prose half and the machine half must not drift apart silently."""
-    doc = (ROOT / "docs" / "p13_preregistration.md").read_text()
+    doc = (ROOT / "docs" / "p13_preregistration.md").read_text(encoding="utf-8")
     assert EXPECTED_HASH in doc, (
         "docs/p13_preregistration.md does not carry the current preregistration hash. "
         "Regenerate it rather than editing the module and leaving the prose behind."
@@ -684,7 +684,7 @@ def test_the_amendment_moved_the_hash_rather_than_pretending_it_did_not():
 
 def test_the_document_records_both_the_active_and_the_superseded_hash():
     """Amendment A2 made this plural: there are now two superseded hashes, not one."""
-    doc = (ROOT / "docs" / "p13_preregistration.md").read_text()
+    doc = (ROOT / "docs" / "p13_preregistration.md").read_text(encoding="utf-8")
     assert EXPECTED_HASH in doc
     assert ORIGINAL_HASH in doc
     assert A1_HASH in doc
@@ -699,7 +699,7 @@ def test_the_acquisition_evidence_still_carries_the_hash_it_was_generated_under(
     that they were produced under a rule that did not exist yet.
     """
     for name in ACQUISITION_EVIDENCE:
-        text = (ROOT / name).read_text()
+        text = (ROOT / name).read_text(encoding="utf-8")
         assert ORIGINAL_HASH in text, f"{name} no longer carries the original hash"
         assert EXPECTED_HASH not in text, (
             f"{name} was rewritten to quote the amended hash. It was generated before the "

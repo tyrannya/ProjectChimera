@@ -125,7 +125,7 @@ def aligned(spine, raw_candles):
 
 @pytest.fixture(scope="module")
 def real_manifest() -> dict[str, Any]:
-    return json.loads(REAL_MANIFEST.read_text())
+    return json.loads(REAL_MANIFEST.read_text(encoding="utf-8"))
 
 
 def poison_from(data: ResearchData, first_unreadable_row: int) -> ResearchData:
@@ -483,7 +483,7 @@ def test_every_research_entrypoint_loads_through_the_vouching_loader():
     """
     root = Path(__file__).resolve().parent.parent / "nn"
     for module in ("train.py", "experiment.py", "walkforward.py", "benchmark.py"):
-        source = (root / module).read_text()
+        source = (root / module).read_text(encoding="utf-8")
         assert "load_research_data(args.dataset)" in source, module
         assert "research_data_from_frame" not in source or module == "train.py", module
 

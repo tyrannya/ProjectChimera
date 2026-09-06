@@ -370,8 +370,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / ABLATION_JSON).write_text(json.dumps(payload, indent=2, default=str) + "\n")
-    (out_dir / ABLATION_MD).write_text(to_markdown(payload))
+    (out_dir / ABLATION_JSON).write_text(
+        json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+    )
+    (out_dir / ABLATION_MD).write_text(to_markdown(payload), encoding="utf-8")
     logger.info("wrote %s and %s", out_dir / ABLATION_JSON, out_dir / ABLATION_MD)
     return 0
 

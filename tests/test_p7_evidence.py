@@ -44,14 +44,16 @@ MODE_IDS = [design["mode"] for design in MODES]
 @pytest.fixture(scope="module")
 def modes() -> dict:
     return {
-        design["mode"]: json.loads((BENCHMARK / out_name(design) / ARTIFACT_NAME).read_text())
+        design["mode"]: json.loads(
+            (BENCHMARK / out_name(design) / ARTIFACT_NAME).read_text(encoding="utf-8")
+        )
         for design in MODES
     }
 
 
 @pytest.fixture(scope="module")
 def decision() -> dict:
-    return json.loads((DECISION_DIR / DECISION_NAME).read_text())
+    return json.loads((DECISION_DIR / DECISION_NAME).read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------- #
@@ -104,7 +106,9 @@ def test_the_preregistered_validity_gate_holds_on_the_frozen_evidence(modes, nam
     payload = modes[name]
     clock = payload["mode"]["decision_clock"]
     cell = json.loads(
-        (REPO / "artifacts" / "benchmark" / f"btc_p6_{clock}_xgboost" / "p6.json").read_text()
+        (REPO / "artifacts" / "benchmark" / f"btc_p6_{clock}_xgboost" / "p6.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     replayed = [
@@ -232,9 +236,9 @@ def test_the_primary_evidence_is_frozen_and_still_hashes():
 def test_the_manifest_covers_every_mode_artifact():
     covered = {
         line.split(maxsplit=1)[1].strip()
-        for line in MANIFEST.read_text().splitlines()
+        for line in MANIFEST.read_text(encoding="utf-8").splitlines()
         if line.strip()
     }
     for design in MODES:
-        directory = (BENCHMARK / out_name(design)).relative_to(REPO)
+        directory = (BENCHMARK / out_name(design)).relative_to(REPO).as_posix()
         assert f"{directory}/{ARTIFACT_NAME}" in covered

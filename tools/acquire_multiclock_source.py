@@ -168,7 +168,7 @@ def download_month(
         logger.info("downloading %s", path.name)
         path.write_bytes(_fetch(source, timeout))
 
-    published = checksum_target.read_text().split()[0].strip().lower()
+    published = checksum_target.read_text(encoding="utf-8").split()[0].strip().lower()
     actual = hashlib.sha256(target.read_bytes()).hexdigest()
     if published != actual:
         raise AcquisitionError(
@@ -247,7 +247,7 @@ def parity_record(minutes: pd.DataFrame, clocks: dict[str, pd.DataFrame]) -> dic
     result = parity_against(clocks["1h"], reference, timeframe="1h")
 
     payload = result.to_dict()
-    payload["reference"] = str(REFERENCE_1H.relative_to(RESEARCH_DIR.parents[1]))
+    payload["reference"] = REFERENCE_1H.relative_to(RESEARCH_DIR.parents[1]).as_posix()
     payload["reference_rows"] = int(len(reference))
     payload["agreeing_bars"] = result.overlapping_bars - result.mismatching_bars
     payload["agreement_fraction"] = (
@@ -296,7 +296,7 @@ def build_manifest(
             "styx_opened": False,
         },
         "minutes": {
-            "path": str(minutes_path.relative_to(RESEARCH_DIR.parents[1])),
+            "path": minutes_path.relative_to(RESEARCH_DIR.parents[1]).as_posix(),
             "rows": int(len(minutes)),
             "start": dates.iloc[0].isoformat(),
             "end": dates.iloc[-1].isoformat(),
@@ -372,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         minutes, provenance, clocks, base_url=args.base_url, minutes_path=minutes_path
     )
     manifest_path = args.out_dir / MANIFEST_NAME
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     logger.info("wrote %s and %s", minutes_path, manifest_path)
 
     parity = manifest["parity_1h"]

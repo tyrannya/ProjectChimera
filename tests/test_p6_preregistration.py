@@ -118,13 +118,13 @@ def test_every_payload_key_is_populated(key):
 
 
 def test_the_document_publishes_the_same_hash():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert FROZEN_HASH in text
     assert f"# {CHECKPOINT} — preregistration" in text
 
 
 def test_the_document_names_all_five_clocks_and_horizons():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     for clock, horizon in HORIZONS.items():
         assert f"`{clock}`" in text
         assert horizon in text
@@ -144,7 +144,7 @@ def test_fold_periods_recompute_from_the_committed_1h_snapshot():
     """
     from nn.p2b import DEFAULT_MANIFEST, plan_from_manifest
 
-    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    manifest = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
     coverage = pd.read_parquet(
         REPO / manifest["processed_outer_coverage"]["path"], columns=["date"]
     )
@@ -200,7 +200,9 @@ def test_the_upstream_parity_disagreements_reach_no_scored_block():
     windows alone.
     """
     manifest = json.loads(
-        (REPO / "data/research/btc_usdt_multiclock_gen2_manifest.json").read_text()
+        (REPO / "data/research/btc_usdt_multiclock_gen2_manifest.json").read_text(
+            encoding="utf-8"
+        )
     )
     stamps = [pd.Timestamp(v) for v in manifest["parity_1h"]["mismatching_timestamps"]]
     assert stamps
@@ -277,13 +279,15 @@ def test_every_forbidden_item_appears_in_the_document():
     """
     from nn.p6_preregistration import FORBIDDEN_AFTER_RESULTS
 
-    section = _flat(DOCUMENT.read_text().split("## 10. Forbidden")[1].split("## 11.")[0])
+    section = _flat(
+        DOCUMENT.read_text(encoding="utf-8").split("## 10. Forbidden")[1].split("## 11.")[0]
+    )
     for item in FORBIDDEN_AFTER_RESULTS:
         assert _flat(item) in section, f"the document does not forbid: {item}"
 
 
 def test_the_document_states_the_gate_and_reports_every_clock():
-    text = _flat(DOCUMENT.read_text())
+    text = _flat(DOCUMENT.read_text(encoding="utf-8"))
     assert "3 of the 4" in text
     assert "five separate specialist verdicts" in text
     assert "native-timeframe momentum baseline" in text
@@ -294,5 +298,5 @@ def test_the_document_states_the_gate_and_reports_every_clock():
 
 
 def test_the_document_has_no_unresolved_placeholder():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert not re.search(r"\bTODO\b|\bTBD\b|XXX", text)

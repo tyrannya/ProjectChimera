@@ -246,13 +246,21 @@ def _timeframe_context(
     # The as-of index: the last bar whose CLOSE is at or before the row. `right`
     # so a row landing exactly on a close *does* see that bar — the boundary case
     # the leakage battery's L3 pins.
-    closes = bars["close_time"].to_numpy()
-    as_of = np.searchsorted(closes, dates.to_numpy(), side="right") - 1
+    # `.to_numpy()` on a tz-aware pandas object returns an *object* array of
+    # Timestamps, so `searchsorted` falls back to Python comparisons and the
+    # subtraction below yields an object array of floats -- arithmetic numpy 2.x
+    # is progressively less willing to define. Asking for `datetime64[ns]`
+    # converts to UTC and drops the zone: the same instants, in the dtype the
+    # comparison and the subtraction are actually defined for. Both operands are
+    # already UTC, so no value moves.
+    closes = bars["close_time"].to_numpy(dtype="datetime64[ns]")
+    row_times = dates.to_numpy(dtype="datetime64[ns]")
+    as_of = np.searchsorted(closes, row_times, side="right") - 1
 
     have = as_of >= 0
     safe = np.where(have, as_of, 0)
     staleness = np.full(len(dates), np.nan)
-    delta = (dates.to_numpy() - closes[safe]) / np.timedelta64(1, "h")
+    delta = (row_times - closes[safe]) / np.timedelta64(1, "h")
     staleness[have] = delta[have]
 
     fresh = have & (staleness < hours * spec.staleness_bound_bars)
@@ -461,8 +469,8 @@ def mtf_join_evidence(candles: pd.DataFrame, context: MtfContext) -> dict[str, A
             )
 
         # Causality, stated as a measurement rather than as a comment.
-        close_times = bars["close_time"].to_numpy()
-        row_times = dates.to_numpy()
+        close_times = bars["close_time"].to_numpy(dtype="datetime64[ns]")
+        row_times = dates.to_numpy(dtype="datetime64[ns]")
         not_yet_closed = int(
             np.count_nonzero(close_times[as_of[eligible]] > row_times[eligible])
         )

@@ -13,7 +13,7 @@ BENCHMARK = ROOT / "artifacts" / "benchmark"
 
 
 def _json(path: Path) -> dict:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_p4_primary_cells_are_frozen():

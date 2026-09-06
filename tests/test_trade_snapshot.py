@@ -499,9 +499,9 @@ def tree(synthetic_trade_snapshot, tmp_path):
 
 
 def edit(manifest_path, mutate):
-    payload = json.loads(manifest_path.read_text())
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     mutate(payload)
-    manifest_path.write_text(json.dumps(payload, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def test_the_fixture_snapshot_verifies(tree):
@@ -580,7 +580,7 @@ def test_a_broken_manifest_is_refused_by_the_named_check(tree, mutate, check):
 
 
 def test_a_missing_aggregate_file_is_refused(tree):
-    payload = json.loads(tree.read_text())
+    payload = json.loads(tree.read_text(encoding="utf-8"))
     (tree.parents[2] / payload["aggregate"]["path"]).unlink()
     with pytest.raises(TradeSnapshotVerificationError) as excinfo:
         verify_trade_snapshot(tree)
@@ -589,7 +589,7 @@ def test_a_missing_aggregate_file_is_refused(tree):
 
 def test_an_edited_aggregate_value_is_refused_even_with_a_rewritten_sha(tree):
     """The semantic hash is the check a re-hashed file cannot slip past."""
-    payload = json.loads(tree.read_text())
+    payload = json.loads(tree.read_text(encoding="utf-8"))
     path = tree.parents[2] / payload["aggregate"]["path"]
     frame = pd.read_parquet(path)
     frame.loc[4, "buy_notional"] = float(frame.loc[4, "buy_notional"]) * 0.5
@@ -598,7 +598,7 @@ def test_an_edited_aggregate_value_is_refused_even_with_a_rewritten_sha(tree):
     import hashlib
 
     payload["aggregate"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-    tree.write_text(json.dumps(payload, indent=2) + "\n")
+    tree.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     with pytest.raises(TradeSnapshotVerificationError) as excinfo:
         verify_trade_snapshot(tree)
@@ -607,7 +607,7 @@ def test_an_edited_aggregate_value_is_refused_even_with_a_rewritten_sha(tree):
 
 def test_a_sealed_hour_is_refused_before_any_digest_is_recomputed(tree):
     """Order matters: a seal breach is reported as one, not as a hash mismatch."""
-    payload = json.loads(tree.read_text())
+    payload = json.loads(tree.read_text(encoding="utf-8"))
     path = tree.parents[2] / payload["aggregate"]["path"]
     frame = pd.read_parquet(path)
     frame["date"] = frame["date"] + (STYX - pd.Timestamp(frame["date"].iloc[-1]))
@@ -616,7 +616,7 @@ def test_a_sealed_hour_is_refused_before_any_digest_is_recomputed(tree):
     import hashlib
 
     payload["aggregate"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-    tree.write_text(json.dumps(payload, indent=2) + "\n")
+    tree.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     with pytest.raises(TradeSnapshotVerificationError) as excinfo:
         verify_trade_snapshot(tree)
@@ -634,7 +634,7 @@ def test_a_sealed_hour_is_refused_before_any_digest_is_recomputed(tree):
 # --------------------------------------------------------------------------- #
 def _shift_the_aggregate(tree: Path, hours: int) -> None:
     """Move every aggregate row's hour without touching a value."""
-    payload = json.loads(tree.read_text())
+    payload = json.loads(tree.read_text(encoding="utf-8"))
     root = tree.parents[2]
     path = root / payload["aggregate"]["path"]
     frame = pd.read_parquet(path)
@@ -694,7 +694,7 @@ def test_an_aggregation_of_another_market_is_refused_by_value(tree, mutate, fact
     counts stay counts — and every hash is rewritten to match, so nothing above
     `cross_source_values` has anything to object to.
     """
-    payload = json.loads(tree.read_text())
+    payload = json.loads(tree.read_text(encoding="utf-8"))
     root = tree.parents[2]
     path = root / payload["aggregate"]["path"]
     frame = mutate(pd.read_parquet(path), factor)
@@ -709,7 +709,7 @@ def test_an_aggregation_of_another_market_is_refused_by_value(tree, mutate, fact
         source_type=payload["source"]["source_type"],
         aggregation_spec_hash=aggregation_spec_hash(),
     ).aggregate_hash
-    tree.write_text(json.dumps(payload, indent=2))
+    tree.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     with pytest.raises(TradeSnapshotVerificationError) as excinfo:
         verify_trade_snapshot(tree)

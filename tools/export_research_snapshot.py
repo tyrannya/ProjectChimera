@@ -79,7 +79,7 @@ def export_snapshot(
         source=str(dataset_path),
     )
 
-    reference = json.loads(reference_path.read_text())
+    reference = json.loads(reference_path.read_text(encoding="utf-8"))
     recorded_contract = reference["sealed_test"]["research_contract"]
     if recorded_contract["contract_id"] != contract.contract_id:
         raise ValueError(
@@ -170,7 +170,9 @@ def export_snapshot(
     )
     save_dataset(processed_out, processed, prefix_metadata)
     metadata_out = processed_out.with_suffix(processed_out.suffix + ".meta.json")
-    metadata_out.write_text(metadata_out.read_text().rstrip("\n") + "\n")
+    metadata_out.write_text(
+        metadata_out.read_text(encoding="utf-8").rstrip("\n") + "\n", encoding="utf-8"
+    )
 
     prefix_hash = research_input_digest(
         {name: processed[name] for name in processed.columns},
@@ -232,7 +234,7 @@ def export_snapshot(
             "styx_rows_exported": 0,
         },
     }
-    manifest_out.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_out.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     print(
         "research snapshot exported:",

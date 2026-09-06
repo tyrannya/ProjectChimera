@@ -49,12 +49,12 @@ WORST_FOLD_DELTA = -0.183647
 
 @pytest.fixture(scope="module")
 def decision() -> dict:
-    return json.loads(DECISION.read_text())
+    return json.loads(DECISION.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
 def comparison() -> dict:
-    return json.loads(COMPARISON.read_text())
+    return json.loads(COMPARISON.read_text(encoding="utf-8"))
 
 
 def test_the_deciding_fold_deltas_are_what_p5_produced(decision):
@@ -160,7 +160,7 @@ def test_the_decision_recomputes_to_the_same_answer():
     claim rather than a derivation.
     """
     rebuilt = build(_cell_dirs(), DEFAULT_MANIFEST)
-    committed = json.loads(DECISION.read_text())
+    committed = json.loads(DECISION.read_text(encoding="utf-8"))
     assert rebuilt["decision"] == committed["decision"]
     assert rebuilt["availability"] == committed["availability"]
     assert rebuilt["identity"] == committed["identity"]
@@ -208,14 +208,16 @@ def test_the_evidence_is_labelled_adaptive_rather_than_confirmatory(comparison):
 def test_every_secondary_context_row_is_reproducible():
     """The six model-arm comparisons, recomputed from the cells."""
     rows = secondary_context(load_cells(_cell_dirs()))
-    committed = json.loads(DECISION.read_text())["context"]
+    committed = json.loads(DECISION.read_text(encoding="utf-8"))["context"]
     assert rows == committed
     assert len(rows) == 6
 
 
 def test_p4_hold_was_not_touched_by_p5():
     """P5 spent nothing that P4 retired."""
-    ledger = json.loads((ROOT / "data" / "research" / "p4_holdout_ledger.json").read_text())
+    ledger = json.loads(
+        (ROOT / "data" / "research" / "p4_holdout_ledger.json").read_text(encoding="utf-8")
+    )
     assert ledger["state"] == "retired"
     assert ledger["checkpoint"] is None
 
@@ -223,7 +225,7 @@ def test_p4_hold_was_not_touched_by_p5():
 def test_no_p5_cell_records_a_sealed_or_holdout_row(decision):
     """P5 adds no source, so it adds no new way to reach either region."""
     for directory in _cell_dirs():
-        cell = json.loads((directory / "p2b.json").read_text())
+        cell = json.loads((directory / "p2b.json").read_text(encoding="utf-8"))
         assert cell["sealed_test"] is False
         assert cell["snapshot"]["contains_styx"] is False
         assert cell["snapshot"]["rows"] == 45802

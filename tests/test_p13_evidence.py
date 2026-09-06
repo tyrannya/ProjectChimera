@@ -92,7 +92,7 @@ def coverage_problems(root: Path) -> list[str]:
     # cannot disagree about which suffixes matter.
     directory = root / PRIMARY_DIR
     present = {
-        str(path.relative_to(root))
+        path.relative_to(root).as_posix()
         for path in sorted(directory.rglob("*"))
         if path.is_file() and path.suffix in EVIDENCE_SUFFIXES
     }
@@ -126,9 +126,10 @@ def drop(root: Path, name: str) -> None:
     manifest.write_text(
         "".join(
             line + "\n"
-            for line in manifest.read_text().splitlines()
+            for line in manifest.read_text(encoding="utf-8").splitlines()
             if line.strip() and line.split(maxsplit=1)[1].strip() != name
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -191,9 +192,10 @@ def test_deleting_only_the_manifest_line_still_fails(scratch, name):
     manifest.write_text(
         "".join(
             line + "\n"
-            for line in manifest.read_text().splitlines()
+            for line in manifest.read_text(encoding="utf-8").splitlines()
             if line.strip() and line.split(maxsplit=1)[1].strip() != name
-        )
+        ),
+        encoding="utf-8",
     )
     assert coverage_problems(scratch) != []
 
@@ -203,7 +205,7 @@ def test_a_new_primary_evidence_file_cannot_appear_uncovered(scratch):
     it. A P13 economic artifact dropped into this directory is the case that
     matters, and it must not be able to arrive quietly."""
     sneaked = scratch / PRIMARY_DIR / "block_results.json"
-    sneaked.write_text("{}\n")
+    sneaked.write_text("{}\n", encoding="utf-8")
     problems = coverage_problems(scratch)
     assert any("block_results.json" in problem for problem in problems)
 
@@ -211,7 +213,7 @@ def test_a_new_primary_evidence_file_cannot_appear_uncovered(scratch):
 def test_a_corrupted_evidence_file_still_fails(scratch):
     """Belt to the contract's braces: the digest half of the guarantee."""
     target = scratch / REQUIRED_EVIDENCE[0]
-    target.write_text(target.read_text() + "\nedited\n")
+    target.write_text(target.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
     assert check(scratch / MANIFEST, root=scratch) != []
 
 

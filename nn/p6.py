@@ -207,7 +207,7 @@ def load_minutes(manifest_path: Path = DEFAULT_MANIFEST) -> pd.DataFrame:
             "Refusing to fit a specialist on data whose own manifest does not describe it."
         ) from exc
     logger.info("multi-clock source verified: %s", json.dumps(report["clocks"]))
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     return pd.read_parquet(REPO_ROOT / manifest["minutes"]["path"])
 
 
@@ -338,7 +338,7 @@ def manifest_label(path: Path) -> str:
     """How a cell names the manifest it was actually produced from."""
     resolved = Path(path).resolve()
     try:
-        return str(resolved.relative_to(REPO_ROOT))
+        return resolved.relative_to(REPO_ROOT).as_posix()
     except ValueError:
         return str(resolved)
 
@@ -550,9 +550,13 @@ def run_clock(
             manifest_path=manifest_path,
         )
         payload["numerics"]["threadpools"] = threads
-        (out_dir / ARTIFACT_NAME).write_text(json.dumps(payload, indent=2) + "\n")
-        (out_dir / MARKDOWN_NAME).write_text(to_markdown(payload))
-        (out_dir / STATUS_NAME).write_text(status_markdown(payload, registered))
+        (out_dir / ARTIFACT_NAME).write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
+        (out_dir / MARKDOWN_NAME).write_text(to_markdown(payload), encoding="utf-8")
+        (out_dir / STATUS_NAME).write_text(
+            status_markdown(payload, registered), encoding="utf-8"
+        )
         predictions.loc[predictions["model"] == spec.name].reset_index(drop=True).to_parquet(
             out_dir / PREDICTIONS_NAME, index=False
         )
@@ -596,7 +600,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     clocks = list(registered.clocks) if args.all else [args.clock]
     minutes = load_minutes(args.manifest)
-    manifest = json.loads(args.manifest.read_text())
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     for clock in clocks:
         run_clock(
             minutes,

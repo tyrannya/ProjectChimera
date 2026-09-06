@@ -125,7 +125,7 @@ def test_the_first_contract_preserves_the_seal_the_committed_artifacts_ran_under
     artifacts = sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json"))
     assert artifacts, "the committed artifacts must be present to check against"
     for artifact in artifacts:
-        sealed = json.loads(artifact.read_text())["sealed_test"]
+        sealed = json.loads(artifact.read_text(encoding="utf-8"))["sealed_test"]
         assert pd.Timestamp(sealed["period"]["start"]) == CONTRACT.sealed_test_start
         assert sealed["start_row"] == 48217
 
@@ -180,11 +180,11 @@ def test_cosmetic_changes_do_not_create_a_new_generation(cosmetic):
 def test_reformatting_the_file_does_not_change_its_identity(tmp_path):
     """Whitespace and key order are how a file is written, not what it says."""
     source = CONTRACTS_DIR / f"{DEFAULT_CONTRACT_ID}.json"
-    payload = json.loads(source.read_text())
+    payload = json.loads(source.read_text(encoding="utf-8"))
     reordered = dict(reversed(list(payload.items())))
 
     reformatted = tmp_path / f"{DEFAULT_CONTRACT_ID}.json"
-    reformatted.write_text(json.dumps(reordered, separators=(",", ":")))
+    reformatted.write_text(json.dumps(reordered, separators=(",", ":")), encoding="utf-8")
 
     assert read_contract_file(reformatted).contract_hash == CONTRACT.contract_hash
 
@@ -270,7 +270,7 @@ def test_a_missing_field_is_refused():
 
 def test_a_file_must_be_named_after_the_contract_it_holds(tmp_path):
     path = tmp_path / "something-else.json"
-    path.write_text(json.dumps(contract_payload()))
+    path.write_text(json.dumps(contract_payload()), encoding="utf-8")
     with pytest.raises(ResearchContractError, match="is named"):
         read_contract_file(path)
 
@@ -358,7 +358,9 @@ def test_the_source_carries_no_second_copy_of_the_anchor():
     """
     anchor = "2025-08-27T23:00:00"
     for path in sorted((REPO / "nn").rglob("*.py")) + sorted((REPO / "chimera").rglob("*.py")):
-        assert anchor not in path.read_text(), f"{path} restates the sealed instant"
+        assert anchor not in path.read_text(
+            encoding="utf-8"
+        ), f"{path} restates the sealed instant"
 
 
 # --- E. scope fails closed ----------------------------------------------------
@@ -515,7 +517,7 @@ def test_training_records_the_contract_it_ran_under(dataset, tmp_path):
     )
     version = next(p for p in models_dir.iterdir() if p.is_dir())
 
-    report = json.loads((version / "report.json").read_text())
+    report = json.loads((version / "report.json").read_text(encoding="utf-8"))
     recorded = report["sealed_test"]["research_contract"]
     assert recorded["contract_id"] == DEFAULT_CONTRACT_ID
     assert recorded["contract_hash"] == BTC_GEN1_HASH
@@ -523,7 +525,7 @@ def test_training_records_the_contract_it_ran_under(dataset, tmp_path):
     assert report["test_evaluated"] is False
     assert report["test"] is None
 
-    metadata = json.loads((version / "metadata.json").read_text())
+    metadata = json.loads((version / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["research_contract_id"] == DEFAULT_CONTRACT_ID
     assert metadata["research_contract_hash"] == BTC_GEN1_HASH
 
@@ -532,8 +534,8 @@ def test_the_experiment_manifest_and_results_carry_the_contract(dataset, tmp_pat
     out = tmp_path / "exp"
     assert experiment.main(["--dataset", str(dataset), "--out", str(out), *TINY]) == 0
 
-    manifest = json.loads((out / "experiment_plan.json").read_text())
-    results = json.loads((out / "experiments.json").read_text())
+    manifest = json.loads((out / "experiment_plan.json").read_text(encoding="utf-8"))
+    results = json.loads((out / "experiments.json").read_text(encoding="utf-8"))
     for payload in (manifest, results):
         recorded = payload["sealed_test"]["research_contract"]
         assert recorded["contract_id"] == DEFAULT_CONTRACT_ID
@@ -579,14 +581,14 @@ def test_walk_forward_records_the_contract_and_names_it_in_the_summary(dataset, 
         == 0
     )
 
-    payload = json.loads((out / "walkforward.json").read_text())
+    payload = json.loads((out / "walkforward.json").read_text(encoding="utf-8"))
     recorded = payload["sealed_test"]["research_contract"]
     assert recorded["contract_id"] == DEFAULT_CONTRACT_ID
     assert recorded["contract_hash"] == BTC_GEN1_HASH
     assert payload["sealed_test"]["evaluated"] is False
     assert payload["test_evaluated"] is False
 
-    markdown = (out / "walkforward.md").read_text()
+    markdown = (out / "walkforward.md").read_text(encoding="utf-8")
     assert DEFAULT_CONTRACT_ID in markdown
     assert BTC_GEN1_HASH in markdown
 
@@ -624,12 +626,14 @@ def historical_copy(directory: Path, *, contract: ResearchContract | None = None
     *copy* is how the contract-era shape gets tested against a real artifact
     without touching the historical record.
     """
-    payload = json.loads(HISTORICAL.read_text())
+    payload = json.loads(HISTORICAL.read_text(encoding="utf-8"))
     if contract is not None:
         payload["sealed_test"]["anchor_timestamp"] = contract.sealed_test_start.isoformat()
         payload["sealed_test"]["research_contract"] = contract.provenance()
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "walkforward.json").write_text(json.dumps(payload, indent=2))
+    (directory / "walkforward.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
     return directory
 
 
@@ -638,7 +642,7 @@ def test_the_committed_artifacts_keep_their_row_only_provenance():
     for artifact in sorted((REPO / "artifacts" / "walkforward").glob("*/walkforward.json")):
         if "_v4_" in artifact.parent.name:
             continue
-        payload = json.loads(artifact.read_text())
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
         assert "research_contract" not in payload["sealed_test"]
         assert "anchor_timestamp" not in payload["sealed_test"]
 
@@ -691,9 +695,11 @@ def test_an_edited_contract_orphans_the_artifacts_produced_under_it(tmp_path):
     stale = copy.deepcopy(CONTRACT.provenance())
     stale["contract_hash"] = "0" * 64
     directory = historical_copy(tmp_path / "stale", contract=CONTRACT)
-    payload = json.loads((directory / "walkforward.json").read_text())
+    payload = json.loads((directory / "walkforward.json").read_text(encoding="utf-8"))
     payload["sealed_test"]["research_contract"] = stale
-    (directory / "walkforward.json").write_text(json.dumps(payload, indent=2))
+    (directory / "walkforward.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
 
     problems = wf_diagnostics.audit_run(wf_diagnostics.load_run(directory))
     assert any("has been edited since the run" in p for p in problems)
@@ -701,9 +707,11 @@ def test_an_edited_contract_orphans_the_artifacts_produced_under_it(tmp_path):
 
 def test_a_half_written_contract_block_is_a_fault(tmp_path):
     directory = historical_copy(tmp_path / "partial", contract=CONTRACT)
-    payload = json.loads((directory / "walkforward.json").read_text())
+    payload = json.loads((directory / "walkforward.json").read_text(encoding="utf-8"))
     del payload["sealed_test"]["research_contract"]["contract_hash"]
-    (directory / "walkforward.json").write_text(json.dumps(payload, indent=2))
+    (directory / "walkforward.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
 
     problems = wf_diagnostics.audit_run(wf_diagnostics.load_run(directory))
     assert any("missing ['contract_hash']" in p for p in problems)
@@ -711,9 +719,11 @@ def test_a_half_written_contract_block_is_a_fault(tmp_path):
 
 def test_a_contract_that_disagrees_with_its_own_anchor_is_a_fault(tmp_path):
     directory = historical_copy(tmp_path / "mixed", contract=CONTRACT)
-    payload = json.loads((directory / "walkforward.json").read_text())
+    payload = json.loads((directory / "walkforward.json").read_text(encoding="utf-8"))
     payload["sealed_test"]["anchor_timestamp"] = "2024-01-01T00:00:00+00:00"
-    (directory / "walkforward.json").write_text(json.dumps(payload, indent=2))
+    (directory / "walkforward.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
 
     problems = wf_diagnostics.audit_run(wf_diagnostics.load_run(directory))
     assert any("cannot have been planned under both" in p for p in problems)
@@ -733,14 +743,16 @@ def test_the_cli_withholds_the_aggregate_across_generations(tmp_path):
     )
 
     assert exit_code == 1
-    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))
     assert payload["summary"] is None
     assert payload["analysis"] is None
     assert any(
         "different research generations" in problem
         for problem in payload["comparability_problems"]
     )
-    assert "Runs are not comparable" in (out / wf_diagnostics.REPORT_MD).read_text()
+    assert "Runs are not comparable" in (out / wf_diagnostics.REPORT_MD).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_the_diagnostics_report_never_fills_in_a_missing_contract(tmp_path):
@@ -748,11 +760,10 @@ def test_the_diagnostics_report_never_fills_in_a_missing_contract(tmp_path):
     assert (
         wf_diagnostics.main([str(historical_copy(tmp_path / "run_a")), "--out", str(out)]) == 0
     )
-    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text())
+    payload = json.loads((out / wf_diagnostics.REPORT_JSON).read_text(encoding="utf-8"))
 
     assert payload["runs"][0]["research_contract"] is None
     assert payload["sealed_test_evaluated"] is False
-    assert (
-        "no research contract (row-only provenance)"
-        in (out / wf_diagnostics.REPORT_MD).read_text()
-    )
+    assert "no research contract (row-only provenance)" in (
+        out / wf_diagnostics.REPORT_MD
+    ).read_text(encoding="utf-8")

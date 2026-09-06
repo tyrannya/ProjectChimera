@@ -193,7 +193,9 @@ def test_recover_refuses_to_adopt_anything_after_an_unreadable_state_file(tmp_pa
     empty view as a flat account and `bootstrap`'s own `save` overwrote the file.
     """
     path = tmp_path / "state.json"
-    path.write_text('{"store_schema": "chimera.futures-execution-state/1", "positions": ')
+    path.write_text(
+        '{"store_schema": "chimera.futures-execution-state/1", "positions": ', encoding="utf-8"
+    )
     original = path.read_bytes()
 
     store = FuturesStore.open(path)
@@ -215,7 +217,7 @@ def test_recover_refuses_to_adopt_anything_after_an_unreadable_state_file(tmp_pa
 
 def test_bootstrap_itself_refuses_after_an_unreadable_file(tmp_path):
     path = tmp_path / "state.json"
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
     store = FuturesStore.open(path)
     with pytest.raises(StoreError, match="adopt_after_unreadable"):
         store.bootstrap({})
@@ -224,7 +226,7 @@ def test_bootstrap_itself_refuses_after_an_unreadable_file(tmp_path):
 def test_an_operator_can_adopt_after_an_unreadable_file_and_the_original_is_kept(tmp_path):
     """The deliberate way through: a written reason, and the file preserved."""
     path = tmp_path / "state.json"
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
     original = path.read_bytes()
     store = FuturesStore.open(path)
 
@@ -238,7 +240,7 @@ def test_an_operator_can_adopt_after_an_unreadable_file_and_the_original_is_kept
     assert preserved is not None and preserved.read_bytes() == original
     assert store.state.bootstrapped is True
     assert store.state.position(SYMBOL).quantity == Decimal("0.5")
-    assert json.loads(path.read_text())["bootstrapped"] is True
+    assert json.loads(path.read_text(encoding="utf-8"))["bootstrapped"] is True
 
 
 def test_adopt_after_unreadable_refuses_a_store_that_loaded_cleanly(tmp_path):
@@ -277,7 +279,8 @@ def test_a_mangled_decimal_in_a_persisted_field_reports_unreadable(tmp_path):
                 "flatten_reasons": [],
                 "disputed": {},
             }
-        )
+        ),
+        encoding="utf-8",
     )
     original = path.read_bytes()
     store = FuturesStore.open(path)

@@ -86,9 +86,9 @@ def sha256(path: Path) -> str:
 
 
 def edit(manifest: Path, mutate: Callable[[dict[str, Any]], None]) -> None:
-    payload = json.loads(manifest.read_text())
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
     mutate(payload)
-    manifest.write_text(json.dumps(payload, indent=2) + "\n")
+    manifest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def rejects(manifest: Path, check: str) -> SnapshotVerificationError:
@@ -99,12 +99,12 @@ def rejects(manifest: Path, check: str) -> SnapshotVerificationError:
 
 
 def raw_path(manifest: Path) -> Path:
-    block = json.loads(manifest.read_text())["raw_pre_styx"]
+    block = json.loads(manifest.read_text(encoding="utf-8"))["raw_pre_styx"]
     return manifest.parents[2] / block["path"]
 
 
 def processed_path(manifest: Path) -> Path:
-    block = json.loads(manifest.read_text())["processed_outer_coverage"]
+    block = json.loads(manifest.read_text(encoding="utf-8"))["processed_outer_coverage"]
     return manifest.parents[2] / block["path"]
 
 
@@ -160,7 +160,7 @@ def test_missing_manifest_is_rejected(snapshot: Path) -> None:
 
 
 def test_unparseable_manifest_is_rejected(snapshot: Path) -> None:
-    snapshot.write_text("{ this is not json")
+    snapshot.write_text("{ this is not json", encoding="utf-8")
     rejects(snapshot, "manifest_readable")
 
 
@@ -245,7 +245,7 @@ def test_processed_byte_corruption_is_rejected(snapshot: Path) -> None:
 
 def test_metadata_corruption_is_rejected(snapshot: Path) -> None:
     path = processed_path(snapshot).with_suffix(".parquet.meta.json")
-    path.write_text(path.read_text() + " ")
+    path.write_text(path.read_text(encoding="utf-8") + " ", encoding="utf-8")
     rejects(snapshot, "metadata_sha256")
 
 

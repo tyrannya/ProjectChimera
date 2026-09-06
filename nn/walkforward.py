@@ -917,7 +917,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         # Trailing newline: these artifacts get committed, and a file without
         # one fails the repository's end-of-file hook.
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     markdown = to_markdown(
         results,
@@ -927,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
         contract=contract,
         fingerprint=fingerprint,
     )
-    (out_dir / "walkforward.md").write_text(markdown)
+    (out_dir / "walkforward.md").write_text(markdown, encoding="utf-8")
     print(markdown)
     logger.info("Wrote results to %s", out_dir)
     return 0

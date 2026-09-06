@@ -117,11 +117,11 @@ def test_inconsistent_artifact_is_rejected(tmp_path, config, metadata):
     corrupt artifact, and loading it would silently mis-shape every request."""
     save_model(tmp_path, "v1", MTST(config), metadata)
     path = tmp_path / "v1" / "metadata.json"
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data["feature_names"] = data["feature_names"][:-1]
     data["scaler_mean"] = data["scaler_mean"][:-1]
     data["scaler_std"] = data["scaler_std"][:-1]
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
     with pytest.raises(ValueError, match="inconsistent"):
         load_model(tmp_path / "v1")
@@ -207,6 +207,8 @@ def test_promoting_an_unknown_version_raises(tmp_path):
 def test_a_dangling_pointer_raises(tmp_path, config, metadata):
     save_model(tmp_path, "v1", MTST(config), metadata, SEALED_REPORT)
     promote(tmp_path, "v1")
-    (tmp_path / "current.json").write_text(json.dumps({"version": "deleted"}))
+    (tmp_path / "current.json").write_text(
+        json.dumps({"version": "deleted"}), encoding="utf-8"
+    )
     with pytest.raises(FileNotFoundError, match="not in"):
         resolve_current(tmp_path)

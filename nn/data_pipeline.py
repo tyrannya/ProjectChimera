@@ -473,7 +473,7 @@ def save_dataset(path: str | Path, frame: pd.DataFrame, metadata: DatasetMetadat
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(path, index=False)
     path.with_suffix(path.suffix + ".meta.json").write_text(
-        json.dumps(metadata.to_dict(), indent=2)
+        json.dumps(metadata.to_dict(), indent=2), encoding="utf-8"
     )
     logger.info("Wrote %d rows to %s", len(frame), path)
     return path
@@ -485,7 +485,7 @@ def load_dataset(path: str | Path) -> tuple[pd.DataFrame, DatasetMetadata]:
     frame = pd.read_parquet(path)
     meta_path = path.with_suffix(path.suffix + ".meta.json")
     if meta_path.exists():
-        metadata = DatasetMetadata.from_dict(json.loads(meta_path.read_text()))
+        metadata = DatasetMetadata.from_dict(json.loads(meta_path.read_text(encoding="utf-8")))
     else:
         logger.warning("No metadata sidecar next to %s", path)
         metadata = DatasetMetadata()

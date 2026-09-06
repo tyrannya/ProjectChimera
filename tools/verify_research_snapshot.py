@@ -153,7 +153,7 @@ def verify_snapshot(manifest_path: str | Path = DEFAULT_MANIFEST) -> list[CheckR
     if not manifest_path.is_file():
         raise SnapshotVerificationError("manifest_readable", f"no manifest at {manifest_path}")
     try:
-        payload = json.loads(manifest_path.read_text())
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise SnapshotVerificationError(
             "manifest_readable", f"{manifest_path} is not readable JSON: {exc}"

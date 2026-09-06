@@ -58,7 +58,9 @@ def committed_status() -> dict[str, SpecialistStatus]:
     """
     status: dict[str, SpecialistStatus] = {}
     for directory, checkpoint in (("btc_p6_decision", "P6"), ("btc_p6ext_decision", "P6-EXT")):
-        payload = json.loads((BENCHMARK / directory / "decision.json").read_text())
+        payload = json.loads(
+            (BENCHMARK / directory / "decision.json").read_text(encoding="utf-8")
+        )
         for row in payload["clocks"]:
             status[row["clock"]] = SpecialistStatus(
                 clock=row["clock"],
@@ -402,7 +404,7 @@ def test_every_transition_is_deterministic(to_mode):
 def test_mode_metrics_are_labelled_only_by_bounded_enums():
     import re
 
-    source = (REPO / "chimera" / "metrics.py").read_text()
+    source = (REPO / "chimera" / "metrics.py").read_text(encoding="utf-8")
     block = source.split("# --- trading modes")[1].split("# --- system")[0]
     labels = set(re.findall(r'"(\w+)"\]', block)) | set(re.findall(r'\["(\w+)",', block))
     assert labels <= {"mode", "reason", "from_mode", "to_mode"}
@@ -425,7 +427,7 @@ def test_recording_a_decision_and_a_transition_does_not_raise():
 
 
 def test_the_document_records_the_current_eligibility_honestly():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert "Current eligibility: none" in text
     assert "never measured" in text
     for mode in DIRECTIONAL:
@@ -438,7 +440,9 @@ def test_the_document_does_not_claim_alpha_for_any_mode():
 
     # Wrapping and emphasis normalised away: the claim is what matters, not how
     # the paragraph happened to break.
-    text = re.sub(r"\s+", " ", DOCUMENT.read_text().replace("*", "").replace("`", "")).lower()
+    text = re.sub(
+        r"\s+", " ", DOCUMENT.read_text(encoding="utf-8").replace("*", "").replace("`", "")
+    ).lower()
     for phrase in ("profitable mode", "proven mode", "this mode makes money"):
         assert phrase not in text
     assert "nothing here claims alpha for any mode" in text
@@ -454,7 +458,7 @@ def test_every_mode_series_the_runbook_names_is_written_by_something():
     """A metric nothing writes is a dashboard panel that is always empty."""
     from chimera import metrics
 
-    runbook = (REPO / "docs" / "paper_operation_runbook.md").read_text()
+    runbook = (REPO / "docs" / "paper_operation_runbook.md").read_text(encoding="utf-8")
     named = set(re.findall(r"chimera_mode_[a-z_]+", runbook))
     assert named, "the runbook names no mode series at all"
 

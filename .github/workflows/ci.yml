@@ -40,9 +40,15 @@ jobs:
         run: pre-commit run --all-files --show-diff-on-failure
 
   test:
-    name: Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      # Both legs are binding. A Windows-only failure is a real failure, and
+      # cancelling the other leg on the first red hides half the answer.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,11 +56,24 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install the project and its real dependencies
-        # The whole dependency graph, from pyproject.toml. The previous workflow
-        # installed only `pandas pytest`, so the suite errored at collection and
-        # nothing it claimed to test was ever exercised. The CPU torch index
-        # keeps the runner from downloading ~2GB of CUDA wheels.
+      - name: Install the locked dependency set (Linux)
+        # requirements-lock.txt pins the exact resolution this suite is known to
+        # pass against, so a dependency release cannot silently change what CI
+        # ran. `-e . --no-deps` then adds the checkout itself without letting pip
+        # re-resolve anything the lock already decided. The CPU torch index keeps
+        # the runner from downloading ~2GB of CUDA wheels, and publishes the
+        # `+cpu` build the lock names.
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-lock.txt
+          pip install -e . --no-deps
+
+      - name: Install the project and its real dependencies (Windows)
+        # The lock is Linux-specific -- it names `torch==2.14.0+cpu` and carries
+        # Linux-only wheels -- so Windows resolves from pyproject.toml under its
+        # declared bounds. See the header of requirements-lock.txt.
+        if: runner.os == 'Windows'
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install --extra-index-url https://download.pytorch.org/whl/cpu -e ".[all]"
@@ -71,6 +90,29 @@ jobs:
           python -m tools.verify_research_snapshot
           python -m tools.verify_trade_snapshot
           python -m tools.verify_research_state
+
+      - name: Verify every frozen evidence manifest
+        # PR-02's scientific-integrity check, executed rather than asserted: the
+        # portability work must move no frozen byte. This matters most on the
+        # Windows leg, where a checkout that converted line endings would change
+        # the bytes of every text file a manifest covers -- `.gitattributes`
+        # forbids that conversion, and this step is what proves it held.
+        # `shell: python` so the same step runs on both runners.
+        shell: python
+        run: |
+          from pathlib import Path
+          from tools.freeze_evidence import check
+          manifests = sorted(Path("artifacts").glob("*SHA256SUMS.txt"))
+          if not manifests:
+              raise SystemExit("no frozen manifest found")
+          problems = []
+          for manifest in manifests:
+              found = check(manifest)
+              print(f"{manifest}: {'verified' if not found else found}")
+              problems += found
+          if problems:
+              raise SystemExit(f"{len(problems)} frozen file(s) moved")
+          print(f"{len(manifests)} frozen manifests verified")
 
       - name: Run the test suite
         run: pytest -q --maxfail=1

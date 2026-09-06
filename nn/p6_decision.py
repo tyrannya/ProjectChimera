@@ -77,7 +77,7 @@ def load_cells(
         artifact = directory / ARTIFACT_NAME
         if not artifact.is_file():
             continue
-        payload = json.loads(artifact.read_text())
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
         if payload.get("checkpoint") != registered.checkpoint:
             raise DecisionError(
                 f"{directory} reports checkpoint {payload.get('checkpoint')!r}; this "
@@ -379,8 +379,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_argparser().parse_args(argv)
     payload = build(list(args.runs), registration(args.registration))
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / DECISION_NAME).write_text(json.dumps(payload, indent=2) + "\n")
-    (args.out / STATUS_NAME).write_text(to_markdown(payload))
+    (args.out / DECISION_NAME).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    (args.out / STATUS_NAME).write_text(to_markdown(payload), encoding="utf-8")
     for row in payload["clocks"]:
         logger.info("%4s: %s", row["clock"], row["verdict"])
     logger.info("P6 outcome: %s", payload["outcome"])

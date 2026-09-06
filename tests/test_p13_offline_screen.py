@@ -126,7 +126,10 @@ def test_evidence_refuses_to_be_written_under_a_frozen_artifact_path(tmp_path):
             write_evidence(outcome.evidence, tmp_path / frozen / "decision.json")
     written = write_evidence(outcome.evidence, tmp_path / "scratch" / "screen.json")
     assert written.exists()
-    assert json.loads(written.read_text())["design"]["active_design"] == "P13-A2R2"
+    assert (
+        json.loads(written.read_text(encoding="utf-8"))["design"]["active_design"]
+        == "P13-A2R2"
+    )
 
 
 # ---------------------------------------------------------------------------

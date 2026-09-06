@@ -365,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
         text = json.dumps(payload, indent=2)
         if args.out:
             args.out.parent.mkdir(parents=True, exist_ok=True)
-            args.out.write_text(text + "\n")
+            args.out.write_text(text + "\n", encoding="utf-8")
         else:
             print(text)
         return 0
@@ -396,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         text = json.dumps(record, indent=2)
         if args.out:
             args.out.parent.mkdir(parents=True, exist_ok=True)
-            args.out.write_text(text + "\n")
+            args.out.write_text(text + "\n", encoding="utf-8")
         else:
             print(text)
         print(

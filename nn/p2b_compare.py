@@ -138,7 +138,7 @@ def load_cell(run_dir: Path) -> dict[str, Any]:
         raise ComparisonError(
             f"{run_dir} has no {ARTIFACT_NAME}; it is not an information-set cell"
         )
-    payload = json.loads(artifact_path.read_text())
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     # Which checkpoint this is comes from the cell, and the cells must then agree
     # — see `checkpoint_of`. What is refused here is a cell that names no
     # checkpoint this runner knows how to ask about, because there is nothing
@@ -1243,7 +1243,7 @@ def main(argv: list[str] | None = None) -> int:
     parity = check_cells_agree(cells)
 
     manifest_path = Path(cells[0]["payload"]["snapshot"]["manifest"])
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     root = manifest_path.resolve().parent.parent.parent
     spine, _ = load_dataset(root / manifest["processed_outer_coverage"]["path"])
     anchored = {
@@ -1364,8 +1364,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / COMPARISON_JSON).write_text(json.dumps(payload, indent=2, default=str) + "\n")
-    (out_dir / COMPARISON_MD).write_text(to_markdown(payload))
+    (out_dir / COMPARISON_JSON).write_text(
+        json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+    )
+    (out_dir / COMPARISON_MD).write_text(to_markdown(payload), encoding="utf-8")
     logger.info("wrote %s and %s", out_dir / COMPARISON_JSON, out_dir / COMPARISON_MD)
     return 0
 

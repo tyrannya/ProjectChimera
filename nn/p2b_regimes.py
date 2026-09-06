@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     args = build_argparser().parse_args(argv)
 
-    manifest = json.loads(args.manifest.read_text())
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     root = args.manifest.resolve().parent.parent.parent
     spine, ds_meta = load_dataset(root / manifest["processed_outer_coverage"]["path"])
     raw = pd.read_parquet(root / manifest["raw_pre_styx"]["path"])
@@ -286,8 +286,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / REGIMES_JSON).write_text(json.dumps(payload, indent=2, default=str) + "\n")
-    (out_dir / REGIMES_MD).write_text(to_markdown(payload))
+    (out_dir / REGIMES_JSON).write_text(
+        json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+    )
+    (out_dir / REGIMES_MD).write_text(to_markdown(payload), encoding="utf-8")
     logger.info("wrote %s and %s", out_dir / REGIMES_JSON, out_dir / REGIMES_MD)
     return 0
 

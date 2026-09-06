@@ -84,7 +84,7 @@ def test_metrics_module_defines_the_expected_families():
 @pytest.mark.parametrize("path", sorted(DASHBOARD_DIR.glob("*.json")))
 def test_every_dashboard_panel_queries_an_exported_metric(path):
     exported = exported_metric_names()
-    dashboard = json.loads(path.read_text())
+    dashboard = json.loads(path.read_text(encoding="utf-8"))
     assert dashboard["panels"], f"{path.name} has no panels"
 
     for panel in dashboard["panels"]:
@@ -102,7 +102,7 @@ def test_every_dashboard_panel_queries_an_exported_metric(path):
 )
 def test_every_alert_rule_queries_an_exported_metric():
     exported = exported_metric_names()
-    rules = yaml.safe_load((CONF_DIR / "alerts.yml").read_text())
+    rules = yaml.safe_load((CONF_DIR / "alerts.yml").read_text(encoding="utf-8"))
     for group in rules["groups"]:
         for rule in group["rules"]:
             for name in referenced_metrics(rule["expr"]):
@@ -110,8 +110,8 @@ def test_every_alert_rule_queries_an_exported_metric():
 
 
 def test_prometheus_scrapes_only_services_that_exist():
-    prometheus = yaml.safe_load((CONF_DIR / "prometheus.yml").read_text())
-    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    prometheus = yaml.safe_load((CONF_DIR / "prometheus.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services = set(compose["services"])
 
     for job in prometheus["scrape_configs"]:
@@ -127,19 +127,21 @@ def test_prometheus_scrapes_only_services_that_exist():
 
 def test_alertmanager_config_contains_no_placeholder_webhook():
     """A placeholder URL silently swallows every critical alert."""
-    text = (CONF_DIR / "alertmanager.yml").read_text()
+    text = (CONF_DIR / "alertmanager.yml").read_text(encoding="utf-8")
     assert "example.com" not in text
 
 
 def test_grafana_datasource_is_provisioned():
     datasource = yaml.safe_load(
-        (ROOT / "grafana" / "provisioning" / "datasources" / "prometheus.yml").read_text()
+        (ROOT / "grafana" / "provisioning" / "datasources" / "prometheus.yml").read_text(
+            encoding="utf-8"
+        )
     )
     assert datasource["datasources"][0]["url"].startswith("http://prometheus:")
 
 
 def test_dashboards_are_mounted_into_grafana():
-    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     mounts = compose["services"]["grafana"]["volumes"]
     assert any(
         "grafana/provisioning" in m for m in mounts

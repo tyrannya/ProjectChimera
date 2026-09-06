@@ -134,14 +134,18 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(freeze_evidence, "ROOT", tmp_path)
     cell = tmp_path / "artifacts" / "benchmark" / "demo_cell"
     cell.mkdir(parents=True)
-    (cell / "p2b.json").write_text(json.dumps({EVIDENCE_CLASS_KEY: PRIMARY, "fold": 0}))
+    (cell / "p2b.json").write_text(
+        json.dumps({EVIDENCE_CLASS_KEY: PRIMARY, "fold": 0}), encoding="utf-8"
+    )
     (cell / "outer_predictions.parquet").write_bytes(b"not really a parquet")
-    (cell / "STATUS.md").write_text("# CURRENT\n")
+    (cell / "STATUS.md").write_text("# CURRENT\n", encoding="utf-8")
 
     report = tmp_path / "artifacts" / "benchmark" / "demo_comparison"
     report.mkdir(parents=True)
-    (report / "p2b_comparison.json").write_text(json.dumps({EVIDENCE_CLASS_KEY: DERIVED}))
-    (report / "p2b_comparison.md").write_text("# derived\n")
+    (report / "p2b_comparison.json").write_text(
+        json.dumps({EVIDENCE_CLASS_KEY: DERIVED}), encoding="utf-8"
+    )
+    (report / "p2b_comparison.md").write_text("# derived\n", encoding="utf-8")
     return tmp_path
 
 
@@ -213,10 +217,12 @@ def test_a_changed_file_is_not_excused_by_living_in_a_comparison_directory(sandb
     """
     directory = sandbox / "artifacts" / "benchmark" / "misnamed_comparison"
     directory.mkdir(parents=True)
-    (directory / "p2b_comparison.json").write_text(json.dumps({EVIDENCE_CLASS_KEY: PRIMARY}))
+    (directory / "p2b_comparison.json").write_text(
+        json.dumps({EVIDENCE_CLASS_KEY: PRIMARY}), encoding="utf-8"
+    )
     manifest = _freeze(sandbox, directory)
     (directory / "p2b_comparison.json").write_text(
-        json.dumps({EVIDENCE_CLASS_KEY: PRIMARY, "x": 1})
+        json.dumps({EVIDENCE_CLASS_KEY: PRIMARY, "x": 1}), encoding="utf-8"
     )
     problems = freeze_evidence.check(manifest)
     assert len(problems) == 1
@@ -227,7 +233,9 @@ def test_the_cli_exit_code_and_the_test_suites_check_are_the_same_decision(sandb
     manifest = _freeze(sandbox, sandbox / "artifacts" / "benchmark" / "demo_cell")
     assert freeze_evidence.check(manifest) == []
     assert freeze_evidence.verify(manifest) == 0
-    (sandbox / "artifacts" / "benchmark" / "demo_cell" / "STATUS.md").write_text("# edited\n")
+    (sandbox / "artifacts" / "benchmark" / "demo_cell" / "STATUS.md").write_text(
+        "# edited\n", encoding="utf-8"
+    )
     assert freeze_evidence.check(manifest) != []
     assert freeze_evidence.verify(manifest) == 1
 
@@ -236,7 +244,7 @@ def test_the_cli_exit_code_and_the_test_suites_check_are_the_same_decision(sandb
 # C. the findings themselves
 # --------------------------------------------------------------------------- #
 def _comparison(name: str) -> dict:
-    return json.loads((BENCHMARK / name / "p2b_comparison.json").read_text())
+    return json.loads((BENCHMARK / name / "p2b_comparison.json").read_text(encoding="utf-8"))
 
 
 def test_each_checkpoints_artifacts_identify_as_that_checkpoint():
@@ -266,13 +274,15 @@ def test_each_checkpoints_artifacts_identify_as_that_checkpoint():
         assert comparison["evidence_class"] == DERIVED
         assert (
             (BENCHMARK / f"{prefix}_comparison" / "p2b_comparison.md")
-            .read_text()
+            .read_text(encoding="utf-8")
             .startswith(f"# {checkpoint} —")
         )
         for arm in arms:
             for model in ("logistic_regression", "lightgbm", "xgboost"):
                 cell = json.loads(
-                    (BENCHMARK / f"{prefix}_{arm}_{model}" / "p2b.json").read_text()
+                    (BENCHMARK / f"{prefix}_{arm}_{model}" / "p2b.json").read_text(
+                        encoding="utf-8"
+                    )
                 )
                 # Both fields, because either alone can be right while the other
                 # is wrong: `load_cell` checks the arm against the columns the
@@ -331,14 +341,16 @@ def test_both_information_set_checkpoints_reproduce_the_same_frozen_control():
     each other. If adding a feature family ever perturbs the control's sample
     universe, this is what notices.
     """
-    p2a = json.loads((BENCHMARK / "btc_p2a_seed_42" / "benchmark.json").read_text())
+    p2a = json.loads(
+        (BENCHMARK / "btc_p2a_seed_42" / "benchmark.json").read_text(encoding="utf-8")
+    )
     frozen = [f["outer_validation"]["xgboost"] for f in p2a["folds"]]
     for checkpoint in (
         "btc_p2b_ohlcv14_xgboost",
         "btc_p2c_ohlcv14_xgboost",
         "btc_p3_ohlcv14_xgboost",
     ):
-        cell = json.loads((BENCHMARK / checkpoint / "p2b.json").read_text())
+        cell = json.loads((BENCHMARK / checkpoint / "p2b.json").read_text(encoding="utf-8"))
         assert [f["outer_validation"]["xgboost"] for f in cell["folds"]] == frozen
 
 
@@ -498,7 +510,7 @@ def test_each_feature_spec_names_its_own_checkpoint(document, checkpoint, family
     `chart_structure_v1.md` carried `Research checkpoint: **P2b**` — `smc_v1`'s
     checkpoint, with `smc_v1`'s question — through two checkpoints.
     """
-    text = (DOCS / document).read_text()
+    text = (DOCS / document).read_text(encoding="utf-8")
     _, _, rest = text.partition("Research checkpoint:")
     assert rest, f"{document} no longer states a research checkpoint"
     assert rest.lstrip().startswith(f"**{checkpoint}**"), rest[:80]
@@ -517,7 +529,7 @@ def test_every_declared_information_family_has_a_committed_spec():
 
 
 def test_the_chart_spec_states_its_adaptive_status_rather_than_implying_none():
-    chart = (DOCS / "chart_structure_v1.md").read_text()
+    chart = (DOCS / "chart_structure_v1.md").read_text(encoding="utf-8")
     assert "Status: adaptive research evidence" in chart
     assert "Not a pristine out-of-sample confirmation" in chart
     # The claim it is allowed to make, and the one it is not.
@@ -528,7 +540,7 @@ def test_the_chart_spec_states_its_adaptive_status_rather_than_implying_none():
 def test_no_document_calls_a_frozen_hash_stale_by_design():
     """The phrase that meant "this checksum is allowed to be wrong"."""
     for path in [ROOT / "artifacts" / "README.md", *DOCS.glob("*.md"), ROOT / "README.md"]:
-        assert "stale by design" not in path.read_text(), path
+        assert "stale by design" not in path.read_text(encoding="utf-8"), path
 
 
 def test_no_document_claims_ohlcv_alpha_has_been_disproved():
@@ -545,7 +557,7 @@ def test_no_document_claims_ohlcv_alpha_has_been_disproved():
         "proven exhausted",
     )
     for path in [ROOT / "README.md", ROOT / "artifacts" / "README.md", *DOCS.glob("*.md")]:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         for phrase in forbidden:
             assert phrase not in text, f"{path.name}: {phrase!r}"
 
@@ -613,7 +625,7 @@ def test_no_manifest_was_left_behind_under_another_name():
 # --------------------------------------------------------------------------- #
 def _fold_net_returns(cell: str, model: str) -> dict[int, float]:
     """One cell's outer net return per fold, read from the cell itself."""
-    payload = json.loads((BENCHMARK / cell / "p2b.json").read_text())
+    payload = json.loads((BENCHMARK / cell / "p2b.json").read_text(encoding="utf-8"))
     return {
         int(record["fold"]): record["outer_validation"][model]["trading"]["net_return"]
         for record in payload["folds"]
@@ -678,7 +690,9 @@ def regime_delta_mismatches(payload: dict, net_returns) -> list[str]:
 
 def test_the_ablation_table_is_recomputed_from_the_cells_behind_it():
     payload = json.loads(
-        (BENCHMARK / "btc_p2b_ablation_xgboost" / "p2b_ablation.json").read_text()
+        (BENCHMARK / "btc_p2b_ablation_xgboost" / "p2b_ablation.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert payload["evidence_class"] == DERIVED
     assert ablation_mismatches(payload, lambda c: _fold_net_returns(c, payload["model"])) == []
@@ -691,7 +705,9 @@ def test_the_regime_description_is_recomputed_from_the_cells_behind_it(model):
     `net_returns` is closed over the model under test rather than parsed back
     out of a directory name, which would be a second place to get it wrong.
     """
-    payload = json.loads((BENCHMARK / "btc_p2b_regimes" / "p2b_regimes.json").read_text())
+    payload = json.loads(
+        (BENCHMARK / "btc_p2b_regimes" / "p2b_regimes.json").read_text(encoding="utf-8")
+    )
     assert payload["evidence_class"] == DERIVED
     assert payload["sealed_test"] is False
     one_model = {**payload, "deltas_by_model": {model: payload["deltas_by_model"][model]}}
@@ -704,7 +720,9 @@ def test_the_ablation_finding_is_that_no_family_carries_the_arm():
     """The headline, pinned. A family that started carrying the combined arm
     would be a change of finding, and has to be a deliberate act."""
     payload = json.loads(
-        (BENCHMARK / "btc_p2b_ablation_xgboost" / "p2b_ablation.json").read_text()
+        (BENCHMARK / "btc_p2b_ablation_xgboost" / "p2b_ablation.json").read_text(
+            encoding="utf-8"
+        )
     )
     carried = [
         family
@@ -725,7 +743,9 @@ def test_the_four_outer_periods_are_the_ones_the_write_up_describes():
     """`artifacts/README.md` and the roadmap both describe these four blocks as
     positive-return, low-directionality stretches. If that stopped being true the
     prose would be wrong and nothing else would say so."""
-    payload = json.loads((BENCHMARK / "btc_p2b_regimes" / "p2b_regimes.json").read_text())
+    payload = json.loads(
+        (BENCHMARK / "btc_p2b_regimes" / "p2b_regimes.json").read_text(encoding="utf-8")
+    )
     assert [p["fold"] for p in payload["periods"]] == [0, 1, 2, 3]
     ratios = []
     for period in payload["periods"]:
@@ -748,12 +768,16 @@ def test_the_four_outer_periods_are_the_ones_the_write_up_describes():
 # without touching a committed artifact.
 def _ablation_payload() -> dict:
     return json.loads(
-        (BENCHMARK / "btc_p2b_ablation_xgboost" / "p2b_ablation.json").read_text()
+        (BENCHMARK / "btc_p2b_ablation_xgboost" / "p2b_ablation.json").read_text(
+            encoding="utf-8"
+        )
     )
 
 
 def _regimes_payload() -> dict:
-    return json.loads((BENCHMARK / "btc_p2b_regimes" / "p2b_regimes.json").read_text())
+    return json.loads(
+        (BENCHMARK / "btc_p2b_regimes" / "p2b_regimes.json").read_text(encoding="utf-8")
+    )
 
 
 def test_an_ablation_delta_edited_away_from_its_cells_is_reported():

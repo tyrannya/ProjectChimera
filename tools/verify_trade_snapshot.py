@@ -318,7 +318,7 @@ def verify_trade_snapshot(
             "manifest_readable", f"no manifest at {manifest_path}"
         )
     try:
-        payload = json.loads(manifest_path.read_text())
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise TradeSnapshotVerificationError(
             "manifest_readable", f"{manifest_path} is not readable JSON: {exc}"
@@ -621,7 +621,7 @@ def verify_trade_snapshot(
             f"alignment.ohlcv_manifest names {ohlcv_manifest}, not a file; the candles "
             "this source claims to align to are not present",
         )
-    ohlcv = json.loads(ohlcv_manifest.read_text())
+    ohlcv = json.loads(ohlcv_manifest.read_text(encoding="utf-8"))
     if (
         ohlcv["processed_outer_coverage"]["semantic_prefix_hash"]
         != alignment["ohlcv_processed_semantic_prefix_hash"]

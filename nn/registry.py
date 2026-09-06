@@ -61,10 +61,16 @@ def save_model(
     target.mkdir(parents=True, exist_ok=True)
 
     torch.save(model.state_dict(), target / "model.pt")
-    (target / "config.json").write_text(json.dumps(model.config.to_dict(), indent=2))
-    (target / "metadata.json").write_text(json.dumps(metadata.to_dict(), indent=2))
+    (target / "config.json").write_text(
+        json.dumps(model.config.to_dict(), indent=2), encoding="utf-8"
+    )
+    (target / "metadata.json").write_text(
+        json.dumps(metadata.to_dict(), indent=2), encoding="utf-8"
+    )
     if report is not None:
-        (target / "report.json").write_text(json.dumps(report, indent=2, default=str))
+        (target / "report.json").write_text(
+            json.dumps(report, indent=2, default=str), encoding="utf-8"
+        )
 
     logger.info("Saved model version %s to %s", version, target)
     return target
@@ -77,8 +83,12 @@ def load_model(model_dir: str | Path) -> tuple[MTST, ModelMetadata]:
         if not (model_dir / name).exists():
             raise FileNotFoundError(f"{model_dir} is not a model artifact: {name} missing")
 
-    config = MTSTConfig.from_dict(json.loads((model_dir / "config.json").read_text()))
-    metadata = ModelMetadata.from_dict(json.loads((model_dir / "metadata.json").read_text()))
+    config = MTSTConfig.from_dict(
+        json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+    )
+    metadata = ModelMetadata.from_dict(
+        json.loads((model_dir / "metadata.json").read_text(encoding="utf-8"))
+    )
 
     if metadata.n_features != config.input_dim:
         raise ValueError(
@@ -108,7 +118,7 @@ def resolve_current(models_dir: str | Path = DEFAULT_MODELS_DIR) -> Path:
             f"no promoted model: {pointer} does not exist. Train a model and let it "
             "pass the promotion gates first."
         )
-    version = json.loads(pointer.read_text())["version"]
+    version = json.loads(pointer.read_text(encoding="utf-8"))["version"]
     target = models_dir / version
     if not target.exists():
         raise FileNotFoundError(f"{pointer} points at {version}, which is not in {models_dir}")
@@ -202,7 +212,7 @@ def require_sealed_test_evidence(model_dir: str | Path, version: str) -> dict[st
             "requires a report proving the sealed test split was evaluated."
         )
     try:
-        report = json.loads(report_path.read_text())
+        report = json.loads(report_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(
             f"cannot promote {version}: report.json is not readable JSON ({exc})."
@@ -254,7 +264,8 @@ def promote(models_dir: str | Path, version: str) -> Path:
                 "promoted_at": datetime.now(timezone.utc).isoformat(),
             },
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     logger.warning("Promoted model %s to current", version)
     return pointer

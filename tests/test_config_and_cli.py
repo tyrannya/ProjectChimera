@@ -45,7 +45,7 @@ def validated(exchange: str, mode: str) -> dict:
 # --- config files ---------------------------------------------------------
 @pytest.mark.parametrize("path", sorted(CONF_DIR.glob("*.json")))
 def test_every_config_is_valid_json(path):
-    json.loads(path.read_text())
+    json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("exchange", EXCHANGES)
@@ -74,7 +74,7 @@ def test_live_profiles_declare_intent_without_being_live(exchange):
 def test_no_config_contains_a_literal_credential():
     """Only ``${VAR}`` placeholders, never a value."""
     for path in CONF_DIR.glob("*.json"):
-        exchange = json.loads(path.read_text()).get("exchange", {})
+        exchange = json.loads(path.read_text(encoding="utf-8")).get("exchange", {})
         for field in ("key", "secret", "password", "uid"):
             value = exchange.get(field)
             if value:
@@ -85,21 +85,24 @@ def test_no_config_contains_a_literal_credential():
 
 def test_base_config_does_not_enable_the_rest_api():
     """The REST API can start, stop and force-enter trades."""
-    base = json.loads((CONF_DIR / "base.json").read_text())
+    base = json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))
     assert base.get("api_server", {}).get("enabled", False) is False
 
 
 def test_base_config_does_not_force_entry():
-    assert json.loads((CONF_DIR / "base.json").read_text())["force_entry_enable"] is False
+    assert (
+        json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))["force_entry_enable"]
+        is False
+    )
 
 
 def test_base_config_states_a_fee():
     """Backtests without an explicit fee silently assume the exchange default."""
-    assert json.loads((CONF_DIR / "base.json").read_text())["fee"] > 0
+    assert json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))["fee"] > 0
 
 
 def test_base_config_carries_risk_limits():
-    risk = json.loads((CONF_DIR / "base.json").read_text())["risk"]
+    risk = json.loads((CONF_DIR / "base.json").read_text(encoding="utf-8"))["risk"]
     for key in ("max_drawdown_pct", "risk_per_trade_pct", "max_open_positions"):
         assert key in risk
 
@@ -166,7 +169,7 @@ def test_launcher_allows_dry_run_without_credentials(tmp_path, capsys):
     )
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out)["dry_run"] is True
-    assert json.loads(config_out.read_text())["dry_run"] is True
+    assert json.loads(config_out.read_text(encoding="utf-8"))["dry_run"] is True
 
 
 def test_launcher_writes_the_merged_config_privately(tmp_path):
@@ -205,7 +208,7 @@ def test_launcher_goes_live_only_with_both_the_ack_and_a_live_config(monkeypatch
         )
         == 0
     )
-    assert json.loads(config_out.read_text())["dry_run"] is False
+    assert json.loads(config_out.read_text(encoding="utf-8"))["dry_run"] is False
 
 
 def test_live_without_credentials_is_refused_even_with_the_ack(monkeypatch, tmp_path):
@@ -242,7 +245,7 @@ def test_the_ack_does_not_make_a_test_config_live(monkeypatch, tmp_path):
             str(config_out),
         ]
     )
-    assert json.loads(config_out.read_text())["dry_run"] is True
+    assert json.loads(config_out.read_text(encoding="utf-8"))["dry_run"] is True
 
 
 def test_load_config_rejects_an_unknown_pair_of_names():
@@ -275,7 +278,7 @@ def test_env_file_is_not_committed():
 
 def test_env_example_contains_no_values():
     repo = Path(__file__).resolve().parents[1]
-    for line in (repo / ".env.example").read_text().splitlines():
+    for line in (repo / ".env.example").read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -300,7 +303,9 @@ def test_no_merge_conflict_markers_remain():
             ".toml",
         }:
             continue
-        for number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
+        for number, line in enumerate(
+            path.read_text(errors="ignore", encoding="utf-8").splitlines(), 1
+        ):
             # Only a line that *starts* with a marker is a real conflict
             # remnant. docs/engineering-audit.md quotes these sequences inline
             # while describing the ones this rebuild removed.

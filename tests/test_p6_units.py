@@ -261,7 +261,7 @@ def write_cell(root: Path, name: str, payload: dict) -> Path:
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
     body = {key: value for key, value in payload.items() if key != "_dir"}
-    (directory / ARTIFACT_NAME).write_text(json.dumps(body, indent=2))
+    (directory / ARTIFACT_NAME).write_text(json.dumps(body, indent=2), encoding="utf-8")
     return directory
 
 

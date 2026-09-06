@@ -63,7 +63,7 @@ def test_p7_was_registered_after_p6_closed():
     assert (REPO / "artifacts" / "btc_p6_SHA256SUMS.txt").is_file()
     decision = REPO / "artifacts" / "benchmark" / "btc_p6_decision" / "decision.json"
     assert decision.is_file(), "P7 may not be registered before P6's decision exists"
-    p6 = json.loads(decision.read_text())
+    p6 = json.loads(decision.read_text(encoding="utf-8"))
     assert p6["preregistration_hash"] == p6_hash()
     # P6 was negative, and P7 says so rather than quietly depending on it.
     assert p6["outcome"] == "negative"
@@ -178,7 +178,7 @@ def test_the_battery_covers_every_property_the_document_lists():
     ids = [item["id"] for item in LEAKAGE_BATTERY]
     assert ids == [f"C{n}" for n in range(1, len(ids) + 1)]
     assert len(ids) == 10
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     for item in LEAKAGE_BATTERY:
         assert f"| {item['id']} |" in text
 
@@ -189,13 +189,13 @@ def test_the_battery_covers_every_property_the_document_lists():
 
 
 def test_the_document_publishes_the_same_hash():
-    text = DOCUMENT.read_text()
+    text = DOCUMENT.read_text(encoding="utf-8")
     assert FROZEN_HASH in text
     assert f"# {CHECKPOINT} — preregistration" in text
 
 
 def test_the_document_states_both_consensus_rules_verbatim():
-    text = _flat(DOCUMENT.read_text())
+    text = _flat(DOCUMENT.read_text(encoding="utf-8"))
     assert "at least 2 of the 3 specialists are actively long" in text
     assert "the 15m specialist is not actively short" in text
     assert "at least 3 of the 4 specialists are actively long" in text
@@ -204,13 +204,15 @@ def test_the_document_states_both_consensus_rules_verbatim():
 
 
 def test_every_forbidden_item_appears_in_the_document():
-    section = _flat(DOCUMENT.read_text().split("## 8. Forbidden")[1].split("## 9.")[0])
+    section = _flat(
+        DOCUMENT.read_text(encoding="utf-8").split("## 8. Forbidden")[1].split("## 9.")[0]
+    )
     for item in FORBIDDEN_AFTER_RESULTS:
         assert _flat(item) in section, f"the document does not forbid: {item}"
 
 
 def test_the_document_has_no_unresolved_placeholder():
-    assert not re.search(r"\bTODO\b|\bTBD\b|XXX", DOCUMENT.read_text())
+    assert not re.search(r"\bTODO\b|\bTBD\b|XXX", DOCUMENT.read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------- #

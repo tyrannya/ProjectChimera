@@ -172,7 +172,9 @@ def corrupted_copy(directory: Path, source: Path, *, row: int, column: str, valu
     target = directory / source.name
     frame.to_parquet(target, index=False)
     sidecar = str(source) + ".meta.json"
-    (Path(str(target) + ".meta.json")).write_text(Path(sidecar).read_text())
+    (Path(str(target) + ".meta.json")).write_text(
+        Path(sidecar).read_text(encoding="utf-8"), encoding="utf-8"
+    )
     return target
 
 
@@ -195,7 +197,7 @@ def test_parquet_compression_does_not_define_identity(
     rewritten.parent.mkdir(parents=True)
     frame.to_parquet(rewritten, index=False, compression=compression)
     (Path(str(rewritten) + ".meta.json")).write_text(
-        Path(str(dataset) + ".meta.json").read_text()
+        Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"), encoding="utf-8"
     )
     assert (
         fingerprint_of(rewritten).research_input_hash == base_fingerprint.research_input_hash
@@ -212,7 +214,7 @@ def test_column_order_and_a_stored_index_do_not_define_identity(
     # index=True adds a stored index column that research never reads.
     reordered.to_parquet(rewritten, index=True)
     (Path(str(rewritten) + ".meta.json")).write_text(
-        Path(str(dataset) + ".meta.json").read_text()
+        Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"), encoding="utf-8"
     )
     assert (
         fingerprint_of(rewritten).research_input_hash == base_fingerprint.research_input_hash
@@ -227,7 +229,7 @@ def test_timestamp_resolution_does_not_define_identity(dataset, base_fingerprint
     rewritten = tmp_path / "microseconds.parquet"
     frame.to_parquet(rewritten, index=False)
     (Path(str(rewritten) + ".meta.json")).write_text(
-        Path(str(dataset) + ".meta.json").read_text()
+        Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"), encoding="utf-8"
     )
     assert (
         fingerprint_of(rewritten).research_input_hash == base_fingerprint.research_input_hash
@@ -239,9 +241,11 @@ def test_a_reformatted_sidecar_does_not_define_identity(dataset, base_fingerprin
     frame, _ = load_dataset(dataset)
     rewritten = tmp_path / "reformatted.parquet"
     frame.to_parquet(rewritten, index=False)
-    payload = json.loads(Path(str(dataset) + ".meta.json").read_text())
+    payload = json.loads(Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"))
     reordered = dict(reversed(list(payload.items())))
-    (Path(str(rewritten) + ".meta.json")).write_text(json.dumps(reordered, indent=8))
+    (Path(str(rewritten) + ".meta.json")).write_text(
+        json.dumps(reordered, indent=8), encoding="utf-8"
+    )
     assert (
         fingerprint_of(rewritten).research_input_hash == base_fingerprint.research_input_hash
     )
@@ -252,11 +256,11 @@ def test_the_market_name_is_case_normalised(dataset, base_fingerprint, tmp_path)
     frame, _ = load_dataset(dataset)
     rewritten = tmp_path / "recased.parquet"
     frame.to_parquet(rewritten, index=False)
-    payload = json.loads(Path(str(dataset) + ".meta.json").read_text())
+    payload = json.loads(Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"))
     payload["exchange"] = "  SYNTHETIC  "
     payload["pair"] = "synth/usdt"
     payload["timeframe"] = "1H"
-    (Path(str(rewritten) + ".meta.json")).write_text(json.dumps(payload))
+    (Path(str(rewritten) + ".meta.json")).write_text(json.dumps(payload), encoding="utf-8")
     assert (
         fingerprint_of(rewritten).research_input_hash == base_fingerprint.research_input_hash
     )
@@ -287,7 +291,7 @@ def test_negative_zero_and_zero_are_one_number(dataset, tmp_path):
         path.parent.mkdir(parents=True)
         variant.to_parquet(path, index=False)
         (Path(str(path) + ".meta.json")).write_text(
-            Path(str(dataset) + ".meta.json").read_text()
+            Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"), encoding="utf-8"
         )
         hashes.add(fingerprint_of(path).research_input_hash)
     assert len(hashes) == 1
@@ -353,7 +357,9 @@ def test_scrambling_the_sealed_block_leaves_the_research_input_alone(
 
     path = tmp_path / "scrambled.parquet"
     frame.to_parquet(path, index=False)
-    (Path(str(path) + ".meta.json")).write_text(Path(str(dataset) + ".meta.json").read_text())
+    (Path(str(path) + ".meta.json")).write_text(
+        Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
 
     scrambled = fingerprint_of(path)
     assert scrambled.research_input_hash == base_fingerprint.research_input_hash
@@ -393,7 +399,9 @@ def test_removing_a_research_visible_row_changes_the_identity(
     shortened = frame.drop(index=5).reset_index(drop=True)
     path = tmp_path / "dropped.parquet"
     shortened.to_parquet(path, index=False)
-    (Path(str(path) + ".meta.json")).write_text(Path(str(dataset) + ".meta.json").read_text())
+    (Path(str(path) + ".meta.json")).write_text(
+        Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     assert fingerprint_of(path).research_input_hash != base_fingerprint.research_input_hash
 
 
@@ -406,7 +414,9 @@ def test_a_column_research_never_reads_does_not_change_the_identity(
     frame["scratch_note"] = np.arange(len(frame), dtype=np.float64)
     path = tmp_path / "extra_column.parquet"
     frame.to_parquet(path, index=False)
-    (Path(str(path) + ".meta.json")).write_text(Path(str(dataset) + ".meta.json").read_text())
+    (Path(str(path) + ".meta.json")).write_text(
+        Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     assert fingerprint_of(path).research_input_hash == base_fingerprint.research_input_hash
 
 
@@ -420,7 +430,9 @@ def test_dropping_the_segment_ids_changes_the_identity(dataset, base_fingerprint
     frame, _ = load_dataset(dataset)
     path = tmp_path / "no_segments.parquet"
     frame.drop(columns=["segment_id"]).to_parquet(path, index=False)
-    (Path(str(path) + ".meta.json")).write_text(Path(str(dataset) + ".meta.json").read_text())
+    (Path(str(path) + ".meta.json")).write_text(
+        Path(str(dataset) + ".meta.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
 
     without = fingerprint_of(path)
     assert without.research_input_hash != base_fingerprint.research_input_hash
@@ -572,7 +584,7 @@ def test_training_records_the_research_input(dataset, tmp_path, base_fingerprint
     )
     version = next(p for p in models_dir.iterdir() if p.is_dir())
 
-    report = json.loads((version / "report.json").read_text())
+    report = json.loads((version / "report.json").read_text(encoding="utf-8"))
     recorded = report["research_input"]
     assert recorded["fingerprint_schema"] == RESEARCH_INPUT_SCHEMA
     assert recorded["research_input_hash"] == base_fingerprint.research_input_hash
@@ -581,7 +593,7 @@ def test_training_records_the_research_input(dataset, tmp_path, base_fingerprint
     assert report["sealed_test"]["research_contract"]["contract_id"] == SYNTHETIC_CONTRACT_ID
     assert report["sealed_test"]["evaluated"] is False
 
-    metadata = json.loads((version / "metadata.json").read_text())
+    metadata = json.loads((version / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["research_input_hash"] == base_fingerprint.research_input_hash
     assert metadata["research_contract_hash"] == CONTRACT.contract_hash
 
@@ -633,19 +645,19 @@ def walk_forward_run(tmp_path_factory, dataset) -> Path:
 def test_walk_forward_records_it_and_names_it_in_the_summary(
     walk_forward_run, base_fingerprint
 ):
-    payload = json.loads((walk_forward_run / "walkforward.json").read_text())
+    payload = json.loads((walk_forward_run / "walkforward.json").read_text(encoding="utf-8"))
     recorded = payload["research_input"]
     assert recorded["research_input_hash"] == base_fingerprint.research_input_hash
     assert recorded["research_rows"] == payload["sealed_test"]["start_row"]
     assert payload["test_evaluated"] is False
 
-    markdown = (walk_forward_run / "walkforward.md").read_text()
+    markdown = (walk_forward_run / "walkforward.md").read_text(encoding="utf-8")
     assert base_fingerprint.research_input_hash in markdown
 
 
 def test_the_recorded_identity_needs_no_local_path(walk_forward_run):
     """Provenance travels with the artifact, not with the machine it ran on."""
-    payload = json.loads((walk_forward_run / "walkforward.json").read_text())
+    payload = json.loads((walk_forward_run / "walkforward.json").read_text(encoding="utf-8"))
     recorded = payload["research_input"]
     assert set(wf_diagnostics.RESEARCH_INPUT_FIELDS) <= set(recorded)
     assert not any(
@@ -680,19 +692,21 @@ def run_copy(directory: Path, *, research_input: dict | None = None) -> Path:
     copies, which is how the fingerprint-era shape gets tested against a real
     artifact without touching the historical record.
     """
-    payload = json.loads(HISTORICAL.read_text())
+    payload = json.loads(HISTORICAL.read_text(encoding="utf-8"))
     payload["sealed_test"]["anchor_timestamp"] = CONTRACT.sealed_test_start.isoformat()
     payload["sealed_test"]["research_contract"] = CONTRACT.provenance()
     if research_input is not None:
         payload["research_input"] = research_input
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "walkforward.json").write_text(json.dumps(payload, indent=2))
+    (directory / "walkforward.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
     return directory
 
 
 @pytest.fixture
 def sealed_row() -> int:
-    return int(json.loads(HISTORICAL.read_text())["sealed_test"]["start_row"])
+    return int(json.loads(HISTORICAL.read_text(encoding="utf-8"))["sealed_test"]["start_row"])
 
 
 def test_runs_reading_the_same_data_stay_comparable(tmp_path, sealed_row):
@@ -768,7 +782,7 @@ def test_the_committed_artifacts_have_no_fingerprint_and_are_never_given_one():
     assert legacy_artifacts, "expected at least one pre-fingerprint committed artifact"
 
     for artifact in legacy_artifacts:
-        payload = json.loads(artifact.read_text())
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
         assert "research_input" not in payload
 
         run = wf_diagnostics.load_run(artifact)
@@ -791,7 +805,7 @@ def test_the_committed_v4_artifacts_carry_current_research_input_provenance():
     assert v4_artifacts, "expected the committed v4 walkforward artifacts"
 
     for artifact in v4_artifacts:
-        payload = json.loads(artifact.read_text())
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
         assert "research_input" in payload
 
         run = wf_diagnostics.load_run(artifact)
@@ -933,13 +947,13 @@ def test_diagnostics_records_the_raw_input_it_read(
         == 0
     )
 
-    report = json.loads((out / "regime_diagnostics.json").read_text())
+    report = json.loads((out / "regime_diagnostics.json").read_text(encoding="utf-8"))
     analysis = report["analysis"]
     assert analysis["research_input_verified"] is True
     assert analysis["raw_input"]["fingerprint_schema"] == RAW_INPUT_SCHEMA
     assert len(analysis["raw_input"]["raw_input_hash"]) == 64
     assert report["sealed_test_evaluated"] is False
-    assert (out / "regime_diagnostics.md").read_text().count("Raw input:") == 1
+    assert (out / "regime_diagnostics.md").read_text(encoding="utf-8").count("Raw input:") == 1
 
 
 def test_diagnostics_refuses_a_dataset_that_is_not_what_the_run_read(
@@ -955,7 +969,7 @@ def test_diagnostics_refuses_a_dataset_that_is_not_what_the_run_read(
 
 def test_the_regime_frame_never_sees_a_sealed_row(walk_forward_run, dataset):
     """The verification path reads the research half only, by construction."""
-    payload = json.loads((walk_forward_run / "walkforward.json").read_text())
+    payload = json.loads((walk_forward_run / "walkforward.json").read_text(encoding="utf-8"))
     frame = load_research_frame(
         dataset,
         sealed_test_start=payload["sealed_test"]["start_row"],

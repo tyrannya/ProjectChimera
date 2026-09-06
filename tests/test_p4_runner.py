@@ -147,9 +147,9 @@ def test_a_derivatives_snapshot_that_fails_verification_never_reaches_a_fit(
     root = tmp_path / "broken"
     shutil.copytree(runnable_tree["root"], root)
     path = root / "data" / "research" / MANIFEST_NAME
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     payload["hourly"]["semantic_hash"] = "0" * 64
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     out = tmp_path / "cell"
     with pytest.raises(SystemExit, match="failed verification"):
         p2b.main(
@@ -174,9 +174,9 @@ def test_a_snapshot_bound_to_other_candles_never_reaches_a_fit(runnable_tree, tm
     shutil.copytree(runnable_tree["root"], root)
     research = root / "data" / "research"
     path = research / MANIFEST_NAME
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     payload["alignment"]["ohlcv_processed_semantic_prefix_hash"] = "7" * 64
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     out = tmp_path / "cell"
     with pytest.raises(SystemExit):
         p2b.main(
@@ -196,7 +196,7 @@ def test_the_committed_snapshot_and_source_agree_about_where_stage_one_stops(
 ):
     checks = verify_derivatives_snapshot(runnable_tree["derivatives"])
     assert any(check.name == "p4-hold" for check in checks)
-    payload = json.loads(runnable_tree["derivatives"].read_text())
+    payload = json.loads(runnable_tree["derivatives"].read_text(encoding="utf-8"))
     assert payload["safety_checks"]["acquisition_bounded_before_p4_hold"] is True
     assert payload["safety_checks"]["table_strictly_before_p4_hold"] is True
 

@@ -591,7 +591,7 @@ def acquisition_window(
     cannot silently cover a different region than the candles it will be aligned
     to, and refused outright if the resulting window reaches the seal.
     """
-    payload = json.loads(Path(ohlcv_manifest).read_text())
+    payload = json.loads(Path(ohlcv_manifest).read_text(encoding="utf-8"))
     processed = payload["processed_outer_coverage"]
     spine_start = pd.Timestamp(processed["start"]).tz_convert("UTC")
     spine_end = pd.Timestamp(processed["end"]).tz_convert("UTC")
@@ -715,7 +715,7 @@ def spine_alignment(frame: pd.DataFrame, ohlcv_manifest: Path) -> dict[str, Any]
     about the hours between them. A spine hour without trades is a hard failure:
     the microstructure row for that candle would have to be invented.
     """
-    payload = json.loads(Path(ohlcv_manifest).read_text())
+    payload = json.loads(Path(ohlcv_manifest).read_text(encoding="utf-8"))
     root = Path(ohlcv_manifest).resolve().parents[2]
     spine = pd.read_parquet(
         root / payload["processed_outer_coverage"]["path"], columns=["date"]
@@ -781,7 +781,7 @@ def write_snapshot(
     def relative(path: Path | str) -> str:
         candidate = Path(path)
         try:
-            return str(candidate.resolve().relative_to(tree))
+            return candidate.resolve().relative_to(tree).as_posix()
         except ValueError:
             return str(candidate)
 
@@ -896,7 +896,7 @@ def write_snapshot(
             "styx_rows_exported": 0,
         },
     }
-    manifest_out.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_out.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(
         "trade snapshot exported:",
         f"hours={len(frame)}",

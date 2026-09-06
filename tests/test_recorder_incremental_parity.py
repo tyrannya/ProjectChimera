@@ -117,10 +117,14 @@ def assert_identical(oracle, rendered, oracle_root, cursor_root, market="um"):
     pd.testing.assert_frame_equal(left, right, check_dtype=True, check_exact=True)
 
     a = json.loads(
-        MinuteNormalizer(oracle_root, CONTRACT).meta_path(market, DAY).read_text("utf-8")
+        MinuteNormalizer(oracle_root, CONTRACT)
+        .meta_path(market, DAY)
+        .read_text(encoding="utf-8")
     )
     b = json.loads(
-        MinuteNormalizer(cursor_root, CONTRACT).meta_path(market, DAY).read_text("utf-8")
+        MinuteNormalizer(cursor_root, CONTRACT)
+        .meta_path(market, DAY)
+        .read_text(encoding="utf-8")
     )
     for field in (
         "rows",
@@ -222,7 +226,9 @@ def test_parity_on_a_partial_then_closed_kline(tmp_path):
     assert_identical(oracle, rendered, oracle_root, cursor_root)
     assert rendered.rows == 1, "the partial frame is not a minute"
     document = json.loads(
-        MinuteNormalizer(cursor_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(cursor_root, CONTRACT)
+        .meta_path("um", DAY)
+        .read_text(encoding="utf-8")
     )
     assert document["streams"][UM_KLINE_1M] == {"records": 2, "closed": 1, "partial": 1}
 
@@ -341,12 +347,16 @@ def test_parity_with_a_missing_kline_minute(tmp_path):
     assert_identical(oracle, rendered, oracle_root, cursor_root)
     assert rendered.rows == 3 and len(rendered.missing) == 1437
     document = json.loads(
-        MinuteNormalizer(cursor_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(cursor_root, CONTRACT)
+        .meta_path("um", DAY)
+        .read_text(encoding="utf-8")
     )
     assert (
         document["gaps"]
         == json.loads(
-            MinuteNormalizer(oracle_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+            MinuteNormalizer(oracle_root, CONTRACT)
+            .meta_path("um", DAY)
+            .read_text(encoding="utf-8")
         )["gaps"]
     )
 
@@ -426,7 +436,9 @@ def test_parity_on_a_large_book_flood(tmp_path):
     oracle, rendered, oracle_root, cursor_root, _ = compare(tmp_path, events)
     assert_identical(oracle, rendered, oracle_root, cursor_root)
     document = json.loads(
-        MinuteNormalizer(cursor_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(cursor_root, CONTRACT)
+        .meta_path("um", DAY)
+        .read_text(encoding="utf-8")
     )
     assert document["streams"][UM_BOOK_TICKER]["records"] == len(books)
 
@@ -551,10 +563,12 @@ def test_a_crash_after_the_append_and_before_the_cache_replays_the_tail_once(tmp
     oracle = full_report(oracle_root, "um")
     assert rendered.digest == oracle.digest
     left = json.loads(
-        MinuteNormalizer(oracle_root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(oracle_root, CONTRACT)
+        .meta_path("um", DAY)
+        .read_text(encoding="utf-8")
     )
     right = json.loads(
-        MinuteNormalizer(root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(root, CONTRACT).meta_path("um", DAY).read_text(encoding="utf-8")
     )
     assert left["streams"] == right["streams"], "a record was folded twice, or not at all"
 
@@ -714,7 +728,7 @@ def test_the_cache_is_outside_everything_that_identifies_a_recording(tmp_path):
     assert cache.exists()
 
     document = json.loads(
-        MinuteNormalizer(root, CONTRACT).meta_path("um", DAY).read_text("utf-8")
+        MinuteNormalizer(root, CONTRACT).meta_path("um", DAY).read_text(encoding="utf-8")
     )
     text = json.dumps(document)
     assert "cache" not in text, "the day's metadata mentions the cache"

@@ -97,7 +97,7 @@ def test_it_says_plainly_that_it_is_not_p5():
     flat = _flat(ext.NOT_P5)
     assert "context columns attached to a 1h row" in flat
     assert "different objects" in flat
-    assert _flat("It is not P5") in _flat(DOCUMENT.read_text())
+    assert _flat("It is not P5") in _flat(DOCUMENT.read_text(encoding="utf-8"))
 
 
 def test_the_thinness_of_the_1d_universe_is_recorded_before_the_verdict():
@@ -109,7 +109,7 @@ def test_the_thinness_of_the_1d_universe_is_recorded_before_the_verdict():
 
 def test_the_hash_is_frozen_and_the_document_publishes_it():
     assert ext.preregistration_hash() == FROZEN_HASH
-    assert FROZEN_HASH in DOCUMENT.read_text()
+    assert FROZEN_HASH in DOCUMENT.read_text(encoding="utf-8")
 
 
 def test_the_runner_executes_this_registration_and_no_other_clock():
@@ -123,7 +123,9 @@ def test_the_runner_executes_this_registration_and_no_other_clock():
 
 
 def test_every_forbidden_item_appears_in_the_document():
-    section = _flat(DOCUMENT.read_text().split("## 7. Forbidden")[1].split("## 8.")[0])
+    section = _flat(
+        DOCUMENT.read_text(encoding="utf-8").split("## 7. Forbidden")[1].split("## 8.")[0]
+    )
     for item in ext.FORBIDDEN_AFTER_RESULTS:
         assert _flat(item) in section, f"the document does not forbid: {item}"
 
@@ -137,7 +139,7 @@ def test_p6_ext_was_registered_after_p6_closed():
     p6_decision = BENCHMARK / "btc_p6_decision" / "decision.json"
     assert p6_decision.is_file()
     assert (
-        json.loads(p6_decision.read_text())["preregistration_hash"]
+        json.loads(p6_decision.read_text(encoding="utf-8"))["preregistration_hash"]
         == p6.preregistration_hash()
     )
 
@@ -156,7 +158,7 @@ def test_no_p6ext_artifact_exists_before_the_evidence_commit():
 
 @pytest.mark.skipif(not DECISION.is_file(), reason="P6-EXT has not been run")
 def test_the_decision_reports_both_clocks_under_the_frozen_design():
-    payload = json.loads(DECISION.read_text())
+    payload = json.loads(DECISION.read_text(encoding="utf-8"))
     assert payload["checkpoint"] == "P6-EXT"
     assert payload["preregistration_hash"] == FROZEN_HASH
     assert [row["clock"] for row in payload["clocks"]] == list(ext.CLOCKS)
@@ -167,7 +169,9 @@ def test_the_decision_reports_both_clocks_under_the_frozen_design():
 @pytest.mark.skipif(not DECISION.is_file(), reason="P6-EXT has not been run")
 @pytest.mark.parametrize("clock,model", CELLS, ids=[f"{c}-{m}" for c, m in CELLS])
 def test_each_extension_cell_declares_the_frozen_design(clock, model):
-    cell = json.loads((BENCHMARK / f"btc_p6ext_{clock}_{model}" / "p6.json").read_text())
+    cell = json.loads(
+        (BENCHMARK / f"btc_p6ext_{clock}_{model}" / "p6.json").read_text(encoding="utf-8")
+    )
     assert cell["checkpoint"] == "P6-EXT"
     assert cell["preregistration_hash"] == FROZEN_HASH
     assert cell["clock"] == clock and cell["model"] == model
@@ -204,7 +208,7 @@ def test_the_decision_regenerates_from_the_frozen_cells_except_one_prose_field()
     """
     from nn.p6_decision import build
 
-    committed = json.loads(DECISION.read_text())
+    committed = json.loads(DECISION.read_text(encoding="utf-8"))
     regenerated = build(
         sorted((BENCHMARK.glob("btc_p6ext_4h_*"))) + sorted(BENCHMARK.glob("btc_p6ext_1d_*")),
         registration("p6ext"),
@@ -223,7 +227,9 @@ def test_p6s_own_decision_still_regenerates_byte_for_byte():
     """The same edit must not have moved P6, which is closed and reproduced."""
     from nn.p6_decision import build
 
-    committed = json.loads((BENCHMARK / "btc_p6_decision" / "decision.json").read_text())
+    committed = json.loads(
+        (BENCHMARK / "btc_p6_decision" / "decision.json").read_text(encoding="utf-8")
+    )
     runs = [
         directory
         for clock in p6.CLOCKS

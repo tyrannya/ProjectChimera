@@ -56,14 +56,16 @@ def cell_dir(clock: str, model: str) -> Path:
 @pytest.fixture(scope="module")
 def cells() -> dict[tuple[str, str], dict]:
     return {
-        (clock, model): json.loads((cell_dir(clock, model) / ARTIFACT_NAME).read_text())
+        (clock, model): json.loads(
+            (cell_dir(clock, model) / ARTIFACT_NAME).read_text(encoding="utf-8")
+        )
         for clock, model in CELLS
     }
 
 
 @pytest.fixture(scope="module")
 def decision() -> dict:
-    return json.loads((DECISION_DIR / DECISION_NAME).read_text())
+    return json.loads((DECISION_DIR / DECISION_NAME).read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------- #
@@ -300,11 +302,11 @@ def test_the_primary_evidence_is_frozen_and_still_hashes():
 def test_the_manifest_covers_every_primary_file():
     covered = {
         line.split(maxsplit=1)[1].strip()
-        for line in MANIFEST.read_text().splitlines()
+        for line in MANIFEST.read_text(encoding="utf-8").splitlines()
         if line.strip()
     }
     for clock, model in CELLS:
-        directory = cell_dir(clock, model).relative_to(REPO)
+        directory = cell_dir(clock, model).relative_to(REPO).as_posix()
         for name in (ARTIFACT_NAME, PREDICTIONS_NAME):
             assert f"{directory}/{name}" in covered
 
@@ -337,7 +339,7 @@ def test_the_thin_folds_are_the_ones_this_document_names(cells):
     # Exactly one of them decides anything.
     assert [row for row in flagged if row[1] == PRIMARY_MODEL] == [("5m", "xgboost", 0)]
 
-    document = (REPO / "docs" / "p6_preregistration.md").read_text()
+    document = (REPO / "docs" / "p6_preregistration.md").read_text(encoding="utf-8")
     section = document.split("`trade_count` diagnostic")[1]
     assert "eight" in section.split("cell-folds")[0]
     for clock, model, fold in flagged:

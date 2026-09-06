@@ -126,7 +126,7 @@ def test_the_report_records_splits_baselines_and_the_gate(dataset, tmp_path):
     models_dir = tmp_path / "models"
     main(["--dataset", str(dataset), "--models-dir", str(models_dir), *TINY])
     version = next(p for p in models_dir.iterdir() if p.is_dir())
-    report = json.loads((version / "report.json").read_text())
+    report = json.loads((version / "report.json").read_text(encoding="utf-8"))
 
     assert set(report["split_plan"]) == {"train", "validation", "test"}
     for split in ("validation", "test"):
@@ -156,7 +156,7 @@ def test_splits_recorded_in_the_report_do_not_overlap(dataset, tmp_path):
     models_dir = tmp_path / "models"
     main(["--dataset", str(dataset), "--models-dir", str(models_dir), *TINY])
     version = next(p for p in models_dir.iterdir() if p.is_dir())
-    plan = json.loads((version / "report.json").read_text())["split_plan"]
+    plan = json.loads((version / "report.json").read_text(encoding="utf-8"))["split_plan"]
 
     assert plan["train"]["end"] == plan["validation"]["start"]
     assert plan["validation"]["end"] == plan["test"]["start"]

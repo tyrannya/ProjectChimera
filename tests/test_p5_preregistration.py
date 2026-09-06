@@ -59,7 +59,7 @@ DOCUMENT = ROOT / "docs" / "p5_preregistration.md"
 
 @pytest.fixture(scope="module")
 def document() -> str:
-    return DOCUMENT.read_text()
+    return DOCUMENT.read_text(encoding="utf-8")
 
 
 # --- the document and the module say the same thing -------------------------
@@ -426,7 +426,9 @@ def test_every_cell_records_this_preregistration_and_not_another():
     benchmark = ROOT / "artifacts" / "benchmark"
     for arm in ARMS:
         for model in MODELS:
-            cell = json.loads((benchmark / f"btc_p5_{arm}_{model}" / "p2b.json").read_text())
+            cell = json.loads(
+                (benchmark / f"btc_p5_{arm}_{model}" / "p2b.json").read_text(encoding="utf-8")
+            )
             assert (
                 cell["mtf_spec"]["preregistration_hash"] == preregistration_hash()
             ), f"btc_p5_{arm}_{model} was produced under a different preregistration"

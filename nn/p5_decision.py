@@ -85,7 +85,7 @@ def load_cells(run_dirs: list[Path]) -> dict[tuple[str, str], dict[str, Any]]:
         path = Path(directory) / ARTIFACT_NAME
         if not path.is_file():
             raise DecisionError(f"{directory}: no {ARTIFACT_NAME}")
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
         if payload.get("checkpoint") != "P5":
             raise DecisionError(
                 f"{directory} is a {payload.get('checkpoint')!r} cell. A decision built "
@@ -470,8 +470,10 @@ def main(argv: list[str] | None = None) -> int:
     payload = build(list(args.runs), args.manifest)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / DECISION_NAME).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    (out / STATUS_NAME).write_text(to_markdown(payload))
+    (out / DECISION_NAME).write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (out / STATUS_NAME).write_text(to_markdown(payload), encoding="utf-8")
     decision = payload["decision"]
     logger.warning(
         "P5 %s: %d of %d folds improved against a bar of %d. Mean delta %s, worst fold %s "

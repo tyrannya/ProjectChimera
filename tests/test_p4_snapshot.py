@@ -169,9 +169,9 @@ def _repoint(exported, tmp_path, mutate):
     root = tmp_path / "tree"
     shutil.copytree(exported["root"], root)
     path = root / "data" / "research" / MANIFEST_NAME
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     mutate(payload, root)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 
 
@@ -207,10 +207,10 @@ def test_a_snapshot_cut_one_block_longer_is_refused_before_a_window_is_planned(
     p4_spine, tmp_path
 ):
     """The one-row overrun, at the level the acquisition can still stop it."""
-    payload = json.loads(p4_spine["manifest"].read_text())
+    payload = json.loads(p4_spine["manifest"].read_text(encoding="utf-8"))
     payload["processed_outer_coverage"]["row_range"] = [0, HOLDOUT_ROWS[0] + 1]
     longer = tmp_path / "manifest.json"
-    longer.write_text(json.dumps(payload))
+    longer.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HoldoutError, match=f"past {HOLDOUT_ROWS[0]}"):
         acquisition_window(longer, CONTRACT)
 
@@ -350,7 +350,7 @@ def test_no_module_on_the_p4_path_can_build_a_rest_request():
         "tools/export_derivatives_snapshot.py",
         "tools/verify_derivatives_snapshot.py",
     ):
-        tree = ast.parse((root / name).read_text())
+        tree = ast.parse((root / name).read_text(encoding="utf-8"))
         docstrings = {
             id(node.body[0].value)
             for node in ast.walk(tree)

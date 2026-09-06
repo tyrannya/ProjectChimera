@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -341,7 +341,7 @@ def test_the_markdown_separates_baselines_from_economic_references():
 # --- the artifact index ----------------------------------------------------------
 def _index_rows() -> list[dict[str, str]]:
     """Parse the status table out of `artifacts/README.md`."""
-    text = INDEX.read_text()
+    text = INDEX.read_text(encoding="utf-8")
     rows = []
     header: list[str] | None = None
     for line in text.splitlines():
@@ -588,7 +588,7 @@ def test_every_committed_artifact_directory_appears_in_the_index():
     # Committed directories, not whatever happens to be on this filesystem: a
     # developer's untracked run directories are legitimate local state and are
     # not part of what the repository contains.
-    committed = {str(Path(p).parent) for p in _tracked_paths() if "/" in p}
+    committed = {PurePosixPath(p).parent.as_posix() for p in _tracked_paths() if "/" in p}
     assert committed, "no committed artifact directories found"
     assert (
         committed == listed
@@ -601,7 +601,7 @@ def test_every_indexed_path_exists_and_carries_a_status_file():
         assert directory.is_dir(), row["path"]
         status = directory / "STATUS.md"
         assert status.is_file(), f"{row['path']} has no STATUS.md"
-        assert status.read_text().startswith(f"# {row['status']}")
+        assert status.read_text(encoding="utf-8").startswith(f"# {row['status']}")
 
 
 def test_the_index_records_that_committed_artifacts_predate_the_metric_change():
@@ -619,7 +619,7 @@ def test_the_index_records_that_committed_artifacts_predate_the_metric_change():
             assert row["metric semantics"] != "pre-correction", row["path"]
             continue
         assert row["metric semantics"] == "pre-correction", row["path"]
-    text = INDEX.read_text()
+    text = INDEX.read_text(encoding="utf-8")
     assert "not comparable" in text
     assert "annualised_sharpe" in text
 
@@ -635,7 +635,7 @@ def test_the_index_states_that_the_v3_source_runs_are_absent():
     assert rows[V3_BASELINE]["source runs present"] == "no"
     assert "btc_nested_v3_seed" in rows[V3_BASELINE]["source runs"]
 
-    text = INDEX.read_text()
+    text = INDEX.read_text(encoding="utf-8")
     assert "not fixed by copying or renaming" in text.lower()
     for missing in ("btc_nested_v3_seed_", "btc_nested_v2_seed_"):
         assert missing in text
@@ -655,7 +655,7 @@ def _tracked_paths() -> set[str]:
         check=True,
     )
     return {
-        str(Path(entry).relative_to("artifacts"))
+        PurePosixPath(entry).relative_to("artifacts").as_posix()
         for entry in result.stdout.split("\0")
         if entry
     }
@@ -697,7 +697,7 @@ def test_a_genuine_untracked_source_run_does_not_fail_the_suite(tmp_path, monkey
     created = not genuine.exists()
     if created:
         genuine.mkdir(parents=True)
-        (genuine / "walkforward.json").write_text("{}")
+        (genuine / "walkforward.json").write_text("{}", encoding="utf-8")
     try:
         assert genuine.exists(), "the fixture must actually be on disk"
         # Untracked, so git does not see it and the guard passes.
@@ -715,7 +715,7 @@ def test_a_genuine_untracked_source_run_does_not_fail_the_suite(tmp_path, monkey
 
 def test_the_index_lists_only_committed_artifact_directories():
     """Every indexed directory is one git actually carries."""
-    committed_dirs = {str(Path(p).parent) for p in _tracked_paths() if "/" in p}
+    committed_dirs = {PurePosixPath(p).parent.as_posix() for p in _tracked_paths() if "/" in p}
     for row in _index_rows():
         assert (
             row["path"] in committed_dirs

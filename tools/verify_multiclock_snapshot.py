@@ -342,7 +342,7 @@ def check_parity(manifest: dict[str, Any], minutes: pd.DataFrame) -> dict[str, A
 def verify(manifest_path: Path) -> dict[str, Any]:
     if not manifest_path.is_file():
         raise SnapshotError(f"no multi-clock manifest at {manifest_path}")
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     check_shape(manifest)
 
     minutes_path = REPO_ROOT / manifest["minutes"]["path"]

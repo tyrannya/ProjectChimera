@@ -141,7 +141,7 @@ def test_validation_only_report_records_that_test_was_not_evaluated(dataset, tmp
         ["--dataset", str(dataset), "--models-dir", str(models_dir), "--validation-only"]
         + TINY
     )
-    report = json.loads((only_version(models_dir) / "report.json").read_text())
+    report = json.loads((only_version(models_dir) / "report.json").read_text(encoding="utf-8"))
 
     assert report["test"] is None
     assert report["test_evaluated"] is False
@@ -319,7 +319,7 @@ def test_the_experiment_runner_never_scores_test(dataset, tmp_path, windowed_spl
     assert experiment.main(experiment_args(dataset, out, ["--seed", "1", "2"])) == 0
 
     assert set(windowed_splits) == {"train", "validation"}, "the spy must have fired"
-    summary = json.loads((out / "experiments.json").read_text())
+    summary = json.loads((out / "experiments.json").read_text(encoding="utf-8"))
     assert summary["test_evaluated"] is False
     assert summary["n_runs"] == 2
     for run in summary["runs"]:
@@ -339,7 +339,7 @@ def test_the_experiment_runner_keeps_failed_runs_visible(dataset, tmp_path):
         )
         == 0
     )
-    summary = json.loads((out / "experiments.json").read_text())
+    summary = json.loads((out / "experiments.json").read_text(encoding="utf-8"))
 
     assert summary["n_runs"] == 2
     assert summary["n_failed"] == 1
@@ -356,7 +356,7 @@ def test_the_experiment_runner_ranks_by_the_declared_objective(dataset, tmp_path
     experiment.main(
         experiment_args(dataset, out, ["--seed", "1", "2", "3", "--objective", "macro_f1"])
     )
-    summary = json.loads((out / "experiments.json").read_text())
+    summary = json.loads((out / "experiments.json").read_text(encoding="utf-8"))
 
     assert summary["objective"] == "macro_f1"
     scores = [r["objective"] for r in summary["runs"] if r["status"] == "ok"]
@@ -622,7 +622,7 @@ def spied_run(dataset, tmp_path_factory):
 
     record["out"] = out
     record["data"] = train.load_research_data(dataset)
-    record["results"] = json.loads((out / "walkforward.json").read_text())
+    record["results"] = json.loads((out / "walkforward.json").read_text(encoding="utf-8"))
     record["boundary"] = boundary_of(record["data"])
     record["plan"] = plan_defaults(record["boundary"], folds=WF_FOLDS)
     return record
@@ -901,11 +901,14 @@ def test_the_summary_aggregates_outer_validation_only(spied_run):
                 )
                 for f in spied_run["results"]["folds"]
             ]
-    assert "outer validation" in (spied_run["out"] / "walkforward.md").read_text().lower()
+    assert (
+        "outer validation"
+        in (spied_run["out"] / "walkforward.md").read_text(encoding="utf-8").lower()
+    )
 
 
 def test_the_markdown_reports_outer_validation_and_claims_nothing_more(spied_run):
-    markdown = (spied_run["out"] / "walkforward.md").read_text()
+    markdown = (spied_run["out"] / "walkforward.md").read_text(encoding="utf-8")
 
     assert "Outer validation (the reported result)" in markdown
     assert "calib err" in markdown
@@ -1064,7 +1067,7 @@ def test_walkforward_row_indices_stay_below_the_boundary(dataset, tmp_path, monk
     assert seen, "the spy must have fired"
     assert max(seen) < boundary, f"a fold reached row {max(seen)}, sealed starts at {boundary}"
 
-    results = json.loads((tmp_path / "wf" / "walkforward.json").read_text())
+    results = json.loads((tmp_path / "wf" / "walkforward.json").read_text(encoding="utf-8"))
     assert results["sealed_test"]["start_row"] == boundary
     assert results["sealed_test"]["evaluated"] is False
     assert results["sealed_test"]["period"]["rows"] == data.n_rows - boundary
@@ -1083,7 +1086,7 @@ def test_experiment_validation_indices_stay_below_the_boundary(dataset, tmp_path
 
     out = tmp_path / "exp"
     experiment.main(experiment_args(dataset, out))
-    summary = json.loads((out / "experiments.json").read_text())
+    summary = json.loads((out / "experiments.json").read_text(encoding="utf-8"))
     assert summary["sealed_test"]["start_row"] == boundary
     assert summary["periods"]["validation"]["row_range"][1] <= boundary
 
@@ -1127,14 +1130,14 @@ def test_promotion_refuses_an_artifact_with_no_report(tmp_path):
 
 def test_promotion_refuses_a_malformed_report(tmp_path):
     models_dir = build_artifact(tmp_path, {"research_only": False, "test_evaluated": True})
-    (models_dir / "v1" / "report.json").write_text('{"research_only": fal')
+    (models_dir / "v1" / "report.json").write_text('{"research_only": fal', encoding="utf-8")
     with pytest.raises(ValueError, match="not readable JSON"):
         promote(models_dir, "v1")
 
 
 def test_promotion_refuses_a_report_that_is_not_an_object(tmp_path):
     models_dir = build_artifact(tmp_path, {"research_only": False, "test_evaluated": True})
-    (models_dir / "v1" / "report.json").write_text("[1, 2, 3]")
+    (models_dir / "v1" / "report.json").write_text("[1, 2, 3]", encoding="utf-8")
     with pytest.raises(ValueError, match="not an object"):
         promote(models_dir, "v1")
 
@@ -1184,7 +1187,7 @@ def test_the_normal_train_promote_path_still_works(dataset, tmp_path, monkeypatc
         == 0
     )
     promoted = resolve_current(models_dir)
-    report = json.loads((promoted / "report.json").read_text())
+    report = json.loads((promoted / "report.json").read_text(encoding="utf-8"))
     assert report["research_only"] is False
     assert report["test_evaluated"] is True
 
@@ -1200,7 +1203,7 @@ def test_the_experiment_plan_exists_before_the_first_model_trains(
 
     def spy(*args, **kwargs):
         seen_at_first_train.setdefault(
-            "plan", json.loads((out / experiment.PLAN_FILE).read_text())
+            "plan", json.loads((out / experiment.PLAN_FILE).read_text(encoding="utf-8"))
         )
         return original(*args, **kwargs)
 
@@ -1216,8 +1219,8 @@ def test_the_experiment_plan_exists_before_the_first_model_trains(
 def test_the_results_carry_the_hash_of_the_plan_they_came_from(dataset, tmp_path):
     out = tmp_path / "exp"
     experiment.main(experiment_args(dataset, out, ["--seed", "1", "2"]))
-    plan = json.loads((out / experiment.PLAN_FILE).read_text())
-    results = json.loads((out / "experiments.json").read_text())
+    plan = json.loads((out / experiment.PLAN_FILE).read_text(encoding="utf-8"))
+    results = json.loads((out / "experiments.json").read_text(encoding="utf-8"))
 
     assert results["plan_hash"] == plan["plan_hash"]
     assert results["plan_file"] == experiment.PLAN_FILE
@@ -1229,7 +1232,9 @@ def test_the_plan_hash_changes_with_the_grid(dataset, tmp_path):
     for extra in (["--seed", "1"], ["--seed", "1", "2"], ["--lr", "1e-3"]):
         out = tmp_path / f"exp{len(hashes)}"
         experiment.main(experiment_args(dataset, out, extra))
-        hashes.add(json.loads((out / experiment.PLAN_FILE).read_text())["plan_hash"])
+        hashes.add(
+            json.loads((out / experiment.PLAN_FILE).read_text(encoding="utf-8"))["plan_hash"]
+        )
     assert len(hashes) == 3
 
 
