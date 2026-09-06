@@ -349,7 +349,21 @@ class DemoRunner:
         decisions: list[RuleDecision] = []
         for rule in self.rules:
             try:
-                decisions.append(rule.evaluate(state, portfolio))
+                decision = rule.evaluate(state, portfolio)
+                # Defence in depth. `RuleDecision.is_actionable` is decided by
+                # the TYPE of the target, which is the guarantee that matters:
+                # a shadow rule returns `SignalOnly` and `HedgedPosition.plan`
+                # cannot accept one. This cross-check catches the other
+                # direction -- a rule that DECLARES itself signal-only and then
+                # returns a `HedgeTarget` -- which the type alone cannot, and
+                # which would be a shadow rule quietly acquiring the ability to
+                # trade.
+                if decision.is_actionable and not getattr(rule, "actionable", False):
+                    raise RuleError(
+                        f"{rule.rule_id} declares actionable=False but returned a "
+                        "HedgeTarget. A signal-only rule may never size a position"
+                    )
+                decisions.append(decision)
             except RuleError as exc:
                 self._halt(f"rule_exception: {rule.rule_id}: {exc}")
                 return TickOutcome(

@@ -432,3 +432,124 @@ def test_a_held_position_is_not_rehedged_every_minute(tmp_path):
         if record["kind"] == "DECISION" and record["execution"]
     ]
     assert len(executions) == 1, "exactly one entry, and no rehedge after it"
+
+
+# ---------------------------------------------------------------------------
+# No rule invents a parameter, and no shadow rule can size a position.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "min_basis",
+        "max_notional_fraction",
+        "step_size",
+        "min_notional",
+        "spot_leg_fraction",
+        "spot_fee_rate",
+        "perp_fee_rate",
+        "slippage_rate",
+    ],
+)
+def test_the_carry_rule_refuses_every_missing_parameter_rather_than_defaulting(missing):
+    """Section 17's S3 STOP list, at the rule rather than at the config.
+
+    A default written into the rule module would be a parameter chosen by its
+    author, before the S2 protocol meant to freeze it and with the recorded data
+    already on disk. Each key is checked separately so a refusal that only
+    covered the first one could not pass.
+    """
+    from chimera.demo.rules_carry import CarryParams
+
+    params = {key: value for key, value in CARRY_PARAMS.items() if key != missing}
+    with pytest.raises(RuleError, match=missing):
+        CarryParams.from_config(params)
+
+
+def test_the_carry_rule_accepts_a_complete_parameter_set():
+    """The negative control: the refusal is about absence, not about the rule."""
+    from chimera.demo.rules_carry import CarryParams
+
+    assert CarryParams.from_config(dict(CARRY_PARAMS)).min_basis == D("10")
+
+
+def test_a_shadow_rule_refuses_a_missing_coefficient_set():
+    from chimera.demo.rules_shadow import ShadowParams
+
+    with pytest.raises(RuleError, match="coefficients"):
+        ShadowParams.from_config("R2", {"intercept": "0", "threshold": "1"})
+
+
+def test_a_shadow_rule_with_the_wrong_number_of_coefficients_is_refused():
+    from chimera.demo.rules_shadow import FrozenLogisticRule, ShadowParams
+
+    params = ShadowParams.from_config(
+        "R2", {"coefficients": ["1"], "intercept": "0", "threshold": "1"}
+    )
+    with pytest.raises(RuleError, match="coefficients"):
+        FrozenLogisticRule(params)
+
+
+def test_a_rule_that_declares_itself_signal_only_may_not_return_a_target(tmp_path):
+    """Defence in depth, in the direction the type system cannot cover.
+
+    A shadow rule returning `SignalOnly` cannot reach an executor because
+    `HedgedPosition.plan` takes a `HedgeTarget`. The opposite mistake -- a rule
+    that declares ``actionable = False`` and then returns a `HedgeTarget` -- is
+    not a type error, and would be a signal-only rule quietly acquiring the
+    ability to trade. The runner refuses it.
+    """
+    from chimera.carry.hedge import HedgeTarget
+    from chimera.demo.rules import RuleDecision
+
+    harness = build(tmp_path, with_shadow=False)
+
+    class Liar:
+        rule_id = "R_liar"
+        version = "1.0.0"
+        actionable = False  # says it only observes
+
+        def rule_hash(self):
+            return "sha256:" + "1" * 64
+
+        def params_hash(self):
+            return "sha256:" + "2" * 64
+
+        def evaluate(self, state, portfolio):
+            return RuleDecision(  # ... and then sizes a position anyway
+                rule_id=self.rule_id,
+                rule_hash=self.rule_hash(),
+                target=HedgeTarget(D("0.5")),
+                reason="synthetic",
+                inputs_hash="sha256:" + "3" * 64,
+                params_hash=self.params_hash(),
+            )
+
+    harness.runner.rules = RuleRegistry([Liar()])
+    harness.run(1)
+    assert harness.runner.state is RunnerState.HALT
+    assert "may never size a position" in (harness.runner.halt_reason or "")
+
+
+def test_the_declared_shadow_rules_do_not_trip_that_check(tmp_path):
+    """The negative control: the real shadow rules pass it every minute."""
+    harness = build(tmp_path, with_shadow=True)
+    harness.run(3)
+    assert harness.runner.state is RunnerState.READY
+
+
+def test_each_rule_declares_whether_it_may_size_a_position():
+    """The declaration itself, pinned.
+
+    `RuleDecision.is_actionable` is decided by the TYPE of the target, and that
+    is the guarantee that matters. This attribute is the second half of the
+    cross-check above -- the half that catches a rule declaring one thing and
+    returning another -- so it is asserted rather than assumed. Without this,
+    flipping a shadow rule's declaration would change nothing any test noticed,
+    which is exactly how a defence-in-depth check rots.
+    """
+    from chimera.demo.rules_carry import CarryRule
+    from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule
+
+    assert CarryRule.actionable is True, "R1 is the one rule that sizes a position"
+    assert FrozenLogisticRule.actionable is False
+    assert DailyMomentumRule.actionable is False
