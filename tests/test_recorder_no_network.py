@@ -441,7 +441,7 @@ ALLOWED_ENDPOINTS = frozenset(
     {
         "wss://fstream.binance.com/market/ws",
         "wss://fstream.binance.com/public/ws",
-        "wss://stream.binance.com:9443/ws",
+        "wss://data-stream.binance.vision:443/ws",
         "https://fapi.binance.com",
         "https://api.binance.com",
         "/fapi/v1/klines",
