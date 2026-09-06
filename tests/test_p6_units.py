@@ -131,7 +131,18 @@ def test_the_last_scored_bar_stops_before_the_research_boundary():
 def test_a_cell_names_the_manifest_it_was_produced_from():
     inside = REPO / "data" / "research" / "btc_usdt_multiclock_gen2_manifest.json"
     assert manifest_label(inside) == "data/research/btc_usdt_multiclock_gen2_manifest.json"
-    assert manifest_label(Path("/etc/hostname")) == "/etc/hostname"
+
+    # A manifest OUTSIDE the repository keeps its own absolute form, because a
+    # repository-relative label would be a claim this repository cannot make.
+    # The example is built from the filesystem's own anchor -- "/" on POSIX,
+    # "C:\\" or "D:\\" on Windows -- rather than from a hard-coded POSIX
+    # literal, whose expected string would be wrong on a platform where
+    # Path("/etc/hostname") resolves to a drive-qualified path.
+    outside = Path(REPO.anchor) / "etc" / "hostname"
+    label = manifest_label(outside)
+    assert label == str(outside.resolve())
+    assert Path(label).is_absolute()
+    assert label != "data/research/btc_usdt_multiclock_gen2_manifest.json"
 
 
 # --------------------------------------------------------------------------- #
