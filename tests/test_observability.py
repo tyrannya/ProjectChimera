@@ -4,10 +4,20 @@ The previous repository had five dashboards querying ten series (`equity`,
 `drift_score`, `sharpe_live`, `retrain_trigger`, ...), not one of which was
 produced by any code in it. These tests make that impossible to reintroduce
 silently.
+
+The demo deployment raises the bar, because `chimera/metrics.py` DECLARING a
+series is not the same as some process WRITING one, and an alert on a series
+nobody writes is indistinguishable from an alert on a healthy system: it never
+fires, for ever. So the demo alert and dashboard checks below carry a
+hand-written table naming, per series, the module that writes it, and assert
+that module really references it. The tables are literal on purpose. An oracle
+collected from the file under test would pass whatever that file happened to
+say, which is the shape of tautology a previous sprint shipped.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -20,6 +30,12 @@ from chimera import metrics
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_DIR = ROOT / "grafana" / "provisioning" / "dashboards"
 CONF_DIR = ROOT / "conf"
+
+#: Both committed rule files. Collected by glob so a third one cannot be added
+#: without the per-file checks below picking it up; pinned by the literal test
+#: immediately after so deleting one cannot silently shrink the parametrisation
+#: to nothing, which would turn a green run into no run at all.
+ALERT_FILES = sorted(CONF_DIR.glob("alerts*.yml"))
 
 #: Series Prometheus itself provides, plus PromQL function names we should not
 #: mistake for metrics.
@@ -97,12 +113,18 @@ def test_every_dashboard_panel_queries_an_exported_metric(path):
                 )
 
 
+def test_the_alert_file_set_is_exactly_the_two_committed_ones():
+    """A literal name check, so a deleted file cannot empty the parametrisation."""
+    assert [path.name for path in ALERT_FILES] == ["alerts.yml", "alerts_demo.yml"]
+
+
 @pytest.mark.skipif(
     not metrics.PROMETHEUS_AVAILABLE, reason="prometheus_client is not installed"
 )
-def test_every_alert_rule_queries_an_exported_metric():
+@pytest.mark.parametrize("path", ALERT_FILES, ids=lambda path: path.name)
+def test_every_alert_rule_queries_an_exported_metric(path):
     exported = exported_metric_names()
-    rules = yaml.safe_load((CONF_DIR / "alerts.yml").read_text(encoding="utf-8"))
+    rules = yaml.safe_load(path.read_text(encoding="utf-8"))
     for group in rules["groups"]:
         for rule in group["rules"]:
             for name in referenced_metrics(rule["expr"]):
@@ -156,3 +178,360 @@ def test_inference_metric_helpers_move_the_counters():
     before_err = metrics.INFERENCE_ERRORS.labels(kind="timeout")._value.get()
     metrics.mark_inference_failure("timeout")
     assert metrics.INFERENCE_ERRORS.labels(kind="timeout")._value.get() == before_err + 1
+
+
+# --- the demo deployment -------------------------------------------------
+#
+# Section 11.2's alerts, section 11.1's dashboard and the two adopted scrape
+# jobs. The oracles below are written out by hand and compared against the
+# committed files; none of them is derived from the file, constant or function
+# it is checking.
+
+
+#: Section 11.2's ten adopted alerts, sorted. Equality against the sorted names
+#: in the file is two-sided by construction: an eleventh alert fails it and a
+#: deleted one fails it.
+DEMO_ALERT_NAMES: tuple[str, ...] = (
+    "ClockSkew",
+    "DataGapToday",
+    "DiskLow",
+    "FundingAdverseStreak",
+    "HedgeImbalance",
+    "ReconciliationMismatch",
+    "RecorderDown",
+    "RecorderStreamStale",
+    "RunnerDown",
+    "RunnerHalted",
+)
+
+#: Every series `conf/alerts_demo.yml` may name, and the module that writes it.
+#: `chimera/metrics.py` is not an acceptable answer for the second half: it
+#: declares series, it does not write them, and a declared-but-unwritten series
+#: is exactly the failure this table exists to catch.
+DEMO_ALERT_SERIES: dict[str, tuple[str, str]] = {
+    "chimera_demo_disk_free_bytes": ("DEMO_DISK_FREE", "chimera/demo/telemetry.py"),
+    "chimera_demo_funding_adverse_streak": (
+        "DEMO_FUNDING_ADVERSE_STREAK",
+        "chimera/demo/telemetry.py",
+    ),
+    "chimera_demo_heartbeat_timestamp": ("DEMO_HEARTBEAT", "chimera/demo/telemetry.py"),
+    "chimera_demo_hedge_imbalance_btc": ("DEMO_HEDGE_IMBALANCE", "chimera/demo/telemetry.py"),
+    "chimera_demo_state": ("set_demo_state", "chimera/demo/telemetry.py"),
+    "chimera_futures_reconciliation_total": (
+        "FUT_RECONCILIATION",
+        "chimera/futures/executor.py",
+    ),
+    "chimera_recorder_clock_skew_ms": ("RECORDER_CLOCK_SKEW", "chimera/recorder/health.py"),
+    "chimera_recorder_disk_free_bytes": ("RECORDER_DISK_FREE", "chimera/recorder/health.py"),
+    "chimera_recorder_heartbeat_timestamp": (
+        "RECORDER_HEARTBEAT",
+        "chimera/recorder/health.py",
+    ),
+    "chimera_recorder_last_event_age_seconds": (
+        "RECORDER_LAST_EVENT_AGE",
+        "chimera/recorder/health.py",
+    ),
+    "chimera_recorder_missing_minutes_total": (
+        "RECORDER_MISSING_MINUTES",
+        "chimera/recorder/health.py",
+    ),
+    "chimera_risk_halted": ("RISK_HALTED", "chimera/demo/telemetry.py"),
+}
+
+#: The eight panels of section 11.1's dashboard, in the order they are laid out.
+DEMO_PANEL_TITLES: tuple[str, ...] = (
+    "Runner state and heartbeat",
+    "Recorder stream ages",
+    "Equity and net PnL",
+    "Hedge state and imbalance",
+    "Funding paid and received",
+    "Fees and slippage (both legs combined)",
+    "Vetoes by reason",
+    "Reconciliation outcomes",
+)
+
+#: The same writer table for every series the demo dashboard queries. The two
+#: tables overlap but are kept apart: an alert and a panel are allowed to watch
+#: different things, and merging them would let one file's oracle cover the
+#: other's gap.
+DEMO_DASHBOARD_SERIES: dict[str, tuple[str, str]] = {
+    "chimera_demo_equity": ("DEMO_EQUITY", "chimera/demo/telemetry.py"),
+    "chimera_demo_funding_total": ("DEMO_FUNDING", "chimera/demo/telemetry.py"),
+    "chimera_demo_heartbeat_timestamp": ("DEMO_HEARTBEAT", "chimera/demo/telemetry.py"),
+    "chimera_demo_hedge_imbalance_btc": ("DEMO_HEDGE_IMBALANCE", "chimera/demo/telemetry.py"),
+    "chimera_demo_hedge_state": ("set_hedge_state", "chimera/demo/telemetry.py"),
+    "chimera_demo_net_pnl": ("DEMO_NET_PNL", "chimera/demo/telemetry.py"),
+    "chimera_demo_state": ("set_demo_state", "chimera/demo/telemetry.py"),
+    "chimera_futures_reconciliation_total": (
+        "FUT_RECONCILIATION",
+        "chimera/futures/executor.py",
+    ),
+    "chimera_futures_risk_vetoes_total": ("FUT_RISK_VETOES", "chimera/futures/executor.py"),
+    "chimera_futures_slippage_bps_bucket": ("FUT_SLIPPAGE_BPS", "chimera/futures/executor.py"),
+    "chimera_futures_trading_fees_total": ("FUT_TRADING_FEES", "chimera/futures/executor.py"),
+    "chimera_recorder_last_event_age_seconds": (
+        "RECORDER_LAST_EVENT_AGE",
+        "chimera/recorder/health.py",
+    ),
+    "chimera_rejected_entries_total": ("REJECTED_ENTRIES", "chimera/demo/telemetry.py"),
+}
+
+#: The adopted scrape endpoints. 9102 for the recorder and 9103 for the runner,
+#: both from the master plan's deployment table, both written out here rather
+#: than read back out of conf/prometheus.yml.
+DEMO_SCRAPE_TARGETS: dict[str, str] = {"recorder": "recorder:9102", "demo": "demo:9103"}
+
+#: Every compose service, so the set fails both when one is deleted and when a
+#: new one -- a live-trading one, say -- is added without anybody noticing.
+COMPOSE_SERVICES: frozenset[str] = frozenset(
+    {"freqtrade", "nn_infer", "prometheus", "grafana", "alertmanager", "recorder", "demo"}
+)
+
+
+def demo_alert_rules() -> list[dict]:
+    """Every rule in conf/alerts_demo.yml, flattened out of its groups."""
+    rules = yaml.safe_load((CONF_DIR / "alerts_demo.yml").read_text(encoding="utf-8"))
+    return [rule for group in rules["groups"] for rule in group["rules"]]
+
+
+def dashboards() -> list[tuple[Path, dict]]:
+    """Every provisioned dashboard, as (path, parsed JSON)."""
+    return [
+        (path, json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(DASHBOARD_DIR.glob("*.json"))
+    ]
+
+
+def panel_expressions(board: dict) -> list[str]:
+    """Every PromQL expression a dashboard's top-level panels query.
+
+    Top level only, deliberately, and asserted to be the whole story by
+    ``test_exactly_one_provisioned_dashboard_covers_the_demo_campaign``: a row
+    panel carries its children in its own nested ``panels`` key, where this walk
+    -- and the one in ``test_every_dashboard_panel_queries_an_exported_metric``
+    -- would not see them.
+    """
+    return [target["expr"] for panel in board["panels"] for target in panel.get("targets", [])]
+
+
+def _references(source: str, attribute: str) -> bool:
+    """True when ``source`` does something *to* ``attribute`` in executable code.
+
+    Deliberately an AST walk rather than a text search. A text search was tried
+    first and a mutation defeated it: commenting the emitting line out left the
+    name in the file, so the guard went on reporting a series as written when
+    nothing wrote it any more. The AST has neither comments nor strings in it,
+    and an imported-but-unused name appears in it only as an ``alias``, so
+    neither survives here.
+
+    Two shapes count. ``NAME.something`` covers ``DEMO_EQUITY.set(...)``,
+    ``DEMO_FUNDING.labels(...).inc()`` and ``metrics.FUT_RECONCILIATION.labels(...)``;
+    ``NAME(...)`` covers the helpers, ``set_demo_state(...)`` and
+    ``set_hedge_state(...)``, which are how the two swept gauges are written.
+    What this proves is that the module reaches for the object, not that the
+    line runs on any given campaign -- tests/test_demo_observability.py runs
+    whole campaigns for that question.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute):
+            base = node.value
+            if isinstance(base, ast.Name) and base.id == attribute:
+                return True
+            if isinstance(base, ast.Attribute) and base.attr == attribute:
+                return True
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == attribute:
+                return True
+    return False
+
+
+def writer_references(attribute: str, module_path: str) -> bool:
+    """``_references`` against a module of this repository."""
+    return _references((ROOT / module_path).read_text(encoding="utf-8"), attribute)
+
+
+def test_the_writer_check_can_tell_a_used_metric_from_an_unused_one():
+    """The negative half of the two checks that lean on ``writer_references``.
+
+    Without it, a helper that returned True for everything would make both
+    "is it emitted" assertions vacuous. ``MODE_SELECTED`` is a real series in
+    chimera/metrics.py that the demo emitter deliberately does not write -- the
+    demo deployment runs no trading-mode machinery -- so it is the honest
+    counter-example.
+    """
+    assert writer_references("DEMO_EQUITY", "chimera/demo/telemetry.py")
+    assert writer_references("set_demo_state", "chimera/demo/telemetry.py")
+    assert writer_references("RECORDER_HEARTBEAT", "chimera/recorder/health.py")
+    assert not writer_references("MODE_SELECTED", "chimera/demo/telemetry.py")
+
+
+def test_the_writer_check_is_not_satisfied_by_a_name_that_only_looks_used():
+    """The three ways a series can appear in a module without being written.
+
+    Each of these defeated an earlier text-matching version of the check, so
+    they are pinned as cases rather than left to a reviewer's memory.
+    """
+    imported_only = "from chimera.metrics import DEMO_EQUITY\n\nX = 1\n"
+    commented_out = "from chimera.metrics import DEMO_EQUITY\n\n# DEMO_EQUITY.set(1.0)\npass\n"
+    named_in_a_string = (
+        'NAMES = ["DEMO_EQUITY"]\nHELP = "DEMO_EQUITY.set() used to live here"\n'
+    )
+    for source in (imported_only, commented_out, named_in_a_string):
+        assert not _references(source, "DEMO_EQUITY"), source
+    assert _references("DEMO_EQUITY.set(1.0)\n", "DEMO_EQUITY")
+
+
+def test_the_demo_alerts_are_exactly_section_11_2s_ten():
+    names = sorted(rule["alert"] for rule in demo_alert_rules())
+    assert names == sorted(DEMO_ALERT_NAMES)
+    assert len(names) == len(set(names)), "two alerts share a name"
+
+
+def test_every_demo_alert_carries_a_severity_and_both_annotations():
+    """An alert with no severity does not route, and one with no description
+    tells the operator on call nothing about what to do next."""
+    for rule in demo_alert_rules():
+        assert "for" in rule, f"{rule['alert']} has no `for` clause"
+        assert rule["labels"]["severity"] in {"critical", "warning"}
+        annotations = rule["annotations"]
+        assert annotations["summary"].strip(), f"{rule['alert']} has an empty summary"
+        assert annotations["description"].strip(), f"{rule['alert']} has no description"
+
+
+def test_every_demo_alert_series_is_written_by_a_named_module():
+    referenced = set()
+    for rule in demo_alert_rules():
+        referenced |= {
+            name for name in referenced_metrics(rule["expr"]) if name.startswith("chimera_")
+        }
+    assert referenced == set(DEMO_ALERT_SERIES), "the alert file's series set moved"
+    for series, (attribute, module_path) in DEMO_ALERT_SERIES.items():
+        assert writer_references(
+            attribute, module_path
+        ), f"{series} is declared but {module_path} never writes it"
+
+
+@pytest.mark.skipif(
+    not metrics.PROMETHEUS_AVAILABLE, reason="prometheus_client is not installed"
+)
+def test_every_demo_alert_series_is_also_declared_in_metrics():
+    exported = exported_metric_names()
+    for series in DEMO_ALERT_SERIES:
+        assert (
+            series in exported
+        ), f"{series} is written but chimera/metrics.py declares no such name"
+
+
+def test_exactly_one_provisioned_dashboard_covers_the_demo_campaign():
+    """ "Exactly one" is a property of the provisioned SET, not of a filename.
+
+    The dashboard that covers the campaign is identified by what it queries --
+    any ``chimera_demo_*`` series -- so renaming demo.json keeps this passing
+    while adding a second demo dashboard, or copying this one, fails it. That is
+    the invariant worth holding: Grafana provisions the whole directory, so a
+    second board is a second board however it is named, and two boards sharing
+    a uid means Grafana loads one of them and silently drops the other.
+    """
+    demo = [
+        (path, board)
+        for path, board in dashboards()
+        if any("chimera_demo_" in expr for expr in panel_expressions(board))
+    ]
+    assert len(demo) == 1, f"expected one demo dashboard, found {[p.name for p, _ in demo]}"
+
+    path, board = demo[0]
+    assert board["uid"] == "chimera-demo"
+    assert board["title"] == "Chimera / Demo campaign"
+    assert [panel["title"] for panel in board["panels"]] == list(DEMO_PANEL_TITLES)
+    assert all(
+        "panels" not in panel for panel in board["panels"]
+    ), "a row panel hides its children from the exported-metric check"
+
+    uids = [board["uid"] for _, board in dashboards()]
+    assert len(uids) == len(set(uids)), f"two dashboards share a uid: {uids}"
+
+
+def test_the_provisioned_dashboard_directory_is_the_one_in_this_repository():
+    """Makes "provisioned" mean something: the provider must point at the
+    directory the compose mount puts these files in, or the count above is a
+    count of files nothing loads."""
+    provider = yaml.safe_load((DASHBOARD_DIR / "dashboards.yml").read_text(encoding="utf-8"))[
+        "providers"
+    ][0]
+    assert provider["options"]["path"] == "/etc/grafana/provisioning/dashboards"
+    mounts = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))[
+        "services"
+    ]["grafana"]["volumes"]
+    assert "./grafana/provisioning:/etc/grafana/provisioning:ro" in mounts
+
+
+def test_every_demo_dashboard_series_is_written_by_a_named_module():
+    board = json.loads((DASHBOARD_DIR / "demo.json").read_text(encoding="utf-8"))
+    referenced = set()
+    for expr in panel_expressions(board):
+        referenced |= {
+            name for name in referenced_metrics(expr) if name.startswith("chimera_")
+        }
+    assert referenced == set(DEMO_DASHBOARD_SERIES), "the dashboard's series set moved"
+    for series, (attribute, module_path) in DEMO_DASHBOARD_SERIES.items():
+        assert writer_references(
+            attribute, module_path
+        ), f"panel series {series} is declared but {module_path} never writes it"
+
+
+def test_every_demo_panel_asks_a_question():
+    """No empty panel, and no panel whose targets were left behind by an edit."""
+    board = json.loads((DASHBOARD_DIR / "demo.json").read_text(encoding="utf-8"))
+    for panel in board["panels"]:
+        assert panel["targets"], f"panel '{panel['title']}' has no query"
+        assert panel["datasource"] == {"type": "prometheus", "uid": "prometheus"}
+        refs = [target["refId"] for target in panel["targets"]]
+        assert len(refs) == len(set(refs)), f"panel '{panel['title']}' repeats a refId"
+
+
+def test_the_demo_profile_scrapes_the_adopted_ports():
+    prometheus = yaml.safe_load((CONF_DIR / "prometheus.yml").read_text(encoding="utf-8"))
+    targets = {
+        job["job_name"]: job["static_configs"][0]["targets"][0]
+        for job in prometheus["scrape_configs"]
+    }
+    for job_name, endpoint in DEMO_SCRAPE_TARGETS.items():
+        assert targets.get(job_name) == endpoint
+    assert "/etc/prometheus/alerts_demo.yml" in prometheus["rule_files"]
+    # PR-12 is additive: taking the legacy jobs off the runtime is the
+    # disconnect change's, and removing them here first would leave
+    # conf/alerts.yml's InferenceServiceDown pointing at a job nothing scrapes.
+    assert "nn_infer" in targets and "freqtrade" in targets
+
+
+def test_every_loaded_rule_file_is_mounted_into_prometheus():
+    """A rule file listed but not mounted stops Prometheus from starting at all."""
+    prometheus = yaml.safe_load((CONF_DIR / "prometheus.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    mounted = {
+        mount.split(":")[1]
+        for mount in compose["services"]["prometheus"]["volumes"]
+        if ":" in mount
+    }
+    for rule_file in prometheus["rule_files"]:
+        assert rule_file in mounted, f"{rule_file} is loaded but never mounted"
+
+
+def test_the_demo_services_carry_no_credential_and_no_live_flag():
+    """The two new containers must be unable to trade, not merely configured not to."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert set(compose["services"]) == set(COMPOSE_SERVICES)
+    for name in ("recorder", "demo"):
+        service = compose["services"][name]
+        assert "env_file" not in service, f"{name} takes an env file"
+        assert "environment" not in service, f"{name} takes an environment block"
+        assert service["profiles"] == ["demo"]
+    # freqtrade is the one service the live flag belongs to, and it sets it
+    # blank. Any other service naming it would be a second way to reach a live
+    # venue from this file, which is the thing that must not appear.
+    for name, service in compose["services"].items():
+        if name == "freqtrade":
+            continue
+        assert "ENABLE_LIVE_TRADING" not in yaml.safe_dump(
+            service
+        ), f"{name} names the live flag"
