@@ -555,3 +555,63 @@ def test_a_correction_flatten_returns_the_cash_of_a_booked_entry(position):
     # the ledger that is under test.
     legs_realised = position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl
     assert ledger.realised == legs_realised
+
+
+def test_a_close_that_leaves_one_leg_holding_disputes_instead_of_booking(position):
+    """`emergency_flatten` returns normally when the venue REJECTS the order.
+
+    So a close can leave the perpetual flat and the spot still LONG. Reading the
+    closed quantity as `ledger.quantity - min(spot, perp)` made that look like a
+    full close: the ledger credited the whole principal and the whole margin and
+    reset the entry, while the spot inventory was still there and still counted
+    by `mark_to_market`. Equity jumped by the position's notional -- the opposite
+    error to the one booking a reduction was added to fix -- and the next flatten
+    booked nothing, because the ledger already read flat, so the spot leg's
+    realised PnL never arrived at all.
+    """
+    open_hedge(position, "0.500")
+    ledger = position.ledger.state
+    cash_before = ledger.free_cash
+    quantity_before = ledger.quantity
+
+    later = minute(1)
+    book(position.model, later)
+    # The spot leg refuses its closing order: a market condition, not a fault.
+    position.fill_models["spot"].max_reference_deviation_bps = D("0")
+    position.emergency_reduce(FlattenCause.RISK_HALT, later)
+
+    assert position.leg(PERP).is_flat and not position.leg(SPOT).is_flat
+    # Nothing was credited for a leg that did not close, and the entry stands.
+    assert ledger.free_cash == cash_before
+    assert ledger.quantity == quantity_before
+    assert ledger.spot_entry is not None and ledger.perp_margin != D("0")
+    # And the position says so rather than carrying on.
+    assert position.is_disputed
+    assert "asymmetric_close" in (ledger.disputed or "")
+
+
+def test_the_exit_fee_and_slippage_reach_the_carry_ledger(position):
+    """A close is charged, and the carry ledger has to see the charge.
+
+    The executors charge the closing fill and the carry ledger was never told, so
+    `free_cash` and every equity reading after a close overstated by the exit
+    cost, once per round trip. The identity test could not catch it: it computed
+    the exit frictions from `ledger.fees`, the accumulator that was not moving.
+    The oracle here is the EXECUTORS' own fee accumulators.
+    """
+    open_hedge(position, "0.500")
+    ledger = position.ledger.state
+    fees_before = ledger.fees
+    executor_fees_before = (
+        position.spot.ledger.trading_fees + position.perp.ledger.trading_fees
+    )
+
+    later = minute(1)
+    book(position.model, later)
+    position.emergency_reduce(FlattenCause.RISK_HALT, later)
+
+    executor_charged = (
+        position.spot.ledger.trading_fees + position.perp.ledger.trading_fees
+    ) - executor_fees_before
+    assert executor_charged > D("0"), "the exit was free, so this proves nothing"
+    assert ledger.fees - fees_before == executor_charged

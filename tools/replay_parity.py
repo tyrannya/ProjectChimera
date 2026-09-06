@@ -97,9 +97,15 @@ EXCLUDING_KINDS: frozenset[str] = frozenset({"SKIPPED_STALE", "RECOVERY"})
 #:
 #: ``LOG_BEHIND_STATE`` is section 9.3's own -- the record was never written, so
 #: there is nothing to compare -- and ``TORN_TAIL``'s record was never committed.
-#: ``LOG_AHEAD_OF_STATE`` is deliberately absent: there the record WAS committed
-#: and is complete, canonical and correctly linked, so excluding its minute would
-#: drop real evidence and let a replay that decided it differently pass unseen.
+#:
+#: ``LOG_AHEAD_OF_STATE`` is deliberately absent, and is handled by the extra
+#: condition in :func:`_excluded_minutes` instead. There the tail record WAS
+#: committed, but that only settles the minute when the tail is the record that
+#: FINISHED it. A tail of FUNDING, RECONCILIATION or LIQUIDATION_TOUCH is written
+#: for its minute before the minute is decided, so such a minute holds part of
+#: its evidence and no decision, and the live runner does not decide it again.
+#: The unconditional rule dropped real evidence for a finished minute; no rule at
+#: all left an unfinished one to diverge as an unexplainable `replay_only`.
 EXCLUDING_RECOVERY_CAUSES: frozenset[str] = frozenset({"LOG_BEHIND_STATE", "TORN_TAIL"})
 
 EXIT_PARITY = 0
@@ -344,14 +350,26 @@ def _excluded_minutes(live: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         else:  # RECOVERY
             recovery = record.get("recovery") or {}
             cause = str(recovery.get("cause", ""))
-            if cause not in EXCLUDING_RECOVERY_CAUSES:
-                # The record for this minute was committed and is complete, so it
-                # is compared like any other. See EXCLUDING_RECOVERY_CAUSES.
+            # `minute_finished` is False only when the runner says the tail record
+            # did not finish its minute. The tool still decides for itself: a
+            # LOG_AHEAD_OF_STATE record that claims the minute WAS finished can
+            # never exclude anything, whatever else it says, so a live log cannot
+            # talk this comparison out of reading evidence that exists.
+            unfinished = recovery.get("minute_finished") is False
+            if cause not in EXCLUDING_RECOVERY_CAUSES and not (
+                cause == "LOG_AHEAD_OF_STATE" and unfinished
+            ):
+                # The record for this minute was committed and it finished the
+                # minute, so it is compared like any other.
                 continue
             affected = str(recovery.get("evidence_excluded_minute") or minute)
-            excluded[affected] = (
-                "section 9.3 excludes the minute a crash left inconsistent " f"({cause})"
+            reason = (
+                "the crash left this minute part-recorded and undecided "
+                f"({cause}); the live run does not decide it again"
+                if unfinished
+                else "section 9.3 excludes the minute a crash left inconsistent " f"({cause})"
             )
+            excluded[affected] = reason
     return excluded
 
 

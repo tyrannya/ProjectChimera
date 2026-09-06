@@ -107,11 +107,32 @@ dirty tree, however clean the checkout is. `SELF_CHECK` then refuses a `CAMPAIGN
 profile, and `--allow-dirty` is itself refused for `CAMPAIGN`, so on that profile
 the runner reaches `HALT` and no `DECISION`, `FUNDING`, `RECONCILIATION`,
 `LIQUIDATION_TOUCH`, `SKIPPED_STALE` or `INCOMPLETE_STATE` record is ever
-written. Every record kind this build can produce is reachable on `SOAK` and
-`TEST`; on `CAMPAIGN`, `STARTUP` and `HALT` are the whole set. The fix belongs to
-the change that owns `tools/demo_run.py`, and is a single argument.
+written. On `CAMPAIGN`, `STARTUP` and `HALT` are the whole set; the other ten
+kinds are reachable on `SOAK` and `TEST`, and there only with `--allow-dirty`,
+because `self_check` refuses a dirty tree on **every** profile and this bug makes
+every tree read as dirty.
 
-A fifth, for anyone reading a `PARTIAL`. `HedgedPosition.correct()` implements
+The remedy is **not** just passing the argument. `source_identity` returns a
+`dict`, and `_software` reads it with `getattr(identity, "revision", "")` and
+`getattr(identity, "dirty", False)` — attribute access on a mapping, which yields
+the defaults. Add the argument alone and every run would record an empty revision
+and `dirty: False`, so a campaign on a genuinely dirty tree would pass
+`SELF_CHECK` unchallenged. That is worse than the halt it replaces. The fix is
+the argument **and** subscript access, and it belongs to the change that owns
+`tools/demo_run.py`.
+
+A fifth, about four disputes an operator cannot clear. `resolve` clears a leg's
+`RECONCILIATION` dispute and nothing else. `stale_leg`, `ledger_store_mismatch`,
+`funding_booking_torn` and `asymmetric_close` all halt the campaign and have no
+command that ends them, so clearing one means repairing the state files by hand,
+deliberately, with the reason recorded. That is narrower than it was: `resolve`
+used to clear whatever the carry ledger was disputing, which set a flag and fixed
+nothing — a torn funding booking stayed unbooked and the cash stayed short while
+the campaign resumed on a ledger it had been told to distrust. Refusing is the
+safer half of the fix; the other half, a `resolve` that actually re-books, is not
+in this change.
+
+A sixth, for anyone reading a `PARTIAL`. `HedgedPosition.correct()` implements
 section 6.3's correction policy — a bounded retry, then a
 `HEDGE_CORRECTION` flatten — and the runner never calls it. A position left with
 one leg filled is retried implicitly by the next minute's `plan()` at a re-sized
@@ -120,13 +141,18 @@ quantity, with no correction timeout and no cap on how long it stays one-legged;
 so it is not liquidation-checked either. Flatten it by hand (section 7) rather
 than waiting for a timeout that does not exist.
 
-A sixth, about one halt reason you will not see. `CarryLedger.check_identity`
+A seventh, about one halt reason you will not see. `CarryLedger.check_identity`
 compares `Q x (entry_basis - current_basis)` against `spot_pnl + perp_pnl`, and
-both sides are computed from the same four ledger fields — it is an algebraic
-identity, residual exactly zero for any inputs, and it never reads the legs'
-stores. It cannot detect "a leg that is wrong by a fill", which is what section
-6.5 introduces it for, so `identity_violation` is unreachable and its absence is
-not evidence that the legs agree.
+both sides are computed from the same ledger fields, never from the legs' stores.
+The residual is non-zero only when `entry_basis` disagrees with
+`perp_entry - spot_entry`, and nothing in this build can make it disagree:
+`book_entry` writes all three together and `book_reduction` clears them together.
+A test can force it by assigning `perp_entry` directly
+(`tests/test_carry_ledger.py::test_an_identity_violation_disputes`), which is why
+the rule is not dead code -- but for a ledger this build wrote,
+`identity_violation` is unreachable. It cannot detect "a leg that is wrong by a
+fill", which is what section 6.5 introduces it for, so its absence is not
+evidence that the legs agree.
 
 ## 1. Preconditions
 

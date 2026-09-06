@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from chimera.carry.hedge import PERP, SPOT, HedgedPosition, HedgeState
+from chimera.carry.ledger import LoadOutcome
 from chimera.demo.clock import RunnerClock
 from chimera.demo.config import DemoConfig
 from chimera.demo.decision_log import (
@@ -197,6 +198,12 @@ class _Recovery:
     #: of its own, so by the time the RECOVERY record is written the "newest
     #: record" is the runner's own STARTUP and no longer the crash's.
     committed_minute_ms: int | None = None
+    #: That record's KIND. A minute is finished by exactly one record, and it is
+    #: not always the last one appended for it: FUNDING, RECONCILIATION and
+    #: LIQUIDATION_TOUCH are all written for minute M BEFORE `mark_processed(M)`.
+    #: So a tail of one of those means the minute was STARTED and never decided,
+    #: which is a different crash from one that ends on the minute's DECISION.
+    committed_minute_kind: str = ""
 
 
 @dataclass
@@ -262,20 +269,24 @@ class DemoRunner:
 
         persisted = self._load_state()
         self.cursor = FeedCursor(self.root, contract, persisted)
-        # `save_state` has always written `clock_now_ns`, and until now nothing
-        # read it back -- a persisted field with no consumer, the same shape of
-        # defect as the reconcile counter that was incremented and never read.
-        # It matters for the operator commands: `tools/demo_run.py` runs
-        # `resolve` and `resume` without `start()`, so on a fresh process the
-        # clock had observed nothing and `now_ns` raised at the moment the
-        # OPERATOR record was written. Carrying the instant over is what
-        # `RunnerClock` itself proposes -- "construct the clock with the start_ns
-        # carried over from persisted state" -- and it is the campaign's own last
-        # decision instant, never a guess. `observe` only ever moves forward, so
-        # a `start()` that then reads the feed still wins.
-        carried = persisted.get("clock_now_ns")
-        if carried is not None and not self.clock.started:
-            self.clock.observe(int(carried))
+        # `save_state` writes `clock_now_ns` and nothing reads it back. That is
+        # deliberate now, and the reason is worth keeping: an earlier revision of
+        # this change DID carry it over, so a new process could record an
+        # operator command without `start()`. It made `start()` raise on the very
+        # crash section 9.3 exists for. `RunnerClock.observe` sets `started`, and
+        # `start()` reads the feed only `elif not self.clock.started` -- so a
+        # carried instant suppressed that read, and after a crash between
+        # `_append` and `save_state` the carried instant is the PREVIOUS minute's
+        # while the log's tail is the current one. `DecisionLog.append` refuses a
+        # `runner_now_ns` that precedes the tail, so the STARTUP record raised
+        # `DecisionLogError` and the campaign died on a traceback at exactly the
+        # moment it was supposed to recover.
+        #
+        # The operator commands therefore still refuse rather than run on a
+        # process that has not started; `resolve` fails before it touches
+        # anything, which is the property that mattered. Making them usable needs
+        # the clock seeded from the LOG's tail, not from the state file that
+        # lagged it, and that is a change with its own crash matrix to prove.
         self.last_record_hash: str = persisted.get("last_record_hash", "")
         #: The minute the last reconciliation was performed for, or None when
         #: none has been. A version 1 state file carries no such field, and its
@@ -523,7 +534,7 @@ class DemoRunner:
         """
         root = self.state_dir / LOG_DIR_NAME
         persisted_head = self.last_record_hash
-        committed_minute_ms = self._last_record_minute_ms()
+        committed = self._last_record_minute()
         verification = verify_log(root)
         if verification.is_forged:
             return _Recovery(
@@ -582,22 +593,102 @@ class DemoRunner:
             # The chain head is adopted from the log, which is the file that
             # actually holds the records; the state file is the one that lagged.
             adopted_head=tail,
-            committed_minute_ms=committed_minute_ms,
+            committed_minute_ms=None if committed is None else committed[0],
+            committed_minute_kind="" if committed is None else committed[1],
         )
 
-    def _last_record_minute_ms(self) -> int | None:
-        """The minute the newest committed record carries, or None on an empty log."""
+    def _save_ledger(self) -> None:
+        """Persist the carry ledger, unless it is the placeholder for a damaged one.
+
+        `CarryLedger.save` refuses an UNREADABLE ledger outright, which is right:
+        writing the placeholder back would replace the only record of the
+        campaign's cash with one saying it never traded. But that refusal is a
+        `LedgerError`, and on the operator paths it fired AFTER
+        `emergency_reduce` had already moved both legs and BEFORE the OPERATOR
+        record -- so the command that the runbook tells an operator to reach for
+        ended in a traceback with the position changed and nothing written down,
+        which is the same shape as the defect the refusal was added to prevent.
+
+        There is nothing to persist for a ledger that holds no real state, so
+        skipping is not a loss; the dispute is already on the position and the
+        record still gets written. The damaged bytes stay on disk either way.
+        """
+        if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
+            logger.warning(
+                "Carry ledger at %s is UNREADABLE; not persisting the placeholder. "
+                "The damaged file is left exactly as it is.",
+                self.position.ledger.path,
+            )
+            return
+        self.position.ledger.save()
+
+    def _require_recordable(self, command: str) -> int:
+        """The instant to record with, or a refusal that has changed nothing.
+
+        Both halves of "can this be written down" belong before the first
+        mutation, and checking only one of them is how this went wrong twice.
+        `DecisionLog.open` verifies the tail and refuses a torn one -- and the
+        CLI never runs `start()`, so triage never repairs it -- while `append`
+        refuses a ``runner_now_ns`` that precedes the tail's. An operator command
+        that saved a store and cleared Aegis's dispute and only THEN discovered
+        either has done the one thing section 8.3 forbids: changed the safety
+        state with nothing in the log to say who did it or why.
+
+        Raising :class:`RunnerError` is part of the contract, not incidental:
+        ``tools/demo_run.py`` catches that and nothing else, so a
+        ``RunnerClockError`` or ``DecisionLogError`` escaping here reaches the
+        operator as a traceback.
+        """
+        try:
+            now_ns = self.clock.now_ns
+            log = self.log
+        except Exception as exc:  # RunnerClockError, DecisionLogError, and kin
+            raise RunnerError(
+                f"{command} cannot be recorded ({exc}). Changing state that no record "
+                "explains is worse than not changing it, so nothing has been changed."
+            ) from exc
+        if log.last_runner_now_ns is not None and now_ns < log.last_runner_now_ns:
+            raise RunnerError(
+                f"{command} cannot be recorded: the runner clock is at {now_ns} and the "
+                f"log's last record is at {log.last_runner_now_ns}, so the record would "
+                "be refused as moving the clock backwards. Nothing has been changed."
+            )
+        return now_ns
+
+    def _last_record_minute(self) -> tuple[int, str] | None:
+        """The newest committed record's ``(minute_ms, kind)``, or None if empty."""
         from chimera.demo.decision_log import day_files, read_records
 
         for path in reversed(day_files(self.state_dir / LOG_DIR_NAME)):
-            newest: str | None = None
+            newest: tuple[str, str] | None = None
             for record in read_records(path):
                 minute = record.get("minute")
                 if isinstance(minute, str) and minute:
-                    newest = minute
+                    newest = (minute, str(record.get("kind", "")))
             if newest is not None:
-                return int(datetime.fromisoformat(newest).timestamp() * 1000)
+                stamp, kind = newest
+                return int(datetime.fromisoformat(stamp).timestamp() * 1000), kind
         return None
+
+    #: The kinds that FINISH a minute. Exactly one of these is written per minute
+    #: the runner got through, and always last, because `mark_processed` runs
+    #: immediately before the DECISION append and the other two are the paths
+    #: that end a minute without one.
+    #:
+    #: FUNDING, RECONCILIATION and LIQUIDATION_TOUCH are deliberately absent:
+    #: each is appended for minute M *before* the minute is finished, so a log
+    #: ending on one says the minute was STARTED, not decided.
+    _TERMINAL_KINDS = frozenset(
+        {
+            RecordKind.DECISION.value,
+            RecordKind.INCOMPLETE_STATE.value,
+            RecordKind.SKIPPED_STALE.value,
+        }
+    )
+
+    def _minute_was_finished(self, triage: "_Recovery") -> bool:
+        """Whether the log's tail is the record that finished its minute."""
+        return triage.committed_minute_kind in self._TERMINAL_KINDS
 
     def _affected_minute_ms(self, triage: "_Recovery") -> int | None:
         """The minute the crash actually left in doubt.
@@ -612,7 +703,10 @@ class DemoRunner:
         -- while the minute the crash really touched was left in and diverged.
 
         For ``LOG_AHEAD_OF_STATE`` the log itself holds the answer, so it is read
-        rather than derived: the committed record's own minute.
+        rather than derived: the committed record's own minute -- whether or not
+        that record FINISHED the minute. See :meth:`_minute_was_finished`: a tail
+        of FUNDING, RECONCILIATION or LIQUIDATION_TOUCH means the minute was
+        started and never decided, and that minute is still the affected one.
         """
         if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE:
             if triage.committed_minute_ms is not None:
@@ -624,6 +718,19 @@ class DemoRunner:
         if triage.adopted_head:
             self.last_record_hash = triage.adopted_head
         affected = self._affected_minute_ms(triage)
+        # Whether the tail FINISHED its minute decides what may be claimed about
+        # it. A DECISION (or INCOMPLETE_STATE, or SKIPPED_STALE) is the minute's
+        # last word, so nothing is excluded and the cursor moves past it. A
+        # FUNDING, RECONCILIATION or LIQUIDATION_TOUCH tail is not: those are
+        # appended for minute M before `mark_processed(M)`, so the minute holds
+        # part of its evidence and no decision. Re-deciding it would append a
+        # SECOND record of that kind for the minute, so the cursor still moves --
+        # and the minute is then excluded, because half a minute's evidence is
+        # what section 9.3's exclusion is for. Advancing without excluding was a
+        # silent hole: the minute vanished from the campaign with nothing saying
+        # so, and the replay's DECISION for it came back as an unexplainable
+        # `replay_only`.
+        finished = self._minute_was_finished(triage)
         if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE and affected is not None:
             # The record for this minute is committed and complete; only the
             # state file naming it was lost. Leaving the cursor behind it made
@@ -660,9 +767,13 @@ class DemoRunner:
                     # what this campaign excluded.
                     "evidence_excluded_minute": (
                         None
-                        if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE
+                        if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE and finished
                         else iso_minute(minute_ns)
                     ),
+                    # Null above means "nothing was lost". This says which of the
+                    # two LOG_AHEAD_OF_STATE shapes it was, so a reader never has
+                    # to infer it from the absence of a field.
+                    "minute_finished": finished,
                 },
                 "veto_or_rejection": {
                     "stage": "recovery",
@@ -1337,7 +1448,7 @@ class DemoRunner:
         self.save_state()
 
         outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
-        self.position.ledger.save()
+        self._save_ledger()
         # A liquidation flatten moves the hedge and then HALTS, so unlike every
         # other position change there is no next minute to refresh the gauges at.
         # Without this `chimera_demo_hedge_state{state="HEDGED"}` stays 1 for as
@@ -1495,8 +1606,16 @@ class DemoRunner:
         if minute is None:
             raise RunnerError("nothing has been processed yet, so there is nothing to flatten")
         state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
+        # The book, before the orders. `install_quote` was put on the tick loop
+        # only, so a `flatten` from a fresh process -- which is every flatten
+        # through `tools/demo_run.py`, since the CLI constructs a runner and
+        # calls this straight away -- sent both reduce-only orders against a
+        # model holding no quote. Every one came back REJECTED `no_fresh_quote`,
+        # the executor recorded "did not reach zero", and the position an
+        # operator was trying to close in an emergency simply stood.
+        self.position.install_quote(state)
         outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
-        self.position.ledger.save()
+        self._save_ledger()
         record_hash = self._append(
             RecordKind.OPERATOR,
             int(minute) * _MS_TO_NS,
@@ -1604,14 +1723,7 @@ class DemoRunner:
         # does not catch it. The safety-critical dispute was cleared with no
         # OPERATOR record, which is the one outcome section 8.3 forbids. Reading
         # the clock first turns that into a refusal that changes nothing.
-        try:
-            now_ns = self.clock.now_ns
-        except Exception as exc:  # RunnerClockError, and anything else it grows
-            raise RunnerError(
-                f"resolve cannot be recorded: the runner clock has no observation ({exc}). "
-                "Clearing a dispute that no record explains is worse than not clearing it, "
-                "so nothing has been changed."
-            ) from exc
+        now_ns = self._require_recordable("resolve")
         adopted = executor.position(symbol)
         executor.resolve_reconciliation(symbol, adopted, note)
         # Aegis keeps its own copy of the dispute (section 7.2's reconciliation
@@ -1658,7 +1770,7 @@ class DemoRunner:
     def shutdown(self, note: str = "") -> TickOutcome:
         """Finish, persist, write SHUTDOWN, and stop. Never mid-record."""
         self._enter(RunnerState.SHUTDOWN)
-        self.position.ledger.save()
+        self._save_ledger()
         record_hash = self._append(
             RecordKind.SHUTDOWN, self._minute_ns(), {"operator": {"note": note}}
         )

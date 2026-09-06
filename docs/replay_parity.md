@@ -116,8 +116,9 @@ construct it without a clock. `day_start_equity` and `daily_pnl` are therefore
 functions of *when the process ran*, not of the minutes it read. A live campaign
 crossing a UTC midnight rolls them; a replay of the same minutes on a later date
 does not, so every record after the first day differs in the `risk` block and the
-daily-loss rule is evaluated over a different window. `runner_now_ns` excludes
-`day` from the hash but not those two fields. Pre-existing and disclosed here
+daily-loss rule is evaluated over a different window. `_risk_hash`
+(`chimera/demo/runner.py`) excludes `day` from the hashed snapshot but not those
+two fields. Pre-existing and disclosed here
 rather than repaired, because giving Aegis the runner's clock changes a frozen
 risk path that is not this change's to move.
 

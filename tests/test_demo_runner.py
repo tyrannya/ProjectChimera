@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from chimera.carry.hedge import HedgeState
-from chimera.carry.ledger import LedgerError
+from chimera.carry.ledger import LedgerError, LoadOutcome
 from chimera.demo.decision_log import RecordKind, iso_minute
 from chimera.demo.fixtures import MinuteShape, SyntheticFeed
 from chimera.demo.rules import HedgeTarget, RuleError, RuleRegistry
@@ -96,6 +96,12 @@ def test_a_log_ahead_of_the_runner_state_recovers_rather_than_halting(tmp_path):
     # that minute however the recovery behaves.
     payload["last_record_hash"] = records[-2]["record_hash"]
     payload["last_minute_processed"] = committed_ms - 60_000
+    # `clock_now_ns` too. Leaving it current is what a `save_state` never does,
+    # and rolling back only the other two hid a regression that made `start()`
+    # raise here: a clock restored from the lagging state file is BEHIND the
+    # log's tail, and `DecisionLog.append` refuses a record whose
+    # `runner_now_ns` precedes it.
+    payload["clock_now_ns"] = (committed_ms - 60_000) * 1_000_000 + 60_000_000_000
     state_path.write_text(json.dumps(payload), encoding="utf-8")
 
     resumed = build(tmp_path, config=config)
@@ -131,6 +137,61 @@ def test_a_log_ahead_of_the_runner_state_recovers_rather_than_halting(tmp_path):
         "the committed minute was decided again after recovery, so the log holds "
         "two DECISION records for one minute"
     )
+
+
+def test_a_crash_on_a_mid_minute_record_does_not_silently_lose_the_minute(tmp_path):
+    """A committed tail is not the same thing as a decided minute.
+
+    FUNDING, RECONCILIATION and LIQUIDATION_TOUCH are all appended for minute M
+    *before* `mark_processed(M)`, so a log ending on one of them says the minute
+    was started and never decided. Treating any committed tail as "this minute is
+    finished" advanced the cursor past it: the minute was never decided, nothing
+    recorded that, `evidence_excluded_minute` was null, and the replay's DECISION
+    for it came back as an unexplainable `replay_only`.
+
+    The cursor still advances -- re-deciding would append a SECOND
+    RECONCILIATION for the minute -- but the minute is now excluded, which is
+    what section 9.3's exclusion is for.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    config = harness.runner.config
+    records = harness.records()
+    kinds = [r["kind"] for r in records]
+    assert RecordKind.RECONCILIATION.value in kinds, "no mid-minute record to crash on"
+
+    # Truncate the log to end on a RECONCILIATION, which is a real crash shape:
+    # the record committed, its minute's DECISION never written.
+    cut = len(kinds) - 1 - kinds[::-1].index(RecordKind.RECONCILIATION.value)
+    tail = records[cut]
+    from chimera.demo.decision_log import LOG_DIR_NAME, day_files
+
+    day_file = day_files(harness.state_dir / LOG_DIR_NAME)[-1]
+    lines = day_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    day_file.write_text("".join(lines[: cut + 1]), encoding="utf-8")
+
+    state_path = harness.state_dir / "runner_state.json"
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["last_record_hash"] = records[cut - 1]["record_hash"]
+    payload["last_minute_processed"] = harness.runner.cursor.last_minute_processed - 60_000
+    payload["clock_now_ns"] = payload["last_minute_processed"] * 1_000_000 + 60_000_000_000
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    resumed = build(tmp_path, config=config)
+    recovery = [r for r in resumed.records() if r["kind"] == RecordKind.RECOVERY.value][0][
+        "recovery"
+    ]
+
+    assert recovery["cause"] == RecoveryCause.LOG_AHEAD_OF_STATE.value
+    assert recovery["minute_finished"] is False, "a RECONCILIATION does not finish a minute"
+    # The minute is named and excluded rather than quietly skipped.
+    assert recovery["evidence_excluded_minute"] == tail["minute"]
+
+    # And the parity tool reads that exclusion, so the replay's DECISION for the
+    # minute is explained rather than reported as replay_only.
+    from tools.replay_parity import _excluded_minutes
+
+    assert tail["minute"] in _excluded_minutes(resumed.records())
 
 
 def test_recovery_names_the_minute_whose_record_was_lost_not_the_one_before(tmp_path):
@@ -396,6 +457,8 @@ def test_closing_a_position_returns_its_cash_and_books_no_phantom_drawdown(tmp_p
     held = harness.runner.position.mark_to_market(
         harness.runner.cursor.state_for(first + 2 * 60_000)
     ).equity
+    entry = harness.runner.position.ledger.state
+    notional = entry.quantity * entry.spot_entry
 
     harness.runner.flatten("operator closed the position")
     ledger = harness.runner.position.ledger.state
@@ -414,8 +477,12 @@ def test_closing_a_position_returns_its_cash_and_books_no_phantom_drawdown(tmp_p
     assert flat == ledger.free_cash
 
     # And equity is continuous across the close: it falls by the exit's own
-    # costs, not by the position's notional.
-    assert held - flat < D("500"), f"closing moved equity by {held - flat}"
+    # costs, not by the position's notional. The bound is a fraction of the
+    # notional rather than a round number, because the defect this catches is an
+    # error of exactly one notional -- ~249,000 on this position, in either
+    # direction (the entry debit never returned, or the inventory counted twice).
+    assert notional > D("100000"), "the position is too small for this to prove anything"
+    assert abs(held - flat) < notional / 100
 
     # The identity the ledger's own fields have to satisfy, computed from them
     # rather than from the implementation: what is gone from capital is exactly
@@ -1355,7 +1422,7 @@ def test_resolve_refuses_rather_than_clearing_a_dispute_it_cannot_record(tmp_pat
     harness.runner.clock._now_ns = None  # the state a fresh CLI process is in
     records_before = len(harness.records())
 
-    with pytest.raises(RunnerError, match="clock has no observation"):
+    with pytest.raises(RunnerError, match="cannot be recorded"):
         harness.runner.resolve(symbol, "operator checked both legs")
 
     assert symbol in harness.runner.position.perp.store.state.disputed
@@ -1363,30 +1430,67 @@ def test_resolve_refuses_rather_than_clearing_a_dispute_it_cannot_record(tmp_pat
     assert len(harness.records()) == records_before
 
 
-def test_a_restart_carries_the_clock_so_the_operator_commands_can_run(tmp_path):
-    """The other half: `resolve` must also be able to SUCCEED from a new process.
+def test_resolve_refuses_when_the_log_itself_cannot_take_the_record(tmp_path):
+    """A readable clock is not the same as a writable log.
 
-    `save_state` wrote `clock_now_ns` and nothing read it back, so every new
-    process began with a clock that had observed nothing. Refusing safely is
-    correct but is not a working command, and section 8.3's resolve is the only
-    way out of a reconciliation dispute.
+    The first version of this guard checked only the clock, so `_append` could
+    still fail afterwards -- on a torn tail, which the CLI never repairs because
+    it does not run `start()` -- with the store already saved and Aegis's dispute
+    already cleared. That is the same silent outcome the guard was added to
+    prevent, reached by a different route.
     """
+    from chimera.demo.decision_log import LOG_DIR_NAME, day_files
+
     harness = build(tmp_path)
-    harness.run(3)
+    harness.run(2)
     symbol = harness.runner.position.config.perp_symbol
     harness.runner.position.perp.store.state.disputed[symbol] = "reconciliation_mismatch"
     harness.runner.position.perp.store.save()
     harness.runner.risk.note_reconciliation(symbol, "reconciliation_mismatch")
-    harness.runner.save_state()
-    expected = harness.runner.clock.now_ns
+    harness.runner.shutdown("stop")
 
-    resumed = build(tmp_path, start=False).runner
-    assert resumed.clock.started, "a new process began with no instant to record with"
-    assert resumed.clock.now_ns == expected
+    # A crash between the write and the fsync: the final line is half a record.
+    day_file = day_files(harness.state_dir / LOG_DIR_NAME)[-1]
+    text = day_file.read_text(encoding="utf-8")
+    day_file.write_text(
+        text[: -len(text.splitlines(keepends=True)[-1]) // 2], encoding="utf-8"
+    )
 
-    outcome = resumed.resolve(symbol, "operator checked both legs")
-    assert outcome.record_hash
-    assert symbol not in resumed.position.perp.store.state.disputed
+    resumed = build(tmp_path, config=harness.runner.config, start=False).runner
+    resumed.clock.observe(harness.runner.clock.now_ns)
+
+    with pytest.raises(RunnerError, match="cannot be recorded"):
+        resumed.resolve(symbol, "operator checked both legs")
+
+    # Nothing moved: the dispute is still frozen and Aegis still knows.
+    assert symbol in resumed.position.perp.store.state.disputed
+    assert resumed.risk.state.reconciliation_disputed
+
+
+def test_an_unreadable_ledger_does_not_turn_flatten_into_a_traceback(tmp_path):
+    """The refusal to overwrite must not fire after the legs have already moved.
+
+    `flatten` reduces the position and then persists the ledger. On an UNREADABLE
+    ledger the new `save()` guard raised `LedgerError` -- not a `RunnerError` --
+    between the reduction and the OPERATOR record, so the command the runbook
+    tells an operator to reach for changed the position and wrote nothing down.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    ledger_path = harness.runner.position.ledger.path
+    ledger_path.write_text("{ this is not json", encoding="utf-8")
+
+    resumed = build(tmp_path, config=harness.runner.config).runner
+    assert resumed.position.ledger.outcome is LoadOutcome.UNREADABLE
+
+    outcome = resumed.flatten("operator flattened on a damaged ledger")
+
+    assert outcome.record_hash, "the flatten was not recorded"
+    # The legs did flatten. The POSITION stays DISPUTED, which is right: an
+    # unreadable ledger is a standing dispute and a flatten does not clear it.
+    assert resumed.position.leg("spot").is_flat and resumed.position.leg("perp").is_flat
+    # The damaged bytes are still exactly as they were.
+    assert ledger_path.read_text(encoding="utf-8") == "{ this is not json"
 
 
 def test_resolve_neither_clears_nor_overwrites_an_unreadable_carry_ledger(tmp_path):
@@ -1409,7 +1513,12 @@ def test_resolve_neither_clears_nor_overwrites_an_unreadable_carry_ledger(tmp_pa
     assert b'"quantity"' in original
 
     ledger_path.write_text("{ this is not json", encoding="utf-8")
-    resumed = build(tmp_path, start=False).runner
+    # Started, so the clock has an instant to record with: `resolve` refuses
+    # outright without one, which is a different (and also correct) refusal and
+    # would hide what this test is about. SELF_CHECK halts on the dispute; the
+    # operator command is still reachable from a halted runner, which is the
+    # situation it exists for.
+    resumed = build(tmp_path, config=harness.runner.config).runner
     ledger = resumed.position.ledger
     assert ledger.disputed and ledger.disputed.startswith("ledger_unreadable")
 

@@ -624,7 +624,11 @@ class HedgedPosition:
             PERP: self.perp.ledger.realised_pnl,
         }
 
-    def _book_close(self, before: Mapping[str, Decimal]) -> Decimal:
+    def _book_close(
+        self,
+        before: Mapping[str, Decimal],
+        frictions: Mapping[str, tuple[Decimal, Decimal]] | None = None,
+    ) -> Decimal:
         """Return the closed quantity's cash to the carry ledger.
 
         Called after a flatten, with the legs' realised PnL as it stood BEFORE
@@ -637,32 +641,75 @@ class HedgedPosition:
         Silent when there is nothing booked to unwind -- a PARTIAL that never
         reached HEDGED has no entry in this ledger, because `book_entry` runs
         only on the first HEDGED cycle.
+
+        **An asymmetric close DISPUTES rather than books.** ``emergency_flatten``
+        returns normally when the venue REJECTS the order, so a close can leave
+        one leg flat and the other holding. Reading the closed quantity as
+        ``ledger.quantity - min(spot, perp)`` made that look like a full close:
+        the ledger credited the whole spot principal and the whole margin and
+        reset the entry, while the surviving leg's inventory was still there and
+        still counted by :meth:`mark_to_market` -- equity jumped by the position's
+        notional, the opposite error to the one booking a reduction fixed, and it
+        reached ``risk.update_equity`` and the drawdown peak. Worse, the ledger
+        then read flat, so the second flatten booked nothing and the surviving
+        leg's realised PnL never arrived: a silent, permanent cash error that
+        ``reconstruct()`` cannot see, because it compares against a ledger
+        quantity of zero.
+
+        This ledger holds ONE quantity for a two-leg position, so it has no
+        honest way to represent "half closed". A dispute is the truthful outcome
+        and the one that stops the campaign increasing over it.
         """
         state = self.ledger.state
         if state.quantity <= ZERO or state.spot_entry is None:
             return ZERO
-        held = min(self.leg(SPOT).quantity, self.leg(PERP).quantity)
-        closed = state.quantity - held
+        spot_held, perp_held = self.leg(SPOT).quantity, self.leg(PERP).quantity
+        if spot_held != perp_held:
+            self.dispute(
+                f"asymmetric_close: the spot leg holds {spot_held} and the perpetual "
+                f"{perp_held} after a close of a booked {state.quantity}. One leg did "
+                "not flatten, so the position is not reducible by a single quantity "
+                "and no cash is returned for one that did not close"
+            )
+            return ZERO
+        closed = state.quantity - spot_held
         if closed <= ZERO:
             return ZERO
         after = self._realised_by_leg()
+        # The exit's own fee and slippage. The executors charge them on the
+        # closing fill and the carry ledger never saw them, so `free_cash` and
+        # every equity reading after a close overstated by the exit cost, once
+        # per round trip and cumulatively. The identity test could not catch it
+        # either: it computed the exit frictions from `ledger.fees`, the very
+        # accumulator that was not being moved.
+        exits = dict(frictions or {})
+        spot_fee, spot_slip = exits.get(SPOT, (ZERO, ZERO))
+        perp_fee, perp_slip = exits.get(PERP, (ZERO, ZERO))
         return self.ledger.book_reduction(
             quantity_closed=closed,
             spot_realised=after[SPOT] - before[SPOT],
             perp_realised=after[PERP] - before[PERP],
+            spot_fee=spot_fee,
+            perp_fee=perp_fee,
+            spot_slippage=spot_slip,
+            perp_slippage=perp_slip,
         )
 
     def flatten_for_correction(self, state: CarryMarketState) -> HedgeOutcome:
         """Reduce whichever leg is filled back to flat, and say why it closed."""
         realised_before = self._realised_by_leg()
+        exits: dict[str, tuple[Decimal, Decimal]] = {}
         for name in (PERP, SPOT):
             executor, symbol = self._executor(name)
             reference = state.spot_close if name == SPOT else state.perp_close
-            executor.emergency_flatten(symbol, FlattenCause.HEDGE_CORRECTION, reference)
+            closing = executor.emergency_flatten(
+                symbol, FlattenCause.HEDGE_CORRECTION, reference
+            )
+            exits[name] = self._frictions([closing] if closing else [], reference)
             self.ledger.note_leg_mark(name, state.minute_ns)
         self.correction_minutes = 0
         self.pending_quantity = ZERO
-        self._book_close(realised_before)
+        self._book_close(realised_before, exits)
         outcome = self._settle(detail="hedge correction timed out; flattened")
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,
@@ -674,13 +721,15 @@ class HedgedPosition:
         """Flatten the perpetual first, then the spot (section 6.8)."""
         self.state = HedgeState.CLOSING
         realised_before = self._realised_by_leg()
+        exits: dict[str, tuple[Decimal, Decimal]] = {}
         for name in (PERP, SPOT):
             executor, symbol = self._executor(name)
             reference = state.spot_close if name == SPOT else state.perp_close
-            executor.emergency_flatten(symbol, cause, reference)
+            closing = executor.emergency_flatten(symbol, cause, reference)
+            exits[name] = self._frictions([closing] if closing else [], reference)
             self.ledger.note_leg_mark(name, state.minute_ns)
         self.pending_quantity = ZERO
-        self._book_close(realised_before)
+        self._book_close(realised_before, exits)
         outcome = self._settle(detail=f"emergency reduce: {cause.value}")
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,
@@ -863,8 +912,19 @@ class HedgedPosition:
             # It is a dispute rather than a repair. The flow can be re-derived,
             # but re-deriving it would be this ledger adopting the other one's
             # story, which is the silent overwrite section 6.8 refuses everywhere
-            # else. An operator resolves it with a note, as with every other
-            # disagreement between the two sides.
+            # else.
+            #
+            # **This one has no operator clearing path in this build**, and the
+            # honest statement is that rather than the one that used to be here.
+            # `DemoRunner.resolve` clears only a leg's RECONCILIATION dispute; it
+            # used to clear whatever the carry ledger happened to be disputing,
+            # which cleared a flag and booked nothing -- the settlement stayed
+            # unbooked and the cash stayed short, so the campaign resumed on a
+            # ledger it had been told to distrust. Refusing to pretend is the
+            # safer half; the missing half is a `resolve` that re-books the torn
+            # settlement, and it is recorded in docs/demo_runbook.md rather than
+            # improvised here. Until then this dispute is cleared by repairing
+            # the ledger file, deliberately by hand.
             self.dispute(
                 "funding_booking_torn: the perpetual leg's ledger has booked "
                 f"settlement(s) {list(unbooked)} that the carry ledger has not. A crash "
