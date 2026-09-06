@@ -1,0 +1,146 @@
+# Alert rules for the demo deployment (adopted plan, section 11.2). Every
+# expression references a series chimera/metrics.py declares AND some process in
+# this repository actually writes: the recorder family from
+# chimera/recorder/health.py's publish(), the demo family and chimera_risk_halted
+# from chimera/demo/telemetry.py, and the reconciliation counter from
+# chimera/futures/executor.py. An alert on a series nothing writes reads as
+# healthy for ever, which is worse than no alert at all, so the alert-file test
+# in tests/test_observability.py checks that property rather than trusting it.
+#
+# This file does not delete conf/alerts.yml and does not touch it. Both rule
+# files are loaded by conf/prometheus.yml; which of them has anything to fire is
+# decided by which services are running, and taking the Freqtrade and inference
+# path off the runtime is PR-13's change, not this one.
+#
+# Known limitation, recorded rather than hidden: the demo runner never schedules
+# FuturesExecutor.reconcile, so ReconciliationMismatch does not watch a periodic
+# comparison of local and venue state on a demo campaign -- it watches the two
+# unscheduled paths that raise the same counter, an emergency flatten that did
+# not reach zero and a fill larger than the order it belongs to. Both are on the
+# runner's real path, so the alert is not dead; the missing periodic
+# reconciliation is a runner gap, tracked as a governance blocker against PR-10
+# rather than papered over here.
+#
+# Second known limitation, the same shape and the same cause:
+# HedgedPosition.settle_funding has no caller in this build either, so
+# CarryLedger.funding_paid and funding_received never move, and
+# chimera_demo_funding_adverse_streak is identically 0 on every run. So
+# FundingAdverseStreak cannot fire today, and the dashboard's "Funding paid and
+# received" panel draws two flat zero lines rather than "No data" -- the
+# telemetry pre-creates both `direction` children at 0 so that rate() and
+# increase() are defined from the first scrape, which is right, and which also
+# means the panel cannot tell "no funding yet" from "funding is not wired".
+# Verified empirically, not inferred: a 540-minute synthetic campaign with the
+# position HEDGED across two of the fixture's three settlements leaves every
+# funding series at 0. Both are armed for the day the runner settles funding;
+# recording it here is the alternative to an operator concluding from a flat
+# line that a hedged carry position genuinely paid no funding for nine hours.
+groups:
+  - name: chimera-demo-recorder
+    rules:
+      # `.` is a regex wildcard here rather than a literal dot. The label domain
+      # is the six stream ids the committed gen3 contract declares (um.kline_1m,
+      # um.markPrice, um.bookTicker, um.funding, spot.kline_1m, spot.bookTicker)
+      # and no other id has this shape, so the four intended streams are exactly
+      # the four selected. Kept as the adopted table writes it; escaping the dots
+      # would be more precise but would be a divergence with no effect.
+      - alert: RecorderStreamStale
+        expr: chimera_recorder_last_event_age_seconds{stream=~"um.kline_1m|spot.kline_1m|um.markPrice|um.bookTicker"} > 180
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Recorder stream {{ $labels.stream }} has delivered nothing for 3 minutes"
+          description: "Minutes recorded while a stream is stale are incomplete; the runner logs INCOMPLETE_STATE and decides nothing on them."
+
+      - alert: RecorderDown
+        expr: time() - chimera_recorder_heartbeat_timestamp > 120
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The recorder has written no heartbeat for two minutes"
+          description: "The heartbeat is wall clock, so this says the process is gone rather than that the feed is late. Every minute it is down is a minute no coverage figure can recover."
+
+      - alert: DataGapToday
+        expr: chimera_recorder_missing_minutes_total > 7
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} minutes missing today on {{ $labels.stream }}"
+          description: "Section 4.9's daily coverage floor is the gate this eats into."
+
+      - alert: ClockSkew
+        expr: abs(chimera_recorder_clock_skew_ms) > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Recorder clock skew above 5 seconds"
+          description: "Minute keys are assigned from exchange event times, so skew this large makes the host's own notion of lateness unreliable. Check NTP on the recorder host before reading any age series."
+
+  - name: chimera-demo-runner
+    rules:
+      - alert: RunnerDown
+        expr: time() - chimera_demo_heartbeat_timestamp > 120
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The demo runner has changed state in neither of the last two minutes"
+          description: "The heartbeat is stamped from wall time at each state change, so this is a liveness question. How far behind the feed the runner is has its own series, chimera_demo_last_minute_age_seconds."
+
+      - alert: RunnerHalted
+        expr: chimera_risk_halted{job="demo"} == 1 or chimera_demo_state{state="HALT"} == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The demo runner is halted"
+          description: "Read the HALT record's veto_or_rejection.detail. Leaving HALT is an operator action with a note: tools.demo_run resume --note."
+
+      - alert: ReconciliationMismatch
+        expr: increase(chimera_futures_reconciliation_total{outcome="MISMATCH"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Local and reported positions disagreed"
+          description: "Inspect both stores. A dispute is cleared by tools.demo_run resolve --symbol --note, and the note is evidence."
+
+      - alert: HedgeImbalance
+        expr: abs(chimera_demo_hedge_imbalance_btc) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The carry position has been unhedged for five minutes"
+          description: "HedgeConfig.max_correction_minutes is 3, so a correction that worked has already finished."
+
+      - alert: FundingAdverseStreak
+        expr: chimera_demo_funding_adverse_streak >= 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The position has paid funding on {{ $value }} settlements in a row"
+          description: "Aegis refuses increases at funding_adverse_streak_limit, which conf/demo/pvc1.json sets to 3."
+
+  - name: chimera-demo-host
+    rules:
+      # The adopted table writes this as min(a, b) < 10e9. PromQL `min` is an
+      # aggregation operator over ONE instant vector, not a two-argument
+      # function, so promtool rejects that expression and section 14 row 12
+      # makes promtool an acceptance criterion for this very change. The `or`
+      # set operator has the same firing semantics -- either free-disk gauge
+      # below 10 GB -- and additionally keeps the offending metric's own name
+      # and job label on the firing alert, so the operator is told which disk.
+      - alert: DiskLow
+        expr: chimera_recorder_disk_free_bytes < 10e9 or chimera_demo_disk_free_bytes < 10e9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Under 10 GB free on a demo filesystem"
+          description: "The recorder stops being able to store what it receives before the disk is full, and a minute lost to a write error is not recoverable. The firing series names which filesystem."

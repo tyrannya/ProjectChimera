@@ -2,6 +2,13 @@
 DEMO_CONFIG ?= conf/demo/pvc1.json
 DEMO_STATE_DIR ?= state/demo
 DEMO_DAYS ?=
+# One UTC day, YYYY-MM-DD, for `demo-report`. No default: a report of "today"
+# would silently change what the target produced from one run to the next, and
+# an operator filing a day's evidence has to name the day.
+DEMO_DAY ?=
+# Where `demo-replay-parity` verdicts are kept, one <day>.json per day, for
+# `demo-report` to quote. Section 13 of docs/demo_runbook.md writes them here.
+DEMO_PARITY_DIR ?= $(DEMO_STATE_DIR)/parity
 
 .PHONY: help setup lint format test smoke sample backfill features \
 	verify-research-snapshot verify-research-state train research experiment walkforward \
@@ -17,7 +24,7 @@ DEMO_DAYS ?=
 	p7-mode p7-btc p7-decide \
 	paper-smoke \
 	recorder-preflight recorder-run recorder-status recorder-acceptance \
-	demo-run demo-status demo-replay-parity \
+	demo-run demo-status demo-replay-parity demo-report demo-soak-drill \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
         infer dry-run docker-build docker-up docker-down docker-logs check clean
@@ -155,6 +162,19 @@ demo-run:  ## Run the demo runner over recorded minutes (dry-run venue; no live 
 
 demo-status:  ## Print the demo runner's state as JSON
 	$(PYTHON) -m tools.demo_run --config $(DEMO_CONFIG) --root $(RECORDER_BASE_DIR) status
+
+demo-report:  ## Section 11.4's daily operational report. Args: DEMO_DAY=YYYY-MM-DD
+	$(PYTHON) -m tools.demo_report --config $(DEMO_CONFIG) --day $(DEMO_DAY) \
+		--parity-dir $(DEMO_PARITY_DIR)
+
+# The drills that exist in executable form: fault injection over synthetic days
+# and the replay-parity comparison. There is no soak driver in this repository
+# and this target does not invent one -- a long unattended run against a live
+# recorder is S4's, and the operator drills (kill switch, flatten, resume,
+# dispute resolution) are performed by hand against a running deployment, which
+# is what sections 6 and 7 of docs/demo_runbook.md are for.
+demo-soak-drill:  ## Run the fault-injection and replay-parity drills over synthetic days
+	$(PYTHON) -m pytest tests/test_demo_fault_injection.py tests/test_demo_replay_parity.py
 
 recorder-run:  ## Record public Binance market data until interrupted (engineering data)
 	$(PYTHON) -m tools.recorder --base-dir $(RECORDER_BASE_DIR) run

@@ -1,0 +1,123 @@
+# Supervision for the demo campaign runner (PR-12, master plan section 11).
+#
+# Reads the recorder's files, decides through the dry-run venue, and writes its
+# decision log and state under the checkout. There are no credentials here and
+# nothing to add: chimera/demo and chimera/carry construct venues in one place
+# and both legs are DryRunFuturesVenue, so an EnvironmentFile carrying an
+# exchange key would be a key this unit has no use for. There is no live route.
+#
+# Install:
+#   sudo cp deploy/systemd/chimera-demo.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now chimera-demo
+#
+# Adjust User, WorkingDirectory and the paths in ExecStart to the host. The
+# defaults assume a checkout at /opt/chimera owned by a `chimera` service user
+# with a virtualenv at /opt/chimera/.venv, and a recorder writing to
+# /var/lib/chimera/data as deploy/systemd/chimera-recorder.service does.
+#
+# READ THIS BEFORE ENABLING IT. `tools.demo_run run` is ONE BOUNDED CATCH-UP
+# PASS, not a daemon: it processes at most `max_catchup_minutes` minutes (3 by
+# default), shuts the log down and exits 0. So RestartSec below is not a
+# crash-recovery delay, it is the interval between passes, and two things follow
+# that an operator must not mistake for faults:
+#
+#   * the metrics endpoint on 9103 exists only while a pass is in flight, so
+#     `up{job="demo"}` is 0 most of the time and the RunnerDown alert in
+#     conf/alerts_demo.yml cannot be read as liveness on this build;
+#   * `systemctl status` shows the unit as activating/inactive between passes.
+#
+# Section 8.1 describes a continuous READY loop and the runner has the state for
+# one, but tools/demo_run.py does not run it. That is a runner gap, recorded as
+# a blocker in docs/demo_runbook.md section 0; this unit does not paper over it
+# by pretending a bounded pass is a service.
+
+[Unit]
+# A [Unit] directive, not a [Service] one: systemd has read it from [Unit]
+# since v229 and logs "Unknown key name" for it anywhere else. It was in
+# [Service], where it did nothing, and the default 5-starts-in-10s limit
+# still applied -- which is what the Restart comment below exists to avoid.
+StartLimitIntervalSec=0
+Description=Chimera demo runner (dry-run venue, no credentials, no live route)
+Documentation=file:/opt/chimera/docs/demo_runbook.md
+# The runner reads what the recorder has already written, so it is useless
+# before the recorder and harmless after it. Wants, not Requires: a recorder
+# that is down leaves the runner with nothing new to read, which it reports as
+# INCOMPLETE_STATE rather than as a reason to stop existing.
+After=network-online.target chimera-recorder.service
+Wants=network-online.target chimera-recorder.service
+
+[Service]
+Type=simple
+User=chimera
+Group=chimera
+WorkingDirectory=/opt/chimera
+
+# --root is the recorder's storage root, read only. The runner's own state
+# directory comes from the campaign configuration, whose default "state/demo" is
+# relative and therefore resolves under WorkingDirectory.
+#
+# prometheus_client.start_http_server binds 9103 on ALL interfaces and there is
+# no bind-address argument to narrow it, so the host must firewall the port to
+# the Prometheus host. The same is true of the recorder's 9102.
+ExecStart=/opt/chimera/.venv/bin/python -m tools.demo_run \
+    --config /opt/chimera/conf/demo/pvc1.json \
+    --root /var/lib/chimera/data \
+    run --metrics-port 9103
+
+# SIGTERM is what a clean stop looks like. Section 9.3's recoverable case is a
+# stop between the state write and the log write; a stop mid-record is not
+# reachable, because DecisionLog.append fsyncs each record before returning.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+# Restart=always because exit 0 is the normal end of a pass, and the next pass
+# is how the campaign continues. RestartPreventExitStatus=3 is the important
+# half: tools/demo_run.py exits 3 when the runner starts into HALT, and a
+# supervisor that restarted a halted campaign every thirty seconds would be
+# performing an automatic resume with no operator note -- exactly what
+# DemoRunner.resume refuses to be. Leaving HALT stays a human action:
+#   python -m tools.demo_run --config ... --root ... resume --note "..."
+# followed by `systemctl start chimera-demo`.
+Restart=always
+RestartSec=30s
+RestartPreventExitStatus=3
+# Do not give up after repeated restarts: at one pass per thirty seconds a
+# healthy campaign trips any default start limit within minutes.
+
+# The runner needs its checkout, its own state directory and read access to the
+# recorder's data. Nothing else, so nothing else is reachable. ProtectSystem=
+# strict leaves /var/lib/chimera/data read-only, which is the correct posture:
+# the recorder writes it and the runner only reads it.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Prefixed with `-`: a path that does not exist yet is skipped rather than
+# failing the mount namespace. Without it the unit dies 226/NAMESPACE on a
+# fresh checkout, because the state directory is created by the first run
+# and ProtectSystem=strict forbids the runner from creating it.
+ReadWritePaths=-/opt/chimera/state
+# StateDirectory is what actually CREATES it. `ReadWritePaths=-` tolerates the
+# directory being absent, which stops the unit dying 226/NAMESPACE on a fresh
+# host, but tolerating an absent directory is not the same as having one: the
+# runner would then fail on its first write instead, which is a worse place to
+# discover it. systemd creates /var/lib/chimera-demo before the process starts,
+# owned by User=, and the ExecStart paths above may point at it or at the
+# operator's own /opt/chimera/state once they have created that themselves.
+StateDirectory=chimera-demo
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chimera-demo
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,7 @@
 
 Exactly six subcommands, as the plan lists them:
 
-    run --config PATH [--replay FROM TO] [--allow-dirty]
+    run --config PATH [--replay FROM TO] [--allow-dirty] [--metrics-port PORT]
     status
     flatten --note TEXT
     resume --note TEXT
@@ -17,9 +17,11 @@ empty or only whitespace is refused. That matches
 action with no stated reason is an unexplained change to a position, and the
 decision log is the only place that reason will ever exist.
 
-This tool opens no socket and reads no credential. It builds a dry-run venue
-through `chimera.carry.factory` -- the one place section 7.6 permits -- and
-reads the recorder's files read-only.
+This tool builds a dry-run venue through `chimera.carry.factory` -- the one
+place section 7.6 permits -- and reads the recorder's files read-only. It reads
+no credential, and the only socket it can open is the Prometheus scrape endpoint
+`run --metrics-port` asks for: a listening port that serves counters, reachable
+from nothing the runner reads back.
 """
 
 from __future__ import annotations
@@ -79,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="soak runs only: skip the source-identity check",
     )
     run.add_argument("--max-minutes", type=int, default=None)
+    run.add_argument(
+        "--metrics-port",
+        type=int,
+        default=None,
+        help="serve Prometheus metrics on this port (default: do not serve)",
+    )
 
     sub.add_parser("status", help="print the runner's state as JSON")
 
@@ -174,6 +182,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     runner = _load(args)
 
     if args.command == "run":
+        if args.metrics_port is not None:
+            # Imported and called here rather than in `chimera/demo`, because
+            # `serve_metrics` opens a listening socket and the whole demo
+            # package is held to opening none (tests/test_demo_no_live_path.py,
+            # and PR-10's "the runner never opens a socket"). The endpoint is
+            # therefore the CLI's, exactly as it is in tools/recorder.py, and
+            # nothing listens unless an operator asks for it.
+            from chimera.metrics import serve_metrics
+
+            serve_metrics(args.metrics_port)
+
         state = runner.start(allow_dirty=args.allow_dirty)
         if state.value == "HALT":
             print(json.dumps({"state": "HALT", "reason": runner.halt_reason}))

@@ -412,13 +412,32 @@ def serve_metrics(port: int) -> None:
     logger.info("Prometheus metrics served on port %d", port)
 
 
-# --- the demo runner (PR-10) -------------------------------------------------
-# Section 14 row 10 puts "observability beyond basic metrics" OUT OF SCOPE, and
-# section 12.2 assigns this module's full runner series to PR-12. These are the
-# three that section 8.1 actually requires to exist: STARTUP "open metrics
-# endpoint" and REPORTING "metrics" cannot be satisfied by nothing. Anything
-# richer -- per-rule counters, latency histograms, the funding and basis series
-# of section 11.1 -- is deliberately left to PR-12 rather than half-built here.
+# --- the demo runner ----------------------------------------------------
+#
+# Section 11.1's runner surface in full. Every label here is a bounded enum
+# fixed by a committed Enum or a committed configuration file, never by traffic:
+#
+#   state      RunnerState's thirteen values on chimera_demo_state, HedgeState's
+#              seven on chimera_demo_hedge_state
+#   kind       RecordKind's twelve values on chimera_demo_log_records_total, and
+#              {"target", "signal_only"} -- RuleDecision.to_record()'s own two
+#              words -- on chimera_demo_decisions_total
+#   rule       the rule ids the campaign configuration's `rules` block names.
+#              RuleRegistry refuses a duplicate id, so the set is the config's
+#              and cannot grow while a campaign runs
+#   market     {"um", "spot"}, the two markets MarketState.feed_age_ns is keyed by
+#   direction  {"paid", "received"}, the same two words the futures family
+#              already uses for a funding flow
+#   leg        {"spot", "perp"}, the two legs of a carry position
+#
+# None of them carries a free-text reason, an order id, a price or a quantity.
+#
+# Every series here is WRITTEN by chimera/demo/telemetry.py and by nothing else,
+# and no value in this family is ever READ back. A metric that fed a rule, a
+# hedge target, an Aegis input, a fill price, a reconciliation or the decision
+# log would be an observation that changed what it observed, and the campaign's
+# evidence would then be a function of its own monitoring. Both halves are
+# asserted structurally and behaviourally by tests/test_demo_observability.py.
 DEMO_UP = Gauge(f"{_PREFIX}_demo_up", "1 while the demo runner process is live")
 DEMO_STATE = Gauge(
     f"{_PREFIX}_demo_state",
@@ -427,7 +446,93 @@ DEMO_STATE = Gauge(
 )
 DEMO_HEARTBEAT = Gauge(
     f"{_PREFIX}_demo_heartbeat_timestamp",
-    "RunnerClock instant of the last completed tick, in seconds",
+    "Unix wall-clock timestamp of the runner's last state change",
+)
+DEMO_TICKS = Counter(
+    f"{_PREFIX}_demo_ticks_total", "Minutes the runner attempted, complete or not"
+)
+DEMO_DECISIONS = Counter(
+    f"{_PREFIX}_demo_decisions_total",
+    "Rule decisions recorded, by rule and by whether one could reach an executor",
+    ["rule", "kind"],
+)
+DEMO_LAST_MINUTE_AGE = Gauge(
+    f"{_PREFIX}_demo_last_minute_age_seconds",
+    "Wall seconds since the close of the last minute the runner attempted",
+)
+DEMO_FEED_AGE = Gauge(
+    f"{_PREFIX}_demo_feed_age_seconds",
+    "Wall seconds since the close of the newest minute read for a market",
+    ["market"],
+)
+DEMO_HEDGE_STATE = Gauge(
+    f"{_PREFIX}_demo_hedge_state",
+    "1 for the carry position's current HedgeState, 0 for the others",
+    ["state"],
+)
+DEMO_HEDGE_IMBALANCE = Gauge(
+    f"{_PREFIX}_demo_hedge_imbalance_btc",
+    "Spot quantity minus perpetual quantity, in BTC. Zero whenever the state is HEDGED",
+)
+DEMO_EQUITY = Gauge(
+    f"{_PREFIX}_demo_equity", "Marked equity of the carry position, in quote currency"
+)
+DEMO_NET_PNL = Gauge(
+    f"{_PREFIX}_demo_net_pnl",
+    "Marked equity minus the campaign's starting capital, in quote currency",
+)
+DEMO_FUNDING = Counter(
+    f"{_PREFIX}_demo_funding_total",
+    "Simulated carry funding, paid and received kept apart and never netted",
+    ["direction"],
+)
+DEMO_BASIS = Gauge(
+    f"{_PREFIX}_demo_basis",
+    "Perpetual close minus spot close at the marked minute, in quote currency",
+)
+DEMO_LIQUIDATION_DISTANCE = Gauge(
+    f"{_PREFIX}_demo_liquidation_distance",
+    "|mark - liquidation| / mark for a leg's open position; NaN while the leg is flat",
+    ["leg"],
+)
+DEMO_LOG_RECORDS = Counter(
+    f"{_PREFIX}_demo_log_records_total", "Decision-log records appended, by kind", ["kind"]
+)
+DEMO_LOG_WRITE_ERRORS = Counter(
+    f"{_PREFIX}_demo_log_write_errors_total",
+    "Appends that raised before the record reached the log",
+)
+DEMO_DISK_FREE = Gauge(
+    f"{_PREFIX}_demo_disk_free_bytes",
+    "Free bytes on the filesystem holding the runner's state directory",
+)
+DEMO_FUNDING_ADVERSE_STREAK = Gauge(
+    f"{_PREFIX}_demo_funding_adverse_streak",
+    "Consecutive settlements the position paid funding on, from the Aegis state",
+)
+
+#: The eighteen series section 11.1 requires of the runner, by name. Pinned here
+#: for the same reason RECORDER_METRIC_NAMES is: a rename must be caught by a
+#: test rather than by a blank dashboard panel.
+DEMO_METRIC_NAMES: tuple[str, ...] = (
+    f"{_PREFIX}_demo_up",
+    f"{_PREFIX}_demo_state",
+    f"{_PREFIX}_demo_heartbeat_timestamp",
+    f"{_PREFIX}_demo_ticks_total",
+    f"{_PREFIX}_demo_decisions_total",
+    f"{_PREFIX}_demo_last_minute_age_seconds",
+    f"{_PREFIX}_demo_feed_age_seconds",
+    f"{_PREFIX}_demo_hedge_state",
+    f"{_PREFIX}_demo_hedge_imbalance_btc",
+    f"{_PREFIX}_demo_equity",
+    f"{_PREFIX}_demo_net_pnl",
+    f"{_PREFIX}_demo_funding_total",
+    f"{_PREFIX}_demo_basis",
+    f"{_PREFIX}_demo_liquidation_distance",
+    f"{_PREFIX}_demo_log_records_total",
+    f"{_PREFIX}_demo_log_write_errors_total",
+    f"{_PREFIX}_demo_disk_free_bytes",
+    f"{_PREFIX}_demo_funding_adverse_streak",
 )
 
 
@@ -440,3 +545,14 @@ def set_demo_state(state: str, *, states: "tuple[str, ...]") -> None:
     """
     for name in states:
         DEMO_STATE.labels(state=name).set(1.0 if name == state else 0.0)
+
+
+def set_hedge_state(state: str, *, states: "tuple[str, ...]") -> None:
+    """The same sweep over the carry position's states, for the same reason.
+
+    Two states reading 1 at once would show a position that is simultaneously
+    HEDGED and FLAT, which is exactly what a label left behind by the previous
+    state looks like.
+    """
+    for name in states:
+        DEMO_HEDGE_STATE.labels(state=name).set(1.0 if name == state else 0.0)

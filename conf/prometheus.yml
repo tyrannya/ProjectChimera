@@ -5,8 +5,13 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Both rule files are loaded. conf/alerts.yml covers the Freqtrade and
+# inference path; conf/alerts_demo.yml covers the recorder and the demo
+# runner. Retiring the former belongs to the change that takes those
+# services off the runtime, not to this one.
 rule_files:
   - /etc/prometheus/alerts.yml
+  - /etc/prometheus/alerts_demo.yml
 
 alerting:
   alertmanagers:
@@ -27,3 +32,17 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["freqtrade:9101"]
+
+  # The demo deployment. Both ports are the adopted ones and both are served by
+  # the CLI rather than by the library: chimera/demo and chimera/recorder open no
+  # listening socket themselves, so the /metrics endpoint exists only when
+  # tools.recorder or tools.demo_run is asked for one.
+  - job_name: recorder
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["recorder:9102"]
+
+  - job_name: demo
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["demo:9103"]
