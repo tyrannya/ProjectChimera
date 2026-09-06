@@ -12,7 +12,27 @@ For any multi-file implementation, research checkpoint, audit, migration, or pro
 4. Read `docs/agent_context/active_context.md`, `docs/agent_context/known_blockers.md`, and `docs/agent_context/architecture_index.md` as navigation aids.
 5. Reconstruct current Git/research state from repository evidence. Do not trust handoff files, chat summaries, PR prose, or prior agent reports when the repository can answer the question.
 
-The files under `docs/agent_context/` are deliberately non-authoritative. Git state, adopted governance documents, frozen contracts and executable guardrails override them. At the end of a substantial task that changes durable repository state, update `active_context.md` narrowly with the verified main/PR state, unresolved load-bearing blockers and the immediate next action. Put durable engineering architecture decisions in `docs/decisions/` rather than growing the handoff into a diary.
+The files under `docs/agent_context/` are deliberately non-authoritative. Git state, adopted governance documents, frozen contracts and executable guardrails override them.
+
+## Cross-session repository memory
+
+Treat the repo-native handoff files as maintained cross-session memory, not as a diary and never as authority over Git/contracts/governance.
+
+At the **start** of every substantial task:
+
+- read `docs/agent_context/active_context.md`;
+- read `docs/agent_context/known_blockers.md`;
+- read `docs/agent_context/architecture_index.md`;
+- verify any load-bearing claim against current Git/repository evidence before acting on it.
+
+At the **end** of every substantial task that changes durable repository state:
+
+- **`active_context.md` — update whenever roadmap/Git state changed.** Keep only the latest verified main SHA (or explicitly state that work remains an unmerged PR), relevant merged/open PRs, current stage, unresolved load-bearing blockers, and the immediate next action.
+- **`known_blockers.md` — update only when blocker state changed.** Add a blocker only after verifying it; update it when its meaning/owner changes; remove it only when repository evidence proves it closed. Never remove a blocker merely because an agent report says it is fixed.
+- **`architecture_index.md` — update only for durable architecture changes.** Examples: active runtime topology changes, canonical entry points move, a component becomes active/historical/disconnected, or an important dependency edge changes. Do not rewrite it for routine implementation changes.
+- **`docs/decisions/` — create/update an ADR only for durable engineering architecture decisions** that future sessions would otherwise need to rediscover and that are not already governed by an adopted scientific/governance document.
+
+Before committing a memory update, reconstruct the facts from Git/repository evidence. Do not copy stale chat text, PR prose, or agent claims into repository memory without verification. Keep these files concise; do not append chronological session logs. Scientific/governance decisions remain in their adopted plan, contract, preregistration or amendment rather than being duplicated into ADRs.
 
 ## Authority order
 
