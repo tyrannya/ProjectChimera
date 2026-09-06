@@ -86,6 +86,16 @@ services:
   # Public market data only. The recorder subscribes to no authenticated
   # endpoint, so there is no credential to pass in and none is read: no
   # env_file, no environment block, no secret mount.
+  #
+  # `recorder` and `demo` carry the `demo` profile and MUST NOT ALSO CARRY
+  # `legacy`. The change that takes the retired runtime off the default `docker
+  # compose up` puts `legacy` on `freqtrade` and `nn_infer`; a service listing
+  # both profiles starts under either, so adding `legacy` here would put the
+  # demo deployment back on the very path that change exists to remove, and
+  # `docker compose --profile legacy up` would start a recorder and a runner
+  # nobody asked for. Neither service is deleted or re-profiled by this change:
+  # after it, every scrape job in conf/prometheus.yml still names a service that
+  # exists and every committed alert still has a job that scrapes it.
   recorder:
     profiles: ["demo"]
     build:

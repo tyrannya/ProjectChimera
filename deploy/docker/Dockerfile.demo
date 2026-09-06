@@ -1,0 +1,53 @@
+# The demo campaign runner. Build from the repository root:
+#   docker build -f deploy/docker/Dockerfile.demo -t chimera/demo:local .
+#
+# Dry-run venue only, and structurally so: chimera/demo and chimera/carry import
+# no network module and construct venues in exactly one place
+# (chimera.carry.factory, both legs DryRunFuturesVenue), which
+# tests/test_demo_no_live_path.py asserts. There is no credential to give this
+# image and no argument that would accept one.
+#
+# Two things this image cannot do today, stated here rather than discovered at
+# 03:00 -- both are the runner's to repair, not this file's:
+#
+#   * it has no git metadata, so tools/demo_run.py's `_software()` reports
+#     `dirty: true` and `DemoRunner.self_check` refuses a CAMPAIGN run. Only a
+#     TEST or SOAK profile can start from a container on this build.
+#   * `tools.demo_run run` is one bounded catch-up pass over at most
+#     `max_catchup_minutes` (3) minutes, not a continuous loop, so the container
+#     exits after each pass and the restart policy is what re-invokes it. The
+#     metrics endpoint therefore exists only while a pass is in flight. See
+#     docs/demo_runbook.md section 0.
+FROM python:3.11-slim
+
+WORKDIR /chimera
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# The demo path's third-party imports are numpy, pandas, pyarrow and
+# prometheus-client, all four of them core dependencies, so there is no extra to
+# ask for here and inventing an empty one would be configuration with no use.
+COPY pyproject.toml ./
+COPY chimera/ ./chimera/
+COPY tools/ ./tools/
+RUN python -m pip install --upgrade pip && pip install -e .
+
+# `conf/` is NOT copied. The campaign configuration is what identifies a
+# campaign, and a copy baked into an image is a second copy that can drift from
+# the reviewed one; docker-compose.yml mounts ./conf read-only instead.
+#
+# The state directory is /chimera/state/demo because the campaign config carries
+# no `runner` block and RUNNER_DEFAULTS["state_dir"] is the relative path
+# "state/demo", which resolves under this WORKDIR. The mount and the default
+# agree by construction, without editing a committed campaign configuration.
+RUN useradd --system --uid 10001 chimera \
+    && mkdir -p /chimera/state \
+    && chown -R chimera:chimera /chimera/state
+USER chimera
+
+# Bound on all interfaces by prometheus_client.start_http_server, so the compose
+# file publishes it on 127.0.0.1 only and a real host must firewall it to the
+# Prometheus host. The port is served only when `run --metrics-port` asks.
+EXPOSE 9103
+
+ENTRYPOINT ["python", "-m", "tools.demo_run"]

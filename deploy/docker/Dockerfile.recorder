@@ -1,0 +1,40 @@
+# The prospective recorder. Build from the repository root:
+#   docker build -f deploy/docker/Dockerfile.recorder -t chimera/recorder:local .
+#
+# Public market data only. The recorder subscribes to no authenticated endpoint,
+# so there is no credential to bake in, no ARG to pass one through and no
+# environment variable read for one. Nothing here can reach a live venue: the
+# entrypoint is tools.recorder, whose only two subcommands are `run` and
+# `status`.
+FROM python:3.11-slim
+
+WORKDIR /chimera
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Package discovery in pyproject.toml globs the tree, so a partial copy installs
+# cleanly. Only what the recorder needs is copied: the shared core and the CLI.
+# `nn/` is left out deliberately -- tools/recorder.py imports nn.source_identity
+# inside a try/except ImportError precisely so a recorder image need not carry
+# research code, and an image has no git metadata to identify a revision from
+# anyway, so copying it would add a file that changes nothing.
+COPY pyproject.toml ./
+COPY chimera/ ./chimera/
+COPY tools/ ./tools/
+
+# `.[recorder]` rather than `.`: the websocket client is the one thing live
+# collection adds over the offline core.
+RUN python -m pip install --upgrade pip && pip install -e ".[recorder]"
+
+# The recorder needs to write exactly one directory, and it is not the checkout.
+RUN useradd --system --uid 10001 chimera \
+    && mkdir -p /var/lib/chimera/data \
+    && chown -R chimera:chimera /var/lib/chimera
+USER chimera
+
+# Bound on all interfaces by prometheus_client.start_http_server, so the compose
+# file publishes it on 127.0.0.1 only and a real host must firewall it to the
+# Prometheus host. The port is served only when `run --metrics-port` asks.
+EXPOSE 9102
+
+ENTRYPOINT ["python", "-m", "tools.recorder"]
