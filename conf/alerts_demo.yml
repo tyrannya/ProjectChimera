@@ -20,6 +20,21 @@
 # runner's real path, so the alert is not dead; the missing periodic
 # reconciliation is a runner gap, tracked as a governance blocker against PR-10
 # rather than papered over here.
+#
+# Second known limitation, the same shape and the same cause:
+# HedgedPosition.settle_funding has no caller in this build either, so
+# CarryLedger.funding_paid and funding_received never move, and
+# chimera_demo_funding_adverse_streak is identically 0 on every run. So
+# FundingAdverseStreak cannot fire today, and the dashboard's "Funding paid and
+# received" panel draws two flat zero lines rather than "No data" -- the
+# telemetry pre-creates both `direction` children at 0 so that rate() and
+# increase() are defined from the first scrape, which is right, and which also
+# means the panel cannot tell "no funding yet" from "funding is not wired".
+# Verified empirically, not inferred: a 540-minute synthetic campaign with the
+# position HEDGED across two of the fixture's three settlements leaves every
+# funding series at 0. Both are armed for the day the runner settles funding;
+# recording it here is the alternative to an operator concluding from a flat
+# line that a hedged carry position genuinely paid no funding for nine hours.
 groups:
   - name: chimera-demo-recorder
     rules:
