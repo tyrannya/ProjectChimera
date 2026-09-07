@@ -1480,7 +1480,11 @@ class DemoRunner:
         # runner keeps exactly one place that halts and one telemetry emission
         # for it; `risk.halt` above has already run, and `_halt` does not repeat
         # it.
-        self._halt(f"liquidation_touch: {outcome.detail}")
+        self._halt(
+            f"liquidation_touch: {outcome.detail}",
+            # Built here, after `_save_ledger`, so the record describes the file.
+            ledger_effect=self._ledger_effect(self.position.ledger.state.last_equity),
+        )
         return TickOutcome(
             minute_ms,
             self.state,
@@ -1579,6 +1583,17 @@ class DemoRunner:
         pre-flatten values, so the close's economics were reported nowhere -- and
         on the liquidation path, which always halts, nowhere ever.
         """
+        if equity is None:
+            # Never `str(None)`. The decision log is append-only and
+            # `reports._ledger_and_funding` pushes this field through `_decimal`,
+            # so one record carrying the text "None" makes the whole day's report
+            # refuse for ever. A caller that has no equity to report has no
+            # `ledger_effect` to write, and finding that out here is better than
+            # finding it out in an auditor's report.
+            raise RunnerError(
+                "a ledger_effect needs an equity; the position has not been marked, so "
+                "there is no equity to record and this record must not carry the block"
+            )
         ledger = self.position.ledger.state
         return {
             "fees": str(ledger.fees),
@@ -1588,11 +1603,26 @@ class DemoRunner:
             "equity": str(equity),
         }
 
-    def _halt(self, reason: str) -> RunnerState:
+    def _halt(
+        self, reason: str, *, ledger_effect: Mapping[str, str] | None = None
+    ) -> RunnerState:
         """Enter HALT and write the record. Idempotent on the reason.
 
         The FIRST reason is kept. A halt that renamed itself as later symptoms
         arrived would lose the cause an operator needs.
+
+        ``ledger_effect`` is passed by the ONE caller that books before it halts
+        -- section 6.7's liquidation flatten -- and by no other. Putting the
+        block on every halt was wrong twice. Most halts run BEFORE the tick's
+        `mark_to_market` and before `_save_ledger`, so the block would have
+        carried `last_equity` of ``None``, and `reports._ledger_and_funding`
+        selects every record that has the block and pushes its equity through
+        `_decimal`: a halt on a campaign's first minutes made the whole day's
+        report refuse, and the day a campaign halted is the day whose report is
+        wanted. It would also have asserted fees and slippage that no file held,
+        because those halts return before the ledger is persisted -- evidence for
+        a booking that never happened, which is the mirror of the defect the
+        block was added to close.
         """
         if self.state is RunnerState.HALT and self.halt_reason:
             return self.state
@@ -1618,13 +1648,10 @@ class DemoRunner:
                     # evidence. Reading the stores would answer it; the log is
                     # what an audit reads.
                     "position_after": self._position_block(),
-                    # And what the ledger held, for the same reason. Section
-                    # 6.7's liquidation flatten books a close and then halts, so
-                    # without this the one record that follows the booking says
-                    # what was held and not what it cost.
-                    "ledger_effect": self._ledger_effect(
-                        self.position.ledger.state.last_equity
-                    ),
+                    # And what the ledger held, when the caller has just booked
+                    # and persisted one. Section 6.7's liquidation flatten is the
+                    # only halt that does.
+                    **({"ledger_effect": dict(ledger_effect)} if ledger_effect else {}),
                 },
             )
             self.save_state()

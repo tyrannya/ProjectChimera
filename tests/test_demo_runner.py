@@ -2373,3 +2373,42 @@ def test_the_liquidation_halt_records_the_cash_its_flatten_moved(tmp_path):
     # by hand to force the touch, which is the one thing in this fixture that
     # moves cash without a fill.)
     assert D(effect["equity"]) == ledger.free_cash
+
+
+def test_a_halt_before_the_first_mark_leaves_the_day_reportable(tmp_path):
+    """A `ledger_effect` on every halt made the day's own report unproducible.
+
+    Most halts run BEFORE the tick's `mark_to_market` and before the ledger is
+    persisted, so `last_equity` is still None. `str(None)` is the text "None",
+    `reports._ledger_and_funding` selects every record carrying the block and
+    pushes its equity through `_decimal`, and the decision log is append-only --
+    so one such record made section 11.4's report refuse for that day, for ever.
+    The day a campaign halted is the day whose report is wanted.
+
+    The block now goes only to the halt that has just booked and persisted one,
+    which is section 6.7's liquidation flatten, and `_ledger_effect` refuses a
+    missing equity rather than writing the word.
+    """
+    from chimera.demo.reports import daily_report
+
+    harness = build(tmp_path, start=False)
+    (harness.state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+    harness.runner.start()
+
+    assert harness.runner.state is RunnerState.HALT
+    halts = [r for r in harness.records() if r["kind"] == RecordKind.HALT.value]
+    assert halts, "the kill switch did not halt the start"
+    assert (
+        "ledger_effect" not in halts[-1]
+    ), "a halt that booked nothing recorded a ledger_effect anyway"
+    # And the day is still reportable, which is the whole point.
+    report = daily_report(harness.state_dir, DAY)
+    assert report is not None
+
+
+def test_a_ledger_effect_without_an_equity_is_refused_rather_than_written(tmp_path):
+    """The guard, directly: the word "None" must never reach an append-only log."""
+    harness = build(tmp_path)
+    assert harness.runner.position.ledger.state.last_equity is None or True
+    with pytest.raises(RunnerError):
+        harness.runner._ledger_effect(None)

@@ -136,8 +136,10 @@ in this change.
 
 A ninth, and read this one before comparing a report against a hand
 calculation. **Slippage is measured, not spent.** The campaign's equity is
-`equity = capital - fees + realised + unrealised`, with no slippage term, and
-`ledger.slippage` is an attribution the reports show beside it. Section 6.5 defines slippage as "the difference between the fill
+`equity = capital - fees + realised + net_funding + unrealised`, with no
+slippage term, and `ledger.slippage` is an attribution the reports show beside
+it. (`ledger.realised` is the two legs' price realisation only; funding reaches
+`free_cash` through `book_funding` and is its own term here.) Section 6.5 defines slippage as "the difference between the fill
 price and the mid at decision" — a measurement of a price — and in this build
 that difference is already inside the price everything else is computed from:
 `RecordedQuoteFillModel` crosses to the recorded touch and applies the
