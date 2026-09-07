@@ -2401,14 +2401,91 @@ def test_a_halt_before_the_first_mark_leaves_the_day_reportable(tmp_path):
     assert (
         "ledger_effect" not in halts[-1]
     ), "a halt that booked nothing recorded a ledger_effect anyway"
-    # And the day is still reportable, which is the whole point.
+    # And the day is still reportable, which is the whole point. Assert what the
+    # report SAYS, not that a function returned: `daily_report` either returns a
+    # dict or raises, so `is not None` cannot fail. The halted day is reported,
+    # and reported as unmarked -- no record that day carries a `ledger_effect`.
     report = daily_report(harness.state_dir, DAY)
-    assert report is not None
+    assert report["records_by_kind"]["HALT"] == 1
+    assert report["ledger"]["equity"]["close"] is None
 
 
 def test_a_ledger_effect_without_an_equity_is_refused_rather_than_written(tmp_path):
     """The guard, directly: the word "None" must never reach an append-only log."""
     harness = build(tmp_path)
-    assert harness.runner.position.ledger.state.last_equity is None or True
-    with pytest.raises(RunnerError):
+    # The premise the test is named for: a started, never-ticked runner has no
+    # marked equity, so "a ledger_effect without an equity" is a real situation
+    # and not an invented one. (`x is None or True` would assert nothing.)
+    assert harness.runner.position.ledger.state.last_equity is None
+    with pytest.raises(RunnerError, match="needs an equity"):
         harness.runner._ledger_effect(None)
+
+
+def _assert_log_evidence_invariant(harness):
+    """Every `ledger_effect` in the log parses, and only a booking carries one.
+
+    Path-independent on purpose. The two witnesses above pin ONE of the runner's
+    seventeen non-liquidation `_halt` sites between them, so a `ledger_effect`
+    re-added at any of the other sixteen would leave both of them green. This
+    reads the log instead of the path: whatever halted, and wherever, the two
+    properties that make the day reportable have to hold for every record.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    for record in harness.records():
+        effect = record.get("ledger_effect")
+        if effect is None:
+            continue
+        assert set(effect) == {
+            "fees",
+            "slippage",
+            "funding",
+            "realised",
+            "equity",
+        }, f"{record['kind']} carries a malformed ledger_effect: {sorted(effect)}"
+        for field, value in effect.items():
+            try:
+                Decimal(value)
+            except InvalidOperation:  # pragma: no cover - the assertion is the point
+                raise AssertionError(
+                    f"{record['kind']} recorded {field}={value!r}, which is not a "
+                    "decimal; one such record makes the whole day's report refuse"
+                )
+        if record["kind"] == RecordKind.HALT.value:
+            # The one halt that books before it halts is section 6.7's flatten.
+            detail = (record.get("veto_or_rejection") or {}).get("detail") or ""
+            assert detail.startswith("liquidation_touch:"), (
+                "a HALT that did not book a liquidation flatten carried a "
+                f"ledger_effect anyway: {detail!r}"
+            )
+
+
+def test_every_ledger_effect_in_a_halted_campaigns_log_is_reportable(tmp_path):
+    """The invariant, on the campaign that halts with a booking behind it."""
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(3, start=first)
+    _erode_to_liquidation(harness, first + 3 * 60_000)
+    harness.runner.tick(first + 3 * 60_000)
+
+    assert harness.runner.state is RunnerState.HALT
+    _assert_log_evidence_invariant(harness)
+    # ...and the day it halted on is still reportable, end to end.
+    from chimera.demo.reports import daily_report
+
+    assert daily_report(harness.state_dir, DAY)["records_by_kind"]["HALT"] == 1
+
+
+def test_every_ledger_effect_survives_a_halt_with_nothing_booked(tmp_path):
+    """The same invariant on a halt that books nothing, through the tick loop."""
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(2, start=first)
+    (harness.state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+    harness.runner.tick(first + 2 * 60_000)
+
+    assert harness.runner.state is RunnerState.HALT
+    _assert_log_evidence_invariant(harness)
+    from chimera.demo.reports import daily_report
+
+    assert daily_report(harness.state_dir, DAY)["records_by_kind"]["HALT"] == 1

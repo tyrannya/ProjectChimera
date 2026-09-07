@@ -1366,13 +1366,7 @@ class DemoRunner:
             },
             "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
             "position_after": self._position_block(),
-            "ledger_effect": {
-                "fees": str(ledger.fees),
-                "slippage": str(ledger.slippage),
-                "funding": str(ledger.net_funding),
-                "realised": str(ledger.realised),
-                "equity": str(mark.equity),
-            },
+            "ledger_effect": self._ledger_effect(mark.equity),
             "veto_or_rejection": None,
         }
 
@@ -1574,7 +1568,10 @@ class DemoRunner:
     def _ledger_effect(self, equity: Any) -> dict[str, str]:
         """Section 9.1's ``ledger_effect`` block, from the carry ledger.
 
-        One builder, because three records carry it and the daily report derives
+        One builder, and now genuinely the only one: `_funding_payload` and
+        `_decision_payload` used to inline their own copy of these five keys, so
+        the guard below reached only half the records that carry the block. Both
+        already hold the `CarryMark` this needs, so they call it now. The daily report derives
         the whole cost and equity series from this block alone
         (`reports._ledger_and_funding`, which deliberately never reads
         `carry_ledger.json`). A record that moves the ledger and omits the block
@@ -2051,7 +2048,6 @@ class DemoRunner:
         mark: Any,
         orders_before: Mapping[str, frozenset[str]],
     ) -> dict[str, Any]:
-        ledger = self.position.ledger.state
         actionable = [d for d in decisions if d.is_actionable]
         primary = actionable[0] if actionable else (decisions[0] if decisions else None)
         payload: dict[str, Any] = {
@@ -2084,13 +2080,7 @@ class DemoRunner:
             },
             "execution": _execution_block(self.position, orders_before),
             "position_after": self._position_block(),
-            "ledger_effect": {
-                "fees": str(ledger.fees),
-                "slippage": str(ledger.slippage),
-                "funding": str(ledger.net_funding),
-                "realised": str(ledger.realised),
-                "equity": str(mark.equity),
-            },
+            "ledger_effect": self._ledger_effect(mark.equity),
             "veto_or_rejection": dict(veto) if veto else None,
             "shadow": [
                 {"rule_id": d.rule_id, "reason": d.reason, **d.to_record()["signal"]}
