@@ -301,3 +301,74 @@ def test_an_in_memory_ledger_persists_nothing(tmp_path):
     ledger = CarryLedger.open(None, capital=CAPITAL)
     ledger.save()
     assert not list(tmp_path.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# Amendment A12: measured slippage is evidence, not a second cash debit
+# ---------------------------------------------------------------------------
+def test_amendment_a12_slippage_is_accumulated_and_not_spent(tmp_path):
+    """A12's rule, stated as arithmetic: fees move cash, slippage does not.
+
+    Written out from `docs/amendment_a12_recorded_quote_slippage.md` the way
+    `test_amendment_a10s_four_cases_land_in_the_column_a10_names` is written out
+    from A10, so the adopted decision has an executable witness and not only a
+    docstring arguing for it.
+    """
+    ledger = fresh(tmp_path)
+    before = ledger.state.free_cash
+
+    ledger.book_costs(leg="spot", fee=D("0"), slippage=D("42"))
+    assert ledger.state.slippage == D("42"), "slippage must still be accumulated"
+    assert ledger.state.free_cash == before, "A12: slippage must not move free_cash"
+
+    ledger.book_costs(leg="spot", fee=D("10"), slippage=D("0"))
+    assert ledger.state.free_cash == before - D("10"), "fees are still a cash debit"
+
+
+def test_amendment_a12_hand_traced_against_an_executed_vwap(tmp_path):
+    """The reason A12 is right, traced by hand on one LONG spot leg.
+
+    A BUY of 1 BTC with a recorded ask of 30000 and 2 bps of configured
+    slippage fills at `30000 * 1.0002 = 30006`. The 6 quote units of slippage
+    are INSIDE that price, so the principal the ledger books is 30006 and the
+    cash it moves is 30006 -- not 30006 + 6. The measured slippage is reported
+    beside the cash line, which is what section 6.5 asks for.
+
+    The two-sided control is the second half: booking at the UN-slipped 30000
+    and charging the 6 separately reaches the same free cash. That is the
+    disjoint-terms model `chimera.carry.accounting` uses and the one section
+    6.6's line was written for, and it is exactly why doing BOTH double-charges.
+    """
+    ask, slip_rate, qty = D("30000"), D("0.0002"), D("1")
+    executed = ask * (1 + slip_rate)
+    measured_slippage = (executed - ask) * qty
+    fee = executed * qty * D("0.001")
+    assert executed == D("30006.0000") and measured_slippage == D("6.0000")
+
+    (tmp_path / "a").mkdir()
+    priced_in = CarryLedger.open((tmp_path / "a") / "l.json", capital=CAPITAL)
+    priced_in.book_position(
+        spot_quantity=qty, spot_entry=executed, perp_quantity=D("0"), perp_entry=D("0")
+    )
+    priced_in.book_costs(leg="spot", fee=fee, slippage=measured_slippage)
+
+    # The disjoint-terms model: un-slipped notional, slippage charged as cash.
+    (tmp_path / "b").mkdir()
+    disjoint = CarryLedger.open((tmp_path / "b") / "l.json", capital=CAPITAL)
+    disjoint.book_position(
+        spot_quantity=qty, spot_entry=ask, perp_quantity=D("0"), perp_entry=D("0")
+    )
+    disjoint.book_costs(leg="spot", fee=fee + measured_slippage, slippage=D("0"))
+
+    assert (
+        priced_in.state.free_cash == disjoint.state.free_cash
+    ), "the two models must agree on cash; only one of them may be applied"
+    assert priced_in.state.free_cash == CAPITAL - executed * qty - fee
+    # ...and only the A12 model still has the slippage available as evidence.
+    assert priced_in.state.slippage == measured_slippage
+    assert disjoint.state.slippage == D("0")
+
+    # What the double debit would have cost: charged twice, cash is short by
+    # exactly the measured slippage, and it grows with every fill.
+    doubled = priced_in.state.free_cash - measured_slippage
+    assert doubled != priced_in.state.free_cash

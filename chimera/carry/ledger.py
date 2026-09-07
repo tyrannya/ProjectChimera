@@ -563,7 +563,11 @@ class CarryLedger:
     ) -> None:
         """Attribute a fill's frictions and realisation to one leg.
 
-        **Slippage is measured, not spent.** It is accumulated and reported, and
+        **Slippage is measured, not spent.** Adopted as amendment A12
+        (`docs/amendment_a12_recorded_quote_slippage.md`), which is the authority
+        for what follows; until that amendment this docstring was the only place
+        the question had been answered, and an engineering argument in a
+        docstring is not an adopted decision. It is accumulated and reported, and
         it does NOT move ``free_cash``. Section 6.5 defines it as "the difference
         between the fill price and the mid at decision" -- a measurement of a
         price, not a transfer -- and in this build that difference is already

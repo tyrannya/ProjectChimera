@@ -338,14 +338,41 @@ what was checked is a resolution nobody can audit.
 > safety state changed with nothing in the log to say who changed it. But it
 > leaves the command unusable.
 >
-> Clearing a dispute therefore means editing `spot_store.json` / `perp_store.json`
-> and `risk.json` by hand, deliberately, with the reason recorded outside the
-> decision log — and that is a worse audit trail than the `OPERATOR` record, not
-> a better one. The fix is to seed the clock from the **log's tail** rather than
-> from the state file, which is a change with its own crash matrix: an earlier
-> attempt seeded it from the state file instead and made `start()` raise on the
-> crash section 9.3 exists to recover from. It is recorded here rather than
-> improvised.
+> **There is no supported way to clear a reconciliation dispute in this build,
+> and this is an open S3 blocker.** Editing `spot_store.json` /
+> `perp_store.json` and `risk.json` by hand would clear the flags, and it is
+> **not** a procedure this runbook offers: section 8.3 requires that a change to
+> the safety state carry the record naming who changed it and why, and a hand
+> edit changes that state with nothing in the decision log at all — strictly
+> worse than the refusal, and worse than leaving the campaign halted. A halted
+> campaign with a durable, explained dispute is a recoverable situation; a
+> campaign whose safety flags were edited by hand is not evidence any more.
+>
+> The fix is to seed the clock from the **log's tail** rather than from the state
+> file, which is a change with its own crash matrix: an earlier attempt seeded it
+> from the state file instead and made `start()` raise on the crash section 9.3
+> exists to recover from. It is recorded here rather than improvised, and it is
+> tracked with the `resume` blocker in section 7 as one piece of work.
+
+### If `carry_ledger.json` itself cannot be read
+
+`CarryLedger.open` disputes and leaves the damaged bytes exactly as it found
+them; `save` then refuses to overwrite them. The position is `DISPUTED` and the
+campaign is halted, which is correct: that file is the only record of what the
+position did, and a ledger that resets itself is indistinguishable from one that
+never traded.
+
+`flatten` still works and still reduces exposure — a corrupt file is no reason to
+leave a real position standing — but the `OPERATOR` record it writes carries **no
+`ledger_effect` block**, because the runner is holding a placeholder and any
+economics built from it would be invented. That omission is the correct
+behaviour and not a missing field. The day's report is still produced; it simply
+carries the last economics a real ledger held.
+
+Repair means restoring the file from the previous good copy, with the damaged
+bytes preserved alongside it under a different name and an incident recorded
+(section 15). It does not mean deleting it: an absent ledger loads as `MISSING`
+and starts a fresh one at full capital.
 
 ## 7. Kill switch, flatten, resume
 
@@ -379,6 +406,52 @@ The kill-switch check is level-triggered: while the file is there every check
 re-asserts the halt, so the file must be gone before `resume` is attempted.
 `resume` refuses an empty note and refuses to run when the runner is not in
 `HALT`.
+
+> **In this build that second command always refuses, and there is no supported
+> operator path out of a persisted HALT. This is an open S3 blocker.**
+>
+> `resume` refuses when the runner is not in `HALT`, and a runner reached
+> through `tools/demo_run.py` never is. The CLI constructs a `DemoRunner` and
+> calls `resume` without `start()`, so the object is in its constructor's
+> `STARTUP` state; the halt is on **disk**, in `risk.json`, and nothing on that
+> path reads it back into the runner. Observed end to end: after a kill-switch
+> halt and a clean shutdown, `risk.json` holds `halted: true` with
+> `halt_reason: kill_switch`, and a fresh process reports `STARTUP` and answers
+> *"the runner is not halted; there is nothing to resume from"*. Removing the
+> kill-switch file first does not change it — the refusal is about the runner's
+> own state, not the switch.
+>
+> The same shape blocks `resolve` (section 6), for a different reason on the
+> same path. Between them, a campaign that halts cannot be returned to `READY`
+> by any documented command.
+>
+> **Do not hand-edit `risk.json` to work around this.** It appears to work and
+> it destroys the audit trail: section 8.3 requires that a change to the safety
+> state be accompanied by the record that says who made it and why, and an
+> operator who clears `halted` by hand has changed the safety state with nothing
+> in the decision log at all — strictly worse than the refusal. If a campaign is
+> halted and must be stopped, stop it; the halt, its cause and its evidence are
+> already durable.
+>
+> Closing this is a runtime change with its own crash matrix — the durable halt
+> must not be cleared before the `RESUME` record is provably writable — and it
+> is tracked as its own piece of work rather than improvised here.
+
+### What is on disk after a dispute halt, and what is not
+
+A halt that follows a booking persists the carry ledger **before** it writes the
+`HALT` record, so the file and the in-memory ledger agree at the moment the
+process stops. That ordering is deliberate and is not a property of a clean
+shutdown: a process killed at the halt boundary leaves the same bytes behind.
+It matters most for slippage, which no executor accumulates — fees and realised
+PnL would be re-derived from the executors on the next start, and slippage would
+simply be gone.
+
+The reverse is also true and is the reason the `HALT` record itself carries no
+`ledger_effect` on most paths: most halts run before the minute's
+`mark_to_market`, so there is no equity to report and the record says nothing
+rather than something unbacked. A `HALT` without a `ledger_effect` block is
+normal. A `ledger_effect` that no file backs would not be.
 
 ## 8. Disk low
 

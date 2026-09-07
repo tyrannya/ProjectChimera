@@ -100,6 +100,25 @@ parity failure; dropping a `DECISION` is.
 exempted to make a run green: a replay that booked a different funding flow,
 reconciled to a different outcome, or missed a settlement diverges.
 
+> **Known gap, not decided here: `OPERATOR` records have no completed parity
+> policy.** `OPERATOR` is not in `OPERATIONAL_KINDS` and not in
+> `EXCLUDING_KINDS`, so it falls into "everything else" and is compared field by
+> field — but a replay drives no CLI and issues no operator command, so it can
+> never produce a counterpart. A live campaign in which an operator ran `flatten`
+> or `resolve` therefore reports that record as `live_only` and the day comes
+> back `DIVERGED`, with nothing wrong with the decision logic.
+>
+> This is not a defect the tool may fix on its own initiative. Section 9.4 puts
+> `OPERATOR` in the **evidence** set, alongside `DECISION` and `FUNDING`, so
+> quietly adding it to the ignored-operational set would exempt a
+> safety-significant action from the comparison — the same shape of decision
+> `chimera/demo/decision_log.py` declines to make for `HALT` and `RESUME`.
+> Whether the correct treatment is a deterministic replay counterpart, an
+> explicit and explained exclusion, or some other adopted mechanism is a
+> question for section 10 and PR-11, not for this file. Until it is adopted, a
+> campaign day containing an operator action cannot reach `PARITY`, and that is
+> recorded here rather than worked around.
+
 **The alignment key carries an ordinal.** A minute may produce more than one
 record of a kind — catching up across a settlement boundary books two `FUNDING`
 settlements in one minute — and the key is `(minute, kind, n)` so each is
