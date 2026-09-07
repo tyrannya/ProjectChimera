@@ -134,12 +134,31 @@ the campaign resumed on a ledger it had been told to distrust. Refusing is the
 safer half of the fix; the other half, a `resolve` that actually re-books, is not
 in this change.
 
+A ninth, and read this one before comparing a report against a hand
+calculation. **Slippage is measured, not spent.** The campaign's equity is
+`equity = capital - fees + realised + unrealised`, with no slippage term, and
+`ledger.slippage` is an attribution the reports show beside it. Section 6.5 defines slippage as "the difference between the fill
+price and the mid at decision" — a measurement of a price — and in this build
+that difference is already inside the price everything else is computed from:
+`RecordedQuoteFillModel` crosses to the recorded touch and applies the
+configured slippage on top of it, so the executor's VWAP is the slipped price,
+and the inventory, the margin and the realised PnL are all valued at it.
+
+Section 6.6's cash line does read `- slippage_paid`, and it is correct for the
+model it was written for: the frozen arithmetic in `chimera/carry/accounting.py`
+fills at an un-slipped price and charges a separate modelled slippage rate, so
+there the two terms are disjoint. They are not disjoint here. Deducting the
+measured slippage as well charged the crossing twice, and the error grew with
+turnover and reached `risk.update_equity` — a campaign that traded enough would
+have halted on a drawdown limit against cash it never spent. If you are
+reconciling a report to section 6.6 by hand, use the equity line above.
+
 An eighth, about what a dispute does and does not cost. The carry ledger books
 each leg at its own level — the spot inventory at the spot leg's VWAP, the
 perpetual's 1x margin at the perpetual's — and moves `free_cash` by the change
 in those levels. So `asymmetric_close` no longer means "no cash was returned":
 the leg that really did close returns its own principal or margin, the leg still
-holding keeps its own, both legs' fees, realised PnL and slippage are booked
+holding keeps its own, both legs' fees, realised PnL and slippage are recorded
 either way, and the position is disputed on top because one hedged quantity
 cannot describe a half-closed pair. Reading `quantity: 0` beside a non-zero
 `spot_principal` is that state, and it is the honest one: the hedge is gone and

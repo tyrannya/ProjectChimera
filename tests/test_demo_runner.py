@@ -536,8 +536,11 @@ def test_closing_a_position_returns_its_cash_and_books_no_phantom_drawdown(tmp_p
 
     # The identity the ledger's own fields have to satisfy, computed from them
     # rather than from the implementation: what is gone from capital is exactly
-    # the frictions paid minus what was realised.
-    assert flat == ledger.capital - ledger.fees - ledger.slippage + ledger.realised
+    # the fees paid minus what was realised. Slippage is not a term -- it is the
+    # gap between the fills and the decision closes, and `realised` is measured
+    # against those same fills, so it is inside `realised` already.
+    assert flat == ledger.capital - ledger.fees + ledger.realised
+    assert ledger.slippage > D("0"), "a run that crossed no spread cannot show this"
 
     # The realised PnL is the LEGS' own, not a number this ledger computed for
     # itself. Checking it against the carry ledger's copy would be circular --
@@ -574,7 +577,8 @@ def test_a_liquidation_reduction_also_returns_the_position_s_cash(tmp_path):
     principal = before.quantity * before.spot_entry
     margin = before.perp_margin
     realised_before = before.realised
-    frictions_before = before.fees + before.slippage
+    fees_before = before.fees
+    slippage_before = before.slippage
 
     harness.runner.tick(first + 3 * 60_000)
     ledger = harness.runner.position.ledger.state
@@ -585,11 +589,10 @@ def test_a_liquidation_reduction_also_returns_the_position_s_cash(tmp_path):
     # legs realised, less what the exit cost. Every term on the right is read
     # from the ENTRY record or from the executors, never from the reduction.
     returned = ledger.free_cash - cash_before
-    exit_frictions = (ledger.fees + ledger.slippage) - frictions_before
-    assert (
-        returned == principal + margin + (ledger.realised - realised_before) - exit_frictions
-    )
+    exit_fees = ledger.fees - fees_before
+    assert returned == principal + margin + (ledger.realised - realised_before) - exit_fees
     assert returned > margin, "the margin alone was not returned"
+    assert ledger.slippage > slippage_before, "the exit crossed no spread"
 
 
 def test_a_rule_that_raises_something_other_than_ruleerror_still_halts(tmp_path):
@@ -2136,12 +2139,14 @@ def test_flatten_refuses_when_the_log_cannot_take_the_record(tmp_path):
 # ---------------------------------------------------------------------------
 # PR-10R: the accounting authority, reached through the real tick loop
 # ---------------------------------------------------------------------------
-def _cash_from_the_legs(position, *, slippage: D) -> D:
+def _cash_from_the_legs(position) -> D:
     """``free_cash`` as the two EXECUTORS describe it, never as the ledger does.
 
     Section 6.6's identity: capital, less what each leg's inventory cost at that
     leg's own VWAP, less cumulative fees, plus cumulative realised PnL and
-    funding, less slippage -- the one term no executor accumulates.
+    funding. Slippage is absent on purpose: it is already inside those VWAPs, so
+    an oracle that subtracted it would be taking one term from the accumulator
+    it is testing -- and that is the term a doubled or dropped booking moves.
     """
     spot, perp = position.leg("spot"), position.leg("perp")
     return (
@@ -2151,7 +2156,6 @@ def _cash_from_the_legs(position, *, slippage: D) -> D:
         - (position.spot.ledger.trading_fees + position.perp.ledger.trading_fees)
         + (position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl)
         + (position.spot.ledger.net_funding + position.perp.ledger.net_funding)
-        - slippage
     )
 
 
@@ -2185,7 +2189,7 @@ def test_an_entry_completed_on_the_next_minute_books_through_the_tick_loop(tmp_p
         position.leg("perp").quantity * position.leg("perp").entry_price
     )
     assert ledger.spot_principal == D("0")
-    assert ledger.free_cash == _cash_from_the_legs(position, slippage=ledger.slippage)
+    assert ledger.free_cash == _cash_from_the_legs(position)
 
     harness.models["spot"].max_reference_deviation_bps = D("50")
     harness.tick(first + 60_000)
@@ -2194,7 +2198,7 @@ def test_an_entry_completed_on_the_next_minute_books_through_the_tick_loop(tmp_p
     assert position.imbalance() == D("0")
     assert ledger.quantity == position.leg("spot").quantity
     assert ledger.spot_entry is not None and ledger.entry_basis is not None
-    assert ledger.free_cash == _cash_from_the_legs(position, slippage=ledger.slippage)
+    assert ledger.free_cash == _cash_from_the_legs(position)
     # Aegis was handed an equity built from that cash, so nothing phantom fired.
     assert not harness.runner.risk.state.halted
     assert harness.runner.risk.current_drawdown() < 0.01
@@ -2212,9 +2216,7 @@ def test_the_cash_identity_holds_on_every_minute_of_a_campaign(tmp_path):
     for index in range(60):
         harness.tick(first + index * 60_000)
         ledger = position.ledger.state
-        assert ledger.free_cash == _cash_from_the_legs(
-            position, slippage=ledger.slippage
-        ), f"minute {index}"
+        assert ledger.free_cash == _cash_from_the_legs(position), f"minute {index}"
         assert ledger.spot_principal == (
             position.leg("spot").quantity * position.leg("spot").entry_price
         )
@@ -2252,3 +2254,71 @@ def test_a_crash_between_the_stores_and_the_ledger_disputes_on_the_next_start(tm
     assert restarted.runner.position.ledger.disputed is not None
     assert "ledger_store_mismatch" in restarted.runner.position.ledger.disputed
     assert restarted.runner.state is RunnerState.HALT
+
+
+def test_the_operator_flatten_records_the_cash_it_moved(tmp_path):
+    """A booking with no evidence is not evidence. Section 9.1's `ledger_effect`.
+
+    `flatten` moves fees, slippage and realised PnL through the carry ledger and
+    used to write an OPERATOR record carrying only `position_after`. The daily
+    report derives the whole cost and equity series from `ledger_effect` alone
+    and deliberately never reads `carry_ledger.json`, so the close's economics
+    were reported nowhere -- and the log's last `ledger_effect` still held the
+    PRE-flatten numbers, which is worse than absent: it is wrong.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(6, start=first)
+    before = [r for r in harness.records() if "ledger_effect" in r][-1]["ledger_effect"]
+
+    harness.runner.flatten("operator closed the position")
+
+    record = harness.records()[-1]
+    assert record["kind"] == RecordKind.OPERATOR.value
+    effect = record.get("ledger_effect")
+    assert effect is not None, "the flatten booked cash and recorded none of it"
+    assert effect != before, "the record repeats the pre-flatten numbers"
+
+    ledger = harness.runner.position.ledger.state
+    assert effect["fees"] == str(ledger.fees)
+    assert effect["slippage"] == str(ledger.slippage)
+    assert effect["realised"] == str(ledger.realised)
+    assert effect["funding"] == str(ledger.net_funding)
+    # The equity is the FLATTENED position's, and a flat account holds only cash.
+    assert effect["equity"] == str(ledger.free_cash)
+    assert D(effect["equity"]) == ledger.capital - ledger.fees + ledger.realised
+    # And it is the number on disk, not one computed after the save.
+    assert str(ledger.last_equity) == effect["equity"]
+
+
+def test_the_liquidation_halt_records_the_cash_its_flatten_moved(tmp_path):
+    """The same, on the path that always halts -- so there is no later record.
+
+    Section 6.7's flatten books a close and then HALTs. Without `ledger_effect`
+    on the HALT record the campaign's last word on its own cash is the mark
+    taken before the position was closed, and no later record ever corrects it
+    because there is no later record.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(3, start=first)
+    _erode_to_liquidation(harness, first + 3 * 60_000)
+    harness.runner.tick(first + 3 * 60_000)
+
+    assert harness.runner.state is RunnerState.HALT
+    halts = [r for r in harness.records() if r["kind"] == RecordKind.HALT.value]
+    assert halts, "the liquidation did not halt"
+    effect = halts[-1].get("ledger_effect")
+    assert effect is not None, "the liquidation flatten recorded no economics"
+
+    ledger = harness.runner.position.ledger.state
+    assert effect["fees"] == str(ledger.fees)
+    assert effect["realised"] == str(ledger.realised)
+    assert effect["equity"] == str(ledger.last_equity)
+    # It describes the position the campaign stopped with, which is flat.
+    assert halts[-1]["position_after"]["spot_qty"] == "0"
+    # A flat account holds only cash, so the recorded equity IS the free cash.
+    # (Not `capital - fees + realised`: `_erode_to_liquidation` drains free_cash
+    # by hand to force the touch, which is the one thing in this fixture that
+    # moves cash without a fill.)
+    assert D(effect["equity"]) == ledger.free_cash

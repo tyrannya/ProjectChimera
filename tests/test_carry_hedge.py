@@ -149,13 +149,13 @@ def recorder(position) -> FrictionRecorder:
     return FrictionRecorder(position)
 
 
-def cash_from_the_legs(position: HedgedPosition, *, slippage: D) -> D:
+def cash_from_the_legs(position: HedgedPosition) -> D:
     """``free_cash`` as the two EXECUTORS describe it. Section 6.6's identity.
 
-    Every term but one is read from an executor: the inventory each leg holds at
-    its own VWAP, its cumulative fees, its cumulative realised PnL and its
-    funding. Slippage is the exception -- no executor accumulates it -- so the
-    caller passes what it independently measured.
+    Every term is read from an executor: the inventory each leg holds at its own
+    VWAP, its cumulative fees, its cumulative realised PnL and its funding.
+    Slippage is deliberately absent -- it is a measurement of a price, already
+    inside those VWAPs, and not a transfer.
     """
     spot, perp = position.leg(SPOT), position.leg(PERP)
     return (
@@ -165,7 +165,6 @@ def cash_from_the_legs(position: HedgedPosition, *, slippage: D) -> D:
         - (position.spot.ledger.trading_fees + position.perp.ledger.trading_fees)
         + (position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl)
         + (position.spot.ledger.net_funding + position.perp.ledger.net_funding)
-        - slippage
     )
 
 
@@ -578,14 +577,22 @@ def test_the_hand_traced_long_spot_short_perp_example(position):
     assert position.state is HedgeState.HEDGED
 
     # -- the net, reached two independent ways -------------------------------
+    #   0.500 x (-13.00 - 5.00)  = -9.00000   the basis moved against the position
+    # + 1.500500000               funding, received by the SHORT (A10)
+    # - 22.50200000               both legs' entry fees
+    #                             = -30.00150000
+    # Slippage is NOT a term: it is the gap between the fills and the decision
+    # closes, and those fills are the prices `spot_pnl`, `perp_pnl` and the
+    # entry basis above are all measured from, so it is inside the -9.00000
+    # already. Subtracting it here as well was the second charge.
     from_components = (
         D("0.500") * (ledger.entry_basis - marked.basis)
         + ledger.net_funding
         - ledger.fees
-        - ledger.slippage
     )
     assert marked.equity - ledger.capital == from_components
-    assert from_components == D("-30.00150000") - ledger.slippage
+    assert from_components == D("-30.00150000")
+    assert ledger.slippage > D("0"), "a run with no slippage cannot show it is not spent"
 
 
 def test_a_correction_flatten_returns_the_cash_of_a_booked_entry(position):
@@ -606,7 +613,8 @@ def test_a_correction_flatten_returns_the_cash_of_a_booked_entry(position):
     principal = ledger.quantity * ledger.spot_entry
     margin = ledger.perp_margin
     cash_before = ledger.free_cash
-    frictions_before = ledger.fees + ledger.slippage
+    fees_before = ledger.fees
+    slippage_before = ledger.slippage
     realised_before = ledger.realised
 
     later = minute(1)
@@ -618,10 +626,11 @@ def test_a_correction_flatten_returns_the_cash_of_a_booked_entry(position):
     assert ledger.spot_entry is None and ledger.entry_basis is None
 
     returned = ledger.free_cash - cash_before
-    exit_frictions = (ledger.fees + ledger.slippage) - frictions_before
-    assert (
-        returned == principal + margin + (ledger.realised - realised_before) - exit_frictions
-    )
+    exit_fees = ledger.fees - fees_before
+    assert returned == principal + margin + (ledger.realised - realised_before) - exit_fees
+    # The exit's slippage is recorded and is not spent: it is already inside the
+    # exit fills that `realised` is measured against.
+    assert ledger.slippage > slippage_before, "the exit crossed no spread"
 
     # The realised half, cross-checked against the executors rather than against
     # the ledger that is under test.
@@ -665,7 +674,7 @@ def test_a_close_that_leaves_one_leg_holding_disputes_but_loses_no_cash(position
     assert ledger.free_cash > cash_before, "the closed leg returned nothing"
     # The oracle is the EXECUTORS and the frictions the position measured --
     # never this ledger's own arithmetic.
-    assert ledger.free_cash == cash_from_the_legs(position, slippage=recorder.slippage)
+    assert ledger.free_cash == cash_from_the_legs(position)
     assert recorder.slippage > slippage_before, "the perpetual's exit was free"
     assert ledger.slippage == recorder.slippage, "an exit's slippage was dropped"
     # And the position says so rather than carrying on.
@@ -738,7 +747,8 @@ def test_the_ordinary_rule_driven_close_books_the_reduction(position):
     principal = ledger.quantity * ledger.spot_entry
     margin = ledger.perp_margin
     cash_before = ledger.free_cash
-    frictions_before = ledger.fees + ledger.slippage
+    fees_before = ledger.fees
+    slippage_before = ledger.slippage
     realised_before = ledger.realised
 
     later = minute(1)
@@ -753,10 +763,9 @@ def test_the_ordinary_rule_driven_close_books_the_reduction(position):
 
     # Same identity as the emergency paths, from the entry record and the legs.
     returned = ledger.free_cash - cash_before
-    exit_frictions = (ledger.fees + ledger.slippage) - frictions_before
-    assert (
-        returned == principal + margin + (ledger.realised - realised_before) - exit_frictions
-    )
+    exit_fees = ledger.fees - fees_before
+    assert returned == principal + margin + (ledger.realised - realised_before) - exit_fees
+    assert ledger.slippage > slippage_before, "the exit crossed no spread"
 
     # A flat account holds only cash.
     marked = position.mark_to_market(later)

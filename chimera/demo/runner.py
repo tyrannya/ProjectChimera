@@ -1462,6 +1462,10 @@ class DemoRunner:
         self.save_state()
 
         outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
+        # Re-marked after the flatten and before the save, so the `ledger_effect`
+        # the HALT record carries describes the position the campaign stopped
+        # with rather than the one it was touched at.
+        self.position.mark_to_market(state)
         self._save_ledger()
         # A liquidation flatten moves the hedge and then HALTS, so unlike every
         # other position change there is no next minute to refresh the gauges at.
@@ -1563,6 +1567,27 @@ class DemoRunner:
             record_hash=record_hash,
         )
 
+    def _ledger_effect(self, equity: Any) -> dict[str, str]:
+        """Section 9.1's ``ledger_effect`` block, from the carry ledger.
+
+        One builder, because three records carry it and the daily report derives
+        the whole cost and equity series from this block alone
+        (`reports._ledger_and_funding`, which deliberately never reads
+        `carry_ledger.json`). A record that moves the ledger and omits the block
+        is a booking with no evidence: an operator flatten used to move fees,
+        slippage and realised PnL and leave the log's last `ledger_effect` at its
+        pre-flatten values, so the close's economics were reported nowhere -- and
+        on the liquidation path, which always halts, nowhere ever.
+        """
+        ledger = self.position.ledger.state
+        return {
+            "fees": str(ledger.fees),
+            "slippage": str(ledger.slippage),
+            "funding": str(ledger.net_funding),
+            "realised": str(ledger.realised),
+            "equity": str(equity),
+        }
+
     def _halt(self, reason: str) -> RunnerState:
         """Enter HALT and write the record. Idempotent on the reason.
 
@@ -1593,6 +1618,13 @@ class DemoRunner:
                     # evidence. Reading the stores would answer it; the log is
                     # what an audit reads.
                     "position_after": self._position_block(),
+                    # And what the ledger held, for the same reason. Section
+                    # 6.7's liquidation flatten books a close and then halts, so
+                    # without this the one record that follows the booking says
+                    # what was held and not what it cost.
+                    "ledger_effect": self._ledger_effect(
+                        self.position.ledger.state.last_equity
+                    ),
                 },
             )
             self.save_state()
@@ -1635,6 +1667,10 @@ class DemoRunner:
         # operator was trying to close in an emergency simply stood.
         self.position.install_quote(state)
         outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
+        # Marked BEFORE the ledger is persisted, so the equity that reaches the
+        # record is the flattened position's and is the one on disk. Marking
+        # after the save would record a number no file holds.
+        mark = self.position.mark_to_market(state)
         self._save_ledger()
         record_hash = self._append(
             RecordKind.OPERATOR,
@@ -1642,6 +1678,7 @@ class DemoRunner:
             {
                 "operator": {"command": "flatten", "note": note},
                 "position_after": self._position_block(),
+                "ledger_effect": self._ledger_effect(mark.equity),
             },
         )
         self.save_state()

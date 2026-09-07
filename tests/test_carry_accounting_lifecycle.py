@@ -127,9 +127,16 @@ class World:
         """``free_cash`` as the two EXECUTORS describe it. Section 6.6's identity.
 
         ``capital`` less what each leg's inventory cost at that leg's own VWAP,
-        less cumulative fees, plus cumulative realised PnL and funding, less the
-        slippage this test watched the position measure. Not one term is read
-        from the carry ledger.
+        less cumulative fees, plus cumulative realised PnL and funding. Every
+        term comes from an executor; not one is read from the carry ledger.
+
+        **Slippage is not a term here.** It used to be, subtracted from both
+        sides, which made the one accumulator with no independent source agree
+        with itself: booking it once, twice or not at all left this oracle
+        satisfied. It is not a cash flow -- the crossing it measures is already
+        inside the VWAPs the first two terms use -- so removing it from the
+        oracle is what makes the oracle independent, and it is asserted
+        separately, exactly, in `assert_cash_is_right`.
         """
         position = self.position
         spot, perp = position.leg(SPOT), position.leg(PERP)
@@ -140,7 +147,6 @@ class World:
             - (position.spot.ledger.trading_fees + position.perp.ledger.trading_fees)
             + (position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl)
             + (position.spot.ledger.net_funding + position.perp.ledger.net_funding)
-            - self.recorder.slippage
         )
 
     def assert_cash_is_right(self, where: str, *, tolerance: D = D("0")) -> None:
@@ -785,3 +791,127 @@ def test_an_imbalanced_position_marks_each_leg_on_what_that_leg_holds(world):
     assert mark.perp_pnl != D("0"), "the price did not move; nothing is proved"
     # The reported hedged quantity is still the hedged one, and it is zero here.
     assert mark.quantity == D("0")
+
+
+def test_a_spot_heavy_imbalance_marks_the_spot_leg_on_what_it_holds(world):
+    """The other half of the per-leg mark, and the direction the fixtures skip.
+
+    Every imbalance an ordinary campaign reaches is perpetual-heavy, because
+    `apply` sends the perpetual first and stops at the first leg that does not
+    fill. So a witness staged only that way asserts the spot term as the literal
+    zero, and a mark that valued the spot inventory at `min(spot, perp)` instead
+    of at what the spot leg holds would pass it. Here the spot leg is the one
+    holding more, which is the state a refused CLOSE leaves.
+    """
+    world.target("0.500", world.minute(0))
+    at = world.minute(1, spot="30300", perp="30360")
+    world.position.fill_models[SPOT].max_reference_deviation_bps = D("0")
+    world.position.emergency_reduce(FlattenCause.RISK_HALT, at)
+
+    spot, perp = world.position.leg(SPOT), world.position.leg(PERP)
+    assert spot.quantity > perp.quantity, "this is not the spot-heavy state"
+    assert perp.is_flat
+
+    later = world.minute(2, spot="30500", perp="30545")
+    mark = world.position.mark_to_market(later)
+    state = world.position.ledger.state
+
+    assert mark.spot_pnl == spot.quantity * (later.spot_close - spot.entry_price)
+    assert mark.spot_pnl != D("0"), "the price did not move; nothing is proved"
+    assert mark.equity == (
+        state.free_cash
+        + spot.quantity * later.spot_close
+        + perp.quantity * perp.entry_price
+        + perp.quantity * (perp.entry_price - later.perp_close)
+    )
+    # And the whole spot inventory is valued, not the hedged quantity, which is
+    # zero here: an equity that marked `min(spot, perp)` would lose all of it.
+    assert mark.equity - state.free_cash == spot.quantity * later.spot_close
+
+
+def test_a_partial_reduction_that_leaves_the_legs_unequal_also_disputes(world):
+    """`asymmetric_close` is about the two legs disagreeing, not about a zero.
+
+    Both other witnesses drive a leg to exactly flat. Section 6.8 compares the
+    two legs' quantities; a reduction whose second leg is refused leaves them
+    unequal at two non-zero quantities, and the ledger has the same single
+    quantity problem there.
+    """
+    world.target("0.500", world.minute(0))
+    at = world.minute(1, spot="30100", perp="30150")
+    world.position.fill_models[SPOT].max_reference_deviation_bps = D("0")
+    world.target("0.300", at)
+
+    spot, perp = world.position.leg(SPOT), world.position.leg(PERP)
+    assert spot.quantity == D("0.500") and perp.quantity == D("0.300"), (
+        f"the staged state is spot={spot.quantity} perp={perp.quantity}"
+    )
+    assert "asymmetric_close" in (world.position.ledger.state.disputed or "")
+    world.assert_cash_is_right("partial asymmetric reduction")
+
+
+def test_the_perpetual_leg_regressing_disputes_too(world):
+    """The guard is per leg, and only the spot half was witnessed."""
+    world.target("0.500", world.minute(0))
+    cash_before = world.position.ledger.state.free_cash
+    assert world.position.ledger.state.perp.fees > D("0")
+
+    world.position.perp.store.state.ledger.trading_fees = D("0")
+    world.position._reconcile_ledger()
+
+    assert "perp_ledger_regressed" in (world.position.ledger.disputed or "")
+    assert world.position.ledger.state.free_cash == cash_before
+
+
+def test_reconstruct_disputes_on_a_perp_margin_that_disagrees(tmp_path):
+    """The principal comparison is two-armed; only the spot arm was witnessed."""
+    import json
+
+    world = make_world(tmp_path)
+    world.target("0.500", world.minute(0))
+    world.position.ledger.save(now_ns=START_NS)
+    path = world.position.ledger.path
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["perp_margin"] = str(D(payload["perp_margin"]) - D("250"))
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", "utf-8")
+
+    restarted = make_world(tmp_path)
+    restarted.position.ledger = CarryLedger.open(path, capital=CAPITAL)
+    outcome = restarted.position.reconstruct()
+    assert outcome.state is HedgeState.DISPUTED
+    assert "ledger_store_mismatch" in (restarted.position.ledger.disputed or "")
+    assert "perp" in (restarted.position.ledger.disputed or "")
+
+
+def test_slippage_is_recorded_and_never_spent(world):
+    """The correction that made the oracle independent, asserted directly.
+
+    `RecordedQuoteFillModel` crosses to the recorded touch and applies the
+    configured slippage on top, so the executor's VWAP IS the slipped price and
+    the inventory, the margin and the realised PnL are all valued at it.
+    Deducting the measured slippage from cash as well charged the crossing
+    twice, and the error grew with turnover and reached `risk.update_equity`.
+    """
+    world.target("0.500", world.minute(0))
+    state = world.position.ledger.state
+    spot, perp = world.position.leg(SPOT), world.position.leg(PERP)
+
+    assert state.slippage > D("0"), "no spread was crossed; nothing is proved"
+    # The slippage the ledger recorded IS the gap between the fills and the
+    # decision closes -- i.e. money already inside the prices below.
+    assert state.slippage == (
+        (spot.entry_price - D("30000")) * spot.quantity
+        + (D("30030") - perp.entry_price) * perp.quantity
+    )
+    fees = world.position.spot.ledger.trading_fees + world.position.perp.ledger.trading_fees
+    committed = spot.quantity * spot.entry_price + perp.quantity * perp.entry_price + fees
+    assert state.free_cash == CAPITAL - committed, "cash moved by something not transacted"
+
+    world.target("0", world.minute(1, spot="30100", perp="30140"))
+    fees = world.position.spot.ledger.trading_fees + world.position.perp.ledger.trading_fees
+    realised = (
+        world.position.spot.ledger.realised_pnl + world.position.perp.ledger.realised_pnl
+    )
+    assert state.free_cash == CAPITAL - fees + realised
+    assert state.slippage > D("0"), "the round trip recorded no slippage at all"

@@ -561,12 +561,42 @@ class CarryLedger:
         realised: Decimal = ZERO,
         rebalance: bool = False,
     ) -> None:
-        """Attribute a fill's frictions and realisation to one leg."""
+        """Attribute a fill's frictions and realisation to one leg.
+
+        **Slippage is measured, not spent.** It is accumulated and reported, and
+        it does NOT move ``free_cash``. Section 6.5 defines it as "the difference
+        between the fill price and the mid at decision" -- a measurement of a
+        price, not a transfer -- and in this build that difference is already
+        inside the price every other term is computed from.
+        :class:`~chimera.futures.fills.RecordedQuoteFillModel` says so in terms:
+        "A BUY crosses to the recorded ask and a SELL to the recorded bid, and
+        the configured slippage is applied *on top of* that crossing." So the
+        executor's VWAP -- which :meth:`book_position` values the inventory and
+        the margin at, and which ``Position.apply_fill`` realises PnL against --
+        is the slipped price. Deducting the measured slippage as well charged
+        the crossing twice.
+
+        Section 6.6's cash line does read ``- slippage_paid``, and it is right
+        for the model it was written for. The frozen arithmetic in
+        :mod:`chimera.carry.accounting` fills at ``entry.spot_fill`` and charges
+        ``spot_notional * costs.spot_slippage`` as a SEPARATE modelled friction
+        on an un-slipped notional; there the two terms are disjoint. The demo
+        fills against a recorded book, so its notional is the slipped one and the
+        second term is money already inside the first. Booking at the executed
+        price and reporting the slippage beside it satisfies both sections; going
+        on to spend it satisfied neither.
+
+        The error was not cosmetic. It grew monotonically with turnover and it
+        reached ``risk.update_equity``, so a campaign that traded enough would
+        have halted on a drawdown limit against cash it had never spent -- the
+        same phantom-equity failure as the un-booked close, arriving slowly
+        instead of all at once.
+        """
         accrual = self._leg(leg)
         accrual.fees += fee
         accrual.slippage += slippage
         accrual.realised += realised
-        self.state.free_cash -= fee + slippage
+        self.state.free_cash -= fee
         self.state.free_cash += realised
         if rebalance:
             self.state.rebalance_cost += fee + slippage
