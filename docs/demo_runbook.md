@@ -126,8 +126,10 @@ A fifth, about the disputes an operator cannot clear — which is all of them.
 cannot run from the CLI at all in this build. `stale_leg`,
 `ledger_store_mismatch`, `funding_booking_torn`, `asymmetric_close`,
 `ledger_unreadable`, `ledger_capital_mismatch`, `{leg}_ledger_regressed` and
-`{leg}_store_unreadable` have no command that ends them either, so clearing any of them means repairing the
-state files by hand, deliberately, with the reason recorded. That is narrower than it was: `resolve`
+`{leg}_store_unreadable` have no command that ends them either. **There is no supported way to clear
+them, and editing the state files by hand is not one this runbook offers** — see
+section 6 for why a safety flag cleared without its record is worse than a
+campaign left halted. That is narrower than it was: `resolve`
 used to clear whatever the carry ledger was disputing, which set a flag and fixed
 nothing — a torn funding booking stayed unbooked and the cash stayed short while
 the campaign resumed on a ledger it had been told to distrust. Refusing is the
@@ -171,8 +173,9 @@ reported LESS cumulative fees than the carry ledger has already booked for that
 leg, which fees cannot do — `Ledger.book_fee` refuses a negative — so it means
 that executor's accumulators were reset underneath the ledger
 (`FuturesStore.adopt_after_unreadable` is the one thing in the tree that does
-it, and no CLI reaches it). Repair means deciding by hand which history is the
-real one; the campaign stops rather than crediting itself the difference.
+it, and no CLI reaches it). Which history is the real one is an operator
+judgement and no command records it, so the campaign stops rather than crediting
+itself the difference — and it stays stopped.
 
 A sixth, for anyone reading a `PARTIAL`. `HedgedPosition.correct()` implements
 section 6.3's correction policy — a bounded retry, then a
@@ -369,10 +372,19 @@ economics built from it would be invented. That omission is the correct
 behaviour and not a missing field. The day's report is still produced; it simply
 carries the last economics a real ledger held.
 
-Repair means restoring the file from the previous good copy, with the damaged
-bytes preserved alongside it under a different name and an incident recorded
-(section 15). It does not mean deleting it: an absent ledger loads as `MISSING`
-and starts a fresh one at full capital.
+Repair means **restoring the whole file from the previous good copy**, with the
+damaged bytes preserved alongside it under a different name and an incident
+recorded (section 15). That is a different act from editing a safety flag by
+hand: it puts back a file the campaign itself wrote, rather than asserting a
+state no record supports.
+
+It does not mean deleting it. An absent ledger loads as `MISSING` and would start
+a fresh one at full capital — so SELF_CHECK refuses to start at all when the
+ledger holds less cumulative `fees` or `slippage` than the decision log has
+already committed (`ledger_behind_log`). A cumulative accumulator cannot fall,
+and every save precedes the record that quotes it, so no crash produces that
+state: it means the file was deleted, truncated or replaced, and the campaign
+fails closed instead of starting again from capital.
 
 ## 7. Kill switch, flatten, resume
 

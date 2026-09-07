@@ -4,7 +4,7 @@ Status: **ADOPTED 2026-09-07 by owner decision, pre-evidence.**
 
 This document is a narrow governance amendment to the authoritative engineering plan
 `docs/proposed_demo_implementation_master_plan.md`. It resolves an ambiguity between section
-6.5's definition of slippage, section 6.6's `free_cash` line, and the fill model section 6.2
+6.5's definition of slippage, section 6.6's `free_cash` line, and the fill model section 5.2
 specifies, for the one fill model in which slippage is represented inside the price.
 
 ## The ambiguity
@@ -19,7 +19,7 @@ Section 6.5 defines slippage as "the difference between the fill price and the m
 decision, per fill, per leg, reported in bps and in quote currency" — a measurement of a
 price, not a transfer.
 
-Section 6.2 specifies `RecordedQuoteFillModel` as filling at
+Section 5.2 specifies `RecordedQuoteFillModel` as filling at
 `quantize_price(ask * (1 + slippage))` for a BUY and `quantize_price(bid * (1 - slippage))`
 for a SELL: the crossing to the recorded ask or bid, and the configured slippage **on top of
 that crossing**, are both inside the executed price. `spot_notional_at_entry` is computed
@@ -45,8 +45,8 @@ For `RecordedQuoteFillModel`, and for it alone:
 - the configured fill slippage is also embedded in the executed fill price, and therefore in
   the executor's VWAP;
 - inventory basis, margin and realised PnL are computed from that executed VWAP;
-- **measured slippage is an evidence and reporting quantity.** It is accumulated per leg and
-  reported in bps and in quote currency, as section 6.5 requires;
+- **measured slippage is an evidence and reporting quantity.** It is accumulated per leg
+  and reported in quote currency;
 - **measured slippage must not be debited again from `free_cash`;**
 - fees remain separate, explicit cash debits — they are charged by the venue on top of the
   fill price and are not inside it;
@@ -61,6 +61,19 @@ free_cash = capital - spot_notional_at_entry - fees_paid + net_funding + realise
 
 with `spot_notional_at_entry` evaluated at the executed VWAP, and `slippage_paid` reported
 beside the cash line rather than subtracted from it.
+
+Two things section 6.5 says about slippage are **not** changed by this amendment and are
+**not** claimed to be satisfied by the current build. They are recorded so the gap is
+visible rather than implied away:
+
+- 6.5 asks for slippage "reported in bps and in quote currency". No bps figure for slippage
+  is emitted anywhere in `chimera/demo`; the accumulators and the `ledger_effect` block are
+  quote currency only. This amendment neither adds the bps reporting nor excuses its
+  absence.
+- 6.5 and 5.2 define the measurement's reference as the **mid** at decision, while
+  `HedgedPosition._frictions` measures against the minute's **close**. On the synthetic
+  fixture the two coincide, so no test separates them. That discrepancy pre-dates this
+  amendment, has no cash effect under the resolution above, and is left where it is.
 
 ## Scope, and what this amendment does not do
 
@@ -92,7 +105,8 @@ Unchanged:
 - fee rates, and the fact that fees are a cash debit;
 - the funding sign convention (A10) and the separate `funding_received` / `funding_paid`
   accumulators;
-- section 6.5's definition and reporting of slippage in bps and quote currency;
+- section 6.5's definition of slippage, and its reporting requirement, which this
+  amendment leaves exactly as it stands (see the two gaps recorded above);
 - the prospective recorder contract and its hash;
 - `prospective_from = null`;
 - P4 and P13 historical semantics and artifacts, and the frozen

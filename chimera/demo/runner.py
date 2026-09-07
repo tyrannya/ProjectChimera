@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -498,6 +498,58 @@ class DemoRunner:
             return f"store_error: {exc}"
         if self.position.ledger.disputed:
             return f"dispute: {self.position.ledger.disputed}"
+        return self._ledger_regressed_against_the_log()
+
+    def _ledger_regressed_against_the_log(self) -> str | None:
+        """Refuse a carry ledger that holds LESS than the log already committed.
+
+        ``fees`` and ``slippage`` are cumulative and can only rise:
+        `HedgedPosition._reconcile_ledger` disputes ``{leg}_ledger_regressed``
+        rather than book a negative fee, and a measured slippage is an absolute
+        difference. Every write order in this runner puts the ledger on disk
+        BEFORE the record that quotes it, so "the file is ahead of the log" is
+        the ordinary crash window and "the file is BEHIND the log" is not
+        reachable by any crash at all. It means the ledger was deleted,
+        truncated, restored from an older copy, or replaced by a placeholder.
+
+        Read literally that state is section 9.3's ``LOG_BEHIND_STATE``, and
+        `_state_ahead_of_log` used to report it as one -- so a DELETED
+        `carry_ledger.json` produced a RECOVERY record saying "the state files
+        were written and the record was not", which is false, excluded a minute
+        from the parity evidence for a crash that never happened, and then let
+        the campaign continue READY against a ledger that had started again at
+        full capital. The next `ledger_effect` then reported a campaign that had
+        never traded: exactly F16's harm, reached without the file being corrupt.
+
+        This runs in SELF_CHECK, which is before RECOVER, so the halt happens
+        instead of the recovery rather than after it.
+
+        ``realised`` and ``net_funding`` are deliberately not checked: both are
+        signed and may legitimately fall.
+        """
+        last = self._last_block("ledger_effect")
+        if last is None:
+            return None
+        ledger = self.position.ledger.state
+        for field_name, held in (("fees", ledger.fees), ("slippage", ledger.slippage)):
+            recorded = last.get(field_name)
+            if recorded is None:
+                continue
+            try:
+                committed = Decimal(str(recorded))
+            except (InvalidOperation, ValueError, TypeError):
+                # A malformed block is the decision log's problem, not this
+                # check's; `reports` refuses the day and says so precisely.
+                continue
+            if held < committed:
+                return (
+                    f"ledger_behind_log: the carry ledger holds {field_name}={held} and "
+                    f"the log already committed {field_name}={committed}. A cumulative "
+                    "accumulator cannot fall, and every save precedes the record that "
+                    "quotes it, so no crash produces this. The ledger has been deleted, "
+                    "truncated or replaced. Restore it from the previous good copy with "
+                    "the damaged bytes preserved (docs/demo_runbook.md, section 6)"
+                )
         return None
 
     # ------------------------------------------------------------------
@@ -836,7 +888,16 @@ class DemoRunner:
                     )
 
         last_ledger = self._last_block("ledger_effect")
-        if last_ledger is not None:
+        if (
+            last_ledger is not None
+            and self.position.ledger.outcome is not LoadOutcome.UNREADABLE
+        ):
+            # An UNREADABLE ledger is a placeholder holding nothing, so every
+            # field disagrees with the log and the comparison would manufacture
+            # a LOG_BEHIND_STATE out of a file it could not read. `self_check`
+            # halts on the dispute before RECOVER runs, so this is defence in
+            # depth rather than a live path -- but the guard is what makes that
+            # true by design instead of by ordering.
             ledger = self.position.ledger.state
             booked = {
                 "funding": str(ledger.net_funding),
@@ -1024,6 +1085,22 @@ class DemoRunner:
                 return TickOutcome(
                     minute_ms, self.state, RecordKind.HALT, decisions=list(decisions)
                 )
+            except Exception as exc:
+                # Every other stage of the tick loop guarantees a HALT record by
+                # catching `Exception`; this one did not, and it is the stage
+                # that books. `_reconcile_ledger` runs from `apply`'s `finally`,
+                # so a `NotBootstrapped` or `FuturesError` from the SECOND leg's
+                # `require_ready`, a `LedgerError` from `book_position`, or a
+                # venue error escaped `tick()` with the first leg filled and
+                # booked, no HALT record, and a traceback out of the CLI -- the
+                # same loss the `ReconciliationRequired` branch above exists to
+                # prevent, reached by a different exception type.
+                self._save_ledger()
+                reason = f"execution_error: {exc}"
+                self._halt(reason)
+                return TickOutcome(
+                    minute_ms, self.state, RecordKind.HALT, decisions=list(decisions)
+                )
 
             self._enter(RunnerState.RECONCILIATION)
             if outcome.state is HedgeState.DISPUTED:
@@ -1044,6 +1121,14 @@ class DemoRunner:
             self._enter(RunnerState.RECONCILIATION)
             reason = self._reconcile(minute_ms, state, after_execution=executed)
             if reason is not None:
+                # `_reconcile` has TWO exits, and only the far one saves. Its
+                # `reconciliation_error` branch returns from ABOVE its own
+                # `_save_ledger` -- a venue error, or an OSError persisting a
+                # store on the mismatch branch, which is the runbook's disk-low
+                # case -- and by then `apply` has already booked this cycle.
+                # Saving here covers both exits, so no reason `_reconcile` can
+                # return leaves the booking in memory only.
+                self._save_ledger()
                 self._halt(reason)
                 return TickOutcome(
                     minute_ms, self.state, RecordKind.HALT, decisions=list(decisions)
@@ -1188,7 +1273,7 @@ class DemoRunner:
 
         self.last_reconcile_minute_ms = int(minute_ms)
         detail = "agreed" if not mismatched else f"mismatch on {', '.join(sorted(mismatched))}"
-        self.position.ledger.save()
+        self._save_ledger()
         self._append(
             RecordKind.RECONCILIATION,
             minute_ns,
@@ -1701,10 +1786,21 @@ class DemoRunner:
         selects every record that has the block and pushes its equity through
         `_decimal`: a halt on a campaign's first minutes made the whole day's
         report refuse, and the day a campaign halted is the day whose report is
-        wanted. It would also have asserted fees and slippage that no file held,
-        because those halts return before the ledger is persisted -- evidence for
-        a booking that never happened, which is the mirror of the defect the
-        block was added to close.
+        wanted.
+
+        The second reason has since been half-repaired and is recorded here
+        rather than quietly dropped. It used to be that the block "would also
+        have asserted fees and slippage that no file held, because those halts
+        return before the ledger is persisted". F10 reversed that: the halts
+        that BOOK now persist the ledger before they halt, so the file is ahead
+        of the log rather than behind it. The block is still withheld, for the
+        first reason alone -- two of those three sites have no fresh mark for the
+        minute, so there is no equity to report -- and the consequence is that a
+        booked-and-persisted dispute halt leaves its economics on disk and out of
+        the day's report until the next record carries a block. That is a
+        disclosed gap, not an assertion of anything false, and it is the
+        conservative direction: the report says less than the file holds rather
+        than more.
         """
         if self.state is RunnerState.HALT and self.halt_reason:
             return self.state

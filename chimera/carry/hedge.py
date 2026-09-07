@@ -1009,8 +1009,11 @@ class HedgedPosition:
             # ledger it had been told to distrust. Refusing to pretend is the
             # safer half; the missing half is a `resolve` that re-books the torn
             # settlement, and it is recorded in docs/demo_runbook.md rather than
-            # improvised here. Until then this dispute is cleared by repairing
-            # the ledger file, deliberately by hand.
+            # improvised here. Until then nothing clears this dispute and the
+            # campaign stays halted: `docs/demo_runbook.md` does not offer
+            # hand-editing the file as a procedure, because a safety flag
+            # cleared without the record that says who cleared it is a worse
+            # audit trail than a halt.
             self.dispute(
                 "funding_booking_torn: the perpetual leg's ledger has booked "
                 f"settlement(s) {list(unbooked)} that the carry ledger has not. A crash "
