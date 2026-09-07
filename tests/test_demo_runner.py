@@ -2204,26 +2204,77 @@ def test_an_entry_completed_on_the_next_minute_books_through_the_tick_loop(tmp_p
     assert harness.runner.risk.current_drawdown() < 0.01
 
 
-def test_the_cash_identity_holds_on_every_minute_of_a_campaign(tmp_path):
-    """Section 6.6, asserted after each of sixty real ticks rather than at the end.
+def test_the_cash_identity_holds_across_every_transition_of_a_campaign(tmp_path):
+    """Section 6.6, on every minute AND across real transitions, not just one.
 
-    An identity checked only once at the end can be satisfied by two errors that
-    cancel. This checks it on every minute, against the executors.
+    A campaign left alone makes exactly one accounting transition and then holds:
+    `_target_to_act_on` pins the target to the entry size while a position is on,
+    so `plan` returns nothing and `apply` is never called again. Section 6.4 is
+    why -- there is deliberately no periodic re-hedge. A sixty-tick witness that
+    only ran the loop would therefore compare an untouched ledger against
+    untouched stores fifty-nine times and could not fail for any reason, which is
+    exactly the shape of witness this pull request keeps finding.
+
+    So the campaign is closed and reopened through the production paths that
+    really do change the position: the operator `flatten` command, and the tick
+    loop's own re-entry on the next minute from flat. One of those re-entries is
+    made to take two minutes by refusing the spot leg, which is the correction
+    retry the runbook describes. Every transition -- close, open, and an entry
+    completed a minute late -- is checked against the executors.
     """
     harness = build(tmp_path)
     first = harness.first_minute_ms()
     position = harness.runner.position
-    for index in range(60):
-        harness.tick(first + index * 60_000)
+
+    def check(where: str) -> None:
         ledger = position.ledger.state
-        assert ledger.free_cash == _cash_from_the_legs(position), f"minute {index}"
+        assert ledger.free_cash == _cash_from_the_legs(position), where
         assert ledger.spot_principal == (
             position.leg("spot").quantity * position.leg("spot").entry_price
-        )
+        ), where
         assert ledger.perp_margin == (
             position.leg("perp").quantity * position.leg("perp").entry_price
-        )
-    assert position.state is HedgeState.HEDGED, "sixty ticks and nothing was ever held"
+        ), where
+        assert ledger.quantity == min(
+            position.leg("spot").quantity, position.leg("perp").quantity
+        ), where
+
+    transitions = 0
+    previous = None
+    for index in range(40):
+        # Minute 21 refuses the spot leg, so the re-entry after the second
+        # flatten is completed on minute 22 instead -- the two-minute entry.
+        harness.models["spot"].max_reference_deviation_bps = D("0") if index == 21 else D("50")
+        harness.tick(first + index * 60_000)
+        check(f"minute {index}")
+        held = (position.leg("spot").quantity, position.leg("perp").quantity)
+        if previous is not None and held != previous:
+            transitions += 1
+        previous = held
+
+        if index in (10, 20, 30):
+            harness.runner.flatten(f"operator flatten at minute {index}")
+            check(f"flatten at minute {index}")
+            assert position.leg("spot").is_flat and position.leg("perp").is_flat
+            transitions += 1
+            previous = (D("0"), D("0"))
+
+    assert transitions >= 7, (
+        f"only {transitions} accounting transitions in forty minutes; the identity "
+        "was re-checked against a ledger nothing had moved"
+    )
+    # The two-minute entry really happened, and it ended balanced.
+    assert position.state is HedgeState.HEDGED
+    assert position.imbalance() == D("0")
+    assert position.ledger.state.quantity > D("0")
+    # Every close returned what it took: the campaign's cash is capital less what
+    # it paid, not less what it paid plus a position it no longer holds.
+    ledger = position.ledger.state
+    legs_fees = position.spot.ledger.trading_fees + position.perp.ledger.trading_fees
+    assert ledger.fees == legs_fees
+    assert ledger.realised == (
+        position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl
+    )
 
 
 def test_a_crash_between_the_stores_and_the_ledger_disputes_on_the_next_start(tmp_path):
