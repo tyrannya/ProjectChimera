@@ -118,9 +118,7 @@ class World:
     def target(self, quantity: str, at: Minute):
         """The production path: plan the rule's target, then apply it."""
         position = self.position
-        return position.apply(
-            position.plan(HedgeTarget(D(quantity)), at), at, equity=EQUITY
-        )
+        return position.apply(position.plan(HedgeTarget(D(quantity)), at), at, equity=EQUITY)
 
     # -- the oracle ------------------------------------------------------
     def cash_from_the_legs(self) -> D:
@@ -637,9 +635,9 @@ def test_an_executor_ledger_that_went_backwards_disputes_rather_than_crediting(w
     world.position._reconcile_ledger()
 
     assert "spot_ledger_regressed" in (world.position.ledger.disputed or "")
-    assert world.position.ledger.state.free_cash == cash_before, (
-        "the campaign credited itself its own fee history"
-    )
+    assert (
+        world.position.ledger.state.free_cash == cash_before
+    ), "the campaign credited itself its own fee history"
 
 
 def test_a_leg_that_raises_after_another_filled_still_books_the_filled_one(world):
@@ -697,9 +695,7 @@ def test_any_sequence_of_targets_keeps_the_cash_identity(tmp_path, seed):
         for leg in (SPOT, PERP):
             world.position.fill_models[leg].max_reference_deviation_bps = D("50")
 
-        world.assert_cash_is_right(
-            f"seed {seed}, step {index}", tolerance=DECIMAL_ARTIFACT
-        )
+        world.assert_cash_is_right(f"seed {seed}, step {index}", tolerance=DECIMAL_ARTIFACT)
         state = world.position.ledger.state
         assert state.quantity == min(
             world.position.leg(SPOT).quantity, world.position.leg(PERP).quantity
@@ -843,9 +839,9 @@ def test_a_partial_reduction_that_leaves_the_legs_unequal_also_disputes(world):
     world.target("0.300", at)
 
     spot, perp = world.position.leg(SPOT), world.position.leg(PERP)
-    assert spot.quantity == D("0.500") and perp.quantity == D("0.300"), (
-        f"the staged state is spot={spot.quantity} perp={perp.quantity}"
-    )
+    assert spot.quantity == D("0.500") and perp.quantity == D(
+        "0.300"
+    ), f"the staged state is spot={spot.quantity} perp={perp.quantity}"
     assert "asymmetric_close" in (world.position.ledger.state.disputed or "")
     world.assert_cash_is_right("partial asymmetric reduction")
 

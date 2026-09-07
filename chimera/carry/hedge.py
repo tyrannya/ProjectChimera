@@ -644,9 +644,7 @@ class HedgedPosition:
                 )
                 return
             if fee or realised or slippage:
-                self.ledger.book_costs(
-                    leg=name, fee=fee, slippage=slippage, realised=realised
-                )
+                self.ledger.book_costs(leg=name, fee=fee, slippage=slippage, realised=realised)
 
         spot_leg, perp_leg = spot_l, perp_l
         self.ledger.book_position(
@@ -969,9 +967,7 @@ class HedgedPosition:
         # the same step, so the quantity alone cannot see it.
         mismatch = None
         if self.ledger.state.quantity != held:
-            mismatch = (
-                f"ledger holds {self.ledger.state.quantity}, the legs hold {held}"
-            )
+            mismatch = f"ledger holds {self.ledger.state.quantity}, the legs hold {held}"
         else:
             for name, leg, booked in (
                 (SPOT, spot_leg, self.ledger.state.spot_principal),

@@ -586,9 +586,7 @@ def test_the_hand_traced_long_spot_short_perp_example(position):
     # entry basis above are all measured from, so it is inside the -9.00000
     # already. Subtracting it here as well was the second charge.
     from_components = (
-        D("0.500") * (ledger.entry_basis - marked.basis)
-        + ledger.net_funding
-        - ledger.fees
+        D("0.500") * (ledger.entry_basis - marked.basis) + ledger.net_funding - ledger.fees
     )
     assert marked.equity - ledger.capital == from_components
     assert from_components == D("-30.00150000")
