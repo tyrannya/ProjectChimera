@@ -2489,3 +2489,393 @@ def test_every_ledger_effect_survives_a_halt_with_nothing_booked(tmp_path):
     from chimera.demo.reports import daily_report
 
     assert daily_report(harness.state_dir, DAY)["records_by_kind"]["HALT"] == 1
+
+
+# ---------------------------------------------------------------------------
+# F16: a damaged carry ledger may never assert economics
+# ---------------------------------------------------------------------------
+def _damage_the_ledger(harness) -> Path:
+    """Corrupt the persisted ledger the way a torn write does. Returns its path."""
+    path = harness.runner.position.ledger.path
+    path.write_text("{ this is not json", encoding="utf-8")
+    return path
+
+
+def test_an_operator_flatten_on_a_damaged_ledger_asserts_no_economics(tmp_path):
+    """F16: the placeholder for an unreadable ledger must not reach `ledger_effect`.
+
+    `CarryLedger.open` fails closed on the FILE -- it disputes and refuses to
+    overwrite -- but the placeholder it returns is a fully formed
+    `CarryLedgerState` holding `free_cash == capital`, no position and no
+    accruals. Nothing stopped that object from being read for the block, so an
+    operator `flatten` on a damaged ledger wrote an OPERATOR record whose
+    `ledger_effect` described a campaign that had never traded, plus this
+    flatten's own frictions. `reports._ledger_and_funding` derives the whole
+    day's cost and equity series from that block alone and the log is
+    append-only, so one such record makes the day's evidence permanently wrong.
+
+    The flatten itself must still happen: reducing exposure is what the command
+    is for, and a corrupt file is no reason to leave a real position standing.
+    """
+    harness = build(tmp_path)
+    harness.run(3)
+    ledger_path = harness.runner.position.ledger.path
+    truth = json.loads(ledger_path.read_text(encoding="utf-8"))
+    # The campaign really did buy something; the placeholder will not know it.
+    assert D(truth["quantity"]) > 0
+    assert D(truth["free_cash"]) < D(truth["capital"])
+    harness.runner.shutdown("stop")
+
+    _damage_the_ledger(harness)
+    resumed = build(tmp_path, config=harness.runner.config).runner
+    assert resumed.position.ledger.outcome is LoadOutcome.UNREADABLE
+
+    outcome = resumed.flatten("kill switch pulled; removing exposure")
+
+    # The command still ran, and still reduced the exposure.
+    assert outcome.record_hash, "the flatten was not recorded"
+    assert resumed.position.leg("spot").is_flat and resumed.position.leg("perp").is_flat
+    # The damaged bytes are still exactly as they were found.
+    assert ledger_path.read_text(encoding="utf-8") == "{ this is not json"
+
+    records = [
+        json.loads(line)
+        for path in sorted((resumed.state_dir / "decision_log").glob("*.ndjson"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    operator = [r for r in records if r["kind"] == RecordKind.OPERATOR.value][-1]
+    assert "ledger_effect" not in operator, (
+        "the OPERATOR record asserts economics no persisted ledger holds: "
+        f"{operator.get('ledger_effect')}"
+    )
+    # The blocks that are read off the legs and the operator, not the ledger, stay.
+    assert operator["position_after"]["spot_qty"] == "0"
+    assert operator["operator"]["note"]
+
+
+def test_no_record_kind_can_build_a_ledger_effect_from_a_placeholder(tmp_path):
+    """The guard is total, not per-caller.
+
+    `_ledger_effect` is the only builder of the block. A caller added later that
+    forgot the UNREADABLE case would reintroduce F16 silently, so the refusal
+    lives in the builder and the two callers that must still act on a damaged
+    ledger opt out explicitly through `_ledger_effect_if_readable`.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    harness.runner.shutdown("stop")
+    _damage_the_ledger(harness)
+
+    resumed = build(tmp_path, config=harness.runner.config).runner
+    assert resumed.position.ledger.outcome is LoadOutcome.UNREADABLE
+
+    with pytest.raises(RunnerError, match="UNREADABLE"):
+        resumed._ledger_effect(D("1000000"))
+    assert resumed._ledger_effect_if_readable(D("1000000")) is None
+
+
+def test_a_damaged_ledger_leaves_the_day_reportable_without_inventing_a_history(tmp_path):
+    """The end-to-end consequence, through `daily_report`.
+
+    The report is computed from the decision log alone. With the fabricated block
+    it adopted the placeholder's history -- a campaign with no funding and no
+    inventory -- as the day's cost and equity series. Without it the day is still
+    reportable, and simply says nothing about economics the flatten could not
+    establish.
+    """
+    from chimera.demo.reports import daily_report
+
+    harness = build(tmp_path)
+    harness.run(3)
+    good = [r for r in harness.records() if "ledger_effect" in r][-1]["ledger_effect"]
+    harness.runner.shutdown("stop")
+    _damage_the_ledger(harness)
+
+    resumed = build(tmp_path, config=harness.runner.config).runner
+    resumed.flatten("removing exposure on a damaged ledger")
+
+    report = daily_report(resumed.state_dir, DAY)
+    assert report["records_by_kind"]["OPERATOR"] == 1
+    # The day's closing economics are still the last ones a real ledger held,
+    # not the placeholder's. Without the guard the flatten's block closed the
+    # series, so `fees` nearly doubled and `slippage` went BACKWARDS -- a
+    # cumulative accumulator cannot fall, and the report had no way to know.
+    assert report["ledger"]["fees"]["close"] == good["fees"]
+    assert report["ledger"]["slippage"]["close"] == good["slippage"]
+
+
+def test_a_restart_after_a_damaged_flatten_recovers_nothing_it_invented(tmp_path):
+    """`_state_ahead_of_log` compares the log's last `ledger_effect` to the ledger.
+
+    A fabricated block is what that comparison would have read on the next start,
+    so the damaged-ledger flatten could manufacture a recovery finding out of
+    numbers no file ever held. With no block written there is nothing to
+    disagree with, and the restart fails closed on the real fault -- the
+    unreadable file -- instead.
+    """
+    harness = build(tmp_path)
+    harness.run(3)
+    last_real = [r for r in harness.records() if "ledger_effect" in r][-1]["ledger_effect"]
+    harness.runner.shutdown("stop")
+    _damage_the_ledger(harness)
+
+    resumed = build(tmp_path, config=harness.runner.config).runner
+    resumed.flatten("removing exposure on a damaged ledger")
+
+    restarted = build(tmp_path, config=harness.runner.config).runner
+    assert restarted.state is RunnerState.HALT
+    # The real fault, not a manufactured disagreement about numbers.
+    assert "ledger_unreadable" in (restarted.halt_reason or "")
+    # The newest block in the log is still the last one a real ledger wrote, so
+    # the ledger half of `_state_ahead_of_log` has nothing invented to read.
+    assert restarted._last_block("ledger_effect") == last_real
+
+
+# ---------------------------------------------------------------------------
+# F10: a dispute that books must persist before it halts
+# ---------------------------------------------------------------------------
+def _arm_a_second_leg_dispute(harness) -> None:
+    """Dispute the SPOT store only, before the position is opened.
+
+    `HedgedPosition.plan` emits the perpetual leg first, so the perp fills and
+    the spot leg's `execute_target` then raises `ReconciliationRequired` -- the
+    asymmetric window `_reconcile_ledger`'s `finally` exists to book. It has to
+    be armed before the OPENING minute: the carry rule holds its target once the
+    position is open, so a later minute plans no intents, never calls `apply`,
+    and never reaches the dispute at all.
+    """
+    symbol = harness.runner.position.config.spot_symbol
+    harness.runner.position.spot.store.state.disputed[symbol] = "reconciliation_mismatch"
+    harness.runner.position.spot.store.save()
+
+
+def test_a_dispute_after_execution_persists_the_ledger_before_it_halts(tmp_path):
+    """F10: correctness must not depend on `shutdown()`.
+
+    `HedgedPosition.apply` books the cycle's fees, slippage, realised PnL and the
+    new principal and margin from a `finally`, so a post-execution dispute halts
+    with the ledger already mutated in memory. The only save on that path was
+    below the early `return`, which left the durable write to `shutdown()` --
+    and a process killed at the halt boundary is exactly the case the halt is
+    for. `reconstruct` re-derives fees and realised PnL from the executors'
+    accumulators on the next start, but no executor accumulates SLIPPAGE, so
+    that cycle's slippage was lost for good.
+    """
+    harness = build(tmp_path)
+    ledger_path = harness.runner.position.ledger.path
+    assert not ledger_path.exists(), "nothing has been booked yet"
+
+    _arm_a_second_leg_dispute(harness)
+    harness.tick(harness.first_minute_ms())
+
+    # The crash boundary. `shutdown()` is never called from here on.
+    assert harness.runner.state is RunnerState.HALT
+    assert "disputed" in (harness.runner.halt_reason or "")
+
+    memory = harness.runner.position.ledger.state
+    # The perpetual leg really did fill, so there is real money to lose.
+    assert memory.perp_margin > 0 and memory.perp.fees > 0 and memory.slippage > 0
+
+    assert ledger_path.exists(), (
+        "the halt persisted nothing: the perpetual leg's margin, fees and "
+        "slippage exist only in RAM, and the next start would read no ledger at "
+        "all while the perp store holds a real short"
+    )
+    on_disk = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert on_disk["free_cash"] == str(memory.free_cash)
+    assert on_disk["perp_margin"] == str(memory.perp_margin)
+    assert on_disk["perp"]["fees"] == str(memory.perp.fees)
+    assert on_disk["perp"]["slippage"] == str(memory.perp.slippage)
+
+
+def test_a_restart_after_a_dispute_halt_reads_the_slippage_the_halt_booked(tmp_path):
+    """The restart half: the durable economics are the ones a new process sees.
+
+    Slippage is the term that proves it. It exists in no executor accumulator, so
+    a restart can only know this cycle's slippage if the halting process wrote it
+    down before it stopped.
+    """
+    harness = build(tmp_path)
+    config = harness.runner.config
+
+    _arm_a_second_leg_dispute(harness)
+    harness.tick(harness.first_minute_ms())
+    assert harness.runner.state is RunnerState.HALT
+    booked = harness.runner.position.ledger.state.slippage
+    assert booked > 0
+
+    # A new process, with no `shutdown()` in between.
+    restarted = build(tmp_path, config=config, start=False)
+    assert restarted.runner.position.ledger.state.slippage == booked
+    assert (
+        restarted.runner.position.ledger.state.perp_margin
+        == harness.runner.position.ledger.state.perp_margin
+    )
+
+
+def test_a_mark_to_market_dispute_persists_before_its_halt(tmp_path):
+    """The same ordering on the sibling site, so the fix closes a class.
+
+    One witness on the execution branch would leave the rest of the class open:
+    `_liquidation_check` and `_settle_funding` both mark to market -- which moves
+    `last_equity` and `worst_equity` and is where `check_identity` raises the
+    dispute -- and both then end the minute without reaching `_decide`'s save.
+
+    The identity violation is forced by moving `entry_basis`, which is a reach-in
+    and is meant to be: what is under test is the ORDER of the save and the halt,
+    not the arithmetic that detects the disagreement.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(2, start=first)
+    ledger_path = harness.runner.position.ledger.path
+    before = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert before["disputed"] is None
+
+    harness.runner.position.ledger.state.entry_basis = D("999999")
+    harness.tick(first + 2 * 60_000)
+
+    assert harness.runner.state is RunnerState.HALT
+    assert "identity_violation" in (harness.runner.halt_reason or "")
+    on_disk = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert on_disk["disputed"], (
+        "the dispute the halt was called for lived only in memory; a restart "
+        "would not know the identity had ever failed"
+    )
+
+
+def _target_flat(harness) -> None:
+    """Swap in an actionable rule that wants the position closed.
+
+    The carry rule holds its target for the whole synthetic day, so nothing else
+    in this fixture ever asks the runner to CLOSE -- and the close is the only
+    transition that can end asymmetrically.
+    """
+    from chimera.demo.rules import RuleDecision
+
+    class Closer:
+        rule_id = "R_closer"
+        version = "1.0.0"
+        actionable = True
+
+        def rule_hash(self):
+            return "sha256:" + "e" * 64
+
+        def params_hash(self):
+            return "sha256:" + "f" * 64
+
+        def evaluate(self, state, portfolio):
+            return RuleDecision(
+                rule_id=self.rule_id,
+                rule_hash=self.rule_hash(),
+                target=HedgeTarget(D("0")),
+                reason="synthetic close",
+                inputs_hash="sha256:" + "a" * 64,
+                params_hash=self.params_hash(),
+            )
+
+    harness.runner.rules = RuleRegistry([Closer()])
+
+
+def test_an_asymmetric_close_persists_the_ledger_before_it_halts(tmp_path):
+    """The DISPUTED-outcome branch, which no raise reaches.
+
+    `apply` can also RETURN disputed: `_reconcile_ledger` books the cycle and
+    then finds the legs ended the close at different quantities. That branch has
+    its own `_halt` and its own early `return`, so a witness on the
+    `ReconciliationRequired` branch alone leaves it open -- a mutation that
+    removed only this save survived until this test existed.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(2, start=first)
+    ledger_path = harness.runner.position.ledger.path
+    before = json.loads(ledger_path.read_text(encoding="utf-8"))
+
+    # Close, but let only the perpetual leg through: the spot fill is refused
+    # for a reference divergence, so the legs end the minute at 0 and 8.292.
+    _target_flat(harness)
+    harness.models["spot"].max_reference_deviation_bps = D("0")
+    harness.tick(first + 2 * 60_000)
+
+    assert harness.runner.state is RunnerState.HALT
+    assert "dispute" in (harness.runner.halt_reason or "")
+    on_disk = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert on_disk != before, "the close booked in memory and persisted nothing"
+    memory = harness.runner.position.ledger.state
+    assert on_disk["free_cash"] == str(memory.free_cash)
+    assert on_disk["perp_margin"] == str(memory.perp_margin)
+    assert on_disk["disputed"]
+
+
+def test_a_funding_settlement_that_disputes_persists_the_flow_it_booked(tmp_path):
+    """The funding branch: the save has to be ABOVE the dispute check.
+
+    `_settle_funding` books the settlement's cash flow and only then marks to
+    market, so a return from below an unsaved ledger loses a settlement that the
+    venue has already applied. The ledger's `settled` set is the exactly-once
+    key, and it is only exactly-once if it is durable.
+    """
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
+    first = harness.first_minute_ms()
+    ledger_path = harness.runner.position.ledger.path
+
+    # Up to the minute before the settlement, then break the identity so the
+    # settlement minute books its flow and then disputes. The index matters: a
+    # dispute on any OTHER minute is caught by the liquidation check's save
+    # instead, and the test would pass without ever entering this branch.
+    settlement_index = 59
+    for index in range(settlement_index):
+        harness.tick(first + index * 60_000)
+    assert not harness.runner.position.ledger.state.settled, (
+        "the settlement was booked before the identity was broken; this test "
+        "would then prove nothing about the funding branch"
+    )
+    harness.runner.position.ledger.state.entry_basis = D("999999")
+    harness.tick(first + settlement_index * 60_000)
+
+    assert harness.runner.state is RunnerState.HALT
+    assert "identity_violation" in (harness.runner.halt_reason or "")
+    memory = harness.runner.position.ledger.state
+    assert memory.settled, "the fixture booked no settlement; the test proves nothing"
+    on_disk = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert [str(k) for k in on_disk["settled"]] == [str(k) for k in memory.settled], (
+        "the settlement was booked in memory and persisted nowhere, so a restart "
+        "would apply the same funding flow a second time"
+    )
+    assert on_disk["funding_received"] == str(memory.funding_received)
+    assert on_disk["funding_paid"] == str(memory.funding_paid)
+
+
+def test_the_ledger_is_durable_even_if_the_process_dies_inside_the_halt(tmp_path):
+    """Ordering, not eventual arrival: the save must be BEFORE `_halt`, not after.
+
+    A save placed after `_halt` still lands in a test that lets the call return,
+    which is exactly how a crash-consistency bug hides. Here `_halt` never
+    returns -- the process dies writing the HALT record -- and the ledger on disk
+    still has to hold what the cycle booked.
+    """
+
+    class ProcessDied(BaseException):
+        """Not an `Exception`: nothing in the runner may catch this."""
+
+    harness = build(tmp_path)
+    _arm_a_second_leg_dispute(harness)
+    ledger_path = harness.runner.position.ledger.path
+
+    def die(*args, **kwargs):
+        raise ProcessDied()
+
+    harness.runner._halt = die
+
+    with pytest.raises(ProcessDied):
+        harness.tick(harness.first_minute_ms())
+
+    memory = harness.runner.position.ledger.state
+    assert memory.perp_margin > 0
+    assert ledger_path.exists(), "the ledger was never persisted before the halt"
+    on_disk = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert on_disk["perp_margin"] == str(memory.perp_margin)
+    assert on_disk["perp"]["slippage"] == str(memory.perp.slippage)

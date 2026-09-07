@@ -1006,6 +1006,20 @@ class DemoRunner:
                 )
                 executed = True
             except ReconciliationRequired as exc:
+                # Persisted BEFORE the halt, and that order is the whole point.
+                # `HedgedPosition.apply` books this cycle into the ledger from a
+                # `finally` (`hedge.py`), so by the time this handler runs the
+                # in-memory ledger already holds the fills' fees, slippage,
+                # realised PnL and the new principal and margin -- and the only
+                # `save` on this path is the one below the halt, which the
+                # `return` skips. Until this line the durable write happened in
+                # `shutdown()`, so a process killed at the halt boundary lost the
+                # booking: `reconstruct` re-derives fees and realised PnL from
+                # the executors' accumulators on the next start, but no executor
+                # accumulates SLIPPAGE, so that cycle's slippage was gone for
+                # good and the restart reported the wrong dispute cause.
+                # Correctness must not depend on a clean shutdown.
+                self._save_ledger()
                 self._halt(f"dispute: {exc}")
                 return TickOutcome(
                     minute_ms, self.state, RecordKind.HALT, decisions=list(decisions)
@@ -1013,6 +1027,10 @@ class DemoRunner:
 
             self._enter(RunnerState.RECONCILIATION)
             if outcome.state is HedgeState.DISPUTED:
+                # The same window, reached without a raise: `_reconcile_ledger`
+                # booked the cycle and then disputed (an asymmetric close, or a
+                # leg whose executor ledger regressed).
+                self._save_ledger()
                 self._halt(f"dispute: {outcome.detail}")
                 return TickOutcome(
                     minute_ms, self.state, RecordKind.HALT, decisions=list(decisions)
@@ -1036,11 +1054,18 @@ class DemoRunner:
         self._enter(RunnerState.PERSISTENCE)
         mark = self.position.mark_to_market(state)
         if self.position.state is HedgeState.DISPUTED:
+            # `mark_to_market` is itself a mutation -- `CarryLedger.mark` moves
+            # `last_equity` and `worst_equity`, and `check_identity` is what set
+            # the dispute -- so this branch has the same shape as the two above:
+            # booked in memory, and the save is below the `return`.
+            self._save_ledger()
             self._halt("identity_violation")
             return TickOutcome(
                 minute_ms, self.state, RecordKind.HALT, decisions=list(decisions)
             )
-        self.position.ledger.save()
+        # Through the same helper as the halt paths above, so the runner has one
+        # ledger-persist call and not two spellings of it three lines apart.
+        self._save_ledger()
         self.risk.update_equity(float(mark.equity))
         self.cursor.mark_processed(minute_ms)
 
@@ -1304,10 +1329,18 @@ class DemoRunner:
                 )
 
             mark = self.position.mark_to_market(state)
+            # Section 9.3's order: state files, then the record, then the head.
+            # HOISTED above the dispute check: `settle_funding` has already
+            # booked the flow and `mark_to_market` has already moved the equity
+            # marks, so returning a halt reason from below an unsaved ledger left
+            # the same crash window as the execution branches -- the booking in
+            # memory, the disk still holding the pre-settlement ledger, and only
+            # `shutdown()` to close the gap. The dispute the check is about is
+            # itself ledger state (`check_identity` sets it), so persisting
+            # first is what makes the next start fail closed on it.
+            self._save_ledger()
             if self.position.state is HedgeState.DISPUTED:
                 return f"identity_violation: {self.position.ledger.disputed}"
-            # Section 9.3's order: state files, then the record, then the head.
-            self.position.ledger.save()
             self._append(
                 RecordKind.FUNDING,
                 minute_ns,
@@ -1413,6 +1446,10 @@ class DemoRunner:
         # erode.
         mark = self.position.mark_to_market(state)
         if self.position.state is HedgeState.DISPUTED:
+            # Same ordering as the execution and funding branches: the mark and
+            # the dispute are ledger mutations, and `_touch_halt` terminates the
+            # minute, so without this the finding lived only in memory.
+            self._save_ledger()
             return self._touch_halt(
                 minute_ms, f"identity_violation: {self.position.ledger.disputed}"
             )
@@ -1477,7 +1514,13 @@ class DemoRunner:
         self._halt(
             f"liquidation_touch: {outcome.detail}",
             # Built here, after `_save_ledger`, so the record describes the file.
-            ledger_effect=self._ledger_effect(self.position.ledger.state.last_equity),
+            # `_if_readable`, for the same reason and in the same case: where
+            # `_save_ledger` took its UNREADABLE skip there is no file for the
+            # record to describe, and a block built from the placeholder would
+            # describe one that does not exist.
+            ledger_effect=self._ledger_effect_if_readable(
+                self.position.ledger.state.last_equity
+            ),
         )
         return TickOutcome(
             minute_ms,
@@ -1591,6 +1634,29 @@ class DemoRunner:
                 "a ledger_effect needs an equity; the position has not been marked, so "
                 "there is no equity to record and this record must not carry the block"
             )
+        if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
+            # The mirror of `CarryLedger.save`'s refusal, and for the same
+            # reason. An UNREADABLE ledger is represented by a placeholder
+            # holding `free_cash == capital`, no position and no accruals, so
+            # every term below would be this object's default rather than
+            # anything a file holds: `funding` and `slippage` in particular
+            # exist in no other store, so the block would report a settlement
+            # that did happen as zero and cumulative slippage as having gone
+            # BACKWARDS. `reports._ledger_and_funding` derives the whole day's
+            # cost and equity series from this block alone, so writing it once
+            # makes the report adopt economics no valid persisted ledger holds
+            # -- and the log is append-only, so it stays adopted.
+            #
+            # Refusing here rather than in each caller makes the guard total:
+            # this is the only builder of the block, and a caller that has an
+            # unreadable ledger has no economics to report at all.
+            raise RunnerError(
+                f"the carry ledger at {self.position.ledger.path} is UNREADABLE, so this "
+                "object holds a placeholder and not what the position did; a ledger_effect "
+                "built from it would assert economics no persisted ledger holds. Repair or "
+                "move the damaged file by hand, with its bytes preserved "
+                "(docs/demo_runbook.md, section 6)."
+            )
         ledger = self.position.ledger.state
         return {
             "fees": str(ledger.fees),
@@ -1599,6 +1665,25 @@ class DemoRunner:
             "realised": str(ledger.realised),
             "equity": str(equity),
         }
+
+    def _ledger_effect_if_readable(self, equity: Any) -> dict[str, str] | None:
+        """The block, or ``None`` when there is no ledger entitled to assert one.
+
+        For the callers that must still act on a damaged ledger. An operator
+        `flatten` reduces real exposure and a liquidation touch has already
+        flattened, and neither may be turned into a refusal because the file on
+        disk is corrupt: `tools/demo_run.py` wraps neither in `except
+        RunnerError`, so refusing would be a traceback with the legs already
+        moved -- the exact shape `_save_ledger` exists to prevent.
+
+        Omitting the key is a supported state rather than a new one: `_halt`
+        already writes records without it, `reports._ledger_and_funding` selects
+        on presence, and `_save_ledger` skips the same case, so the record and
+        the file agree that this cycle's economics were never booked anywhere.
+        """
+        if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
+            return None
+        return self._ledger_effect(equity)
 
     def _halt(
         self, reason: str, *, ledger_effect: Mapping[str, str] | None = None
@@ -1696,13 +1781,22 @@ class DemoRunner:
         # after the save would record a number no file holds.
         mark = self.position.mark_to_market(state)
         self._save_ledger()
+        effect = self._ledger_effect_if_readable(mark.equity)
         record_hash = self._append(
             RecordKind.OPERATOR,
             int(minute) * _MS_TO_NS,
             {
                 "operator": {"command": "flatten", "note": note},
                 "position_after": self._position_block(),
-                "ledger_effect": self._ledger_effect(mark.equity),
+                # Omitted, not zeroed, when the ledger is UNREADABLE. The
+                # flatten still happens -- reducing exposure is what the command
+                # is for and a corrupt file is no reason to leave a position
+                # standing -- but its economics were booked into a placeholder
+                # and persisted nowhere, so the record says nothing about them
+                # rather than saying something false. The `position_after` block
+                # and the note are read off the legs and the operator, not the
+                # ledger, so both stay.
+                **({"ledger_effect": effect} if effect is not None else {}),
             },
         )
         self.save_state()
