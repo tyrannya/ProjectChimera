@@ -166,9 +166,13 @@ def test_a_crash_on_a_mid_minute_record_does_not_silently_lose_the_minute(tmp_pa
     tail = records[cut]
     from chimera.demo.decision_log import LOG_DIR_NAME, day_files
 
+    # In BYTES. The log is byte-canonical (section 9.2), and rewriting it in text
+    # mode translates "\n" to "\r\n" on Windows, which makes every record
+    # non-canonical: the runner then reports LOG_FORGED and this test stages a
+    # crash it did not mean to.
     day_file = day_files(harness.state_dir / LOG_DIR_NAME)[-1]
-    lines = day_file.read_text(encoding="utf-8").splitlines(keepends=True)
-    day_file.write_text("".join(lines[: cut + 1]), encoding="utf-8")
+    lines = day_file.read_bytes().splitlines(keepends=True)
+    day_file.write_bytes(b"".join(lines[: cut + 1]))
 
     state_path = harness.state_dir / "runner_state.json"
     payload = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1450,11 +1454,13 @@ def test_resolve_refuses_when_the_log_itself_cannot_take_the_record(tmp_path):
     harness.runner.shutdown("stop")
 
     # A crash between the write and the fsync: the final line is half a record.
+    # Bytes, and only the final line: a torn tail is half a record, not a whole
+    # file rewritten. Text mode would re-encode every earlier line on Windows and
+    # turn this into LOG_FORGED, which raises for a different reason and would
+    # let the test pass without proving anything.
     day_file = day_files(harness.state_dir / LOG_DIR_NAME)[-1]
-    text = day_file.read_text(encoding="utf-8")
-    day_file.write_text(
-        text[: -len(text.splitlines(keepends=True)[-1]) // 2], encoding="utf-8"
-    )
+    lines = day_file.read_bytes().splitlines(keepends=True)
+    day_file.write_bytes(b"".join(lines[:-1]) + lines[-1][: len(lines[-1]) // 2])
 
     resumed = build(tmp_path, config=harness.runner.config, start=False).runner
     resumed.clock.observe(harness.runner.clock.now_ns)
