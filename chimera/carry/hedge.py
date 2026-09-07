@@ -475,10 +475,6 @@ class HedgedPosition:
         the first was refused is how a one-sided position is created on purpose.
         """
         if not intents:
-            # Reconciling is idempotent, so a cycle that sends nothing costs
-            # nothing -- and it is the cycle on which a booking deferred by an
-            # earlier refusal catches up.
-            self._reconcile_ledger()
             return self._settle(detail="nothing to do")
 
         target_quantity = intents[0].quantity
@@ -570,15 +566,25 @@ class HedgedPosition:
         ``book_costs`` for everything else. Each was a branch someone had to
         remember to reach, and two transitions had no branch at all:
 
-        * a hedge completed through the **correction** path booked no entry,
-          because the entry trigger needed both legs' frictions in ONE cycle and
-          a correction sends only the missing leg. The legs went HEDGED while
-          the ledger held nothing, so ``free_cash`` kept the whole inventory it
-          had never paid for and ``mark_to_market`` read the notional as profit;
-        * a **rebalance up** booked no principal, no margin and no quantity, so
-          equity gained the increment for nothing. That is the ~25% phantom
-          drawdown's mirror image, and the carry rule re-sizes from equity every
-          minute, so it is the ordinary path and not an edge.
+        * a hedge completed **across two minutes** booked no entry, because the
+          entry trigger needed both legs' frictions in ONE cycle. A refused spot
+          leg leaves PARTIAL; the next minute
+          ``DemoRunner._target_to_act_on`` sees a FLAT spot leg and hands the
+          rule's target back, so ``plan`` sends only the missing leg -- and the
+          trigger never fires. How much that costs depends on whether the
+          re-sized target still equals what the perpetual holds. When it does,
+          the position reaches HEDGED with an empty carry ledger and
+          ``free_cash`` holds money it never spent; when it does not, the
+          perpetual is sent too, the trigger fires, and what is lost is only the
+          realised PnL and fees of that leg's own adjustment -- which
+          ``book_entry`` had no argument for. The first is the one that reads
+          the notional as profit; both are wrong and both are this;
+        * an **increase** booked no principal, no margin and no quantity at all.
+          ``_target_to_act_on`` holds the entry size while the position is on,
+          so the rule cannot re-hedge (section 6.4 forbids it) -- but the same
+          two-minute retry above re-sizes, and ``correct()`` retries at
+          ``pending_quantity``, so a leg can be asked for MORE than it holds.
+          Booking nothing for it is the ~25% phantom drawdown's mirror image.
 
         Nothing here asks what KIND of cycle this was. Four levels are read off
         the executors -- each leg's inventory at its own VWAP, each leg's
@@ -610,6 +616,7 @@ class HedgedPosition:
         exits = dict(frictions or {})
         state = self.ledger.state
         booked_quantity = state.quantity
+        spot_l, perp_l = self.leg(SPOT), self.leg(PERP)
 
         accruals = {SPOT: state.spot, PERP: state.perp}
         for name, executor in ((SPOT, self.spot), (PERP, self.perp)):
@@ -641,7 +648,7 @@ class HedgedPosition:
                     leg=name, fee=fee, slippage=slippage, realised=realised
                 )
 
-        spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
+        spot_leg, perp_leg = spot_l, perp_l
         self.ledger.book_position(
             spot_quantity=spot_leg.quantity,
             spot_entry=spot_leg.entry_price,

@@ -2131,3 +2131,124 @@ def test_flatten_refuses_when_the_log_cannot_take_the_record(tmp_path):
         resumed.position.leg("spot").quantity,
         resumed.position.leg("perp").quantity,
     ) == held
+
+
+# ---------------------------------------------------------------------------
+# PR-10R: the accounting authority, reached through the real tick loop
+# ---------------------------------------------------------------------------
+def _cash_from_the_legs(position, *, slippage: D) -> D:
+    """``free_cash`` as the two EXECUTORS describe it, never as the ledger does.
+
+    Section 6.6's identity: capital, less what each leg's inventory cost at that
+    leg's own VWAP, less cumulative fees, plus cumulative realised PnL and
+    funding, less slippage -- the one term no executor accumulates.
+    """
+    spot, perp = position.leg("spot"), position.leg("perp")
+    return (
+        D("1000000")
+        - spot.quantity * spot.entry_price
+        - perp.quantity * perp.entry_price
+        - (position.spot.ledger.trading_fees + position.perp.ledger.trading_fees)
+        + (position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl)
+        + (position.spot.ledger.net_funding + position.perp.ledger.net_funding)
+        - slippage
+    )
+
+
+def test_an_entry_completed_on_the_next_minute_books_through_the_tick_loop(tmp_path):
+    """The correction retry the runbook describes, driven by `tick` and nothing else.
+
+    `HedgedPosition.correct()` has no runner caller, so this is how a one-legged
+    position is actually retried: `_target_to_act_on` sees a FLAT spot leg and
+    hands back the rule's own target, and `plan` sends whichever legs differ
+    from it. The entry trigger it replaced needed BOTH legs' frictions inside a
+    single `apply`, so it did not fire here -- and on the minutes where the
+    re-sized target still equals what the perpetual holds, only the spot leg is
+    sent and the position reaches HEDGED with an empty carry ledger.
+
+    On this fixture's price path the target re-sizes every minute, so the
+    perpetual is sent too and the trigger does fire; what was lost is that
+    leg's own realised PnL and fees, which the entry booking had no argument
+    for. The oracle is the executors, so the witness sees it either way.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+
+    harness.models["spot"].max_reference_deviation_bps = D("0")
+    harness.tick(first)
+    position = harness.runner.position
+    assert position.state is HedgeState.PARTIAL
+    assert position.leg("spot").is_flat and not position.leg("perp").is_flat
+    ledger = position.ledger.state
+    # The perpetual alone is booked at its own level: it really is held.
+    assert ledger.perp_margin == (
+        position.leg("perp").quantity * position.leg("perp").entry_price
+    )
+    assert ledger.spot_principal == D("0")
+    assert ledger.free_cash == _cash_from_the_legs(position, slippage=ledger.slippage)
+
+    harness.models["spot"].max_reference_deviation_bps = D("50")
+    harness.tick(first + 60_000)
+
+    assert position.state is HedgeState.HEDGED
+    assert position.imbalance() == D("0")
+    assert ledger.quantity == position.leg("spot").quantity
+    assert ledger.spot_entry is not None and ledger.entry_basis is not None
+    assert ledger.free_cash == _cash_from_the_legs(position, slippage=ledger.slippage)
+    # Aegis was handed an equity built from that cash, so nothing phantom fired.
+    assert not harness.runner.risk.state.halted
+    assert harness.runner.risk.current_drawdown() < 0.01
+
+
+def test_the_cash_identity_holds_on_every_minute_of_a_campaign(tmp_path):
+    """Section 6.6, asserted after each of sixty real ticks rather than at the end.
+
+    An identity checked only once at the end can be satisfied by two errors that
+    cancel. This checks it on every minute, against the executors.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    position = harness.runner.position
+    for index in range(60):
+        harness.tick(first + index * 60_000)
+        ledger = position.ledger.state
+        assert ledger.free_cash == _cash_from_the_legs(
+            position, slippage=ledger.slippage
+        ), f"minute {index}"
+        assert ledger.spot_principal == (
+            position.leg("spot").quantity * position.leg("spot").entry_price
+        )
+        assert ledger.perp_margin == (
+            position.leg("perp").quantity * position.leg("perp").entry_price
+        )
+    assert position.state is HedgeState.HEDGED, "sixty ticks and nothing was ever held"
+
+
+def test_a_crash_between_the_stores_and_the_ledger_disputes_on_the_next_start(tmp_path):
+    """Section 9.3's write order, and the window at the end of it.
+
+    The executors persist inside `execute_target`; the carry ledger persists in
+    PERSISTENCE, later in the same tick. A crash between them leaves the stores
+    describing a closed position and the ledger describing an open one. The
+    ledger-versus-stores comparison used to be conditioned on the legs holding
+    something, which is exactly what they do not do here, so `reconstruct`
+    returned READY and the campaign carried on with `free_cash` short by a
+    principal and a margin it had already been paid back.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    harness.run(3, start=first)
+    assert harness.runner.position.state is HedgeState.HEDGED
+    ledger_path = harness.runner.position.ledger.path
+    open_bytes = ledger_path.read_bytes()
+
+    harness.runner.flatten("operator closed the position")
+    assert harness.runner.position.leg("spot").is_flat
+    # The crash: the stores are fsynced, this file's own save never happened.
+    ledger_path.write_bytes(open_bytes)
+
+    restarted = build(tmp_path, start=False)
+    restarted.runner.start()
+    assert restarted.runner.position.ledger.disputed is not None
+    assert "ledger_store_mismatch" in restarted.runner.position.ledger.disputed
+    assert restarted.runner.state is RunnerState.HALT

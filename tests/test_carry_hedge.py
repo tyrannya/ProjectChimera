@@ -280,11 +280,34 @@ def test_correction_is_a_no_op_when_the_position_is_not_partial(position):
 
 
 def test_emergency_reduce_flattens_the_perpetual_before_the_spot(position):
+    """Section 6.8 fixes the order, and this test used not to check it.
+
+    It asserted that both legs ended flat and that both stores recorded the
+    cause -- both of which are true whichever leg goes first. Reversing the loop
+    left it green. The order is the whole point: the perpetual is the leg whose
+    refusal is more likely, so it is the one to discover a refusal on before the
+    other side has been sold.
+
+    The two real `emergency_flatten` methods are wrapped rather than replaced,
+    so what is observed is the production call graph and not a stand-in.
+    """
     open_hedge(position)
     bar = minute(1)
     book(position.model, bar)
+
+    order: list[str] = []
+    for name, executor in ((SPOT, position.spot), (PERP, position.perp)):
+        original = executor.emergency_flatten
+
+        def watched(*args, _name=name, _original=original, **kwargs):
+            order.append(_name)
+            return _original(*args, **kwargs)
+
+        executor.emergency_flatten = watched
+
     outcome = position.emergency_reduce(FlattenCause.RISK_HALT, bar)
 
+    assert order == [PERP, SPOT], f"section 6.8's order was {order}"
     assert position.state is HedgeState.FLAT
     assert outcome.detail.endswith(FlattenCause.RISK_HALT.value)
     assert position.leg(SPOT).is_flat and position.leg(PERP).is_flat
