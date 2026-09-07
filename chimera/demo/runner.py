@@ -670,25 +670,39 @@ class DemoRunner:
                 return int(datetime.fromisoformat(stamp).timestamp() * 1000), kind
         return None
 
-    #: The kinds that FINISH a minute. Exactly one of these is written per minute
-    #: the runner got through, and always last, because `mark_processed` runs
-    #: immediately before the DECISION append and the other two are the paths
-    #: that end a minute without one.
+    #: The kinds a minute can be left in the MIDDLE of, and only those.
     #:
-    #: FUNDING, RECONCILIATION and LIQUIDATION_TOUCH are deliberately absent:
-    #: each is appended for minute M *before* the minute is finished, so a log
-    #: ending on one says the minute was STARTED, not decided.
-    _TERMINAL_KINDS = frozenset(
+    #: Each is appended for minute M *before* `mark_processed(M)`, so a log
+    #: ending on one says the minute was started and never decided.
+    #:
+    #: Defined as the exception rather than the rule, and that direction is the
+    #: point. The first version of this named the three kinds that DO finish a
+    #: minute and treated everything else as unfinished -- which swept in HALT,
+    #: STARTUP, SHUTDOWN, OPERATOR, RESUME and RECOVERY. None of those is a
+    #: minute's record at all: they are stamped with `_minute_ns()`, the last
+    #: minute already PROCESSED, whose DECISION is committed. A crash between
+    #: `_append(HALT)` and `save_state` therefore excluded a decided minute from
+    #: the parity comparison and dropped its DECISION with it -- exactly the harm
+    #: `EXCLUDING_RECOVERY_CAUSES` refuses LOG_AHEAD_OF_STATE to avoid. Listing
+    #: the exceptions means an unlisted kind defaults to "nothing was lost",
+    #: which is the direction that never silently drops evidence.
+    _MID_MINUTE_KINDS = frozenset(
         {
-            RecordKind.DECISION.value,
-            RecordKind.INCOMPLETE_STATE.value,
-            RecordKind.SKIPPED_STALE.value,
+            RecordKind.FUNDING.value,
+            RecordKind.RECONCILIATION.value,
+            RecordKind.LIQUIDATION_TOUCH.value,
         }
     )
 
     def _minute_was_finished(self, triage: "_Recovery") -> bool:
-        """Whether the log's tail is the record that finished its minute."""
-        return triage.committed_minute_kind in self._TERMINAL_KINDS
+        """Whether the log's tail leaves its minute finished.
+
+        True for a tail that finished the minute (DECISION, INCOMPLETE_STATE,
+        SKIPPED_STALE) and true for a tail that is not a minute's record at all
+        (HALT, STARTUP, SHUTDOWN, OPERATOR, RESUME, RECOVERY) -- in both cases
+        there is nothing to exclude.
+        """
+        return triage.committed_minute_kind not in self._MID_MINUTE_KINDS
 
     def _affected_minute_ms(self, triage: "_Recovery") -> int | None:
         """The minute the crash actually left in doubt.
@@ -1605,6 +1619,12 @@ class DemoRunner:
         minute = self.cursor.last_minute_processed
         if minute is None:
             raise RunnerError("nothing has been processed yet, so there is nothing to flatten")
+        # Prove the record is writable BEFORE the legs move, for the same reason
+        # `resolve` does: on a forged log `start()`'s halt swallows the open
+        # failure, so `_append` raised `DecisionLogTailError` -- not a
+        # `RunnerError`, so the CLI showed a traceback -- AFTER both legs had
+        # been flattened, with nothing in the log to say a flatten happened.
+        self._require_recordable("flatten")
         state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
         # The book, before the orders. `install_quote` was put on the tick loop
         # only, so a `flatten` from a fresh process -- which is every flatten

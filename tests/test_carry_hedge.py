@@ -589,6 +589,23 @@ def test_a_close_that_leaves_one_leg_holding_disputes_instead_of_booking(positio
     assert position.is_disputed
     assert "asymmetric_close" in (ledger.disputed or "")
 
+    # The operator's remedy: flatten again once the leg will take the order.
+    # The FIRST leg closed a call ago, so a booking computed from a before/after
+    # snapshot around this call would see zero realised and zero fee for it and
+    # lose that leg's close for ever, silently -- `reconstruct()` compares
+    # quantities, which agree. Booking against the executors' TOTALS cannot.
+    position.fill_models["spot"].max_reference_deviation_bps = D("50")
+    book(position.model, later)
+    position.emergency_reduce(FlattenCause.RISK_HALT, later)
+
+    assert position.leg(SPOT).is_flat and position.leg(PERP).is_flat
+    assert ledger.quantity == D("0") and ledger.perp_margin == D("0")
+    legs_realised = position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl
+    legs_fees = position.spot.ledger.trading_fees + position.perp.ledger.trading_fees
+    assert legs_realised != D("0"), "the legs realised nothing, so this proves nothing"
+    assert ledger.realised == legs_realised
+    assert ledger.fees == legs_fees
+
 
 def test_the_exit_fee_and_slippage_reach_the_carry_ledger(position):
     """A close is charged, and the carry ledger has to see the charge.
@@ -615,3 +632,49 @@ def test_the_exit_fee_and_slippage_reach_the_carry_ledger(position):
     ) - executor_fees_before
     assert executor_charged > D("0"), "the exit was free, so this proves nothing"
     assert ledger.fees - fees_before == executor_charged
+
+
+def test_the_ordinary_rule_driven_close_books_the_reduction(position):
+    """The exit a campaign actually takes goes through `apply`, not a flatten.
+
+    `CarryRule` returns `HedgeTarget(0)` when the basis falls below
+    `min_basis`, and that reaches the ledger through `apply` -> `_book`.
+    `book_reduction` was wired into `emergency_reduce` and
+    `flatten_for_correction` only, so the ORDINARY close booked fees and
+    nothing else: the legs went flat while the ledger kept the whole entry, and
+    `mark_to_market` -- free_cash + Q x spot_close + perp_margin + perp_pnl --
+    read about a quarter of capital too low. That number reaches
+    `risk.update_equity` and the DECISION record's `ledger_effect`, so the first
+    ordinary exit of a campaign booked a ~25% drawdown that never happened.
+
+    The witness that missed this closed with `flatten`, which is the emergency
+    path; this one closes the way the rule does.
+    """
+    open_hedge(position, "0.500")
+    ledger = position.ledger.state
+    principal = ledger.quantity * ledger.spot_entry
+    margin = ledger.perp_margin
+    cash_before = ledger.free_cash
+    frictions_before = ledger.fees + ledger.slippage
+    realised_before = ledger.realised
+
+    later = minute(1)
+    book(position.model, later)
+    outcome = position.apply(position.plan(HedgeTarget(D("0")), later), later, equity=EQUITY)
+
+    assert outcome.state is HedgeState.FLAT
+    assert position.leg(SPOT).is_flat and position.leg(PERP).is_flat
+    # The entry is unwound, so a later re-open books a fresh entry.
+    assert ledger.quantity == D("0") and ledger.perp_margin == D("0")
+    assert ledger.spot_entry is None and ledger.entry_basis is None
+
+    # Same identity as the emergency paths, from the entry record and the legs.
+    returned = ledger.free_cash - cash_before
+    exit_frictions = (ledger.fees + ledger.slippage) - frictions_before
+    assert (
+        returned == principal + margin + (ledger.realised - realised_before) - exit_frictions
+    )
+
+    # A flat account holds only cash.
+    marked = position.mark_to_market(later)
+    assert marked.equity == ledger.free_cash

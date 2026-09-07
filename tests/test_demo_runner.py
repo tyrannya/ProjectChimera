@@ -139,6 +139,48 @@ def test_a_log_ahead_of_the_runner_state_recovers_rather_than_halting(tmp_path):
     )
 
 
+def test_a_halt_tail_does_not_exclude_the_minute_it_was_stamped_with(tmp_path):
+    """HALT, STARTUP, OPERATOR and their kin are not a minute's record.
+
+    They are stamped with `_minute_ns()` -- the last minute already PROCESSED,
+    whose DECISION is committed. Classifying "finished" by naming the three
+    kinds that finish a minute swept all of them into "unfinished", so a crash
+    between `_append(HALT)` and `save_state` excluded a DECIDED minute from the
+    parity comparison and took its DECISION out with it. That is the harm
+    `EXCLUDING_RECOVERY_CAUSES` refuses LOG_AHEAD_OF_STATE to avoid, reached by
+    another route.
+    """
+    from tools.replay_parity import _excluded_minutes
+
+    harness = build(tmp_path)
+    harness.run(2)
+    config = harness.runner.config
+    harness.runner._halt("synthetic halt for the crash drill")
+    records = harness.records()
+    assert records[-1]["kind"] == RecordKind.HALT.value
+    halted_minute = records[-1]["minute"]
+    decided = {r["minute"] for r in records if r["kind"] == RecordKind.DECISION.value}
+    assert halted_minute in decided, "the HALT is stamped with a minute that has a DECISION"
+
+    # The crash: the HALT is committed, the state file naming it is not.
+    state_path = harness.state_dir / "runner_state.json"
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["last_record_hash"] = records[-2]["record_hash"]
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    resumed = build(tmp_path, config=config, start=False)
+    resumed.runner.start()
+    recovery = [r for r in resumed.records() if r["kind"] == RecordKind.RECOVERY.value][-1][
+        "recovery"
+    ]
+
+    assert recovery["cause"] == RecoveryCause.LOG_AHEAD_OF_STATE.value
+    assert recovery["minute_finished"] is True
+    assert recovery["evidence_excluded_minute"] is None
+    # And the parity tool excludes nothing, so that minute's DECISION is compared.
+    assert halted_minute not in _excluded_minutes(resumed.records())
+
+
 def test_a_crash_on_a_mid_minute_record_does_not_silently_lose_the_minute(tmp_path):
     """A committed tail is not the same thing as a decided minute.
 
@@ -266,11 +308,15 @@ def test_a_forged_record_is_refused_and_never_repaired(tmp_path):
     harness.run(2)
     config = harness.runner.config
     day = sorted((harness.state_dir / "decision_log").glob("*.ndjson"))[-1]
-    lines = day.read_text(encoding="utf-8").splitlines()
+    lines = day.read_bytes().decode("utf-8").splitlines()
     tampered = json.loads(lines[-1])
     tampered["ledger_effect"]["equity"] = "999999999.00"
     lines[-1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
-    day.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Bytes: the log is byte-canonical, and `write_text` turns every "\n"
+    # into "\r\n" on Windows -- which makes EVERY record non-canonical, so
+    # the runner reports NON_CANONICAL_BYTES instead of the forgery this
+    # test is about and the assertion below passes for the wrong reason.
+    day.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
 
     resumed = build(tmp_path, config=config, start=False)
     state = resumed.runner.start()
@@ -2042,3 +2088,46 @@ def test_a_restart_reconciles_against_a_venue_that_still_knows_the_position(tmp_
         assert leg["outcome"] == "AGREED", leg
         assert leg["reported_qty"] == str(held), "the venue still knows the position"
     assert resumed.risk.state.reconciliation_disputed == {}
+
+
+def test_flatten_refuses_when_the_log_cannot_take_the_record(tmp_path):
+    """`flatten` moves both legs, so it owes the same proof `resolve` does.
+
+    On a forged log, `start()`'s halt swallows the open failure, so the log is
+    never opened; `_append` then raised `DecisionLogTailError` -- not a
+    `RunnerError`, so the CLI showed a traceback -- AFTER both legs had been
+    flattened, with nothing in the log to say a flatten happened. That is the
+    outcome `_require_recordable` exists to prevent, on the command the runbook
+    tells an operator to reach for.
+    """
+    from chimera.demo.decision_log import LOG_DIR_NAME, day_files
+
+    harness = build(tmp_path)
+    harness.run(2)
+    config = harness.runner.config
+    harness.runner.shutdown("stop")
+
+    # A forged record: complete, canonical, and wrong. No crash makes one.
+    day = day_files(harness.state_dir / LOG_DIR_NAME)[-1]
+    lines = day.read_bytes().decode("utf-8").splitlines()
+    forged = json.loads(lines[-1])
+    forged["runner_now_ns"] = int(forged["runner_now_ns"]) + 1
+    lines[-1] = json.dumps(forged, sort_keys=True, separators=(",", ":"))
+    day.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+
+    resumed = build(tmp_path, config=config, start=False).runner
+    resumed.start()
+    assert resumed.state is RunnerState.HALT
+
+    held = (
+        resumed.position.leg("spot").quantity,
+        resumed.position.leg("perp").quantity,
+    )
+    with pytest.raises(RunnerError, match="cannot be recorded"):
+        resumed.flatten("operator flatten on a forged log")
+
+    # The legs did not move, which is the whole point.
+    assert (
+        resumed.position.leg("spot").quantity,
+        resumed.position.leg("perp").quantity,
+    ) == held

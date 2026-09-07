@@ -639,12 +639,16 @@ def test_the_daily_report_repairs_no_torn_tail(tmp_path):
 def test_a_forged_record_is_reported_not_hidden(tmp_path):
     harness = _campaign(tmp_path)
     path = sorted((harness.state_dir / "decision_log").glob("*.ndjson"))[0]
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = path.read_bytes().decode("utf-8").splitlines()
     index = max(i for i, line in enumerate(lines) if json.loads(line)["kind"] == "DECISION")
     forged = json.loads(lines[index])
     forged["ledger_effect"]["fees"] = "999999"
     lines[index] = json.dumps(forged, sort_keys=True, separators=(",", ":"))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Bytes: the log is byte-canonical, and `write_text` turns every "\n"
+    # into "\r\n" on Windows -- which makes EVERY record non-canonical, so
+    # the runner reports NON_CANONICAL_BYTES instead of the forgery this
+    # test is about and the assertion below passes for the wrong reason.
+    path.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
 
     report = daily_report(harness.state_dir, DAY)
 

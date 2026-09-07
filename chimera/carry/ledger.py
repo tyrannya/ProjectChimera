@@ -477,6 +477,12 @@ class CarryLedger:
         quantity clears the entry state, so a later re-open books a fresh entry
         instead of being mistaken for one already open.
 
+        The pro-rata branch was briefly thought unreachable -- both FLATTEN paths
+        drive a leg to zero or leave it untouched -- and removing it broke the
+        random-target fuzz test at once. It became reachable the moment `_book`
+        started booking reductions on the `apply` path, because a rebalance DOWN
+        is a partial close. It is live, and the fuzz test is what holds it.
+
         Returns the realised PnL booked, for the caller to record.
         """
         state = self.state
@@ -497,6 +503,9 @@ class CarryLedger:
 
         flat = quantity_closed == state.quantity
         principal = quantity_closed * state.spot_entry
+        # Pro rata while the position survives; the exact remainder on the close
+        # that ends it, so the inexactness of the division can never accumulate
+        # into a residue that outlives the position.
         margin_released = (
             state.perp_margin if flat else state.perp_margin * quantity_closed / state.quantity
         )

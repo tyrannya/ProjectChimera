@@ -121,11 +121,13 @@ and `dirty: False`, so a campaign on a genuinely dirty tree would pass
 the argument **and** subscript access, and it belongs to the change that owns
 `tools/demo_run.py`.
 
-A fifth, about four disputes an operator cannot clear. `resolve` clears a leg's
-`RECONCILIATION` dispute and nothing else. `stale_leg`, `ledger_store_mismatch`,
-`funding_booking_torn` and `asymmetric_close` all halt the campaign and have no
-command that ends them, so clearing one means repairing the state files by hand,
-deliberately, with the reason recorded. That is narrower than it was: `resolve`
+A fifth, about the disputes an operator cannot clear — which is all of them.
+`resolve` is scoped to a leg's `RECONCILIATION` dispute and, as section 6 records,
+cannot run from the CLI at all in this build. `stale_leg`,
+`ledger_store_mismatch`, `funding_booking_torn`, `asymmetric_close`,
+`ledger_unreadable`, `ledger_capital_mismatch` and `{leg}_store_unreadable` have
+no command that ends them either, so clearing any of them means repairing the
+state files by hand, deliberately, with the reason recorded. That is narrower than it was: `resolve`
 used to clear whatever the carry ledger was disputing, which set a flag and fixed
 nothing — a torn funding booking stayed unbooked and the cash stayed short while
 the campaign resumed on a ledger it had been told to distrust. Refusing is the
@@ -285,6 +287,25 @@ The note is mandatory in three separate places and it is evidence, not
 decoration: it is written into an `OPERATOR` record and it appears in the daily
 report under `reconciliation.operator_resolutions`. A note that does not say
 what was checked is a resolution nobody can audit.
+
+> **In this build that command always refuses, and no operator path clears a
+> reconciliation dispute.** `tools/demo_run.py` constructs the runner and calls
+> `resolve` without `start()`, so the runner clock has observed nothing;
+> `resolve` checks that it can write the `OPERATOR` record before it changes
+> anything, and refuses with *"resolve cannot be recorded"*. That refusal is the
+> correct half — the alternative, which this build shipped until it was caught,
+> was clearing the store dispute and Aegis's copy and *then* dying, leaving the
+> safety state changed with nothing in the log to say who changed it. But it
+> leaves the command unusable.
+>
+> Clearing a dispute therefore means editing `spot_store.json` / `perp_store.json`
+> and `risk.json` by hand, deliberately, with the reason recorded outside the
+> decision log — and that is a worse audit trail than the `OPERATOR` record, not
+> a better one. The fix is to seed the clock from the **log's tail** rather than
+> from the state file, which is a change with its own crash matrix: an earlier
+> attempt seeded it from the state file instead and made `start()` raise on the
+> crash section 9.3 exists to recover from. It is recorded here rather than
+> improvised.
 
 ## 7. Kill switch, flatten, resume
 
