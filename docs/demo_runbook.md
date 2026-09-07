@@ -125,14 +125,33 @@ A fifth, about the disputes an operator cannot clear — which is all of them.
 `resolve` is scoped to a leg's `RECONCILIATION` dispute and, as section 6 records,
 cannot run from the CLI at all in this build. `stale_leg`,
 `ledger_store_mismatch`, `funding_booking_torn`, `asymmetric_close`,
-`ledger_unreadable`, `ledger_capital_mismatch` and `{leg}_store_unreadable` have
-no command that ends them either, so clearing any of them means repairing the
+`ledger_unreadable`, `ledger_capital_mismatch`, `{leg}_ledger_regressed` and
+`{leg}_store_unreadable` have no command that ends them either, so clearing any of them means repairing the
 state files by hand, deliberately, with the reason recorded. That is narrower than it was: `resolve`
 used to clear whatever the carry ledger was disputing, which set a flag and fixed
 nothing — a torn funding booking stayed unbooked and the cash stayed short while
 the campaign resumed on a ledger it had been told to distrust. Refusing is the
 safer half of the fix; the other half, a `resolve` that actually re-books, is not
 in this change.
+
+An eighth, about what a dispute does and does not cost. The carry ledger books
+each leg at its own level — the spot inventory at the spot leg's VWAP, the
+perpetual's 1x margin at the perpetual's — and moves `free_cash` by the change
+in those levels. So `asymmetric_close` no longer means "no cash was returned":
+the leg that really did close returns its own principal or margin, the leg still
+holding keeps its own, both legs' fees, realised PnL and slippage are booked
+either way, and the position is disputed on top because one hedged quantity
+cannot describe a half-closed pair. Reading `quantity: 0` beside a non-zero
+`spot_principal` is that state, and it is the honest one: the hedge is gone and
+the spot leg is not.
+
+`{leg}_ledger_regressed` is new and should never be seen. It means an executor
+reported LESS cumulative fees than the carry ledger has already booked for that
+leg, which fees cannot do — `Ledger.book_fee` refuses a negative — so it means
+that executor's accumulators were reset underneath the ledger
+(`FuturesStore.adopt_after_unreadable` is the one thing in the tree that does
+it, and no CLI reaches it). Repair means deciding by hand which history is the
+real one; the campaign stops rather than crediting itself the difference.
 
 A sixth, for anyone reading a `PARTIAL`. `HedgedPosition.correct()` implements
 section 6.3's correction policy — a bounded retry, then a
@@ -148,7 +167,7 @@ compares `Q x (entry_basis - current_basis)` against `spot_pnl + perp_pnl`, and
 both sides are computed from the same ledger fields, never from the legs' stores.
 The residual is non-zero only when `entry_basis` disagrees with
 `perp_entry - spot_entry`, and nothing in this build can make it disagree:
-`book_entry` writes all three together and `book_reduction` clears them together.
+`book_position` writes all three together and clears them together.
 A test can force it by assigning `perp_entry` directly
 (`tests/test_carry_ledger.py::test_an_identity_violation_disputes`), which is why
 the rule is not dead code -- but for a ledger this build wrote,

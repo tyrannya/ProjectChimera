@@ -28,16 +28,14 @@ def fresh(tmp_path, capital: D = CAPITAL) -> CarryLedger:
 def opened(tmp_path) -> CarryLedger:
     """A ledger with one hedge booked: 0.5 BTC, spot 30000, perp 30030."""
     ledger = fresh(tmp_path)
-    ledger.book_entry(
-        quantity=D("0.5"),
-        spot_fill=D("30000"),
-        perp_fill=D("30030"),
-        spot_fee=D("15"),
-        perp_fee=D("7.5075"),
-        spot_slippage=D("3"),
-        perp_slippage=D("3"),
-        perp_margin=D("15015"),
+    ledger.book_position(
+        spot_quantity=D("0.5"),
+        spot_entry=D("30000"),
+        perp_quantity=D("0.5"),
+        perp_entry=D("30030"),
     )
+    ledger.book_costs(leg="spot", fee=D("15"), slippage=D("3"))
+    ledger.book_costs(leg="perp", fee=D("7.5075"), slippage=D("3"))
     return ledger
 
 

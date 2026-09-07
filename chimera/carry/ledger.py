@@ -79,6 +79,23 @@ def _text(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
 
 
+def _spot_principal(data: Mapping[str, Any]) -> Decimal:
+    """The persisted spot principal, or what a file without one had booked.
+
+    Before this field existed the only spot principal the ledger could hold was
+    ``quantity * spot_entry`` -- ``book_entry`` debited exactly that and
+    ``book_reduction`` credited exactly a share of it. So the fallback restates
+    the old file rather than guessing at it, and a ledger written by either
+    build reloads with the same cash meaning under the same schema id.
+    """
+    raw = data.get("spot_principal")
+    if raw is not None:
+        return _decimal(raw, "spot_principal")
+    quantity = _decimal(data.get("quantity", "0"), "quantity")
+    entry = _optional_decimal(data.get("spot_entry"), "spot_entry")
+    return ZERO if entry is None else quantity * entry
+
+
 @dataclass
 class LegAccrual:
     """One leg's cost and realisation accumulators, reported per leg (section 6.5)."""
@@ -117,6 +134,21 @@ class CarryLedgerState:
     quantity: Decimal = ZERO
     spot_entry: Decimal | None = None
     perp_entry: Decimal | None = None
+    #: What the spot inventory now held COST, in quote currency, and the
+    #: counterpart of :attr:`perp_margin` on the other leg. Both are LEVELS:
+    #: :meth:`CarryLedger.book_position` moves ``free_cash`` by the change in
+    #: them, so an entry, an increase, a partial reduction and a close are one
+    #: piece of arithmetic rather than three.
+    #:
+    #: It is persisted rather than derived from ``quantity * spot_entry``
+    #: because ``quantity`` is the HEDGED quantity -- ``min(spot, perp)`` -- and
+    #: the spot leg can hold more than that while a correction is outstanding.
+    #: Deriving it would then value the inventory at a quantity the spot leg
+    #: does not hold. Additive: :meth:`from_dict` falls back to
+    #: ``quantity * spot_entry``, which is exactly what a file written before
+    #: this field existed had booked, so the fallback is a restatement and not
+    #: a guess.
+    spot_principal: Decimal = ZERO
     perp_margin: Decimal = ZERO
     entry_basis: Decimal | None = None
     current_basis: Decimal | None = None
@@ -183,6 +215,7 @@ class CarryLedgerState:
             "quantity": str(self.quantity),
             "spot_entry": _text(self.spot_entry),
             "perp_entry": _text(self.perp_entry),
+            "spot_principal": str(self.spot_principal),
             "perp_margin": str(self.perp_margin),
             "entry_basis": _text(self.entry_basis),
             "current_basis": _text(self.current_basis),
@@ -243,6 +276,7 @@ class CarryLedgerState:
             quantity=_decimal(data.get("quantity", "0"), "quantity"),
             spot_entry=_optional_decimal(data.get("spot_entry"), "spot_entry"),
             perp_entry=_optional_decimal(data.get("perp_entry"), "perp_entry"),
+            spot_principal=_spot_principal(data),
             perp_margin=_decimal(data.get("perp_margin", "0"), "perp_margin"),
             entry_basis=_optional_decimal(data.get("entry_basis"), "entry_basis"),
             current_basis=_optional_decimal(data.get("current_basis"), "current_basis"),
@@ -407,131 +441,99 @@ class CarryLedger:
 
     # -- booking -----------------------------------------------------------
 
-    def book_entry(
+    def book_position(
         self,
         *,
-        quantity: Decimal,
-        spot_fill: Decimal,
-        perp_fill: Decimal,
-        spot_fee: Decimal,
-        perp_fee: Decimal,
-        spot_slippage: Decimal,
-        perp_slippage: Decimal,
-        perp_margin: Decimal,
-    ) -> None:
-        """Record an opened hedge: quantities, entry prices, entry basis and costs."""
-        self.state.quantity = quantity
-        self.state.spot_entry = spot_fill
-        self.state.perp_entry = perp_fill
-        self.state.perp_margin = perp_margin
-        self.state.entry_basis = perp_fill - spot_fill
-        self.state.current_basis = self.state.entry_basis
-        self.state.spot.fees += spot_fee
-        self.state.perp.fees += perp_fee
-        self.state.spot.slippage += spot_slippage
-        self.state.perp.slippage += perp_slippage
-        self.state.free_cash -= quantity * spot_fill
-        self.state.free_cash -= perp_margin
-        self.state.free_cash -= spot_fee + perp_fee + spot_slippage + perp_slippage
-
-    def book_reduction(
-        self,
-        *,
-        quantity_closed: Decimal,
-        spot_realised: Decimal = ZERO,
-        perp_realised: Decimal = ZERO,
-        spot_fee: Decimal = ZERO,
-        perp_fee: Decimal = ZERO,
-        spot_slippage: Decimal = ZERO,
-        perp_slippage: Decimal = ZERO,
+        spot_quantity: Decimal,
+        spot_entry: Decimal,
+        perp_quantity: Decimal,
+        perp_entry: Decimal,
     ) -> Decimal:
-        """Return a closed position's cash. The inverse of :meth:`book_entry`.
+        """Move the ledger to the position the LEGS hold, at the legs' own cost.
 
-        Nothing booked a reduction before this existed. :meth:`book_entry` debited
-        ``quantity x spot_entry`` for the inventory and ``perp_margin`` for the
-        margin, and no method ever credited either back: ``emergency_reduce`` and
-        ``flatten_for_correction`` moved both legs to flat and touched the carry
-        ledger only to stamp the leg marks. So after any close ``free_cash`` still
-        carried the whole entry debit while the legs it had paid for were gone,
-        and :meth:`HedgedPosition.mark_to_market` -- ``free_cash + quantity x
-        spot_close + perp_margin + perp_pnl`` -- read roughly a quarter of capital
-        too low. That number is not only reported: it is handed to
-        ``risk.update_equity``, so the first ordinary exit of a campaign booked a
-        ~25% drawdown against a 5% limit and Aegis halted on a loss that never
-        happened, with the phantom equity written into the evidence log as
-        ``ledger_effect`` and ``position_after``.
+        **The one place principal and margin move.** It replaced ``book_entry``
+        and ``book_reduction``, which were two different pieces of arithmetic
+        reached by two different triggers -- and a third state, an increase, had
+        no trigger at all. Every miss of that kind is the same defect: a
+        transition nobody wrote a branch for.
 
-        **Exit prices are never needed and never taken.** The executors already
-        realise each leg's PnL against their own fills, so the cash to return is
-        the principal at COST plus that realised difference:
+        This takes LEVELS, not events. The spot inventory the position holds
+        cost ``spot_quantity * spot_entry`` and the perpetual's 1x margin is
+        ``perp_quantity * perp_entry``, where the two entry prices are the
+        executors' own VWAPs (:class:`chimera.futures.domain.Position`'s
+        ``entry_price``, maintained by ``apply_fill`` and left unchanged by a
+        partial close). ``free_cash`` then moves by the CHANGE in those levels,
+        and the same line of arithmetic covers every transition:
 
-            spot LONG   sold at exit  ->  Q x spot_entry + realised_spot
-            perp SHORT  margin back   ->  perp_margin    + realised_perp
+            open      0     -> Q.w        debits exactly Q.w
+            increase  Q.w   -> Q'.w'      debits the increment at its own fill
+            reduce    Q.w   -> (Q-c).w    credits c.w, the principal AT COST
+            close     Q.w   -> 0          credits the whole principal
+            reopen    0     -> Q''.w''    debits fresh, inheriting no basis
 
-        which is exactly ``Q x spot_exit`` and ``perp_margin + Q x (perp_entry -
-        perp_exit)``. Taking the realised numbers from the legs rather than
-        recomputing them from a mark is what keeps this ledger and the executors'
-        from being able to disagree.
+        There is no division, so a partial reduction releases margin exactly pro
+        rata and the final one clears the exact remainder with no residue to
+        accumulate -- the pro-rata branch that needed a fuzz test to hold it is
+        gone rather than fixed.
 
-        A partial reduction releases margin in proportion; closing the whole
-        quantity clears the entry state, so a later re-open books a fresh entry
-        instead of being mistaken for one already open.
+        It is also **idempotent**: called again with the same levels it computes
+        zero differences and moves nothing. That is what lets a reconciliation
+        run after every cycle, and what makes a cycle that could not book
+        (an asymmetric close, section 6.8) recoverable rather than lost -- the
+        next cycle reconciles to the level, and levels do not remember how many
+        calls it took to reach them.
 
-        The pro-rata branch was briefly thought unreachable -- both FLATTEN paths
-        drive a leg to zero or leave it untouched -- and removing it broke the
-        random-target fuzz test at once. It became reachable the moment `_book`
-        started booking reductions on the `apply` path, because a rebalance DOWN
-        is a partial close. It is live, and the fuzz test is what holds it.
+        ``quantity`` stays the HEDGED quantity, ``min(spot, perp)``: it is what
+        section 6.5's identity and the reports are defined on. The two
+        principals are per leg precisely so that this method never has to
+        invent a single quantity for a position whose legs disagree.
 
-        Returns the realised PnL booked, for the caller to record.
+        Returns the signed cash moved, for the caller to record.
         """
         state = self.state
-        if quantity_closed <= ZERO:
-            raise LedgerError(f"a reduction closes a positive quantity, got {quantity_closed}")
-        if state.quantity <= ZERO or state.spot_entry is None:
+        if spot_quantity < ZERO or perp_quantity < ZERO:
             raise LedgerError(
-                "there is no booked entry to reduce: the carry ledger holds no open "
-                "quantity, so returning cash for one would credit capital that was "
-                "never debited"
+                f"a leg cannot hold a negative quantity (spot {spot_quantity}, perp "
+                f"{perp_quantity}); a position read this way is a store to dispute, "
+                "not one to book"
             )
-        if quantity_closed > state.quantity:
+        if spot_quantity > ZERO and spot_entry <= ZERO:
             raise LedgerError(
-                f"cannot close {quantity_closed} of a booked {state.quantity}: a "
-                "reduction larger than the position would return more cash than the "
-                "entry ever took"
+                f"the spot leg holds {spot_quantity} at an entry price of {spot_entry}. "
+                "Booking it would value real inventory at nothing and credit the "
+                "difference to free cash on the next reduction"
+            )
+        if perp_quantity > ZERO and perp_entry <= ZERO:
+            raise LedgerError(
+                f"the perpetual leg holds {perp_quantity} at an entry price of "
+                f"{perp_entry}. Booking it would post no margin for a real short"
             )
 
-        flat = quantity_closed == state.quantity
-        principal = quantity_closed * state.spot_entry
-        # Pro rata while the position survives; the exact remainder on the close
-        # that ends it, so the inexactness of the division can never accumulate
-        # into a residue that outlives the position.
-        margin_released = (
-            state.perp_margin if flat else state.perp_margin * quantity_closed / state.quantity
-        )
+        principal = spot_quantity * spot_entry
+        margin = perp_quantity * perp_entry
+        moved = (principal - state.spot_principal) + (margin - state.perp_margin)
+        state.free_cash -= moved
+        state.spot_principal = principal
+        state.perp_margin = margin
 
-        # Frictions and realisation are attributed per leg through the one method
-        # that does that, so a reduction cannot grow a second opinion about which
-        # leg a fee belongs to. `book_costs` moves free_cash by `realised - fee -
-        # slippage`; the principal and the margin are this method's own.
-        self.book_costs(
-            leg="spot", fee=spot_fee, slippage=spot_slippage, realised=spot_realised
-        )
-        self.book_costs(
-            leg="perp", fee=perp_fee, slippage=perp_slippage, realised=perp_realised
-        )
-
-        state.free_cash += principal + margin_released
-        state.perp_margin -= margin_released
-        state.quantity -= quantity_closed
-        if flat:
-            state.quantity = ZERO
+        state.quantity = min(spot_quantity, perp_quantity)
+        if state.quantity > ZERO:
+            state.spot_entry = spot_entry
+            state.perp_entry = perp_entry
+            # Re-derived rather than kept: an increase moves both VWAPs, and an
+            # entry basis left at the first fill's would make section 6.5's
+            # identity disagree with the legs by the whole size of the increment.
+            state.entry_basis = perp_entry - spot_entry
+            if state.current_basis is None:
+                state.current_basis = state.entry_basis
+        else:
+            # No hedged quantity: the identity has nothing to check and a
+            # retained entry basis would be inherited by the next position.
             state.spot_entry = None
             state.perp_entry = None
-            state.perp_margin = ZERO
             state.entry_basis = None
             state.current_basis = None
-        return spot_realised + perp_realised
+        return -moved
 
     def book_funding(self, instant_ns: int, flow: Decimal) -> Decimal:
         """Book one settlement's signed flow. Returns 0 if already booked.

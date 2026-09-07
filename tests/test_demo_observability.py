@@ -204,7 +204,7 @@ MUTATING_CALLS: frozenset[str] = frozenset(
         "append",
         "apply",
         "book_costs",
-        "book_entry",
+        "book_position",
         "book_funding",
         "check_kill_switch",
         "correct",

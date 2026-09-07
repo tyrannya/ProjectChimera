@@ -120,6 +120,55 @@ def assert_hedged_is_balanced(position: HedgedPosition) -> None:
         assert position.imbalance() == D("0"), "HEDGED with a non-zero imbalance"
 
 
+class FrictionRecorder:
+    """Every friction the position COMPUTES, captured before the ledger sees it.
+
+    The oracle for "nothing was dropped" cannot be the accumulator under test.
+    This wraps `_frictions`, which is where a fee and a slippage first exist, so
+    a cycle whose booking is deferred or refused still shows up here -- which is
+    exactly how the lost exit slippage was invisible to a test that compared the
+    ledger against itself.
+    """
+
+    def __init__(self, position: HedgedPosition) -> None:
+        original = HedgedPosition._frictions
+        self.fees = D("0")
+        self.slippage = D("0")
+
+        def wrapper(records, reference):
+            fee, slip = original(records, reference)
+            self.fees += fee
+            self.slippage += slip
+            return fee, slip
+
+        position._frictions = wrapper
+
+
+@pytest.fixture
+def recorder(position) -> FrictionRecorder:
+    return FrictionRecorder(position)
+
+
+def cash_from_the_legs(position: HedgedPosition, *, slippage: D) -> D:
+    """``free_cash`` as the two EXECUTORS describe it. Section 6.6's identity.
+
+    Every term but one is read from an executor: the inventory each leg holds at
+    its own VWAP, its cumulative fees, its cumulative realised PnL and its
+    funding. Slippage is the exception -- no executor accumulates it -- so the
+    caller passes what it independently measured.
+    """
+    spot, perp = position.leg(SPOT), position.leg(PERP)
+    return (
+        CAPITAL
+        - spot.quantity * spot.entry_price
+        - perp.quantity * perp.entry_price
+        - (position.spot.ledger.trading_fees + position.perp.ledger.trading_fees)
+        + (position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl)
+        + (position.spot.ledger.net_funding + position.perp.ledger.net_funding)
+        - slippage
+    )
+
+
 # ---------------------------------------------------------------------------
 # Entry sequence
 # ---------------------------------------------------------------------------
@@ -557,22 +606,27 @@ def test_a_correction_flatten_returns_the_cash_of_a_booked_entry(position):
     assert ledger.realised == legs_realised
 
 
-def test_a_close_that_leaves_one_leg_holding_disputes_instead_of_booking(position):
+def test_a_close_that_leaves_one_leg_holding_disputes_but_loses_no_cash(position, recorder):
     """`emergency_flatten` returns normally when the venue REJECTS the order.
 
     So a close can leave the perpetual flat and the spot still LONG. Reading the
     closed quantity as `ledger.quantity - min(spot, perp)` made that look like a
     full close: the ledger credited the whole principal and the whole margin and
     reset the entry, while the spot inventory was still there and still counted
-    by `mark_to_market`. Equity jumped by the position's notional -- the opposite
-    error to the one booking a reduction was added to fix -- and the next flatten
-    booked nothing, because the ledger already read flat, so the spot leg's
-    realised PnL never arrived at all.
+    by `mark_to_market`. Equity jumped by the position's notional.
+
+    The answer is a dispute, and it always was. What it is NOT is a reason to
+    lose money: refusing to book anything discarded the closed leg's exit
+    slippage, which no executor accumulates and nothing can recover later. Each
+    leg is booked at its own level -- the perpetual's margin comes back because
+    the perpetual really did close, the spot's principal stays out because the
+    spot really is still held -- and the position is disputed on top.
     """
     open_hedge(position, "0.500")
     ledger = position.ledger.state
     cash_before = ledger.free_cash
-    quantity_before = ledger.quantity
+    spot_principal_before = ledger.spot_principal
+    slippage_before = recorder.slippage
 
     later = minute(1)
     book(position.model, later)
@@ -581,10 +635,16 @@ def test_a_close_that_leaves_one_leg_holding_disputes_instead_of_booking(positio
     position.emergency_reduce(FlattenCause.RISK_HALT, later)
 
     assert position.leg(PERP).is_flat and not position.leg(SPOT).is_flat
-    # Nothing was credited for a leg that did not close, and the entry stands.
-    assert ledger.free_cash == cash_before
-    assert ledger.quantity == quantity_before
-    assert ledger.spot_entry is not None and ledger.perp_margin != D("0")
+    # The leg that closed returned its margin; the leg that did not keeps its
+    # principal. Neither is guessed at: both are that leg's own level.
+    assert ledger.perp_margin == D("0")
+    assert ledger.spot_principal == spot_principal_before
+    assert ledger.free_cash > cash_before, "the closed leg returned nothing"
+    # The oracle is the EXECUTORS and the frictions the position measured --
+    # never this ledger's own arithmetic.
+    assert ledger.free_cash == cash_from_the_legs(position, slippage=recorder.slippage)
+    assert recorder.slippage > slippage_before, "the perpetual's exit was free"
+    assert ledger.slippage == recorder.slippage, "an exit's slippage was dropped"
     # And the position says so rather than carrying on.
     assert position.is_disputed
     assert "asymmetric_close" in (ledger.disputed or "")

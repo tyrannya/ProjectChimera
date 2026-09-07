@@ -475,6 +475,10 @@ class HedgedPosition:
         the first was refused is how a one-sided position is created on purpose.
         """
         if not intents:
+            # Reconciling is idempotent, so a cycle that sends nothing costs
+            # nothing -- and it is the cycle on which a booking deferred by an
+            # earlier refusal catches up.
+            self._reconcile_ledger()
             return self._settle(detail="nothing to do")
 
         target_quantity = intents[0].quantity
@@ -485,6 +489,39 @@ class HedgedPosition:
         filled: list[str] = []
         unfilled: list[str] = []
         frictions: dict[str, tuple[Decimal, Decimal]] = {}
+        try:
+            self._execute(intents, state, equity, filled, unfilled, frictions)
+        finally:
+            # `execute_target` raises -- ReconciliationRequired, NotBootstrapped
+            # -- and it raises per leg, so the second leg can throw after the
+            # first has already filled and persisted. Reconciling in `finally`
+            # is what stops that cycle's economics from being lost: the fees and
+            # the realised PnL would be recovered by a later level comparison,
+            # but this cycle's slippage exists nowhere else and would be gone.
+            self._reconcile_ledger(frictions)
+
+        outcome = self._settle(filled=tuple(filled), unfilled=tuple(unfilled))
+        self.ledger.note_open_instant(
+            flat=outcome.state is HedgeState.FLAT,
+            instant_ns=state.minute_ns + _MINUTE_NS,
+        )
+        return outcome
+
+    def _execute(
+        self,
+        intents: list[LegIntent],
+        state: CarryMarketState,
+        equity: float,
+        filled: list[str],
+        unfilled: list[str],
+        frictions: dict[str, tuple[Decimal, Decimal]],
+    ) -> None:
+        """Send the planned legs in order, stopping at the first that does not fill.
+
+        Split out of :meth:`apply` only so that the reconciliation which follows
+        it can sit in a ``finally``. The lists it appends to are the caller's, so
+        a leg that filled before another raised is still described.
+        """
         for intent in intents:
             executor, symbol = self._executor(intent.leg)
             reference = state.spot_close if intent.leg == SPOT else state.perp_close
@@ -494,20 +531,17 @@ class HedgedPosition:
                 equity=equity,
             )
             self.ledger.note_leg_mark(intent.leg, state.minute_ns)
+            # Frictions are taken from whatever came back, filled or not. A
+            # partial fill charges a fee and moves a price while ending
+            # something other than FILLED, and slippage is the one quantity no
+            # executor accumulates -- so a cycle that does not measure it is a
+            # cycle that loses it, permanently.
+            frictions[intent.leg] = self._frictions(records, reference)
             if records and all(r.state is OrderState.FILLED for r in records):
                 filled.append(intent.leg)
-                frictions[intent.leg] = self._frictions(records, reference)
             else:
                 unfilled.append(intent.leg)
                 break
-
-        outcome = self._settle(filled=tuple(filled), unfilled=tuple(unfilled))
-        self._book(outcome, frictions)
-        self.ledger.note_open_instant(
-            flat=outcome.state is HedgeState.FLAT,
-            instant_ns=state.minute_ns + _MINUTE_NS,
-        )
-        return outcome
 
     @staticmethod
     def _frictions(records: list[Any], reference: Decimal) -> tuple[Decimal, Decimal]:
@@ -526,68 +560,106 @@ class HedgedPosition:
                 slippage += abs(record.average_price - reference) * record.filled_quantity
         return fee, slippage
 
-    def _book(
-        self,
-        outcome: HedgeOutcome,
-        frictions: dict[str, tuple[Decimal, Decimal]],
+    def _reconcile_ledger(
+        self, frictions: Mapping[str, tuple[Decimal, Decimal]] | None = None
     ) -> None:
-        """Record this cycle in the ledger: the entry once, the frictions always.
+        """Bring the carry ledger to what the two executors now hold. One authority.
 
-        The entry is booked exactly when the position first becomes HEDGED, which
-        is section 6.2 step 4 -- the ledger records the entry basis
-        ``perp_fill - spot_fill`` together with fees and slippage per leg.
+        This replaced three separate booking triggers -- ``book_entry`` on the
+        first HEDGED cycle, ``book_reduction`` through a close path, and
+        ``book_costs`` for everything else. Each was a branch someone had to
+        remember to reach, and two transitions had no branch at all:
 
-        **A reduction here books like any other reduction.** This is the path an
-        ORDINARY exit takes and it was the one left out: the carry rule's own
-        `basis < min_basis` branch returns ``HedgeTarget(0)``, which reaches this
-        method through :meth:`apply`, not through `emergency_reduce` or
-        `flatten_for_correction`. Wiring `book_reduction` into only those two
-        left the common exit booking fees and nothing else -- the legs went flat
-        while the ledger kept the whole entry, so `mark_to_market` read about a
-        quarter of capital too low, `risk.update_equity` saw a ~25% drawdown that
-        never happened, and the number went into the DECISION record's
-        `ledger_effect`. Measured on the synthetic day: equity 999409.06 held,
-        749405.21 the tick after the rule closed the position.
+        * a hedge completed through the **correction** path booked no entry,
+          because the entry trigger needed both legs' frictions in ONE cycle and
+          a correction sends only the missing leg. The legs went HEDGED while
+          the ledger held nothing, so ``free_cash`` kept the whole inventory it
+          had never paid for and ``mark_to_market`` read the notional as profit;
+        * a **rebalance up** booked no principal, no margin and no quantity, so
+          equity gained the increment for nothing. That is the ~25% phantom
+          drawdown's mirror image, and the carry rule re-sizes from equity every
+          minute, so it is the ordinary path and not an edge.
+
+        Nothing here asks what KIND of cycle this was. Four levels are read off
+        the executors -- each leg's inventory at its own VWAP, each leg's
+        cumulative fees and cumulative realised PnL -- and the ledger is moved to
+        them. A transition nobody thought of is still reconciled, because a
+        level does not need to be recognised to be compared.
+
+        The three parts, in this order:
+
+        1. **This cycle's slippage**, per leg, immediately. It is the one
+           quantity the executors do not accumulate, so it cannot be recovered
+           later and must not be deferred behind a booking that might refuse.
+        2. **Fees and realised PnL**, as the difference between each executor's
+           cumulative total and what this ledger has already booked for that
+           leg. Self-correcting: however many calls a close takes, the ledger
+           converges on what the executors actually did.
+        3. **The position**, through :meth:`CarryLedger.book_position`, which
+           takes each leg's level and moves ``free_cash`` by the change.
+
+        **An asymmetric close still DISPUTES** (section 6.8). ``emergency_flatten``
+        returns normally when the venue REJECTS the order, so a close can leave
+        one leg flat and the other holding, and this ledger holds one hedged
+        quantity for a two-leg position. What has changed is that the dispute no
+        longer costs money: the leg that did close really did return its cash and
+        that is booked, the leg that did not keeps its principal, and the
+        frictions of both are booked either way. Refusing to book was losing the
+        closed leg's exit slippage for ever.
         """
-        first_entry = (
-            outcome.state is HedgeState.HEDGED
-            and self.ledger.state.entry_basis is None
-            and SPOT in frictions
-            and PERP in frictions
-        )
-        if first_entry:
-            spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
-            spot_fee, spot_slip = frictions[SPOT]
-            perp_fee, perp_slip = frictions[PERP]
-            self.ledger.book_entry(
-                quantity=spot_leg.quantity,
-                spot_fill=spot_leg.entry_price,
-                perp_fill=perp_leg.entry_price,
-                spot_fee=spot_fee,
-                perp_fee=perp_fee,
-                spot_slippage=spot_slip,
-                perp_slippage=perp_slip,
-                perp_margin=perp_leg.quantity * perp_leg.entry_price,
-            )
-            return
-
-        # A reduction: the ledger holds more than the legs now do. `_book_close`
-        # books the principal, the margin, the legs' realised PnL and this
-        # cycle's frictions together, so they are NOT booked again below.
-        if self._is_reduction():
-            self._book_close(frictions)
-            return
-
-        for leg, (fee, slippage) in frictions.items():
-            if fee or slippage:
-                self.ledger.book_costs(leg=leg, fee=fee, slippage=slippage)
-
-    def _is_reduction(self) -> bool:
-        """Whether the legs now hold less than the ledger has booked."""
+        exits = dict(frictions or {})
         state = self.ledger.state
-        if state.quantity <= ZERO or state.spot_entry is None:
-            return False
-        return min(self.leg(SPOT).quantity, self.leg(PERP).quantity) < state.quantity
+        booked_quantity = state.quantity
+
+        accruals = {SPOT: state.spot, PERP: state.perp}
+        for name, executor in ((SPOT, self.spot), (PERP, self.perp)):
+            accrual = accruals[name]
+            fee = executor.ledger.trading_fees - accrual.fees
+            realised = executor.ledger.realised_pnl - accrual.realised
+            slippage = exits.get(name, (ZERO, ZERO))[1]
+            if fee < ZERO:
+                # `trading_fees` is a magnitude that only ever grows --
+                # `Ledger.book_fee` refuses a negative. So a total BELOW what
+                # this ledger has booked is not a fee, it is an executor ledger
+                # that was reset (``FuturesStore.adopt_after_unreadable`` starts
+                # a fresh `FuturesState`, zeroing every accumulator). Booking
+                # the difference would CREDIT the campaign its whole fee history
+                # as cash. A level reconciliation is only sound while the level
+                # it reconciles to is the same history; when it is not, the two
+                # ledgers disagree about what this position did and that is a
+                # dispute, not an adjustment.
+                self.dispute(
+                    f"{name}_ledger_regressed: the {name} executor reports "
+                    f"{executor.ledger.trading_fees} of cumulative fees and this ledger "
+                    f"has already booked {accrual.fees}. Fees never fall, so the "
+                    "executor's accumulators were reset and the two ledgers no longer "
+                    "describe the same history"
+                )
+                return
+            if fee or realised or slippage:
+                self.ledger.book_costs(
+                    leg=name, fee=fee, slippage=slippage, realised=realised
+                )
+
+        spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
+        self.ledger.book_position(
+            spot_quantity=spot_leg.quantity,
+            spot_entry=spot_leg.entry_price,
+            perp_quantity=perp_leg.quantity,
+            perp_entry=perp_leg.entry_price,
+        )
+
+        if (
+            spot_leg.quantity != perp_leg.quantity
+            and min(spot_leg.quantity, perp_leg.quantity) < booked_quantity
+        ):
+            self.dispute(
+                f"asymmetric_close: the spot leg holds {spot_leg.quantity} and the "
+                f"perpetual {perp_leg.quantity} after a close of a booked "
+                f"{booked_quantity}. One leg did not flatten, so the position is not "
+                "reducible by a single quantity; each leg's own cash is booked and the "
+                "position is disputed rather than reported as closed"
+            )
 
     def _settle(
         self, filled: tuple[str, ...] = (), unfilled: tuple[str, ...] = (), detail: str = ""
@@ -644,90 +716,15 @@ class HedgedPosition:
         _ = larger
         return self.apply(self.plan(HedgeTarget(wanted), state), state, equity=equity)
 
-    def _book_close(
-        self, frictions: Mapping[str, tuple[Decimal, Decimal]] | None = None
-    ) -> Decimal:
-        """Return the closed quantity's cash to the carry ledger.
-
-        **Absolute, not incremental.** The realised PnL and fees booked here are
-        the difference between what each executor has accumulated and what this
-        ledger has already recorded for that leg -- never a before/after snapshot
-        taken around one call. The snapshot version lost a leg's close whenever
-        two calls were involved: an asymmetric close disputes and books nothing,
-        and the second flatten then saw `realised_after - realised_before == 0`
-        for the leg that had already closed, and no exit fee at all because
-        `emergency_flatten` returns `None` for a leg that is already flat. The
-        ledger ended up short by that leg's whole close, silently and
-        permanently, with `reconstruct()` unable to see it because it compares
-        quantities and the quantities agreed.
-
-        Reading the totals makes the booking self-correcting: however many calls
-        a close takes, the carry ledger converges on what the executors actually
-        did. Slippage still comes from this cycle's frictions, because the
-        executors do not accumulate it.
-
-        Silent when there is nothing booked to unwind -- a PARTIAL that never
-        reached HEDGED has no entry in this ledger, because `book_entry` runs
-        only on the first HEDGED cycle.
-
-        **An asymmetric close DISPUTES rather than books.** ``emergency_flatten``
-        returns normally when the venue REJECTS the order, so a close can leave
-        one leg flat and the other holding. Reading the closed quantity as
-        ``ledger.quantity - min(spot, perp)`` made that look like a full close:
-        the ledger credited the whole spot principal and the whole margin and
-        reset the entry, while the surviving leg's inventory was still there and
-        still counted by :meth:`mark_to_market` -- equity jumped by the position's
-        notional, the opposite error to the one booking a reduction fixed.
-
-        This ledger holds ONE quantity for a two-leg position, so it has no
-        honest way to represent "half closed". A dispute is the truthful outcome
-        and the one that stops the campaign increasing over it.
-        """
-        state = self.ledger.state
-        if state.quantity <= ZERO or state.spot_entry is None:
-            return ZERO
-        spot_held, perp_held = self.leg(SPOT).quantity, self.leg(PERP).quantity
-        if spot_held != perp_held:
-            self.dispute(
-                f"asymmetric_close: the spot leg holds {spot_held} and the perpetual "
-                f"{perp_held} after a close of a booked {state.quantity}. One leg did "
-                "not flatten, so the position is not reducible by a single quantity "
-                "and no cash is returned for one that did not close"
-            )
-            return ZERO
-        closed = state.quantity - spot_held
-        if closed <= ZERO:
-            return ZERO
-
-        exits = dict(frictions or {})
-        spot_realised = self.spot.ledger.realised_pnl - state.spot.realised
-        perp_realised = self.perp.ledger.realised_pnl - state.perp.realised
-        spot_fee = self.spot.ledger.trading_fees - state.spot.fees
-        perp_fee = self.perp.ledger.trading_fees - state.perp.fees
-        return self.ledger.book_reduction(
-            quantity_closed=closed,
-            spot_realised=spot_realised,
-            perp_realised=perp_realised,
-            spot_fee=spot_fee,
-            perp_fee=perp_fee,
-            spot_slippage=exits.get(SPOT, (ZERO, ZERO))[1],
-            perp_slippage=exits.get(PERP, (ZERO, ZERO))[1],
-        )
-
     def flatten_for_correction(self, state: CarryMarketState) -> HedgeOutcome:
         """Reduce whichever leg is filled back to flat, and say why it closed."""
         exits: dict[str, tuple[Decimal, Decimal]] = {}
-        for name in (PERP, SPOT):
-            executor, symbol = self._executor(name)
-            reference = state.spot_close if name == SPOT else state.perp_close
-            closing = executor.emergency_flatten(
-                symbol, FlattenCause.HEDGE_CORRECTION, reference
-            )
-            exits[name] = self._frictions([closing] if closing else [], reference)
-            self.ledger.note_leg_mark(name, state.minute_ns)
-        self.correction_minutes = 0
-        self.pending_quantity = ZERO
-        self._book_close(exits)
+        try:
+            self._flatten_legs(FlattenCause.HEDGE_CORRECTION, state, exits)
+        finally:
+            self.correction_minutes = 0
+            self.pending_quantity = ZERO
+            self._reconcile_ledger(exits)
         outcome = self._settle(detail="hedge correction timed out; flattened")
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,
@@ -735,18 +732,36 @@ class HedgedPosition:
         )
         return outcome
 
-    def emergency_reduce(self, cause: FlattenCause, state: CarryMarketState) -> HedgeOutcome:
-        """Flatten the perpetual first, then the spot (section 6.8)."""
-        self.state = HedgeState.CLOSING
-        exits: dict[str, tuple[Decimal, Decimal]] = {}
+    def _flatten_legs(
+        self,
+        cause: FlattenCause,
+        state: CarryMarketState,
+        exits: dict[str, tuple[Decimal, Decimal]],
+    ) -> None:
+        """Flatten the perpetual first, then the spot (section 6.8).
+
+        Separate from its two callers so that the reconciliation which follows
+        can sit in a ``finally``: ``emergency_flatten`` raises ``NotBootstrapped``
+        per leg, so the SECOND leg can throw after the first has already
+        flattened, and this cycle's slippage for that first leg exists nowhere
+        else. ``exits`` is the caller's, so whatever was measured survives.
+        """
         for name in (PERP, SPOT):
             executor, symbol = self._executor(name)
             reference = state.spot_close if name == SPOT else state.perp_close
             closing = executor.emergency_flatten(symbol, cause, reference)
             exits[name] = self._frictions([closing] if closing else [], reference)
             self.ledger.note_leg_mark(name, state.minute_ns)
-        self.pending_quantity = ZERO
-        self._book_close(exits)
+
+    def emergency_reduce(self, cause: FlattenCause, state: CarryMarketState) -> HedgeOutcome:
+        """Flatten the perpetual first, then the spot (section 6.8)."""
+        self.state = HedgeState.CLOSING
+        exits: dict[str, tuple[Decimal, Decimal]] = {}
+        try:
+            self._flatten_legs(cause, state, exits)
+        finally:
+            self.pending_quantity = ZERO
+            self._reconcile_ledger(exits)
         outcome = self._settle(detail=f"emergency reduce: {cause.value}")
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,
@@ -801,11 +816,31 @@ class HedgedPosition:
     # -- marking and the identity -----------------------------------------
 
     def mark_to_market(self, state: CarryMarketState) -> CarryMark:
-        """Mark both legs at the minute's closes and check the running identity."""
+        """Mark both legs at the minute's closes and check the running identity.
+
+        Section 6.6's identity, per leg. ``perp_margin`` is the margin posted for
+        the quantity the PERPETUAL leg holds, so the unrealised term that sits
+        beside it in the equity line has to be measured on that same quantity.
+        Marking it on ``min(spot, perp)`` instead reported a margin the position
+        held and a PnL it did not, and the two disagreed by exactly the
+        imbalance -- which is the state an equity reading most needs to be right
+        about, because it is the state Aegis is being asked to halt on.
+
+        The reported ``quantity`` stays the HEDGED one: that is what the basis
+        and section 6.5's identity are defined on, and it is not an equity term.
+        """
         spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
         quantity = min(spot_leg.quantity, perp_leg.quantity)
-        spot_pnl = quantity * (state.spot_close - spot_leg.entry_price) if quantity else ZERO
-        perp_pnl = quantity * (perp_leg.entry_price - state.perp_close) if quantity else ZERO
+        spot_pnl = (
+            spot_leg.quantity * (state.spot_close - spot_leg.entry_price)
+            if spot_leg.quantity
+            else ZERO
+        )
+        perp_pnl = (
+            perp_leg.quantity * (perp_leg.entry_price - state.perp_close)
+            if perp_leg.quantity
+            else ZERO
+        )
         equity = (
             self.ledger.state.free_cash
             + spot_leg.quantity * state.spot_close
@@ -908,11 +943,42 @@ class HedgedPosition:
 
         spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
         held = min(spot_leg.quantity, perp_leg.quantity)
-        if held > ZERO and self.ledger.state.quantity != held:
-            self.dispute(
-                f"ledger_store_mismatch: ledger holds {self.ledger.state.quantity}, the "
-                f"legs hold {held}"
+        # Unconditionally, in both directions. The guard used to read
+        # `held > ZERO and ...`, which skipped the comparison in exactly the
+        # state the crash window produces: the executors persist inside
+        # `execute_target`, this ledger persists later, so a crash between them
+        # leaves the legs FLAT and the ledger still holding the whole position.
+        # `held` is then zero, the check did not run, `reconstruct` returned
+        # READY, and the campaign carried on with `free_cash` short by the
+        # principal and the margin of a position it had already closed -- which
+        # the next reconciliation would then absorb without saying so. Section
+        # 6.8 compares "the two legs' quantities and the ledger file"; it does
+        # not make the comparison conditional on the legs being non-flat.
+        #
+        # The principals are compared as well as the quantity. They are what
+        # `free_cash` was moved by, and a torn write can leave them disagreeing
+        # while the quantities happen to match -- an increase that reached the
+        # stores and not this file moves both legs and the hedged quantity by
+        # the same step, so the quantity alone cannot see it.
+        mismatch = None
+        if self.ledger.state.quantity != held:
+            mismatch = (
+                f"ledger holds {self.ledger.state.quantity}, the legs hold {held}"
             )
+        else:
+            for name, leg, booked in (
+                (SPOT, spot_leg, self.ledger.state.spot_principal),
+                (PERP, perp_leg, self.ledger.state.perp_margin),
+            ):
+                level = leg.quantity * leg.entry_price
+                if level != booked:
+                    mismatch = (
+                        f"the {name} leg holds {leg.quantity} at {leg.entry_price}, which "
+                        f"cost {level}, and the ledger booked {booked}"
+                    )
+                    break
+        if mismatch is not None:
+            self.dispute(f"ledger_store_mismatch: {mismatch}")
             return HedgeOutcome(self.state, detail="ledger disagrees with the stores")
 
         unbooked = self.unbooked_funding_instants()
