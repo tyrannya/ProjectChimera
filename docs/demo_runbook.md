@@ -372,19 +372,35 @@ economics built from it would be invented. That omission is the correct
 behaviour and not a missing field. The day's report is still produced; it simply
 carries the last economics a real ledger held.
 
-Repair means **restoring the whole file from the previous good copy**, with the
-damaged bytes preserved alongside it under a different name and an incident
-recorded (section 15). That is a different act from editing a safety flag by
-hand: it puts back a file the campaign itself wrote, rather than asserting a
-state no record supports.
+Repair means **restoring the whole file from a good copy**, with the damaged
+bytes preserved alongside it under a different name and an incident recorded
+(section 15). That is a different act from editing a safety flag by hand: it puts
+back a file the campaign itself wrote, rather than asserting a state no record
+supports.
 
-It does not mean deleting it. An absent ledger loads as `MISSING` and would start
-a fresh one at full capital — so SELF_CHECK refuses to start at all when the
-ledger holds less cumulative `fees` or `slippage` than the decision log has
-already committed (`ledger_behind_log`). A cumulative accumulator cannot fall,
-and every save precedes the record that quotes it, so no crash produces that
-state: it means the file was deleted, truncated or replaced, and the campaign
-fails closed instead of starting again from capital.
+**Not any copy, and this is the part that decides whether the campaign can be
+started again at all.** SELF_CHECK refuses a ledger holding less cumulative
+`fees`, `slippage`, `funding_paid_total` or `funding_received_total` than the
+decision log has already committed (`ledger_behind_log`). Those accumulators
+cannot fall, and every ledger save precedes the record that quotes it, so no
+crash produces a ledger behind the log — it means the file was deleted,
+truncated, or replaced by an older one. Deleting it is therefore not a repair
+either: an absent ledger loads as `MISSING`, would start again at full capital,
+and is refused on the same rule.
+
+So the copy has to be **at least as recent as the log's last `ledger_effect` and
+its last `FUNDING` record**. A backup older than those is refused again, with no
+dispute for any operator command to clear, and **the campaign cannot be
+started** — the daily backup that predates this morning's settlement is not a
+usable restore point. That is the fail-closed contract working as designed, and
+it is also a real operational limit: back the state directory up **with** the
+decision log and at the same instant, or accept that a campaign whose ledger is
+lost is a campaign that ends.
+
+While the ledger is in that state `flatten` still reduces exposure, but writes
+neither a ledger nor a `ledger_effect` — a file that cannot speak for the
+campaign must not be allowed to start speaking for it through the emergency
+path.
 
 ## 7. Kill switch, flatten, resume
 

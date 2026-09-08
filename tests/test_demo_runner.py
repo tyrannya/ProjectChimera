@@ -3015,15 +3015,34 @@ def test_a_ledger_ahead_of_the_log_is_still_an_ordinary_recovery(tmp_path):
     section 9.3's ordinary `LOG_BEHIND_STATE`. Only the other direction is
     impossible, and only that direction may fail closed.
     """
+    from chimera.futures.executor import FlattenCause
+
     harness = build(tmp_path)
-    harness.run(2)
-    ledger = harness.runner.position.ledger.state
+    first = harness.first_minute_ms()
+    harness.run(3, start=first)
     committed = [r for r in harness.records() if "ledger_effect" in r][-1]["ledger_effect"]
 
-    # The file holds at least what the log committed: that is the normal state.
-    assert ledger.fees >= D(committed["fees"])
-    assert ledger.slippage >= D(committed["slippage"])
+    # Build a ledger genuinely AHEAD of the log: reduce the position and persist
+    # the booking, but never write the record that would quote it. That is what
+    # a crash between `_save_ledger` and `_append` leaves behind.
+    state = harness.runner.cursor.state_for(
+        first + 2 * 60_000, now_ns=harness.runner.clock.now_ns
+    )
+    harness.runner.position.install_quote(state)
+    harness.runner.position.emergency_reduce(FlattenCause.RISK_HALT, state)
+    harness.runner._save_ledger()
+    ledger = harness.runner.position.ledger.state
+    assert ledger.fees > D(committed["fees"]), "the file must really be ahead"
+
+    # The guard does not fire on that direction...
     assert harness.runner._ledger_regressed_against_the_log() is None
+
+    # ...and a restart still performs the ordinary recovery rather than halting.
+    restarted = build(tmp_path, config=harness.runner.config)
+    assert "ledger_behind_log" not in (restarted.runner.halt_reason or "")
+    recoveries = [r for r in restarted.records() if r["kind"] == RecordKind.RECOVERY.value]
+    assert recoveries, "the real crash window must still produce a RECOVERY"
+    assert recoveries[-1]["recovery"]["cause"] == RecoveryCause.LOG_BEHIND_STATE.value
 
 
 def test_the_recovery_comparison_ignores_a_ledger_it_could_not_read(tmp_path):
@@ -3051,3 +3070,83 @@ def test_the_recovery_comparison_ignores_a_ledger_it_could_not_read(tmp_path):
     assert (
         resumed._state_ahead_of_log() == ""
     ), "the placeholder was compared against the log and manufactured a recovery"
+
+
+def test_a_flatten_on_a_deleted_ledger_writes_neither_a_ledger_nor_a_block(tmp_path):
+    """F16's harm through the documented emergency path.
+
+    `tools/demo_run.py` runs `start()` and then `flatten` whatever `start()`
+    returned, which is what the runbook tells an operator to do during a halt.
+    A deleted ledger halts at SELF_CHECK -- and the very next operator command
+    used to write a FRESH ledger to disk with `settled: []` and
+    `funding_paid: 0`, append an OPERATOR record quoting it, and thereby make the
+    guard pass on the following start. The append-only log then carried
+    economics from a ledger that had begun again at capital, and only Aegis's
+    persisted halt still held the campaign -- which `resume` clears.
+
+    `MISSING` with the log already holding a committed block is a placeholder in
+    every sense that matters, even though nothing failed to parse.
+    """
+    harness = build(tmp_path)
+    harness.run(3)
+    harness.runner.shutdown("stop")
+    last_real = [r for r in harness.records() if "ledger_effect" in r][-1]["ledger_effect"]
+    ledger_path = harness.runner.position.ledger.path
+    ledger_path.unlink()
+
+    resumed = build(tmp_path, config=harness.runner.config)
+    assert resumed.runner.state is RunnerState.HALT
+    assert "ledger_behind_log" in (resumed.runner.halt_reason or "")
+
+    resumed.runner.flatten("kill switch pulled; removing exposure")
+
+    # The reduction happened; the fabricated economics did not.
+    assert resumed.runner.position.leg("spot").is_flat
+    assert not ledger_path.exists(), (
+        "a fresh ledger was written over a deleted one; the campaign's cash "
+        "history is now a file that says it never traded"
+    )
+    operator = [r for r in resumed.records() if r["kind"] == RecordKind.OPERATOR.value][-1]
+    assert "ledger_effect" not in operator
+
+    # And the guard still fires on the next start, rather than being satisfied
+    # by a block this flatten wrote.
+    restarted = build(tmp_path, config=harness.runner.config)
+    assert "ledger_behind_log" in (restarted.runner.halt_reason or "")
+    assert restarted.runner._last_block("ledger_effect") == last_real
+
+
+def test_a_ledger_restored_to_before_a_settlement_is_refused(tmp_path):
+    """The funding half of the same invariant.
+
+    `funding_paid` and `funding_received` are accumulated separately and each
+    only rises, and every FUNDING record carries both as totals. Checking only
+    the `ledger_effect` block left this case reachable: a ledger restored to
+    before a settlement has matching fees and slippage, so the guard passed and
+    the false `LOG_BEHIND_STATE` recovery -- and its false minute exclusion --
+    were written after all.
+    """
+    harness = build(tmp_path)
+    _settlements_at_hour_one(harness)
+    first = harness.first_minute_ms()
+    ledger_path = harness.runner.position.ledger.path
+
+    for index in range(59):
+        harness.tick(first + index * 60_000)
+    before_settlement = ledger_path.read_bytes()
+    harness.tick(first + 59 * 60_000)
+    assert harness.runner.position.ledger.state.settled, "no settlement was booked"
+    assert _funding_records(harness), "no FUNDING record was written"
+    harness.runner.shutdown("stop")
+
+    # Restore the pre-settlement copy: fees and slippage are unchanged, so only
+    # the funding accumulators can tell that this file is behind the log.
+    ledger_path.write_bytes(before_settlement)
+
+    restarted = build(tmp_path, config=harness.runner.config)
+    assert restarted.runner.state is RunnerState.HALT
+    assert "ledger_behind_log" in (restarted.runner.halt_reason or "")
+    assert "funding" in (restarted.runner.halt_reason or "")
+    assert [
+        r for r in restarted.records() if r["kind"] == RecordKind.RECOVERY.value
+    ] == [], "a recovery was invented for a crash that never happened"

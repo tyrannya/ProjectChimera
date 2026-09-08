@@ -524,32 +524,55 @@ class DemoRunner:
         This runs in SELF_CHECK, which is before RECOVER, so the halt happens
         instead of the recovery rather than after it.
 
-        ``realised`` and ``net_funding`` are deliberately not checked: both are
-        signed and may legitimately fall.
+        ``net_funding`` and ``realised`` are deliberately not compared: both are
+        signed and may legitimately fall. But the funding history is still
+        checked, from a different block. ``funding_paid`` and
+        ``funding_received`` are accumulated separately and each only rises --
+        `CarryLedger.book_funding` adds a positive flow to one and the negation
+        of a negative flow to the other -- and every FUNDING record carries both
+        as ``funding_paid_total`` and ``funding_received_total``. Checking only
+        the `ledger_effect` block left exactly the harm above reachable for a
+        ledger restored to before a settlement: fees and slippage matched, the
+        guard passed, and the false ``LOG_BEHIND_STATE`` recovery and its false
+        minute exclusion were written after all.
         """
-        last = self._last_block("ledger_effect")
-        if last is None:
-            return None
         ledger = self.position.ledger.state
-        for field_name, held in (("fees", ledger.fees), ("slippage", ledger.slippage)):
-            recorded = last.get(field_name)
-            if recorded is None:
+        sources = (
+            (
+                self._last_block("ledger_effect"),
+                (("fees", ledger.fees), ("slippage", ledger.slippage)),
+            ),
+            (
+                self._last_block("funding"),
+                (
+                    ("funding_paid_total", ledger.funding_paid),
+                    ("funding_received_total", ledger.funding_received),
+                ),
+            ),
+        )
+        for block, fields in sources:
+            if block is None:
                 continue
-            try:
-                committed = Decimal(str(recorded))
-            except (InvalidOperation, ValueError, TypeError):
-                # A malformed block is the decision log's problem, not this
-                # check's; `reports` refuses the day and says so precisely.
-                continue
-            if held < committed:
-                return (
-                    f"ledger_behind_log: the carry ledger holds {field_name}={held} and "
-                    f"the log already committed {field_name}={committed}. A cumulative "
-                    "accumulator cannot fall, and every save precedes the record that "
-                    "quotes it, so no crash produces this. The ledger has been deleted, "
-                    "truncated or replaced. Restore it from the previous good copy with "
-                    "the damaged bytes preserved (docs/demo_runbook.md, section 6)"
-                )
+            for field_name, held in fields:
+                recorded = block.get(field_name)
+                if recorded is None:
+                    continue
+                try:
+                    committed = Decimal(str(recorded))
+                except (InvalidOperation, ValueError, TypeError):
+                    # A malformed block is the decision log's problem, not this
+                    # check's; `reports` refuses the day and says so precisely.
+                    continue
+                if held < committed:
+                    return (
+                        f"ledger_behind_log: the carry ledger holds {field_name}={held} "
+                        f"and the log already committed {field_name}={committed}. A "
+                        "cumulative accumulator cannot fall, and every save precedes the "
+                        "record that quotes it, so no crash produces this. The ledger has "
+                        "been deleted, truncated or replaced. Restore it from a copy taken "
+                        "AFTER the log's last such record -- an older copy will be refused "
+                        "here again (docs/demo_runbook.md, section 6)"
+                    )
         return None
 
     # ------------------------------------------------------------------
@@ -649,6 +672,41 @@ class DemoRunner:
             committed_minute_kind="" if committed is None else committed[1],
         )
 
+    def _ledger_may_speak(self) -> bool:
+        """Whether this ledger object is entitled to be persisted or quoted.
+
+        Two cases, and the second is why this is a predicate rather than an
+        `outcome is UNREADABLE` check repeated in three places.
+
+        **UNREADABLE.** `CarryLedger.open` returns a placeholder holding
+        `free_cash == capital` and no position. Persisting it replaces the only
+        record of the campaign's cash; quoting it asserts economics no file
+        holds.
+
+        **MISSING, when the log has already committed a `ledger_effect`.** A file
+        that is absent loads as a fresh ledger at full capital, with no dispute,
+        and that is correct for a campaign that has never traded. It is not
+        correct for one whose decision log already says what it paid: the file
+        was deleted, and the object holding `fees == 0` is a placeholder in every
+        sense that matters even though nothing failed to parse.
+
+        The second case is not hypothetical and `self_check` alone does not
+        cover it. `tools/demo_run.py` runs `start()` and then `flatten` whatever
+        `start()` returned, which is what the runbook tells an operator to do
+        during a halt -- so a deleted ledger halted at SELF_CHECK, and the very
+        next operator command wrote a fresh one to disk with `settled: []` and
+        `funding_paid: 0`, appended an OPERATOR record quoting it, and thereby
+        made the guard pass on the following start. The append-only log then
+        carried economics from a ledger that had begun again at capital, which
+        is F16's harm reached through the documented emergency path.
+        """
+        ledger = self.position.ledger
+        if ledger.outcome is LoadOutcome.UNREADABLE:
+            return False
+        if ledger.outcome is LoadOutcome.MISSING and self._last_block("ledger_effect"):
+            return False
+        return True
+
     def _save_ledger(self) -> None:
         """Persist the carry ledger, unless it is the placeholder for a damaged one.
 
@@ -665,11 +723,13 @@ class DemoRunner:
         skipping is not a loss; the dispute is already on the position and the
         record still gets written. The damaged bytes stay on disk either way.
         """
-        if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
+        if not self._ledger_may_speak():
             logger.warning(
-                "Carry ledger at %s is UNREADABLE; not persisting the placeholder. "
-                "The damaged file is left exactly as it is.",
+                "Carry ledger at %s is %s and the log has already committed economics; "
+                "not persisting this object. Writing it would replace what the campaign "
+                "did with a ledger that says it never traded.",
                 self.position.ledger.path,
+                self.position.ledger.outcome.value,
             )
             return
         self.position.ledger.save()
@@ -1719,9 +1779,9 @@ class DemoRunner:
                 "a ledger_effect needs an equity; the position has not been marked, so "
                 "there is no equity to record and this record must not carry the block"
             )
-        if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
+        if not self._ledger_may_speak():
             # The mirror of `CarryLedger.save`'s refusal, and for the same
-            # reason. An UNREADABLE ledger is represented by a placeholder
+            # reason. A ledger that may not speak is represented by a placeholder
             # holding `free_cash == capital`, no position and no accruals, so
             # every term below would be this object's default rather than
             # anything a file holds: `funding` and `slippage` in particular
@@ -1736,10 +1796,12 @@ class DemoRunner:
             # this is the only builder of the block, and a caller that has an
             # unreadable ledger has no economics to report at all.
             raise RunnerError(
-                f"the carry ledger at {self.position.ledger.path} is UNREADABLE, so this "
-                "object holds a placeholder and not what the position did; a ledger_effect "
-                "built from it would assert economics no persisted ledger holds. Repair or "
-                "move the damaged file by hand, with its bytes preserved "
+                f"the carry ledger at {self.position.ledger.path} is "
+                f"{self.position.ledger.outcome.value} and is not entitled to speak for "
+                "this campaign, so this object holds a placeholder and not what the "
+                "position did; a ledger_effect built from it would assert economics no "
+                "persisted ledger holds. Restore the file from a copy taken after the "
+                "log's last ledger_effect, with any damaged bytes preserved "
                 "(docs/demo_runbook.md, section 6)."
             )
         ledger = self.position.ledger.state
@@ -1766,7 +1828,7 @@ class DemoRunner:
         on presence, and `_save_ledger` skips the same case, so the record and
         the file agree that this cycle's economics were never booked anywhere.
         """
-        if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
+        if not self._ledger_may_speak():
             return None
         return self._ledger_effect(equity)
 
