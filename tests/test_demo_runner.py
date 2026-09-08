@@ -3282,3 +3282,34 @@ def test_an_unreadable_ledger_may_not_speak_even_with_an_empty_log(tmp_path):
     assert runner._ledger_regressed_against_the_log() is None, "so the guard says nothing"
 
     assert runner._ledger_may_speak() is False
+
+
+def test_the_ledger_verdict_is_taken_before_the_torn_tail_is_repaired(tmp_path):
+    """The two features meet in `__init__`, and the order matters.
+
+    `_ledger_regression` is decided during construction, which is BEFORE
+    `start()` repairs a torn tail -- so the verdict is read from a log whose
+    final line is half a record. That is the correct moment anyway: a torn
+    record was never committed, and the ledger is always saved before the record
+    that quotes it, so the surviving blocks are exactly the ones the ledger must
+    cover. What must not happen is construction raising on the unparseable line,
+    which would turn a recoverable crash into a campaign that cannot be built.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    config = harness.runner.config
+    harness.runner.shutdown("crash drill")
+    day = sorted((harness.state_dir / "decision_log").glob("*.ndjson"))[-1]
+    with open(day, "ab") as handle:
+        handle.write(b'{"schema":"chimera.decision-record/1","seq":99')
+
+    # Constructed, not started: this is the read that happens before any repair.
+    unstarted = build(tmp_path, config=config, start=False).runner
+    assert unstarted._ledger_regression is None
+    assert unstarted._ledger_may_speak() is True
+
+    # And the ordinary torn-tail recovery still happens on top of it.
+    resumed = build(tmp_path, config=config)
+    assert resumed.runner.state is RunnerState.READY
+    recoveries = [r for r in resumed.records() if r["kind"] == RecordKind.RECOVERY.value]
+    assert [r["recovery"]["cause"] for r in recoveries] == [RecoveryCause.TORN_TAIL.value]

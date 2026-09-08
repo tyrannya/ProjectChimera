@@ -266,7 +266,10 @@ class DemoRunner:
         )
         self._enter(RunnerState.STARTUP)
         self.halt_reason: str | None = None
-        #: Verdict of :meth:`_ledger_may_speak`, decided ONCE and decided HERE.
+        #: Why this ledger holds less than the log already committed, or None.
+        #: Decided ONCE and decided HERE, and it is the SAME value SELF_CHECK
+        #: refuses on and :meth:`_ledger_may_speak` mutes on -- one computation,
+        #: so the halt and the mute cannot drift apart.
         #:
         #: It has to be taken from the ledger as it was LOADED, before anything
         #: books into it. `HedgedPosition._reconcile_ledger` re-derives fees and
@@ -274,7 +277,7 @@ class DemoRunner:
         #: `flatten` on a stale ledger raises its fees to match the executors
         #: before the first save -- and a verdict computed at that moment would
         #: find nothing behind the log and let the stale file speak. That is the
-        #: precise mechanism this predicate exists to stop, so the question is
+        #: precise mechanism the mute exists to stop, so the question is
         #: answered before the first command can move the answer.
         #:
         #: Slippage is why the answer still matters after fees have caught up:
@@ -303,11 +306,8 @@ class DemoRunner:
         # the clock seeded from the LOG's tail, not from the state file that
         # lagged it, and that is a change with its own crash matrix to prove.
         self.last_record_hash: str = persisted.get("last_record_hash", "")
-        # Decided now, from the ledger as loaded. See `_may_speak` above.
-        self._may_speak = (
-            self.position.ledger.outcome is not LoadOutcome.UNREADABLE
-            and self._ledger_regressed_against_the_log() is None
-        )
+        # Decided now, from the ledger as loaded. See `_ledger_regression` above.
+        self._ledger_regression = self._ledger_regressed_against_the_log()
         #: The minute the last reconciliation was performed for, or None when
         #: none has been. A version 1 state file carries no such field, and its
         #: absence means "none has been" -- see RUNNER_STATE_SCHEMAS_READ.
@@ -518,7 +518,7 @@ class DemoRunner:
             return f"store_error: {exc}"
         if self.position.ledger.disputed:
             return f"dispute: {self.position.ledger.disputed}"
-        return self._ledger_regressed_against_the_log()
+        return self._ledger_regression
 
     def _ledger_regressed_against_the_log(self) -> str | None:
         """Refuse a carry ledger that holds LESS than the log already committed.
@@ -731,12 +731,10 @@ class DemoRunner:
         into speaking. One answer per process is also what keeps this off the
         hot path -- unmemoized it is several full decision-log scans per minute.
         """
-        if self._may_speak is None:  # pragma: no cover - set in __init__
-            self._may_speak = (
-                self.position.ledger.outcome is not LoadOutcome.UNREADABLE
-                and self._ledger_regressed_against_the_log() is None
-            )
-        return self._may_speak
+        return (
+            self.position.ledger.outcome is not LoadOutcome.UNREADABLE
+            and self._ledger_regression is None
+        )
 
     def _save_ledger(self) -> None:
         """Persist the carry ledger, unless it is the placeholder for a damaged one.
