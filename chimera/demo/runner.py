@@ -1333,6 +1333,14 @@ class DemoRunner:
 
         self.last_reconcile_minute_ms = int(minute_ms)
         detail = "agreed" if not mismatched else f"mismatch on {', '.join(sorted(mismatched))}"
+        # Through the helper, so the runner spells "persist the ledger" one way.
+        # A consistency edit and nothing more: the only difference from
+        # `ledger.save()` is that an UNREADABLE ledger is skipped rather than
+        # raising, and no path reachable through `tools/demo_run.py` gets here
+        # with one -- `start()` halts in SELF_CHECK on the dispute, and both
+        # `catch_up` and `run_minutes` stop on HALT. It carries no witness for
+        # that reason, and is recorded here rather than left looking like a
+        # behaviour change nobody tested.
         self._save_ledger()
         self._append(
             RecordKind.RECONCILIATION,
@@ -1856,8 +1864,9 @@ class DemoRunner:
         return before the ledger is persisted". F10 reversed that: the halts
         that BOOK now persist the ledger before they halt, so the file is ahead
         of the log rather than behind it. The block is still withheld, for the
-        first reason alone -- two of those three sites have no fresh mark for the
-        minute, so there is no equity to report -- and the consequence is that a
+        first reason alone -- most of those sites halt before the minute's
+        `mark_to_market`, so there is no equity to report -- and the consequence
+        is that a
         booked-and-persisted dispute halt leaves its economics on disk and out of
         the day's report until the next record carries a block. That is a
         disclosed gap, not an assertion of anything false, and it is the

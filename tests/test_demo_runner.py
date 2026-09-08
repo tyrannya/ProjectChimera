@@ -2314,6 +2314,9 @@ def test_a_crash_between_the_stores_and_the_ledger_disputes_on_the_next_start(tm
     harness.runner.position.install_quote(state)
     harness.runner.position.emergency_reduce(FlattenCause.RISK_HALT, state)
     assert harness.runner.position.leg("spot").is_flat
+    # A sanity check on the SIMULATION, not a claim about production:
+    # `emergency_reduce` books into the in-memory ledger and never persists it,
+    # so this asserts the crash window was set up as intended.
     assert ledger_path.read_bytes() == open_bytes, "the ledger save must not have happened"
 
     restarted = build(tmp_path, start=False)
