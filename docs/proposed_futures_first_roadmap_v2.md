@@ -8,6 +8,8 @@ The current active implementation branch remains responsible for finishing its o
 
 Nothing in this document is a research preregistration. Nothing here licenses a result, a live order, real money, a leverage increase, or a change to any frozen historical verdict. It is a roadmap and architecture decision proposal only.
 
+> **Presence on `main` does not mean adoption.** This file may be merged into `main` so collaborators and independent reviewers can read it from the default branch. Until the adoption checklist in section 25 is completed by a separate governance decision, agents may read, critique, expand, or independently audit this proposal, but they MUST NOT treat it as the active roadmap or begin implementing its post-S3 stages merely because the file exists on `main`.
+
 ---
 
 ## 0. Owner objective
@@ -118,584 +120,692 @@ microstructure state      causal multi-timeframe state
 (tick/trade/book)         (1m -> 5m -> 15m -> 1h -> 4h -> 1d)
     |                     |
     +----------+----------+
-               v
-        MARKET CONTEXT
-   one as-of instant, explicit
-   missingness and staleness
                |
-        +------+------+----------------+
-        |             |                |
-        v             v                v
- futures directional  scalping         spot
- strategy family      strategy family  strategy family
-        |             |                |
-        +-------------+----------------+
-                      v
-              strategy intents
-                      |
-                      v
-                    AEGIS
-             sole risk authority
-                      |
-                      v
-          venue-specific execution
-        futures / spot / later venues
-                      |
-                      v
-       accounting + position state
-                      |
-                      v
-      decision log + input hashes
-                      |
-                      v
-             deterministic replay
+               v
+       MarketContext(as_of=t)
+               |
+       +-------+-------+
+       |               |
+       v               v
+ futures directional   scalping / spot
+ candidates            candidates
+       |               |
+       +-------+-------+
+               |
+               v
+      Aegis risk authority
+               |
+               v
+    simulated execution first
+               |
+               v
+  persistent accounting + log
+               |
+               v
+ deterministic replay / audit
 ```
 
-The system must separate:
-
-- **data truth** from strategy interpretation;
-- **market context** from model family;
-- **strategy decision** from risk permission;
-- **risk permission** from venue execution;
-- **execution** from accounting/reporting;
-- **engineering qualification** from scientific evidence;
-- **prospective validation** from permission to trade real money.
+The essential architectural rule is that **MarketContext is a causally valid representation of what was knowable at a single `as_of` instant**, not a bag of resampled candles.
 
 ---
 
-## 4. Multi-Timeframe Coherence (MTC) — required core capability
+## 4. Multi-Timeframe Coherence (MTC)
 
-The old P7 consensus-v1 result does **not** become a blanket prohibition on multi-timeframe reasoning. The new system must not revive that same majority-vote design under a new name.
+### 4.1 Purpose
 
-### 4.1 Causal clocks
+MTC is a required platform capability, not a presumed source of alpha.
 
-Initial supported context clocks:
+It exists to let a strategy ask:
 
-- event / trade / book state for microstructure;
-- 1s / 5s / 15s derived micro bars only where the source contract can support them;
-- 1m;
-- 5m;
-- 15m;
-- 1h;
-- 4h;
-- 1d.
+- what is the microstructure saying now?
+- what is the 1m/5m/15m local state?
+- what is the 1h/4h/day regime?
+- do those views reinforce, contradict or remain silent relative to each other?
+- how stale is each view?
+- which views are missing?
 
-Not every strategy must use every clock.
+### 4.2 Causal rule
 
-At decision instant `t`, a timeframe may contribute only information that was causally available by `t`.
+At decision instant `t`, every timeframe feature must be computed only from information available by `t`.
 
-Default rule for v1:
+For a closed higher-timeframe bar:
 
-> A higher-timeframe candle contributes as a completed candle only when its close instant is <= the decision instant.
+```text
+bar is eligible iff its close instant <= t
+```
 
-An unfinished H1/H4/D1 candle may not be silently represented as its final OHLC. If a future design wants partial-candle state, that is a **different explicitly named feature family** with its own as-of semantics.
+An unfinished 4h or 1d candle may not contribute its eventual final high/low/close as though those values already existed.
 
-### 4.2 MarketContext
+If partial-bar state is ever used, it must be specified as a **different information family** with explicitly causal fields known at `t`; it may not borrow the closed-bar semantics.
 
-Build one deterministic `MarketContext(as_of=t)` containing per clock, where available:
+### 4.3 Alignment
 
-- return / direction state;
-- trend-strength state;
+Each view carries at minimum:
+
+```text
+source_time
+available_time
+as_of
+age
+complete / partial
+missing
+```
+
+No forward fill that hides missingness.
+
+No nearest-future match.
+
+No retrospective alignment after the fact.
+
+### 4.4 State categories
+
+The first MTC generation should represent at least:
+
+- directional/trend state;
 - realised-volatility state;
-- range / compression / expansion state;
+- range/compression/expansion state;
 - volume/activity state;
-- futures mark/index/basis/funding state;
-- microstructure state where applicable;
-- staleness;
-- completeness / missingness;
-- source/input digest.
+- spot/perpetual basis or divergence state;
+- funding state;
+- price relative to recent causal structure;
+- microstructure pressure;
+- explicit disagreement/coherence across clocks;
+- staleness and missingness.
 
-The market context is an engineering representation. It does not itself declare LONG or SHORT.
+### 4.5 Coherence is not majority voting
 
-### 4.3 Coherence representation
+Do not restore P7 consensus-v1 under a new name.
 
-The first researchable MTC representation should expose a vector rather than hard-code a single vote:
+A higher timeframe is not automatically a veto and a lower timeframe is not automatically noise. The role depends on the strategy family and horizon.
 
-- directional agreement across clocks;
-- disagreement structure;
-- trend-strength alignment;
-- volatility-regime compatibility;
-- short-vs-long horizon momentum conflict;
-- microstructure confirmation/conflict;
-- staleness-weighted availability;
-- derivatives-vs-spot disagreement where both are present.
+For example:
 
-A later model may learn which interactions matter, but any deciding use is frozen before the prospective result.
+- a multi-hour futures strategy may treat 4h/1d as regime context and 5m/15m as timing;
+- a scalper may treat order flow and top-of-book as the primary state while 15m/1h is only a context/risk modifier.
 
-### 4.4 Required MTC invariants
+The relationship must be measured prospectively rather than hard-coded from trading folklore.
 
-Tests must prove:
+### 4.6 MTC scientific question
 
-1. changing a future higher-timeframe close cannot change an earlier context;
-2. no incomplete higher-timeframe candle is passed as final without an explicit partial-candle feature family;
-3. replaying the same event set creates byte-identical contexts;
-4. missing input remains missing — no forward/backward fill;
-5. stale clocks are marked stale rather than reused as fresh;
-6. the exact source rows behind a decision are hash-identifiable;
-7. no model or strategy can bypass Aegis because MTC agrees strongly.
+The first MTC experiment is not "does a complicated architecture make money?"
+
+It is:
+
+> Does a causally aligned multi-timeframe context add prospective information or decision value relative to the same candidate family without that context, under the same instrument, horizon, costs and risk rules?
+
+This makes the incremental contribution identifiable.
 
 ---
 
-## 5. Data generations
+## 5. Future data generation: gen4
 
-Do not mutate the existing gen3 contract into the new research surface. Preserve it as provenance.
+The current prospective recorder is a foundation, but the new destination requires a generation whose contract explicitly supports directional futures and native microstructure.
 
-### D0 — Keep gen3 intact
+### 5.1 Required core market families
 
-Gen3 remains the record of the current programme and current S3 machinery.
+At minimum investigate and freeze first-party sources for:
 
-### D1 — Gen4 source preflight
+- USD-M BTCUSDT perpetual klines;
+- mark price / index price / funding semantics;
+- perpetual best bid/ask;
+- public trades / aggregate trades where scientifically suitable;
+- native order-book depth if a defensible continuous source is available;
+- liquidation / force-order information if a source-valid contract can be maintained;
+- open interest if publication semantics and archive/reconciliation are adequate;
+- spot BTCUSDT klines;
+- spot best bid/ask;
+- spot public trades / aggregate trades where suitable.
 
-Before freezing a gen4 contract, perform engineering-only source preflight for the data needed by the futures-first and scalping lanes.
+Every source must have a source preflight before the contract freezes.
 
-Futures core candidates include, subject to current first-party documentation and observed availability:
+### 5.2 Depth/order-book rule
 
-- USD-M perpetual kline/trade data;
-- mark/index/premium/funding information;
-- best bid/ask;
-- aggregate trade / trade flow;
-- depth/book updates for the scalping lane;
-- required exchange metadata for tick size, quantity step and contract rules.
+If native depth is used, the system must define and test:
 
-Spot candidates include:
+- snapshot + delta bootstrap;
+- sequence/update-id semantics;
+- gap detection;
+- reconnect recovery;
+- duplicate handling;
+- out-of-order handling;
+- local-book reconciliation;
+- clock/time basis;
+- storage footprint;
+- deterministic replay.
 
-- spot kline/trade data;
-- best bid/ask;
-- depth/book data for the spot scalping lane.
+A broken local book is worse than no book. Fail closed rather than pretend continuity.
 
-Exact endpoints, stream names, event fields, sequence rules and reconciliation sources must be verified from current first-party documentation and a real engineering probe **before** the gen4 contract is frozen.
+### 5.3 Data-rate/storage report
 
-### D2 — Storage sizing rule
+Before adopting high-rate streams, run an engineering preflight that measures:
 
-Do not guess a monthly microstructure storage number.
+- events/s;
+- compressed/raw bytes/s;
+- CPU;
+- memory;
+- disk/day;
+- replay throughput;
+- expected 30/90/182-day storage;
+- recovery time after restart.
 
-For every high-rate candidate stream, run a 24-hour engineering pilot before contract freeze and compute:
+The roadmap must be operationally affordable before the source contract is frozen.
+
+---
+
+## 6. General single-leg futures runtime
+
+The existing demo path is carry-shaped. A futures-first system needs a general directional state machine that does not require a spot hedge leg.
+
+### 6.1 Required states
+
+At minimum represent safely:
 
 ```text
-compressed_GiB_per_day = compressed_bytes_24h / 2^30
-projected_30d_GiB       = compressed_GiB_per_day * 30
-minimum_free_capacity   = 1.5 * projected_30d_GiB
-                         + compaction/replay scratch requirement
+FLAT
+LONG
+SHORT
+REDUCING
+HALTED
+DISPUTED
+RECOVERING
 ```
 
-Provisioning must use the measured rate, not a README estimate. If a stream makes the approved storage/egress budget impossible, change sampling/retention **before** `prospective_from`, create a new contract identity, and repeat the pilot. Never thin a prospective stream retrospectively because it became expensive.
+A position may not be inferred from the last strategy signal; execution/accounting state is authoritative.
 
-### D3 — Microstructure integrity
+### 6.2 Accounting
 
-A book/depth contract must define and test:
+The single-leg futures ledger must make explicit:
 
-- snapshot + diff sequencing where the venue requires it;
-- duplicate policy;
-- out-of-order policy;
-- reconnect policy;
-- sequence-gap detection;
-- reconstruction validity;
-- receipt time and exchange/event time;
-- stale-book semantics;
-- recovery after disconnect;
-- exact behaviour when a gap cannot be repaired.
-
-A corrupted or uncertain local book fails closed for scalping decisions.
-
----
-
-## 6. Stage sequence after S3
-
-The proposed future sequence is:
-
-```text
-B0/B1 current S3 closure
-      ↓
-F0 roadmap adoption / generation freeze
-      ↓
-F1 gen4 recorder + market-state foundation
-      ↓
-F2 general futures directional runtime
-      ↓
-F3 causal MTC implementation + research protocol
-      ↓
-F4 futures-first candidate freeze
-      ↓
-F5 Futures Validation Campaign (FVC-1)
-      ↓
-while FVC-1 accrues:
-      SCL1 futures-scalping lane
-      SPT1 standalone spot lane
-      ↓
-SCL2 / SPT2 prospective campaigns
-      ↓
-U1 unified multi-strategy orchestration
-      ↓
-U2 sustained paper operation + independent audit
-      ↓
-L0 separately authorised tiny-live consideration
-      ↓
-X1 later options / DEX / cross-exchange / other assets
-```
-
-No result from one arrow is assumed by the next.
-
----
-
-## 7. F0 — adopt the futures-first mandate
-
-Governance only.
-
-Record explicitly:
-
-- futures directional autonomy is priority 1;
-- scalping and spot are priority 2;
-- other families are lower priority;
-- MTC is a required platform capability but not presumed alpha;
-- carry remains supported but is no longer the primary campaign spine;
-- the old carry-first R1/R2/R3 PVC-1 plan is superseded before it starts;
-- no old historical result is reinterpreted;
-- no prospective result exists merely because this roadmap is adopted.
-
-F0 must not alter the active PR #89 chronology retrospectively.
-
----
-
-## 8. F1 — gen4 recorder and MarketContext foundation
-
-Goal: collect and represent the data needed for the instrument the project actually intends to trade.
-
-Engineering deliverables:
-
-- new gen4 contract(s), preserving gen3;
-- futures and spot source preflight records;
-- microstructure raw sink additions where selected;
-- deterministic trade/book normalisation;
-- causal multi-timeframe resampling;
-- `MarketContext` with input hashes and staleness;
-- replay of context construction;
-- source-quality / sequence-gap / clock-skew observability.
-
-Scientific tasks: **none**.
-
-No model fitting based on the prospective gen4 validation region.
-
-Pass: the exact data contract can be recorded and replayed deterministically under the frozen source semantics.
-
-Fail: source/sequence/storage constraints make the design unreliable. Redesign the contract before activating its prospective boundary.
-
----
-
-## 9. F2 — general futures directional runtime
-
-The current runtime is carry-shaped. The futures-first target needs a first-class **single-leg directional perpetual position** without breaking the existing carry path.
-
-Required capabilities:
-
-- LONG / FLAT / SHORT perpetual target state;
-- open, increase, reduce, close, reverse under explicit transition rules;
-- mark-to-market from the venue's liquidation/reference semantics;
-- realised and unrealised PnL;
-- taker/maker fee representation as actually executed;
+- signed quantity;
+- average entry;
+- realised PnL;
+- unrealised PnL;
+- fees;
 - funding paid/received;
-- spread/slippage attribution without double charging;
-- margin state and liquidation-distance calculation;
-- no exposure increase without Aegis approval;
-- restart reconstruction against persisted position/accounting state;
-- deterministic decision records and replay;
-- strategy-agnostic accounting interfaces where practical.
+- margin allocation;
+- liquidation reference;
+- slippage evidence;
+- free cash / total equity;
+- order/fill provenance.
 
-This stage uses synthetic rules/fixtures. It generates no alpha result.
+No term may be charged twice merely because it appears both in a fill price and in a metric.
 
-The carry implementation remains as a two-leg stress test and later optional strategy, not as the abstraction every futures trade must pretend to be.
+### 6.3 Crash consistency
 
----
+State/log/ledger ordering must be defined before a campaign starts.
 
-## 10. F3 — causal MTC implementation and falsification
+Every restart must either:
 
-This stage tests the **machinery**, then designs one bounded scientific question.
+- reconstruct one coherent state;
+- recover a specifically authorised crash window;
+- or refuse.
 
-Engineering first:
+Never silently manufacture a fresh ledger because a persistent file disappeared.
 
-- implement causal context at the chosen clocks;
-- leakage tests at every resampling boundary;
-- staleness/missingness tests;
-- feature parity between live and replay;
-- clock and timezone tests;
-- synthetic examples where higher and lower timeframes agree, disagree and are missing.
+### 6.4 No real exchange route yet
 
-Only after engineering is frozen may a research checkpoint ask whether MTC adds value.
+This is still simulated execution over recorded public data.
 
-The primary MTC scientific comparison should be incremental and controlled:
+No credentials.
 
-> On the same samples, same target, same execution assumptions and same model family, does adding the preregistered MTC information set improve a futures directional candidate over its single-clock baseline?
+No authenticated order route.
 
-Do not answer this with an uncontrolled comparison of two entirely different systems.
-
-The roadmap budget for the initial directional screen is intentionally finite:
-
-- at most 2 model families: one linear and one tree baseline;
-- at most 3 decision clocks/horizons selected before the deciding run;
-- exactly 2 information arms per cell: single-clock baseline vs MTC-augmented;
-- therefore at most 12 deciding cells before multiplicity correction;
-- no neural model in the first futures-first screen.
-
-The exact clocks, target and effect-size floor belong in the preregistration, not in this roadmap.
+No leverage above 1x.
 
 ---
 
-## 11. F4 — futures candidate freeze
+## 7. Futures directional candidate programme
 
-Primary purpose: produce a **small frozen menu** for forward validation, not find the prettiest backtest.
+This is the primary scientific lane.
 
-Candidate selection principles:
+### 7.1 Candidate hierarchy
 
-- model the USD-M BTCUSDT perpetual directly;
-- train only on research-visible/development data;
-- burned historical blocks may be used for development but never described as fresh deciding evidence;
-- the forward campaign starts strictly after model/rule/config hashes are frozen and independently reviewed;
-- no online tuning in FVC-1;
-- cost model is venue/instrument specific, not a flat global 20 bps assumption;
-- effect-size floor, minimum activity, statistical method and multiplicity budget are all fixed before the first scored minute.
+Start with intentionally limited families rather than a model zoo.
 
-Initial campaign menu: at most **three** futures directional candidates total, preferably fewer.
+Tier A — simple baselines:
 
-At least one must be a simple externally intelligible baseline. A complex candidate cannot be promoted merely for beating CASH while failing to beat the appropriate simple baseline net of costs.
+- constant/no-trade controls;
+- causal momentum/trend;
+- causal reversal;
+- volatility/regime-conditioned variants.
 
----
+Tier B — simple learned models:
 
-## 12. F5 — FVC-1, the primary Futures Validation Campaign
+- regularised linear/logistic family;
+- one tree-family candidate (for example LightGBM/XGBoost selected in advance, not both searched indefinitely).
 
-FVC-1 is the first priority scientific campaign under this roadmap.
+Tier C — later only if earned:
 
-Minimum design:
+- sequence/deep models;
+- representation learning;
+- transformers;
+- specialised architectures.
 
-- USD-M BTCUSDT perpetual is the traded/simulated instrument;
-- candidate hashes frozen before start;
-- simulated fills use recorded market state and the venue-specific cost model;
-- every decision is reconstructible from the decision log and exact input hashes;
-- no parameter change after campaign start;
-- no threshold rescue;
-- no changing a losing LONG/SHORT rule into a different rule after reading interim results;
-- monthly frozen evidence;
-- dependent-data inference, not IID trade assumptions;
-- multiplicity correction across the frozen menu.
+Deep learning is not a prerequisite for a useful autonomous trading system.
 
-### Duration policy
+### 7.2 First bounded MTC screen
 
-The default maximum campaign duration is **182 calendar days**.
+For the first deciding MTC screen:
 
-Do not extend it because a promising result is "almost significant". If the preregistered minimum effective activity is not reached, the result is `INSUFFICIENT_ACTIVITY` under the protocol unless an extension rule was frozen before start.
+- maximum 2 model families: one linear, one tree;
+- maximum 3 preselected horizons/clocks;
+- exactly two arms per model/horizon: baseline vs MTC;
+- maximum **12 deciding cells**;
+- no neural models;
+- no post-hoc horizon addition;
+- no post-result feature-family rescue.
 
-The protocol must calculate, before start, the minimum effective sample size required for its effect-size floor at:
+The purpose is to answer whether the MTC information family deserves promotion, not to optimise the whole strategy universe.
 
-- family-wise alpha <= 0.05 after the declared candidate multiplicity;
-- target power >= 0.80 under the preregistered alternative;
-- dependence handled through block/bootstrap or another justified dependent-data method.
+### 7.3 Instrument
 
-Trade count alone is not an IID sample-size claim.
+Primary deciding instrument:
 
-### FVC-1 output
+```text
+Binance USD-M BTCUSDT perpetual
+```
 
-One verdict per frozen candidate, once.
+A strategy trained/evaluated for the perpetual is executed against the perpetual simulator.
 
-A PASS authorises continued paper validation and later safety review. It does not authorise real money.
+Spot may be an input/control where preregistered, but a positive perpetual result is not silently re-labelled as spot alpha and vice versa.
 
 ---
 
-## 13. SCL1 — futures scalping lane (priority 2)
+## 8. Cost and execution realism
 
-Start its engineering while FVC-1 is accruing so calendar time is not wasted.
+Directional futures and especially scalping cannot reuse one generic cost assumption blindly.
 
-Definition for this programme:
+### 8.1 Common terms
 
-> Scalping means decisions whose information and execution depend materially on native microstructure, not merely one-minute candles.
+Every candidate must account for the terms applicable to it:
 
-Required data/engineering before a scientific scalping campaign:
+- taker/maker fee;
+- bid/ask crossing;
+- configured or measured slippage;
+- funding;
+- latency assumption;
+- partial fills;
+- quantity/price constraints;
+- market impact where relevant;
+- liquidation/margin rules.
 
-- trade / aggregate-trade flow;
-- reliable top-of-book and, if selected, locally reconstructed depth;
-- spread and microprice;
-- depth/order-flow imbalance;
-- event/receipt latency measurement;
-- sequence integrity;
-- taker fills from the touch;
-- maker execution only after a separate queue/latency model is validated.
+### 8.2 Scalping constraint
 
-Initial signal families may include, subject to preregistration:
+A strategy is not a serious scalping candidate if its expected gross edge is of the same order as one spread crossing plus fees and it has no credible maker/queue model.
 
-- order-flow imbalance;
-- signed trade imbalance;
-- microprice / depth imbalance;
-- spread/liquidity state;
-- very-short-horizon momentum/reversal;
-- futures mark/index/spot dislocation;
-- liquidation/forced-order information only if a stable first-party source is verified.
+### 8.3 Taker-first rule
 
-Do not begin with dozens of indicators.
+The first scalping campaign should prefer a conservative taker model unless a maker simulation has independently validated:
 
-The first scalping campaign should prefer **taker-only execution** because maker fills require queue-position assumptions that can create fictitious alpha. A maker lane is a separate later checkpoint.
+- queue position;
+- cancellation/replace latency;
+- fill probability;
+- adverse selection;
+- partial fills;
+- fees/rebates.
 
-MTC can contribute higher-horizon context to a scalp, but higher timeframes are context, not a mandatory directional veto. The research question must determine whether the context improves the microstructure baseline.
-
----
-
-## 14. SPT1 — standalone spot lane (priority 2)
-
-Spot becomes a first-class tradable path.
-
-Initial scope:
-
-- BTCUSDT spot, LONG / FLAT only;
-- own venue constraints, fees, quotes and ledger;
-- same recorder/provenance/MarketContext framework;
-- no assumption that a futures edge transfers to spot;
-- no margin shorting in v1;
-- optional spot scalping after the shared microstructure substrate is valid.
-
-Scientific comparisons are venue-specific. A spot result and a futures result must not be collapsed merely because the symbol is BTCUSDT.
+Do not manufacture profitable maker fills from touching the best quote.
 
 ---
 
-## 15. SCL2 / SPT2 — prospective validation
+## 9. Primary prospective campaign: FVC-1
 
-Scalping and spot receive separate prospective protocols and start instants.
+FVC-1 = **Futures Validation Campaign 1**.
 
-They may overlap FVC-1 in wall-clock time if and only if:
+This replaces the assumption that the old carry-first PVC-1 menu is automatically the next deciding campaign.
 
-- their rules were frozen before their own first scored data;
-- each campaign has its own multiplicity budget;
-- interim FVC-1 results are not used to tune them;
-- shared data do not make one campaign's holdout a hidden development set for the other.
+### 9.1 Freeze before start
 
-For scalping, require both a minimum calendar-regime span and an effective-activity threshold; high raw trade count alone is not enough because thousands of adjacent micro trades are strongly dependent.
+Before the first scored instant, freeze in Git:
 
----
+- source contract;
+- eligible data families;
+- candidate count;
+- candidate parameters;
+- horizon/holding rules;
+- MTC information set;
+- execution/cost model;
+- risk limits;
+- scoring metrics;
+- minimum activity/data sufficiency rules;
+- multiple-testing procedure;
+- missing-data behavior;
+- stop/continuation rules;
+- campaign duration rule;
+- exact boundary/start instant.
 
-## 16. U1 — unified multi-strategy orchestration
+Independent protocol review occurs before the boundary.
 
-Do **not** rebuild the old mode router before strategies have earned it.
+### 9.2 Candidate cap
 
-U1 opens only when at least two strategy families have prospectively valid non-negative evidence under their own protocols.
+FVC-1 may carry at most **3 frozen futures candidates**, including any baseline/control required by the protocol.
 
-Potential strategy families at that point:
+No online tuning.
 
-- futures directional;
-- futures scalping;
-- spot directional/scalping;
-- carry/basis;
-- later stat-arb.
+No replacing a losing candidate mid-campaign.
 
-The orchestrator owns allocation, not scientific rescue.
+### 9.3 Maximum duration
 
-Required concepts:
+Maximum deciding observation window:
 
-- strategy-level risk budgets;
-- aggregate BTC delta;
-- gross/notional exposure;
-- correlated strategy exposure;
-- conflicting intents;
-- portfolio drawdown and daily-loss state;
-- order-rate sharing;
-- funding/margin pressure;
-- one Aegis decision surface above all strategies.
+```text
+182 UTC days
+```
 
-A losing strategy may not be hidden by portfolio aggregation and called validated.
+The protocol may define an earlier valid stop only if that stop rule itself is frozen before the first scored day.
 
----
+### 9.4 Minimum effective sample size
 
-## 17. U2 — sustained autonomous paper operation
+Do not choose an arbitrary number such as "100 trades" and call it statistical sufficiency.
 
-Before any authenticated trading route exists, the selected system runs continuously in paper/dry-run form.
+Before the boundary, the protocol must specify an effect-size floor and compute the minimum effective sample size needed for the primary comparison under:
 
-Minimum expectations:
+```text
+family-wise alpha <= 0.05
+power >= 0.80
+```
 
-- several months of continuous operation after candidate selection;
-- scheduled restarts;
-- recorder outages;
-- stale-book drills;
-- state corruption drills;
-- exchange metadata changes simulated;
-- kill-switch drills;
-- reconciliation drills;
-- zero unexplained replay divergence;
-- decision log and accounting reconstructible independently;
-- runbook executed by someone other than the authoring agent.
+Because trades/returns are serially dependent, effective sample size must be estimated conservatively with a preregistered dependent-data method such as block bootstrap, stationary bootstrap or another justified equivalent.
 
-The autonomous property is operational here: the system can make, risk-check, simulate, record, recover and explain its decisions without an operator manually selecting trades.
+For scalping, thousands of adjacent fills do not count as thousands of independent experiments.
 
----
+### 9.5 Primary metrics
 
-## 18. L0 — separately authorised live route, only after evidence
+The protocol should distinguish:
 
-The end goal includes the ability to trade, but the authenticated route is deliberately late.
+- predictive/information metrics;
+- economic metrics after all costs;
+- risk metrics;
+- operational/data-validity metrics.
 
-L0 may be designed only after:
+A candidate cannot pass economically merely because a predictive AUC/accuracy is nonzero.
 
-1. a strategy has passed its prospective protocol;
-2. sustained paper operation is coherent;
-3. replay/accounting/safety audits pass;
-4. an independent reviewer reconstructs the result;
-5. the owner explicitly authorises a new live-trading contract.
+### 9.6 Default failure meaning
 
-Initial live architecture must include at minimum:
+A negative FVC-1 is a result.
 
-- dedicated exchange sub-account;
-- API key with trading permission only and withdrawals disabled;
-- IP allow-list where supported;
-- credentials outside repository and ordinary state directories;
-- hard capital cap enforced by both account balance and Aegis;
-- leverage capped at 1x initially unless a later independent risk mandate changes it;
-- exchange-state reconciliation;
-- duplicate-order prevention;
-- cancel/flatten procedure;
-- local kill switch plus exchange-side emergency procedure;
-- parallel dry-run for live-vs-shadow parity;
-- explicit operator enable gate;
-- no automatic capital top-up;
-- any capital increase is a new reviewed decision.
+It does not trigger an in-place rescue search.
 
-A live executor is not alpha and does not retroactively validate a strategy.
+Any materially new candidate family requires a new preregistered campaign and consumes the finite future research budget.
 
 ---
 
-## 19. X1 — later expansion
+## 10. Scalping programme — second priority
 
-Only after the futures + scalping/spot core is coherent may the project open lower-priority mandates such as:
+Scalping starts as a separate scientific lane after the futures directional protocol is frozen/started, so evidence accrual can run while new engineering proceeds.
 
-- delta-neutral carry / funding / cash-and-carry;
-- cross-exchange arbitrage;
+### 10.1 Native information families
+
+Candidates may use preregistered subsets of:
+
+- top-of-book imbalance;
+- spread;
+- microprice;
+- signed trade flow;
+- aggressive buy/sell volume;
+- depth imbalance;
+- short-horizon realised volatility;
+- liquidity depletion/replenishment;
+- short-horizon basis/spot-perp divergence;
+- liquidation activity where source-valid;
+- MTC context as a slower regime input.
+
+### 10.2 Horizons
+
+Scalping is defined by its execution and holding horizon, not by naming a chart timeframe.
+
+The protocol should explicitly define:
+
+- decision cadence;
+- expected holding time;
+- exit/time stop;
+- order type;
+- latency model;
+- whether more than one decision may occur per second/minute;
+- overlap policy for positions/signals.
+
+### 10.3 Separate campaign
+
+A positive or negative FVC-1 does not answer the scalping question.
+
+Scalping receives its own preregistration and prospective boundary.
+
+---
+
+## 11. Spot programme — second priority alongside scalping
+
+Spot becomes first-class.
+
+Required eventually:
+
+- standalone spot position/accounting state;
+- spot LONG execution;
+- explicit short-unavailable rule unless a margin/borrow product is separately introduced later;
+- spot fees/slippage;
+- independent spot strategy campaign;
+- ability to use spot as a supporting input without conflating instruments.
+
+A future unified portfolio may contain both futures and spot strategies, but each family first earns eligibility independently.
+
+---
+
+## 12. Carry and market-neutral strategies
+
+Carry is retained, but demoted from architectural spine to a later candidate family.
+
+Why retain it:
+
+- structural payoff differs from directional alpha;
+- useful multi-leg accounting stress case;
+- funding/basis may provide diversification;
+- the current work invested in safe accounting remains valuable.
+
+What does not follow:
+
+- the old carry rule is not automatically a production strategy;
+- successful accounting is not successful economics;
+- a structural carry thesis still requires its own prospective validation.
+
+---
+
+## 13. Later strategy families
+
+After futures directional and scalping/spot are dispositioned, evaluate whether to open:
+
 - cross-sectional/statistical arbitrage;
 - market making;
 - options/volatility;
-- DEX/on-chain execution and MEV-aware research;
-- additional perpetual symbols;
-- portfolio-level cross-asset breadth.
+- cross-exchange arbitrage;
+- DEX/on-chain;
+- other coins/markets.
 
-Each is a new research mandate with its own data/source/cost model. None inherits validation from BTCUSDT futures merely because the infrastructure is shared.
+Every new family receives a source-validity review and its own scientific contract.
 
----
-
-## 20. Research-budget discipline
-
-The replacement roadmap broadens capability but must not reopen unlimited historical search.
-
-Standing rules:
-
-- deciding reuse of the burned outer blocks remains 0;
-- a new feature family is not a licence for unlimited model search;
-- first futures MTC screen: <= 12 deciding cells as defined in F3;
-- FVC-1: <= 3 frozen candidates;
-- first scalping screen: bounded candidate menu fixed in its preregistration;
-- first spot screen: bounded candidate menu fixed in its preregistration;
-- no neural model until a simpler baseline has shown a prospectively validated nonlinear residual worth modelling;
-- no online adaptive retraining until a static candidate has first been evaluated prospectively;
-- negative results remain visible.
-
-A future adaptive/retraining system, if desired, is its own research programme: retraining schedule, decay/expiry, drift detector and promotion rule are frozen before forward evaluation.
+No family is added merely to increase the chance that something somewhere looks profitable.
 
 ---
 
-## 21. Verification discipline for every major stage
+## 14. Unified orchestration
 
-Every major engineering PR should prove the claims it makes with some combination of:
+Do not build the final strategy router before there is something worth routing.
 
-- two-sided synthetic controls;
+Eligibility to open a unified multi-strategy layer requires at least **two strategy families** to have earned prospective eligibility under their own frozen protocols.
+
+Only then design:
+
+- capital allocation;
+- correlated exposure limits;
+- strategy conflicts;
+- priority and netting;
+- cross-strategy drawdown control;
+- portfolio-level Aegis rules;
+- mode/context routing if it has measurable incremental value.
+
+The old mode/consensus architecture may inform engineering history but is not restored automatically.
+
+---
+
+## 15. Aegis and safety
+
+Aegis stays the sole risk authority.
+
+Future extensions must eventually cover:
+
+- gross/net exposure;
+- margin utilisation;
+- liquidation distance;
+- stale/missing data;
+- reconciliation disputes;
+- funding extremes;
+- position/account mismatch;
+- duplicate execution;
+- restart safety;
+- campaign-specific loss/drawdown limits;
+- portfolio limits once multiple families exist.
+
+Reductions/flattening remain reachable when new exposure is refused.
+
+No strategy may bypass Aegis because it is "high confidence".
+
+---
+
+## 16. Autonomous-paper certification
+
+Passing one research campaign is not enough to enable live money.
+
+Before any live-route proposal, the system must demonstrate sustained unattended paper operation over real incoming data.
+
+Required evidence should include:
+
+- restart/recovery exercises;
+- stale-feed faults;
+- network disconnects;
+- duplicate/out-of-order market events;
+- state/log reconciliation;
+- risk halt and supported recovery;
+- no unexplained replay divergences;
+- complete daily/monthly reports;
+- no secret/manual decision path needed to keep the system running.
+
+A strategy that only works when an operator continually rescues it is not autonomous.
+
+---
+
+## 17. Live-money ladder — not authorised now
+
+No real-money trading is authorised by this roadmap proposal.
+
+A later live-executor design may only be considered after:
+
+1. at least one strategy passes a frozen prospective campaign;
+2. independent audit confirms the result and chronology;
+3. autonomous-paper certification passes;
+4. the execution/accounting system is independently safety-audited;
+5. a separate governance change explicitly opens a live route;
+6. exchange/account/credential/security design is reviewed separately.
+
+Possible later ladder, not yet authorised:
+
+```text
+L0  no authenticated path
+L1  authenticated read-only account reconciliation
+L2  tiny capped execution, leverage 1x, one strategy
+L3  only after independent review of L2 evidence
+```
+
+The exact capital amounts are deliberately not set here.
+
+---
+
+## 18. Research-budget discipline
+
+Historical outer blocks remain burned for deciding directional model selection.
+
+Future programme budget:
+
+- no more deciding reads of those historical blocks;
+- at most two major prospective directional campaigns before a mandatory strategic review;
+- each new strategy family consumes an explicit campaign slot;
+- negative results remain visible;
+- no post-result feature/horizon/model rescue inside a campaign;
+- exploratory work may exist only when clearly labelled non-deciding and separated from governed evidence.
+
+This prevents the roadmap from becoming a perpetual search until a winner appears.
+
+---
+
+## 19. Promotion gates
+
+A candidate strategy may be promoted only if all applicable gates pass.
+
+### Scientific
+
+- frozen before prospective evidence;
+- enough effective sample under the preregistered power/effect rule;
+- multiple-testing procedure followed;
+- primary endpoint passes;
+- no forbidden post-hoc selection.
+
+### Economic
+
+- net after applicable fees/spread/slippage/funding;
+- no profit dependent on obviously impossible fills;
+- acceptable drawdown/tail behavior under the frozen criterion.
+
+### Operational
+
+- data coverage valid;
+- replay deterministic;
+- no unresolved accounting/reconciliation dispute;
+- autonomous soak clean.
+
+### Audit
+
+- independent reviewer can reproduce/reconstruct the verdict;
+- Git chronology proves the protocol predates the result.
+
+A strategy that fails one required category does not become production-eligible because another category looks strong.
+
+---
+
+## 20. Independent review programme
+
+Use independent review at several boundaries:
+
+### A. roadmap review
+
+Before v2 is adopted, a fresh Fable 5.1 strategic audit may:
+
+- reject priorities;
+- change stage order;
+- remove unnecessary components;
+- identify missing lanes;
+- tighten statistical design;
+- challenge MTC;
+- challenge scalping economics;
+- challenge the six-month horizon;
+- challenge the proposed research budget.
+
+The reviewer is not asked to ratify this file.
+
+### B. protocol review
+
+Every deciding campaign gets a fresh read-only review before its boundary.
+
+### C. result audit
+
+Every positive result receives independent reconstruction before any promotion.
+
+For an important negative result, audit when the consequence is to close an entire research family.
+
+---
+
+## 21. Verification requirements for future engineering
+
+Depending on package scope, require:
+
+- targeted unit tests;
+- positive/negative controls;
 - mutation witnesses for load-bearing guards;
 - property/invariant tests;
 - deterministic replay;
