@@ -252,6 +252,12 @@ def _status(runner: DemoRunner) -> dict[str, Any]:
         "last_minute_processed": runner.cursor.last_minute_processed,
         "last_record_hash": runner.last_record_hash,
         "risk_halted": runner.risk.state.halted,
+        # The one read-only inspection command must not report a ledger the guard
+        # has refused as if it were the campaign's. `_ledger_regression` is
+        # decided in `__init__`, so it is available here without `start()` --
+        # which matters, because this command never calls `start()`.
+        "ledger_may_speak": runner._ledger_may_speak(),
+        "ledger_regression": runner._ledger_regression,
         "ledger": {
             "fees": str(ledger.fees),
             "funding_received": str(ledger.funding_received),

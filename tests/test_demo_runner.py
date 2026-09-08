@@ -3340,6 +3340,122 @@ def test_resume_refuses_while_the_ledger_still_holds_less_than_the_log(tmp_path)
     with pytest.raises(RunnerError, match="cannot resume"):
         resumed.resume("checked the exchange by hand, looks fine")
 
-    # Still halted, and no RESUME record was written.
+    # Still halted, and no RESUME record was written. Aegis matters as much as
+    # the record: the refusal has to precede `risk.resume()`, or the halt is
+    # cleared on disk while the caller sees an exception and believes nothing
+    # happened.
+    assert resumed.risk.state.halted, "the refusal must precede risk.resume()"
     assert resumed.state is RunnerState.HALT
     assert not [r for r in harness.records() if r["kind"] == RecordKind.RESUME.value]
+
+
+def test_resume_refuses_an_unreadable_ledger_in_its_own_words(tmp_path):
+    """The refusal must diagnose what is actually wrong.
+
+    `resume` used to ask `_ledger_regression` alone -- half the predicate -- so
+    an unreadable ledger was refused with "the carry ledger holds fees=0",
+    describing the PLACEHOLDER's zeros as the campaign's holdings. Worse, a
+    never-traded unreadable ledger has no regression at all, so it passed the
+    check, wrote a RESUME record, and was re-halted by `reconstruct` for a cause
+    that had not changed. Asking the whole predicate fixes both.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    harness.runner.shutdown("stop")
+    _damage_the_ledger(harness)
+
+    resumed = build(tmp_path, config=harness.runner.config).runner
+    assert resumed.state is RunnerState.HALT
+    assert resumed.position.ledger.outcome is LoadOutcome.UNREADABLE
+
+    with pytest.raises(RunnerError, match="could not be read"):
+        resumed.resume("checked by hand")
+
+    # No RESUME record, and the halt is untouched.
+    assert not [r for r in harness.records() if r["kind"] == RecordKind.RESUME.value]
+    assert resumed.state is RunnerState.HALT
+
+
+def test_resume_refuses_an_unreadable_ledger_that_never_traded(tmp_path):
+    """The case that separates the whole predicate from half of it.
+
+    An unreadable ledger on a campaign that HAS traded is refused either way,
+    because its placeholder's zeros are behind the committed blocks. A campaign
+    that never traded commits only zeros, so there is no regression to find --
+    and asking `_ledger_regression` alone let it resume, write a RESUME record,
+    and be re-halted by `reconstruct` for a cause that had not changed. The mute
+    already knew better; `resume` now asks the same question the mute asks.
+    """
+    config = campaign_config(
+        tmp_path / "state",
+        rules={"R1_carry": {**CARRY_PARAMS, "min_basis": "1000000"}},
+    )
+    harness = build(tmp_path, config=config, with_shadow=False)
+    harness.run(3)
+    assert harness.runner.position.leg("spot").is_flat, "the fixture was supposed to hold off"
+    harness.runner.shutdown("stop")
+    _damage_the_ledger(harness)
+
+    resumed = build(tmp_path, config=config, with_shadow=False).runner
+    assert resumed.state is RunnerState.HALT
+    assert resumed.position.ledger.outcome is LoadOutcome.UNREADABLE
+    # Nothing was ever committed, so the accumulator comparison finds nothing.
+    assert resumed._ledger_regression is None
+    assert resumed._ledger_may_speak() is False
+
+    with pytest.raises(RunnerError, match="could not be read"):
+        resumed.resume("checked by hand")
+    assert not [r for r in harness.records() if r["kind"] == RecordKind.RESUME.value]
+
+
+def test_a_stale_ledger_with_an_open_position_never_speaks_again(tmp_path):
+    """The witness I wrongly said could not be built.
+
+    A previous revision of this branch recorded that this case needed "a
+    re-hedge the fixture does not produce" and left it unwitnessed. A round-5
+    reviewer disproved that by construction: it needs the TWO-MINUTE hedge --
+    defect #1 of this very PR -- which the suite already produces by refusing one
+    leg's fill for a minute.
+
+    That matters because this, not the flat-position case, is what the load-time
+    verdict protects. The flatten's exit booking re-derives fees AND books exit
+    slippage, so every compared accumulator can reach what the log committed; a
+    verdict taken after that booking finds nothing behind the log and lets a
+    stale file speak. The reviewer measured the consequence under a lazy verdict:
+    the OPERATOR record quoted `slippage=162.66`, against a true cumulative
+    216.73, understating the campaign by the spot leg's entry slippage for the
+    rest of its life.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+
+    # Minute 0: the spot leg refuses its fill, so only the perp is hedged.
+    harness.models["spot"].max_reference_deviation_bps = D("0")
+    harness.tick(first)
+    assert harness.runner.position.state is HedgeState.PARTIAL
+    ledger_path = harness.runner.position.ledger.path
+    stale = ledger_path.read_bytes()
+
+    # Minute 1: the hedge completes, so the log commits more than the copy holds.
+    harness.models["spot"].max_reference_deviation_bps = D("50")
+    harness.tick(first + 60_000)
+    assert harness.runner.position.state is HedgeState.HEDGED
+    harness.runner.shutdown("stop")
+    ledger_path.write_bytes(stale)
+
+    resumed = build(tmp_path, config=harness.runner.config)
+    assert "ledger_behind_log" in (resumed.runner.halt_reason or "")
+    assert resumed.runner.position.ledger.outcome is LoadOutcome.LOADED
+    assert not resumed.runner.position.leg("spot").is_flat, "the position must still be open"
+
+    resumed.runner.flatten("kill switch pulled; removing exposure")
+
+    # The legs moved; the stale file did not, and nothing quoted it.
+    assert resumed.runner.position.leg("spot").is_flat
+    assert ledger_path.read_bytes() == stale
+    operator = [r for r in resumed.records() if r["kind"] == RecordKind.OPERATOR.value][-1]
+    assert "ledger_effect" not in operator
+
+    # And this is the part the ordering buys: recomputed AFTER the flatten's own
+    # booking, the guard finds nothing wrong. Only the verdict taken at load does.
+    assert resumed.runner._ledger_regressed_against_the_log() is None

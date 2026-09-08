@@ -402,10 +402,27 @@ lost is a campaign that ends.
 While the ledger is in that state `flatten` still reduces exposure, but writes
 neither a ledger nor a `ledger_effect` — a file that cannot speak for the
 campaign must not be allowed to start speaking for it through the emergency
-path. `resume` refuses too, for the same reason and with the same remedy: an
-operator note cannot make the file hold what it does not hold, and clearing the
-halt without repairing the ledger used to end in a traceback rather than a
-refusal. That applies to a **restored older copy** exactly as it does to a
+path. `resume` refuses too, for the same reason: an operator note cannot make the
+file hold what it does not hold, and clearing the halt without repairing the
+ledger used to end in a traceback rather than a refusal. (On this build you will
+not meet that refusal from the CLI, because `resume` is reached without
+`start()` and stops earlier on "the runner is not halted" — section 7. The check
+is there for when the CLI adopts the persisted halt.)
+
+**The order of the repair decides whether the campaign survives, and this is the
+one place it is written down.** Restore the ledger **before** running `flatten`:
+
+* `restore` → `start` → `resume` → `flatten` recovers fully;
+* `flatten` → `restore` **ends the campaign**. A flatten while the ledger is
+  muted moves both legs to flat and writes neither a ledger nor a
+  `ledger_effect` — correctly, that is the whole point — so a copy restored
+  afterwards still holds the pre-flatten quantity while the stores hold zero.
+  `reconstruct` then disputes `ledger_store_mismatch`, which is on the list in
+  section 6 that no operator command clears, and the flatten's own exit fees and
+  slippage are recorded in no ledger and no record.
+
+Exposure is zero either way, so the wrong order is safe before it is
+unrecoverable — but it is unrecoverable. That applies to a **restored older copy** exactly as it does to a
 deleted one: the copy loads normally, so nothing about the file itself says it is stale,
 and only the comparison against the log does. Without that, one `flatten` would
 persist the stale file, quote it into an `OPERATOR` record, and leave the log's
@@ -419,6 +436,13 @@ with the ORIGINAL halt text — after the ledger has been restored correctly, af
 the cause is gone. Read that line as "a halt is on disk", never as "the halt you
 just fixed is still true": the authority on the current cause is the SELF_CHECK
 result of the run you are looking at, not the sentence Aegis carried forward.
+It is worse than a stale sentence on screen: **each repaired start appends
+another HALT record carrying the now-false reason**, so the decision log
+accumulates halts for a cause that no longer exists. Nothing prints or records
+the SELF_CHECK result of the run in front of you, so there is currently no
+output that tells you the cause is gone — the way to confirm it is to observe
+that `resume` now succeeds.
+
 This is a reporting defect in the operator lifecycle, recorded here because
 following section 6 is exactly when you meet it, and repairing it belongs to the
 change that owns the lifecycle.

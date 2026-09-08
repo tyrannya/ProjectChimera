@@ -303,17 +303,22 @@ class DemoRunner:
         #: The precise limit of that, because this was once stated too broadly.
         #: `slippage` is compared too and NOTHING re-derives it, so a stale copy
         #: restored onto a FLAT position is refused whenever the verdict is
-        #: taken -- the ordering is not what saves that case, and saying it was
-        #: overstated the claim. What the ordering saves is a ledger that may not
-        #: speak while the position is still OPEN, where the flatten's own exit
+        #: taken -- on slippage and funding, not on fees, which a flatten
+        #: re-derives even when flat. The ordering is not what saves that case,
+        #: and saying it was overstated the claim. What the ordering saves is a
+        #: ledger that may not speak while the position is still OPEN, where the
+        #: flatten's own exit
         #: booking can carry every compared accumulator up to what the log holds.
-        #: `test_a_flatten_on_a_deleted_ledger_writes_neither_a_ledger_nor_a_block`
-        #: is that case, and a verdict taken lazily fails it and nothing else.
+        #: Two tests are that case, one for each way a ledger comes to be unable
+        #: to speak: `test_a_flatten_on_a_deleted_ledger_writes_neither_a_ledger_
+        #: nor_a_block` for a deleted file, and
+        #: `test_a_stale_ledger_with_an_open_position_never_speaks_again` for a
+        #: restored older copy. A verdict taken lazily fails both.
         #:
-        #: The same shape with a stale copy rather than a deleted one is reasoned
-        #: but NOT witnessed: the demo fixture books no further fees while merely
-        #: holding, so neither two independent reviewers nor this author could
-        #: construct it without a re-hedge the fixture does not produce.
+        #: The second existed only because a reviewer disproved this comment's
+        #: previous claim that it could not be built. It needs the TWO-MINUTE
+        #: hedge -- defect #1 of this PR -- which the fixture produces readily
+        #: once one leg's fill is refused for a minute.
         self._ledger_regression = self._ledger_regressed_against_the_log()
         #: The minute the last reconciliation was performed for, or None when
         #: none has been. A version 1 state file carries no such field, and its
@@ -698,6 +703,13 @@ class DemoRunner:
             committed_minute_ms=None if committed is None else committed[0],
             committed_minute_kind="" if committed is None else committed[1],
         )
+
+    def _ledger_state_complaint(self) -> str:
+        """Why the ledger may not speak, in the words that fit its actual state."""
+        if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
+            # No path here: every caller has already named the file.
+            return f"UNREADABLE -- it could not be read: {self.position.ledger.disputed}"
+        return self._ledger_regression or "it may not speak for this campaign"
 
     def _ledger_may_speak(self) -> bool:
         """Whether this ledger object is entitled to be persisted or quoted.
@@ -1370,12 +1382,12 @@ class DemoRunner:
         # Through the helper, so the runner spells "persist the ledger" one way.
         # A consistency edit and nothing more: the only difference from
         # `ledger.save()` is that a ledger which may not speak is skipped
-        # rather than raising. For the UNREADABLE case no path reachable through
-        # `tools/demo_run.py` gets here -- `start()` halts in SELF_CHECK on the
-        # dispute, and both `catch_up` and `run_minutes` stop on HALT. The
-        # behind-the-log case IS reachable, and skipping is what it wants: the
-        # RECONCILIATION record is still written and the stale file is left
-        # exactly as it was found.
+        # rather than raising. No path reachable through `tools/demo_run.py` gets
+        # here muted, in either case: `start()` halts in SELF_CHECK, `catch_up`
+        # and `run_minutes` stop on HALT, and `resume` now refuses. Only a direct
+        # `tick()` on an already-halted runner arrives. Skipping is still what
+        # that wants -- the RECONCILIATION record is written and the stale file
+        # is left exactly as it was found.
         self._save_ledger()
         self._append(
             RecordKind.RECONCILIATION,
@@ -1839,13 +1851,12 @@ class DemoRunner:
             # this is the only builder of the block, and a caller that has an
             # unreadable ledger has no economics to report at all.
             raise RunnerError(
-                f"the carry ledger at {self.position.ledger.path} is "
-                f"{self.position.ledger.outcome.value} and is not entitled to speak for "
-                "this campaign, so this object holds a placeholder and not what the "
-                "position did; a ledger_effect built from it would assert economics no "
-                "persisted ledger holds. Restore the file from a copy taken after the "
-                "log's last ledger_effect, with any damaged bytes preserved "
-                "(docs/demo_runbook.md, section 6)."
+                f"the carry ledger at {self.position.ledger.path} is not entitled to "
+                f"speak for this campaign ({self._ledger_state_complaint()}); a "
+                "ledger_effect built from it would assert economics no persisted ledger "
+                "holds. Restore the file from a copy at least as recent as the log's "
+                "last ledger_effect and FUNDING records, with any damaged bytes "
+                "preserved (docs/demo_runbook.md, section 6)."
             )
         ledger = self.position.ledger.state
         return {
@@ -2032,17 +2043,25 @@ class DemoRunner:
         if self.state is not RunnerState.HALT:
             raise RunnerError("the runner is not halted; there is nothing to resume from")
         # A halt whose cause is still true is not resumable. `resume` used to go
-        # straight to RECOVER, so an operator could clear a `ledger_behind_log`
-        # halt without repairing the file: the mute correctly kept the ledger
+        # straight to RECOVER, so a ledger that may not speak could have its halt
+        # cleared without the file being repaired: the mute correctly kept it
         # silent, and the next tick then raised out of `_ledger_effect` with no
         # HALT record -- a traceback where a refusal belongs. `reconstruct` does
         # not cover this, because it compares quantities and settlements and
         # never the accumulators the guard compares.
-        if self._ledger_regression is not None:
+        #
+        # This asks the WHOLE predicate rather than `_ledger_regression` alone,
+        # so an unreadable ledger is diagnosed as unreadable instead of being
+        # described through its placeholder's zeros as "holds fees=0".
+        if not self._ledger_may_speak():
             raise RunnerError(
-                f"cannot resume: {self._ledger_regression}. Restore the ledger from a copy "
-                "at least as recent as the log's last ledger_effect and FUNDING records, "
-                "then start again -- resuming cannot make the file hold what it does not."
+                f"cannot resume: {self._ledger_state_complaint()}. Restore the ledger from a "
+                "copy at least as recent as the log's last ledger_effect and FUNDING "
+                "records, then start again -- resuming cannot make the file hold what it "
+                "does not. Restore BEFORE running `flatten`: a flatten while the ledger is "
+                "muted moves the legs and writes no ledger, so a copy restored afterwards "
+                "disagrees with the stores and `reconstruct` disputes ledger_store_mismatch, "
+                "which no command clears."
             )
         self.risk.resume()
         record_hash = self._append(
@@ -2137,7 +2156,7 @@ class DemoRunner:
         dispute = self.position.ledger.disputed
         if dispute is not None and dispute.startswith(f"{leg_name}_reconciliation_mismatch"):
             self.position.ledger.resolve(note, now_ns=now_ns)
-            self.position.ledger.save()
+            self._save_ledger()
         record_hash = self._append(
             RecordKind.OPERATOR,
             self._minute_ns(),
