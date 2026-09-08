@@ -3357,7 +3357,11 @@ def test_resume_refuses_an_unreadable_ledger_in_its_own_words(tmp_path):
     describing the PLACEHOLDER's zeros as the campaign's holdings. Worse, a
     never-traded unreadable ledger has no regression at all, so it passed the
     check, wrote a RESUME record, and was re-halted by `reconstruct` for a cause
-    that had not changed. Asking the whole predicate fixes both.
+    that had not changed. Asking the whole predicate fixes the second; the wording
+    comes from `_ledger_state_complaint()`, which both refusals share -- so this
+    test pins the message and
+    `test_resume_refuses_an_unreadable_ledger_that_never_traded` pins the
+    predicate.
     """
     harness = build(tmp_path)
     harness.run(2)
@@ -3421,10 +3425,10 @@ def test_a_stale_ledger_with_an_open_position_never_speaks_again(tmp_path):
     verdict protects. The flatten's exit booking re-derives fees AND books exit
     slippage, so every compared accumulator can reach what the log committed; a
     verdict taken after that booking finds nothing behind the log and lets a
-    stale file speak. The reviewer measured the consequence under a lazy verdict:
-    the OPERATOR record quoted `slippage=162.66`, against a true cumulative
-    216.73, understating the campaign by the spot leg's entry slippage for the
-    rest of its life.
+    stale file speak. Measured on this fixture under a lazy verdict, the OPERATOR
+    record quotes `slippage=162.08256` against a true cumulative 216.14636 -- the
+    difference is 54.06380, exactly the spot leg's entry slippage, lost for the
+    rest of the campaign's life.
     """
     harness = build(tmp_path)
     first = harness.first_minute_ms()

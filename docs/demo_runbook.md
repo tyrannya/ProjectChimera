@@ -412,14 +412,21 @@ is there for when the CLI adopts the persisted halt.)
 **The order of the repair decides whether the campaign survives, and this is the
 one place it is written down.** Restore the ledger **before** running `flatten`:
 
-* `restore` → `start` → `resume` → `flatten` recovers fully;
+* `restore` → `flatten` recovers fully. (`flatten` calls `start()` itself, which
+  is what makes this the CLI-followable form; there is no `start` subcommand, and
+  `resume` cannot be reached from the CLI on this build — section 7.)
 * `flatten` → `restore` **ends the campaign**. A flatten while the ledger is
   muted moves both legs to flat and writes neither a ledger nor a
   `ledger_effect` — correctly, that is the whole point — so a copy restored
   afterwards still holds the pre-flatten quantity while the stores hold zero.
-  `reconstruct` then disputes `ledger_store_mismatch`, which is on the list in
-  section 6 that no operator command clears, and the flatten's own exit fees and
-  slippage are recorded in no ledger and no record.
+  `reconstruct` then disputes `ledger_store_mismatch` — one of the disputes
+  section 0 lists (under "a fifth") as clearable by no operator command — and the
+  flatten's own exit fees and slippage are recorded in no ledger and no record.
+  Note what you will actually SEE: the halt reads `dispute: ledger disagrees with
+  the stores`, and the ledger's own `disputed` field is still `null`, because
+  `start()` never persists that dispute. The literal `ledger_store_mismatch`
+  appears only on stderr, so section 6's "inspect the ledger's `disputed`" step
+  will show you nothing here.
 
 Exposure is zero either way, so the wrong order is safe before it is
 unrecoverable — but it is unrecoverable. That applies to a **restored older copy** exactly as it does to a
@@ -438,10 +445,14 @@ just fixed is still true": the authority on the current cause is the SELF_CHECK
 result of the run you are looking at, not the sentence Aegis carried forward.
 It is worse than a stale sentence on screen: **each repaired start appends
 another HALT record carrying the now-false reason**, so the decision log
-accumulates halts for a cause that no longer exists. Nothing prints or records
-the SELF_CHECK result of the run in front of you, so there is currently no
-output that tells you the cause is gone — the way to confirm it is to observe
-that `resume` now succeeds.
+accumulates halts for a cause that no longer exists. `run` prints Aegis's carried
+sentence and not the current verdict, so **the command to trust here is
+`status`**: it reports `ledger_may_speak` and `ledger_regression` computed from
+the ledger as loaded, it needs no `start()`, and after a correct restore it says
+`ledger_may_speak: true, ledger_regression: null` while `run` is still repeating
+the old halt text. On a `CAMPAIGN` profile `status` is the ONLY place the verdict
+appears at all, because `self_check` returns the `source_identity` failure of
+section 0.2 before it ever reaches the ledger.
 
 This is a reporting defect in the operator lifecycle, recorded here because
 following section 6 is exactly when you meet it, and repairing it belongs to the

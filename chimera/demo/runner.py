@@ -1855,8 +1855,8 @@ class DemoRunner:
                 f"speak for this campaign ({self._ledger_state_complaint()}); a "
                 "ledger_effect built from it would assert economics no persisted ledger "
                 "holds. Restore the file from a copy at least as recent as the log's "
-                "last ledger_effect and FUNDING records, with any damaged bytes "
-                "preserved (docs/demo_runbook.md, section 6)."
+                "last ledger_effect and FUNDING records, BEFORE running flatten "
+                "(docs/demo_runbook.md, section 6)."
             )
         ledger = self.position.ledger.state
         return {

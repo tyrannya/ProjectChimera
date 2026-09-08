@@ -257,7 +257,9 @@ def _status(runner: DemoRunner) -> dict[str, Any]:
         # decided in `__init__`, so it is available here without `start()` --
         # which matters, because this command never calls `start()`.
         "ledger_may_speak": runner._ledger_may_speak(),
-        "ledger_regression": runner._ledger_regression,
+        "ledger_complaint": (
+            None if runner._ledger_may_speak() else runner._ledger_state_complaint()
+        ),
         "ledger": {
             "fees": str(ledger.fees),
             "funding_received": str(ledger.funding_received),
