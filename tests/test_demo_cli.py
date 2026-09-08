@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from chimera.demo.config import config_hash
+from chimera.demo.runner import RunnerState
 from tests.demo_harness import CARRY_PARAMS, DAY, build, campaign_config
 from tools import demo_run
 
@@ -71,6 +72,34 @@ def test_status_reports_the_runner_without_changing_it(tmp_path, capsys):
     assert payload["protocol_frozen"] is False
     assert payload["imbalance"] == "0.000"
     assert harness.runner.cursor.last_minute_processed == before
+
+
+def test_status_names_the_ledger_verdict_fields_the_runbook_names(tmp_path):
+    """The keys are an operator-facing contract, and the runbook quotes them.
+
+    A round-7 reviewer found the runbook telling operators to look for
+    `ledger_regression` in `status` output, in the same commit that renamed the
+    key to `ledger_complaint` -- so the documented string appeared nowhere and
+    nothing in CI could notice. `tests/test_demo_runbook.py` checks the commands
+    section 6 names, not the fields it quotes; this closes that gap.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    payload = demo_run._status(harness.runner)
+
+    # A healthy campaign: the ledger may speak and has nothing to complain of.
+    assert payload["ledger_may_speak"] is True
+    assert payload["ledger_complaint"] is None
+    assert "ledger_regression" not in payload, "the runbook must not name a field we drop"
+
+    # And a ledger that may not speak says so, without start() having been called.
+    harness.runner.shutdown("stop")
+    harness.runner.position.ledger.path.unlink()
+    refused = build(tmp_path, config=harness.runner.config, start=False).runner
+    payload = demo_run._status(refused)
+    assert refused.state is RunnerState.STARTUP, "status must not need start()"
+    assert payload["ledger_may_speak"] is False
+    assert "ledger_behind_log" in payload["ledger_complaint"]
 
 
 def test_report_counts_a_days_records(tmp_path, capsys):

@@ -412,7 +412,11 @@ is there for when the CLI adopts the persisted halt.)
 **The order of the repair decides whether the campaign survives, and this is the
 one place it is written down.** Restore the ledger **before** running `flatten`:
 
-* `restore` → `flatten` recovers fully. (`flatten` calls `start()` itself, which
+* `restore` → `flatten` saves the campaign's accounting: the ledger survives, and
+  the flatten is booked and carries its `ledger_effect`. It does NOT return the
+  campaign to READY — the halt is still in `risk.json` and no CLI command clears
+  it, which is section 7's blocker, not this procedure's.
+  (`flatten` calls `start()` itself, which
   is what makes this the CLI-followable form; there is no `start` subcommand, and
   `resume` cannot be reached from the CLI on this build — section 7.)
 * `flatten` → `restore` **ends the campaign**. A flatten while the ledger is
@@ -421,7 +425,10 @@ one place it is written down.** Restore the ledger **before** running `flatten`:
   afterwards still holds the pre-flatten quantity while the stores hold zero.
   `reconstruct` then disputes `ledger_store_mismatch` — one of the disputes
   section 0 lists (under "a fifth") as clearable by no operator command — and the
-  flatten's own exit fees and slippage are recorded in no ledger and no record.
+  flatten's own exit **slippage** is then recorded nowhere at all. Its fees are
+  not lost — the executor stores accumulate `trading_fees`, and
+  `_reconcile_ledger` re-derives fees from them — but no executor accumulates
+  slippage, so that number exists only in the ledger you did not write.
   Note what you will actually SEE: the halt reads `dispute: ledger disagrees with
   the stores`, and the ledger's own `disputed` field is still `null`, because
   `start()` never persists that dispute. The literal `ledger_store_mismatch`
@@ -447,12 +454,27 @@ It is worse than a stale sentence on screen: **each repaired start appends
 another HALT record carrying the now-false reason**, so the decision log
 accumulates halts for a cause that no longer exists. `run` prints Aegis's carried
 sentence and not the current verdict, so **the command to trust here is
-`status`**: it reports `ledger_may_speak` and `ledger_regression` computed from
+`status`**: it reports `ledger_may_speak` and `ledger_complaint` computed from
 the ledger as loaded, it needs no `start()`, and after a correct restore it says
-`ledger_may_speak: true, ledger_regression: null` while `run` is still repeating
+`ledger_may_speak: true, ledger_complaint: null` while `run` is still repeating
 the old halt text. On a `CAMPAIGN` profile `status` is the ONLY place the verdict
-appears at all, because `self_check` returns the `source_identity` failure of
-section 0.2 before it ever reaches the ledger.
+appears in `run`'s own output, because `self_check` returns the `source_identity`
+failure of section 0.2 before it ever reaches the ledger. (A muted `flatten` also
+prints the complaint on stderr, so "only" means "the only place you can ask for
+it".)
+
+**What `status` cannot tell you.** It answers the ledger-guard question and
+nothing else. It does not run `reconstruct`, so a `ledger_store_mismatch` — the
+state the wrong repair order leaves behind — does not appear in it: `status` will
+read `ledger_may_speak: true, ledger_complaint: null` on a campaign that `run`
+halts immediately. On a `CAMPAIGN` profile `reconstruct` never runs at all, so
+that dispute shows up nowhere. A clean `status` means the ledger may speak, not
+that the campaign is well.
+
+One more halt reason section 6 will show you that nobody asked for: on a
+`CAMPAIGN` profile the CLI's `flatten` calls `start(allow_dirty=True)` on your
+behalf, so every CAMPAIGN flatten appends a HALT record reading `allow_dirty was
+requested for a CAMPAIGN profile`. You did not request it; the CLI did.
 
 This is a reporting defect in the operator lifecycle, recorded here because
 following section 6 is exactly when you meet it, and repairing it belongs to the
