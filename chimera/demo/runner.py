@@ -266,6 +266,21 @@ class DemoRunner:
         )
         self._enter(RunnerState.STARTUP)
         self.halt_reason: str | None = None
+        #: Verdict of :meth:`_ledger_may_speak`, decided ONCE and decided HERE.
+        #:
+        #: It has to be taken from the ledger as it was LOADED, before anything
+        #: books into it. `HedgedPosition._reconcile_ledger` re-derives fees and
+        #: realised PnL from the executors' accumulators, so an operator
+        #: `flatten` on a stale ledger raises its fees to match the executors
+        #: before the first save -- and a verdict computed at that moment would
+        #: find nothing behind the log and let the stale file speak. That is the
+        #: precise mechanism this predicate exists to stop, so the question is
+        #: answered before the first command can move the answer.
+        #:
+        #: Slippage is why the answer still matters after fees have caught up:
+        #: no executor accumulates it, so it stays understated for the rest of
+        #: the campaign.
+        self._may_speak: bool | None = None
 
         persisted = self._load_state()
         self.cursor = FeedCursor(self.root, contract, persisted)
@@ -288,6 +303,11 @@ class DemoRunner:
         # the clock seeded from the LOG's tail, not from the state file that
         # lagged it, and that is a change with its own crash matrix to prove.
         self.last_record_hash: str = persisted.get("last_record_hash", "")
+        # Decided now, from the ledger as loaded. See `_may_speak` above.
+        self._may_speak = (
+            self.position.ledger.outcome is not LoadOutcome.UNREADABLE
+            and self._ledger_regressed_against_the_log() is None
+        )
         #: The minute the last reconciliation was performed for, or None when
         #: none has been. A version 1 state file carries no such field, and its
         #: absence means "none has been" -- see RUNNER_STATE_SCHEMAS_READ.
@@ -675,37 +695,48 @@ class DemoRunner:
     def _ledger_may_speak(self) -> bool:
         """Whether this ledger object is entitled to be persisted or quoted.
 
-        Two cases, and the second is why this is a predicate rather than an
-        `outcome is UNREADABLE` check repeated in three places.
+        The question is not how the file was FOUND. It is whether this object
+        holds at least what the decision log has already committed -- which is
+        exactly what `_ledger_regressed_against_the_log` decides -- plus the
+        separate case of a file that could not be parsed at all.
 
-        **UNREADABLE.** `CarryLedger.open` returns a placeholder holding
-        `free_cash == capital` and no position. Persisting it replaces the only
-        record of the campaign's cash; quoting it asserts economics no file
-        holds.
+        An earlier version of this asked `outcome`, and the proxy was wrong in
+        both directions.
 
-        **MISSING, when the log has already committed a `ledger_effect`.** A file
-        that is absent loads as a fresh ledger at full capital, with no dispute,
-        and that is correct for a campaign that has never traded. It is not
-        correct for one whose decision log already says what it paid: the file
-        was deleted, and the object holding `fees == 0` is a placeholder in every
-        sense that matters even though nothing failed to parse.
+        * A ledger **restored from an older copy** loads `LOADED`, so it passed.
+          SELF_CHECK refused it, but `tools/demo_run.py` runs `start()` and then
+          `flatten` regardless -- which is what the runbook tells an operator to
+          do during a halt -- and that flatten persisted the stale file and
+          quoted it into an OPERATOR record. The log's newest block then equalled
+          the stale file, the guard passed on the next start, and `resume`
+          released the campaign. Fees appear to catch up because
+          `_reconcile_ledger` re-derives them from the executors' accumulators;
+          slippage has no accumulator anywhere else, so it stays understated for
+          the rest of the campaign and the log's cumulative series goes
+          backwards.
+        * A campaign that **ticked but never traded** commits blocks whose fees
+          and slippage are zero. Deleting its ledger left `outcome` MISSING with
+          a committed block present, so the proxy refused -- but nothing had been
+          paid and there was nothing to protect. `_save_ledger` then skipped,
+          `_ledger_effect` raised out of `tick()` with no HALT record, and the
+          CLI showed a traceback. The guard itself is right about that case:
+          `0 < 0` is false, so there is no regression to refuse.
 
-        The second case is not hypothetical and `self_check` alone does not
-        cover it. `tools/demo_run.py` runs `start()` and then `flatten` whatever
-        `start()` returned, which is what the runbook tells an operator to do
-        during a halt -- so a deleted ledger halted at SELF_CHECK, and the very
-        next operator command wrote a fresh one to disk with `settled: []` and
-        `funding_paid: 0`, appended an OPERATOR record quoting it, and thereby
-        made the guard pass on the following start. The append-only log then
-        carried economics from a ledger that had begun again at capital, which
-        is F16's harm reached through the documented emergency path.
+        Asking the guard directly makes the two agree by construction.
+
+        **Memoized, deliberately.** In-process the ledger only rises and every
+        block appended is quoted from it, so a True verdict cannot become False.
+        A False verdict must not become True either: fees catching up through
+        re-derivation is precisely how a stale ledger would talk its way back
+        into speaking. One answer per process is also what keeps this off the
+        hot path -- unmemoized it is several full decision-log scans per minute.
         """
-        ledger = self.position.ledger
-        if ledger.outcome is LoadOutcome.UNREADABLE:
-            return False
-        if ledger.outcome is LoadOutcome.MISSING and self._last_block("ledger_effect"):
-            return False
-        return True
+        if self._may_speak is None:  # pragma: no cover - set in __init__
+            self._may_speak = (
+                self.position.ledger.outcome is not LoadOutcome.UNREADABLE
+                and self._ledger_regressed_against_the_log() is None
+            )
+        return self._may_speak
 
     def _save_ledger(self) -> None:
         """Persist the carry ledger, unless it is the placeholder for a damaged one.
@@ -725,9 +756,9 @@ class DemoRunner:
         """
         if not self._ledger_may_speak():
             logger.warning(
-                "Carry ledger at %s is %s and the log has already committed economics; "
+                "Carry ledger at %s (%s) is not entitled to speak for this campaign; "
                 "not persisting this object. Writing it would replace what the campaign "
-                "did with a ledger that says it never traded.",
+                "did with a ledger that holds less than the log already committed.",
                 self.position.ledger.path,
                 self.position.ledger.outcome.value,
             )
@@ -1335,12 +1366,13 @@ class DemoRunner:
         detail = "agreed" if not mismatched else f"mismatch on {', '.join(sorted(mismatched))}"
         # Through the helper, so the runner spells "persist the ledger" one way.
         # A consistency edit and nothing more: the only difference from
-        # `ledger.save()` is that an UNREADABLE ledger is skipped rather than
-        # raising, and no path reachable through `tools/demo_run.py` gets here
-        # with one -- `start()` halts in SELF_CHECK on the dispute, and both
-        # `catch_up` and `run_minutes` stop on HALT. It carries no witness for
-        # that reason, and is recorded here rather than left looking like a
-        # behaviour change nobody tested.
+        # `ledger.save()` is that a ledger which may not speak is skipped
+        # rather than raising. For the UNREADABLE case no path reachable through
+        # `tools/demo_run.py` gets here -- `start()` halts in SELF_CHECK on the
+        # dispute, and both `catch_up` and `run_minutes` stop on HALT. The
+        # behind-the-log case IS reachable, and skipping is what it wants: the
+        # RECONCILIATION record is still written and the stale file is left
+        # exactly as it was found.
         self._save_ledger()
         self._append(
             RecordKind.RECONCILIATION,
@@ -1848,8 +1880,11 @@ class DemoRunner:
         The FIRST reason is kept. A halt that renamed itself as later symptoms
         arrived would lose the cause an operator needs.
 
-        ``ledger_effect`` is passed by the ONE caller that books before it halts
-        -- section 6.7's liquidation flatten -- and by no other. Putting the
+        ``ledger_effect`` is passed by exactly one caller -- section 6.7's
+        liquidation flatten -- and by no other. It is no longer the only halt
+        that BOOKS before it halts: F10 made every booking halt persist first,
+        so several sites now stop with the ledger durable and the block
+        withheld. Putting the
         block on every halt was wrong twice. Most halts run BEFORE the tick's
         `mark_to_market` and before `_save_ledger`, so the block would have
         carried `last_equity` of ``None``, and `reports._ledger_and_funding`

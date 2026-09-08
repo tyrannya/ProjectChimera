@@ -3153,3 +3153,132 @@ def test_a_ledger_restored_to_before_a_settlement_is_refused(tmp_path):
     assert [
         r for r in restarted.records() if r["kind"] == RecordKind.RECOVERY.value
     ] == [], "a recovery was invented for a crash that never happened"
+
+
+def test_a_ledger_restored_from_an_older_copy_never_speaks_again(tmp_path):
+    """The BLOCKER an `outcome`-based predicate could not see.
+
+    A ledger restored from an older copy loads `LOADED`, not `MISSING`. Asking
+    `outcome` therefore let it through: SELF_CHECK refused it, but the CLI runs
+    `start()` and then `flatten` regardless, and that flatten persisted the stale
+    file and quoted it into an OPERATOR record. The log's newest block then
+    equalled the stale file, the guard passed on the next start, and `resume`
+    released the campaign.
+
+    Fees appear to recover because `_reconcile_ledger` re-derives them from the
+    executors' accumulators. Slippage exists in no accumulator anywhere else, so
+    it stays understated for the rest of the campaign and the log's cumulative
+    series runs BACKWARDS -- which is the thing an append-only evidence log can
+    never take back.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    ledger_path = harness.runner.position.ledger.path
+    stale = ledger_path.read_bytes()
+    stale_slippage = D(json.loads(stale)["spot"]["slippage"]) + D(
+        json.loads(stale)["perp"]["slippage"]
+    )
+
+    # Trade on, so the log commits more than the copy holds.
+    harness.runner.flatten("operator closed the position")
+    harness.runner.shutdown("stop")
+    committed = [r for r in harness.records() if "ledger_effect" in r][-1]["ledger_effect"]
+    assert D(committed["slippage"]) > stale_slippage
+
+    # The restore an operator would actually perform.
+    ledger_path.write_bytes(stale)
+
+    resumed = build(tmp_path, config=harness.runner.config)
+    assert resumed.runner.state is RunnerState.HALT
+    assert "ledger_behind_log" in (resumed.runner.halt_reason or "")
+    assert resumed.runner.position.ledger.outcome is LoadOutcome.LOADED
+    assert resumed.runner._ledger_may_speak() is False
+
+    resumed.runner.flatten("kill switch pulled; removing exposure")
+
+    # The stale bytes were not overwritten, and nothing quoted them.
+    assert ledger_path.read_bytes() == stale
+    operator = [r for r in resumed.records() if r["kind"] == RecordKind.OPERATOR.value][-1]
+    assert "ledger_effect" not in operator
+    # ...so the guard still fires on the next start rather than being satisfied
+    # by a block this flatten wrote.
+    restarted = build(tmp_path, config=harness.runner.config)
+    assert "ledger_behind_log" in (restarted.runner.halt_reason or "")
+
+
+def test_a_never_traded_campaign_survives_losing_its_ledger(tmp_path):
+    """The other direction, and the regression the proxy introduced.
+
+    A campaign that ticks without trading commits blocks whose fees and slippage
+    are zero. Deleting its ledger is not a loss -- nothing had been paid -- and
+    the guard agrees, because `0 < 0` is false. An `outcome`-based predicate
+    disagreed with the guard: it muted the ledger, `_save_ledger` skipped, and
+    `_ledger_effect` then raised out of `tick()` with no HALT record and a
+    traceback out of the CLI, on every start.
+    """
+    config = campaign_config(
+        tmp_path / "state",
+        rules={"R1_carry": {**CARRY_PARAMS, "min_basis": "1000000"}},
+    )
+    harness = build(tmp_path, config=config, with_shadow=False)
+    harness.run(3)
+    assert harness.runner.position.leg("spot").is_flat, "the fixture was supposed to hold off"
+    blocks = [r for r in harness.records() if "ledger_effect" in r]
+    assert blocks and D(blocks[-1]["ledger_effect"]["fees"]) == 0
+    harness.runner.shutdown("stop")
+    harness.runner.position.ledger.path.unlink()
+
+    resumed = build(tmp_path, config=config, with_shadow=False)
+    assert resumed.runner.state is RunnerState.READY
+    assert resumed.runner._ledger_may_speak() is True
+
+    # The tick completes and the ledger is re-created, as it did before the
+    # predicate existed -- rather than raising out of the loop.
+    first = resumed.first_minute_ms()
+    outcome = resumed.tick(first + 3 * 60_000)
+    assert outcome.kind is RecordKind.DECISION
+    assert resumed.runner.position.ledger.path.exists()
+
+
+def test_the_ledger_effect_builder_refuses_a_stale_ledger_directly(tmp_path):
+    """The total guard's own witness, not its caller's.
+
+    Reverting `_ledger_effect`'s guard alone used to break nothing, because
+    `_ledger_effect_if_readable` refused first on every path a test drove. This
+    calls the builder itself, which is what makes the guard total.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    ledger_path = harness.runner.position.ledger.path
+    stale = ledger_path.read_bytes()
+    harness.runner.flatten("operator closed the position")
+    harness.runner.shutdown("stop")
+    ledger_path.write_bytes(stale)
+
+    resumed = build(tmp_path, config=harness.runner.config).runner
+    assert resumed.position.ledger.outcome is LoadOutcome.LOADED
+    with pytest.raises(RunnerError, match="not entitled to speak"):
+        resumed._ledger_effect(D("1000000"))
+
+
+def test_an_unreadable_ledger_may_not_speak_even_with_an_empty_log(tmp_path):
+    """The UNREADABLE half of the predicate, on its own.
+
+    Once the predicate asks the guard, an unreadable ledger with committed
+    economics is refused by the comparison anyway -- its placeholder holds zero.
+    The clause is load-bearing only where there is nothing committed to compare
+    against, which is exactly where a corrupt file is least obviously dangerous.
+    Pinned separately so it is defence in depth by design rather than by
+    coincidence.
+    """
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "carry_ledger.json").write_text("{ this is not json", encoding="utf-8")
+
+    harness = build(tmp_path, config=campaign_config(state_dir), start=False)
+    runner = harness.runner
+    assert runner.position.ledger.outcome is LoadOutcome.UNREADABLE
+    assert runner._last_block("ledger_effect") is None, "nothing is committed yet"
+    assert runner._ledger_regressed_against_the_log() is None, "so the guard says nothing"
+
+    assert runner._ledger_may_speak() is False

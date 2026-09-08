@@ -421,13 +421,6 @@ class CarryLedger:
                     os.fsync(directory)
                 finally:
                     os.close(directory)
-            # The file exists now, and it is this object's. `outcome` records
-            # how the ledger was FOUND, and callers ask it whether this object
-            # may speak for the campaign -- so leaving it at MISSING after a
-            # successful write would make a brand-new campaign, which is MISSING
-            # by definition, unable to persist or report anything after its first
-            # record. `FuturesStore` mutates its own outcome for the same reason.
-            self.outcome = LoadOutcome.LOADED
         except OSError as exc:
             raise LedgerError(
                 f"could not persist the carry ledger to {self.path}: {exc}. Continuing "

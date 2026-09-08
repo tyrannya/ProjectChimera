@@ -384,9 +384,10 @@ started again at all.** SELF_CHECK refuses a ledger holding less cumulative
 decision log has already committed (`ledger_behind_log`). Those accumulators
 cannot fall, and every ledger save precedes the record that quotes it, so no
 crash produces a ledger behind the log — it means the file was deleted,
-truncated, or replaced by an older one. Deleting it is therefore not a repair
-either: an absent ledger loads as `MISSING`, would start again at full capital,
-and is refused on the same rule.
+truncated, or replaced by an older one. Deleting it is refused by the same rule
+once the campaign has booked anything at all; before its first fill there is
+nothing committed to be behind, and a campaign that has paid nothing loses
+nothing by starting its ledger again.
 
 So the copy has to be **at least as recent as the log's last `ledger_effect` and
 its last `FUNDING` record**. A backup older than those is refused again, with no
@@ -400,7 +401,12 @@ lost is a campaign that ends.
 While the ledger is in that state `flatten` still reduces exposure, but writes
 neither a ledger nor a `ledger_effect` — a file that cannot speak for the
 campaign must not be allowed to start speaking for it through the emergency
-path.
+path. That applies to a **restored older copy** exactly as it does to a deleted
+one: the copy loads normally, so nothing about the file itself says it is stale,
+and only the comparison against the log does. Without that, one `flatten` would
+persist the stale file, quote it into an `OPERATOR` record, and leave the log's
+own cumulative slippage running backwards — which an append-only evidence log
+cannot take back.
 
 ## 7. Kill switch, flatten, resume
 
