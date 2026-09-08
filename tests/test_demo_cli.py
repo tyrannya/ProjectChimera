@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,31 @@ def test_a_real_note_survives_stripped():
     assert demo_run._require_note("  checked both legs  ", "flatten") == "checked both legs"
 
 
+RUNBOOK = Path(__file__).resolve().parents[1] / "docs" / "demo_runbook.md"
+
+_FENCED_BLOCK = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+_BACKTICKED_SPAN = re.compile(r"`([^`\n]+)`")
+#: ``ledger_x: value`` -- how the runbook quotes what `status` prints.
+_FIELD_IN_OUTPUT_POSITION = re.compile(r"\b(ledger_[a-z_]+)\s*:")
+
+
+def _status_fields_named_by(text: str) -> set[str]:
+    """Every `ledger_*` field the text shows as `status` output.
+
+    Scans each inline backticked span separately: one span can quote several
+    fields (`ledger_may_speak: true, ledger_complaint: null`), and a single
+    pattern over the whole string finds only the first of them. Fenced code
+    blocks are stripped first -- their backticks otherwise pair with the inline
+    ones and every span after the first fence is read off by one.
+    """
+    # Fenced blocks carry their own backticks and would skew inline pairing.
+    prose = _FENCED_BLOCK.sub("", text)
+    named: set[str] = set()
+    for span in _BACKTICKED_SPAN.findall(prose):
+        named.update(_FIELD_IN_OUTPUT_POSITION.findall(span))
+    return named
+
+
 def test_status_reports_the_runner_without_changing_it(tmp_path, capsys):
     harness = build(tmp_path)
     harness.run(2)
@@ -90,7 +116,6 @@ def test_status_names_the_ledger_verdict_fields_the_runbook_names(tmp_path):
     # A healthy campaign: the ledger may speak and has nothing to complain of.
     assert payload["ledger_may_speak"] is True
     assert payload["ledger_complaint"] is None
-    assert "ledger_regression" not in payload, "the runbook must not name a field we drop"
 
     # And a ledger that may not speak says so, without start() having been called.
     harness.runner.shutdown("stop")
@@ -100,6 +125,53 @@ def test_status_names_the_ledger_verdict_fields_the_runbook_names(tmp_path):
     assert refused.state is RunnerState.STARTUP, "status must not need start()"
     assert payload["ledger_may_speak"] is False
     assert "ledger_behind_log" in payload["ledger_complaint"]
+
+
+def test_the_runbook_only_names_status_fields_that_status_emits(tmp_path):
+    """The runbook/CLI agreement itself, not one dead field name.
+
+    Round 7 found section 6 telling operators to look for `ledger_regression` in
+    `status` output, in the same commit that renamed the key to
+    `ledger_complaint`. The first test written for it asserted what `_status`
+    emits and that one historical name was absent -- which pins the
+    IMPLEMENTATION plus a tombstone. Rename the field in the CLI and in that
+    test while forgetting the runbook and the same defect returns green.
+
+    This reads the runbook instead. Every `ledger_*` name the document shows in
+    an output position -- ``name: value`` inside backticks, which is how section
+    6 quotes what an operator will see -- must be a key `_status` actually
+    emits. No allow-list to rot, and it fails on the historical text (see
+    `test_the_runbook_contract_catches_the_defect_it_was_written_for`).
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    emitted = set(demo_run._status(harness.runner))
+
+    named = _status_fields_named_by(RUNBOOK.read_text(encoding="utf-8"))
+    assert named, "the runbook must keep quoting status output, or this test guards nothing"
+    assert named <= emitted, (
+        f"the runbook shows status fields that status does not emit: {sorted(named - emitted)}; "
+        f"status emits {sorted(emitted)}"
+    )
+
+
+def test_the_runbook_contract_catches_the_defect_it_was_written_for(tmp_path):
+    """A control: the check above must FAIL on the text that actually shipped.
+
+    Without this, the runbook check could be vacuous -- passing because it
+    matches nothing rather than because the document is right.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    emitted = set(demo_run._status(harness.runner))
+
+    # The verbatim shape of the round-7 defect: a field named in an output
+    # position that `_status` has never emitted.
+    shipped = "it says `ledger_may_speak: true, ledger_regression: null` while `run` repeats"
+    named = _status_fields_named_by(shipped)
+
+    assert "ledger_regression" in named, "the extractor must see the name that shipped"
+    assert not (named <= emitted), "the contract check must reject the text that shipped"
 
 
 def test_report_counts_a_days_records(tmp_path, capsys):
