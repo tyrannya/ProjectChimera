@@ -3313,3 +3313,33 @@ def test_the_ledger_verdict_is_taken_before_the_torn_tail_is_repaired(tmp_path):
     assert resumed.runner.state is RunnerState.READY
     recoveries = [r for r in resumed.records() if r["kind"] == RecordKind.RECOVERY.value]
     assert [r["recovery"]["cause"] for r in recoveries] == [RecoveryCause.TORN_TAIL.value]
+
+
+def test_resume_refuses_while_the_ledger_still_holds_less_than_the_log(tmp_path):
+    """Clearing the halt must not be a way around the ledger it halted for.
+
+    `resume` went straight to RECOVER, so an operator could clear a
+    `ledger_behind_log` halt without repairing the file. The mute correctly kept
+    the ledger silent -- and the next tick then raised out of `_ledger_effect`
+    with no HALT record, which is a traceback where a refusal belongs.
+    `reconstruct` does not catch it: it compares quantities and settlements,
+    never the accumulators the guard compares.
+    """
+    harness = build(tmp_path)
+    harness.run(2)
+    ledger_path = harness.runner.position.ledger.path
+    stale = ledger_path.read_bytes()
+    harness.runner.flatten("operator closed the position")
+    harness.runner.shutdown("stop")
+    ledger_path.write_bytes(stale)
+
+    resumed = build(tmp_path, config=harness.runner.config).runner
+    assert resumed.state is RunnerState.HALT
+    assert "ledger_behind_log" in (resumed.halt_reason or "")
+
+    with pytest.raises(RunnerError, match="cannot resume"):
+        resumed.resume("checked the exchange by hand, looks fine")
+
+    # Still halted, and no RESUME record was written.
+    assert resumed.state is RunnerState.HALT
+    assert not [r for r in harness.records() if r["kind"] == RecordKind.RESUME.value]

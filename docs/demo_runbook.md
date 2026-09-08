@@ -385,9 +385,10 @@ decision log has already committed (`ledger_behind_log`). Those accumulators
 cannot fall, and every ledger save precedes the record that quotes it, so no
 crash produces a ledger behind the log — it means the file was deleted,
 truncated, or replaced by an older one. Deleting it is refused by the same rule
-once the campaign has booked anything at all; before its first fill there is
-nothing committed to be behind, and a campaign that has paid nothing loses
-nothing by starting its ledger again.
+once the campaign has booked a nonzero fee, slippage or funding amount — the
+guard compares those accumulators, so a campaign whose committed blocks are all
+zero has nothing to be behind, and one that has paid nothing loses nothing by
+starting its ledger again.
 
 So the copy has to be **at least as recent as the log's last `ledger_effect` and
 its last `FUNDING` record**. A backup older than those is refused again, with no
@@ -401,12 +402,26 @@ lost is a campaign that ends.
 While the ledger is in that state `flatten` still reduces exposure, but writes
 neither a ledger nor a `ledger_effect` — a file that cannot speak for the
 campaign must not be allowed to start speaking for it through the emergency
-path. That applies to a **restored older copy** exactly as it does to a deleted
-one: the copy loads normally, so nothing about the file itself says it is stale,
+path. `resume` refuses too, for the same reason and with the same remedy: an
+operator note cannot make the file hold what it does not hold, and clearing the
+halt without repairing the ledger used to end in a traceback rather than a
+refusal. That applies to a **restored older copy** exactly as it does to a
+deleted one: the copy loads normally, so nothing about the file itself says it is stale,
 and only the comparison against the log does. Without that, one `flatten` would
 persist the stale file, quote it into an `OPERATOR` record, and leave the log's
 own cumulative slippage running backwards — which an append-only evidence log
 cannot take back.
+
+**One thing that will mislead you while you work through this.** Aegis persists
+the halt in `risk.json`, and it is not cleared by repairing whatever caused it.
+So a later CLI start still announces *"Starting in HALTED state from risk.json"*
+with the ORIGINAL halt text — after the ledger has been restored correctly, after
+the cause is gone. Read that line as "a halt is on disk", never as "the halt you
+just fixed is still true": the authority on the current cause is the SELF_CHECK
+result of the run you are looking at, not the sentence Aegis carried forward.
+This is a reporting defect in the operator lifecycle, recorded here because
+following section 6 is exactly when you meet it, and repairing it belongs to the
+change that owns the lifecycle.
 
 ## 7. Kill switch, flatten, resume
 

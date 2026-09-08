@@ -266,24 +266,6 @@ class DemoRunner:
         )
         self._enter(RunnerState.STARTUP)
         self.halt_reason: str | None = None
-        #: Why this ledger holds less than the log already committed, or None.
-        #: Decided ONCE and decided HERE, and it is the SAME value SELF_CHECK
-        #: refuses on and :meth:`_ledger_may_speak` mutes on -- one computation,
-        #: so the halt and the mute cannot drift apart.
-        #:
-        #: It has to be taken from the ledger as it was LOADED, before anything
-        #: books into it. `HedgedPosition._reconcile_ledger` re-derives fees and
-        #: realised PnL from the executors' accumulators, so an operator
-        #: `flatten` on a stale ledger raises its fees to match the executors
-        #: before the first save -- and a verdict computed at that moment would
-        #: find nothing behind the log and let the stale file speak. That is the
-        #: precise mechanism the mute exists to stop, so the question is
-        #: answered before the first command can move the answer.
-        #:
-        #: Slippage is why the answer still matters after fees have caught up:
-        #: no executor accumulates it, so it stays understated for the rest of
-        #: the campaign.
-        self._may_speak: bool | None = None
 
         persisted = self._load_state()
         self.cursor = FeedCursor(self.root, contract, persisted)
@@ -306,7 +288,32 @@ class DemoRunner:
         # the clock seeded from the LOG's tail, not from the state file that
         # lagged it, and that is a change with its own crash matrix to prove.
         self.last_record_hash: str = persisted.get("last_record_hash", "")
-        # Decided now, from the ledger as loaded. See `_ledger_regression` above.
+        #: Why this ledger holds less than the log already committed, or None.
+        #: Decided ONCE and decided HERE, and it is the SAME value SELF_CHECK
+        #: refuses on and :meth:`_ledger_may_speak` mutes on -- one computation,
+        #: so the halt and the mute cannot drift apart.
+        #:
+        #: Taken from the ledger as it was LOADED, before anything books into it.
+        #: `HedgedPosition._reconcile_ledger` re-derives fees from the executors'
+        #: accumulators, so an operator `flatten` raises a stale ledger's fees
+        #: toward the committed ones before the first save. A verdict computed
+        #: after that booking is therefore a verdict on a ledger the command
+        #: itself has already moved.
+        #:
+        #: The precise limit of that, because this was once stated too broadly.
+        #: `slippage` is compared too and NOTHING re-derives it, so a stale copy
+        #: restored onto a FLAT position is refused whenever the verdict is
+        #: taken -- the ordering is not what saves that case, and saying it was
+        #: overstated the claim. What the ordering saves is a ledger that may not
+        #: speak while the position is still OPEN, where the flatten's own exit
+        #: booking can carry every compared accumulator up to what the log holds.
+        #: `test_a_flatten_on_a_deleted_ledger_writes_neither_a_ledger_nor_a_block`
+        #: is that case, and a verdict taken lazily fails it and nothing else.
+        #:
+        #: The same shape with a stale copy rather than a deleted one is reasoned
+        #: but NOT witnessed: the demo fixture books no further fees while merely
+        #: holding, so neither two independent reviewers nor this author could
+        #: construct it without a re-hedge the fixture does not produce.
         self._ledger_regression = self._ledger_regressed_against_the_log()
         #: The minute the last reconciliation was performed for, or None when
         #: none has been. A version 1 state file carries no such field, and its
@@ -724,12 +731,10 @@ class DemoRunner:
 
         Asking the guard directly makes the two agree by construction.
 
-        **Memoized, deliberately.** In-process the ledger only rises and every
-        block appended is quoted from it, so a True verdict cannot become False.
-        A False verdict must not become True either: fees catching up through
-        re-derivation is precisely how a stale ledger would talk its way back
-        into speaking. One answer per process is also what keeps this off the
-        hot path -- unmemoized it is several full decision-log scans per minute.
+        **Precomputed, deliberately.** The value is taken in `__init__` from the
+        ledger as loaded, and `self_check` refuses on the very same value -- so
+        the halt and the mute are one decision, not two that agree. See
+        `_ledger_regression` there for why the moment matters.
         """
         return (
             self.position.ledger.outcome is not LoadOutcome.UNREADABLE
@@ -754,11 +759,11 @@ class DemoRunner:
         """
         if not self._ledger_may_speak():
             logger.warning(
-                "Carry ledger at %s (%s) is not entitled to speak for this campaign; "
+                "Carry ledger at %s is not entitled to speak for this campaign (%s); "
                 "not persisting this object. Writing it would replace what the campaign "
                 "did with a ledger that holds less than the log already committed.",
                 self.position.ledger.path,
-                self.position.ledger.outcome.value,
+                self._ledger_regression or "the file could not be read",
             )
             return
         self.position.ledger.save()
@@ -1854,7 +1859,7 @@ class DemoRunner:
     def _ledger_effect_if_readable(self, equity: Any) -> dict[str, str] | None:
         """The block, or ``None`` when there is no ledger entitled to assert one.
 
-        For the callers that must still act on a damaged ledger. An operator
+        For the callers that must still act while the ledger may not speak. An operator
         `flatten` reduces real exposure and a liquidation touch has already
         flattened, and neither may be turned into a refusal because the file on
         disk is corrupt: `tools/demo_run.py` wraps neither in `except
@@ -2026,6 +2031,19 @@ class DemoRunner:
             raise RunnerError("resume requires an operator note stating what was checked")
         if self.state is not RunnerState.HALT:
             raise RunnerError("the runner is not halted; there is nothing to resume from")
+        # A halt whose cause is still true is not resumable. `resume` used to go
+        # straight to RECOVER, so an operator could clear a `ledger_behind_log`
+        # halt without repairing the file: the mute correctly kept the ledger
+        # silent, and the next tick then raised out of `_ledger_effect` with no
+        # HALT record -- a traceback where a refusal belongs. `reconstruct` does
+        # not cover this, because it compares quantities and settlements and
+        # never the accumulators the guard compares.
+        if self._ledger_regression is not None:
+            raise RunnerError(
+                f"cannot resume: {self._ledger_regression}. Restore the ledger from a copy "
+                "at least as recent as the log's last ledger_effect and FUNDING records, "
+                "then start again -- resuming cannot make the file hold what it does not."
+            )
         self.risk.resume()
         record_hash = self._append(
             RecordKind.RESUME,
