@@ -107,8 +107,10 @@ dirty tree, however clean the checkout is. `SELF_CHECK` then refuses a `CAMPAIGN
 profile, and `--allow-dirty` is itself refused for `CAMPAIGN`, so on that profile
 the runner reaches `HALT` and no `DECISION`, `FUNDING`, `RECONCILIATION`,
 `LIQUIDATION_TOUCH`, `SKIPPED_STALE` or `INCOMPLETE_STATE` record is ever
-written. On `CAMPAIGN`, `STARTUP` and `HALT` are the whole set; the other ten
-kinds are reachable on `SOAK` and `TEST`, and there only with `--allow-dirty`,
+written. On `CAMPAIGN` the reachable set is `STARTUP`, `HALT` and — because the
+CLI's `flatten` calls `start(allow_dirty=True)` itself and then acts — `OPERATOR`
+(section 6); the other nine kinds are reachable on `SOAK` and `TEST`, and there
+only with `--allow-dirty`,
 because `self_check` refuses a dirty tree on **every** profile and this bug makes
 every tree read as dirty.
 
@@ -427,11 +429,16 @@ one place it is written down.** Restore the ledger **before** running `flatten`:
   section 0 lists (under "a fifth") as clearable by no operator command — and the
   flatten's own exit **slippage** is then recorded nowhere at all. Its fees are
   not lost — the executor stores accumulate `trading_fees`, and
-  `_reconcile_ledger` re-derives fees from them — but no executor accumulates
-  slippage, so that number exists only in the ledger you did not write.
-  Note what you will actually SEE: the halt reads `dispute: ledger disagrees with
-  the stores`, and the ledger's own `disputed` field is still `null`, because
-  `start()` never persists that dispute. The literal `ledger_store_mismatch`
+  `_reconcile_ledger` re-derives fees from them. No executor accumulates
+  slippage, so nothing on disk states that number. It is not beyond recovery,
+  though: each store keeps the exit order with its `average_price` and
+  `filled_quantity`, so the figure can be re-derived by hand against the minute's
+  close. Recorded nowhere, recoverable by arithmetic — not the same as lost.
+  Note what you will actually SEE **on `TEST` or `SOAK`**: the halt reads
+  `dispute: ledger disagrees with the stores`, and the ledger's own `disputed`
+  field is still `null`, because `start()` never persists that dispute. On
+  `CAMPAIGN` you see none of this, for the reason below: `reconstruct` is never
+  reached, so the dispute is never raised at all. The literal `ledger_store_mismatch`
   appears only on stderr, so section 6's "inspect the ledger's `disputed`" step
   will show you nothing here.
 
@@ -457,19 +464,27 @@ sentence and not the current verdict, so **the command to trust here is
 `status`**: it reports `ledger_may_speak` and `ledger_complaint` computed from
 the ledger as loaded, it needs no `start()`, and after a correct restore it says
 `ledger_may_speak: true, ledger_complaint: null` while `run` is still repeating
-the old halt text. On a `CAMPAIGN` profile `status` is the ONLY place the verdict
-appears in `run`'s own output, because `self_check` returns the `source_identity`
-failure of section 0.2 before it ever reaches the ledger. (A muted `flatten` also
-prints the complaint on stderr, so "only" means "the only place you can ask for
-it".)
+the old halt text. On a `CAMPAIGN` profile the verdict never reaches `run`'s
+output at all, because `self_check` returns the `source_identity` failure of
+section 0.2 before it ever reaches the ledger — so `status` is the only command
+you can ask for it. (A muted `flatten` prints the complaint on stderr too, but
+that is a side effect of an action, not somewhere you can go and look.)
 
-**What `status` cannot tell you.** It answers the ledger-guard question and
-nothing else. It does not run `reconstruct`, so a `ledger_store_mismatch` — the
-state the wrong repair order leaves behind — does not appear in it: `status` will
-read `ledger_may_speak: true, ledger_complaint: null` on a campaign that `run`
-halts immediately. On a `CAMPAIGN` profile `reconstruct` never runs at all, so
-that dispute shows up nowhere. A clean `status` means the ledger may speak, not
-that the campaign is well.
+**What `status` cannot tell you.** It reports plenty besides the ledger verdict —
+`risk_halted`, `halt_reason`, `hedge_state`, `disputed`, the cursor and the
+ledger's own totals — but only the two verdict fields are computed fresh. It does
+not run `reconstruct`, and that costs more than one missing line: after the wrong
+repair order `status` reads `ledger_may_speak: true, ledger_complaint: null` on a
+campaign `run` halts immediately, and `disputed` and `hedge_state` are stale
+rather than merely silent, because the dispute that would have set them was never
+raised. `risk_halted` is your one true signal there, and it does read true.
+
+So a clean ledger verdict means the ledger may speak, not that the campaign is
+well; read `risk_halted` beside it, and treat `disputed` as unanswered rather
+than answered "no". On a `CAMPAIGN` profile `reconstruct` is not reached on any
+CLI path today, so that dispute shows up nowhere at all — but that follows from
+the `source_identity` defect of section 0.2 halting first, so if that defect is
+ever repaired this paragraph must be re-checked rather than trusted.
 
 One more halt reason section 6 will show you that nobody asked for: on a
 `CAMPAIGN` profile the CLI's `flatten` calls `start(allow_dirty=True)` on your

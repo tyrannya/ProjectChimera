@@ -70,6 +70,14 @@ _FENCED_BLOCK = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 _BACKTICKED_SPAN = re.compile(r"`([^`\n]+)`")
 #: ``ledger_x: value`` -- how the runbook quotes what `status` prints.
 _FIELD_IN_OUTPUT_POSITION = re.compile(r"\b(ledger_[a-z_]+)\s*:")
+#: The prose form: "it reports `ledger_may_speak` and `ledger_complaint`". The
+#: colon form alone misses it, and it is one of the two lines round 7 had to
+#: rename -- drift confined to it would have stayed green. Harvested ONLY from
+#: the sentence that introduces the fields: the runbook backticks plenty of other
+#: `ledger_*` names (halt reasons, dispute ids, record keys) that `status` neither
+#: emits nor should.
+_INTRODUCES_THE_FIELDS = "it reports"
+_FIELD_AS_BARE_NAME = re.compile(r"\A(ledger_[a-z_]+)\Z")
 
 
 def _status_fields_named_by(text: str) -> set[str]:
@@ -84,8 +92,12 @@ def _status_fields_named_by(text: str) -> set[str]:
     # Fenced blocks carry their own backticks and would skew inline pairing.
     prose = _FENCED_BLOCK.sub("", text)
     named: set[str] = set()
-    for span in _BACKTICKED_SPAN.findall(prose):
-        named.update(_FIELD_IN_OUTPUT_POSITION.findall(span))
+    for line in prose.splitlines():
+        introduces = _INTRODUCES_THE_FIELDS in line
+        for span in _BACKTICKED_SPAN.findall(line):
+            named.update(_FIELD_IN_OUTPUT_POSITION.findall(span))
+            if introduces:
+                named.update(_FIELD_AS_BARE_NAME.findall(span.strip()))
     return named
 
 
@@ -125,6 +137,39 @@ def test_status_names_the_ledger_verdict_fields_the_runbook_names(tmp_path):
     assert refused.state is RunnerState.STARTUP, "status must not need start()"
     assert payload["ledger_may_speak"] is False
     assert "ledger_behind_log" in payload["ledger_complaint"]
+
+
+def test_status_asks_the_whole_ledger_predicate_not_half_of_it(tmp_path):
+    """`status` must ask `_ledger_may_speak()`, not `_ledger_regression is None`.
+
+    This is the defect the branch already shipped and fixed in `resume`: an
+    unreadable ledger on a campaign that never traded has NO regression to find,
+    so half the predicate calls it healthy. `status` had the same hole and no
+    test saw it -- reducing `_status` to the regression term alone left the whole
+    file green while `status` printed the documented all-clear
+    (`ledger_may_speak: true, ledger_complaint: null`) for a ledger that may not
+    speak.
+
+    The other status tests cannot catch it: every ledger they build is behind the
+    log as well as unreadable, so both halves agree by accident.
+    """
+    config = campaign_config(
+        tmp_path / "state",
+        rules={"R1_carry": {**CARRY_PARAMS, "min_basis": "1000000"}},
+    )
+    harness = build(tmp_path, config=config, with_shadow=False)
+    harness.run(3)
+    assert harness.runner.position.leg("spot").is_flat, "the fixture was supposed to hold off"
+    harness.runner.shutdown("stop")
+    harness.runner.position.ledger.path.write_text("{ this is not json", encoding="utf-8")
+
+    runner = build(tmp_path, config=config, with_shadow=False, start=False).runner
+    # Nothing was ever committed, so the regression term alone finds nothing...
+    assert runner._ledger_regression is None
+    # ...but the ledger is unreadable, so it may not speak, and status must say so.
+    payload = demo_run._status(runner)
+    assert payload["ledger_may_speak"] is False
+    assert "UNREADABLE" in payload["ledger_complaint"]
 
 
 def test_the_runbook_only_names_status_fields_that_status_emits(tmp_path):
