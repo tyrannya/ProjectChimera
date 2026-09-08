@@ -423,15 +423,29 @@ re-asserts the halt, so the file must be gone before `resume` is attempted.
 > operator path out of a persisted HALT. This is an open S3 blocker.**
 >
 > `resume` refuses when the runner is not in `HALT`, and a runner reached
-> through `tools/demo_run.py` never is. The CLI constructs a `DemoRunner` and
-> calls `resume` without `start()`, so the object is in its constructor's
-> `STARTUP` state; the halt is on **disk**, in `risk.json`, and nothing on that
-> path reads it back into the runner. Observed end to end: after a kill-switch
-> halt and a clean shutdown, `risk.json` holds `halted: true` with
-> `halt_reason: kill_switch`, and a fresh process reports `STARTUP` and answers
-> *"the runner is not halted; there is nothing to resume from"*. Removing the
-> kill-switch file first does not change it — the refusal is about the runner's
-> own state, not the switch.
+> through the CLI's **`resume`, `resolve` and `status`** paths never is. Those
+> three construct a `DemoRunner` and act on it without calling `start()`, so the
+> object is in its constructor's `STARTUP` state; the halt is on **disk**, in
+> `risk.json`, and nothing on those paths reads it back into the runner. (`run`
+> and `flatten` do call `start()` and do reach `HALT` — the gap is not that the
+> CLI can never be halted, it is that the commands which exist to LEAVE a halt
+> are the ones that never look.) Observed end to end: after a kill-switch halt
+> and a clean shutdown, `risk.json` holds `halted: true` with `halt_reason:
+> kill_switch`, and a fresh process reports `STARTUP` and answers *"the runner
+> is not halted; there is nothing to resume from"*. Removing the kill-switch
+> file first does not change it — the refusal is about the runner's own state,
+> not the switch.
+>
+> **The repair is smaller than it looks, and the direction matters.** Calling
+> `start()` first is not a second obstacle, it is the missing step: measured on
+> the same fixture, `start()` returns `HALT` and `resume()` then **succeeds** —
+> the runner reaches `READY` and `risk.json`'s `halted` flips back to false. What
+> is missing is that the CLI's resume path adopts the persisted campaign state
+> before it decides whether there is anything to resume from. It cannot simply be
+> `start()` as it stands, because on a `CAMPAIGN` profile section 0.2's
+> `_software()` defect makes `start()` halt on `source_identity` first, and
+> `resume` would then be clearing a halt whose recorded cause is a bug rather
+> than the operator's. Both have to be fixed together.
 >
 > The same shape blocks `resolve` (section 6), for a different reason on the
 > same path. Between them, a campaign that halts cannot be returned to `READY`
