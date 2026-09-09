@@ -17,13 +17,14 @@ from chimera.carry.factory import build_hedged_position
 from chimera.demo.config import ConfigProfile, DemoConfig, parse_demo_config
 from chimera.demo.feed import FeedCursor
 from chimera.demo.fixtures import MinuteShape, SyntheticFeed
+from chimera.demo.risk_wiring import build_risk_engine
 from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
 from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, ShadowParams
 from chimera.demo.runner import DemoRunner
 from chimera.futures.fills import RecordedQuoteFillModel
 from chimera.recorder.contract import load_recorder_contract
-from chimera.risk import RiskEngine, RiskLimits
+from chimera.risk import RiskEngine
 
 REPO = Path(__file__).resolve().parents[1]
 DAY = "2026-09-19"
@@ -59,14 +60,32 @@ def campaign_config(
     state_dir: Path,
     *,
     profile: str = "TEST",
+    limits: Mapping[str, Any] | None = None,
     rules: Mapping[str, Any] | None = None,
     runner: Mapping[str, Any] | None = None,
     faults: Mapping[str, Any] | None = None,
 ) -> DemoConfig:
+    """The committed campaign's limits, on a test profile, in a test directory.
+
+    ``limits`` merges over section 7.4's values and exists for ONE reason: a test
+    that compresses campaign time. Aegis measures its order-rate window and its
+    cooldown on the wall clock -- the runner clock is not injected into
+    `RiskEngine`, which the master plan's F->G row (section 2.4) says it should be
+    -- so a test that runs forty campaign-minutes inside one wall-clock second
+    presents forty minutes of orders as one minute of orders. Such a test has to
+    say which bound it cannot honour and why.
+
+    It is NOT for loosening a limit a test is about. Every test that asserts what
+    a limit does must get that limit from the campaign, which is what
+    `tests/test_demo_risk_wiring.py` exists to prove; the default here is section
+    7.4 unchanged, and `test_the_harness_default_is_the_committed_campaign`
+    holds it there.
+    """
     base = json.loads((REPO / "conf" / "demo" / "pvc1.json").read_text(encoding="utf-8"))
     payload: dict[str, Any] = {
         **base,
         "profile": profile,
+        "limits": {**base["limits"], **dict(limits or {})},
         "runner": {"state_dir": str(state_dir), **dict(runner or {})},
         "rules": dict(
             rules
@@ -152,12 +171,12 @@ def build(
     feed.write_settlements(list(days))
 
     cfg = config or campaign_config(state_dir)
-    risk = RiskEngine(
-        RiskLimits(max_position_pct=1.0, risk_per_trade_pct=0.5),
-        state_path=state_dir / "risk.json",
-        kill_switch_path=state_dir / "KILL_SWITCH",
-    )
-    risk.update_equity(float(CAPITAL))
+    # The production mapping, not a second one. This harness used to build
+    # `RiskLimits(max_position_pct=1.0, risk_per_trade_pct=0.5)` with its own
+    # literals, which is why no test could see that `tools/demo_run.py` was
+    # dropping twelve of section 7.4's thirteen limits: the harness was not
+    # exercising the wiring, it was reimplementing a different one.
+    risk = build_risk_engine(cfg, capital=CAPITAL, state_dir=state_dir)
     position = build_hedged_position(risk=risk, capital=CAPITAL, state_dir=state_dir)
     position.spot.recover({})
     position.perp.recover({})

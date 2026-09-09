@@ -35,13 +35,13 @@ from typing import Any, Sequence
 
 from chimera.carry.factory import build_hedged_position
 from chimera.demo.config import ConfigProfile, parse_demo_config
+from chimera.demo.risk_wiring import build_risk_engine
 from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
 from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, ShadowParams
 from chimera.demo.runner import DemoRunner, RunnerError
 from chimera.futures.fills import RecordedQuoteFillModel
 from chimera.recorder.contract import load_recorder_contract
-from chimera.risk import RiskEngine, RiskLimits
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
@@ -113,17 +113,13 @@ def _load(args: argparse.Namespace) -> DemoRunner:
 
     contract = load_recorder_contract("btcusdt-prospective-gen3")
     state_dir = Path(config.runner_setting("state_dir"))
-    limits = config.limits
-    risk = RiskEngine(
-        RiskLimits(
-            max_position_pct=float(limits.max_exposure_per_asset_pct),
-            risk_per_trade_pct=0.5,
-        ),
-        state_path=state_dir / "risk.json",
-        kill_switch_path=state_dir / "KILL_SWITCH",
-    )
     capital = Decimal("1000000")
-    risk.update_equity(float(capital))
+    # Section 7.4's limits reach Aegis through `chimera.demo.risk_wiring` and
+    # nowhere else. Building `RiskLimits` here is what let a campaign be hashed
+    # under one risk regime and enforced under another; the mapping is one
+    # audited function now, and `tests/test_demo_risk_wiring.py` holds this file
+    # to using it.
+    risk = build_risk_engine(config, capital=capital, state_dir=state_dir)
     position = build_hedged_position(
         risk=risk,
         capital=capital,
