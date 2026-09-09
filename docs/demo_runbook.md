@@ -107,12 +107,29 @@ dirty tree, however clean the checkout is. `SELF_CHECK` then refuses a `CAMPAIGN
 profile, and `--allow-dirty` is itself refused for `CAMPAIGN`, so on that profile
 the runner reaches `HALT` and no `DECISION`, `FUNDING`, `RECONCILIATION`,
 `LIQUIDATION_TOUCH`, `SKIPPED_STALE` or `INCOMPLETE_STATE` record is ever
-written. On `CAMPAIGN` the reachable set is `STARTUP`, `HALT` and — because the
-CLI's `flatten` calls `start(allow_dirty=True)` itself and then acts — `OPERATOR`
-(section 6); the other nine kinds are reachable on `SOAK` and `TEST`, and there
-only with `--allow-dirty`,
-because `self_check` refuses a dirty tree on **every** profile and this bug makes
-every tree read as dirty.
+written. A `CAMPAIGN` that has only ever run as one holds `STARTUP` and `HALT`
+and nothing else on this build — `OPERATOR` included. The CLI's `flatten` does
+call `start(allow_dirty=True)` itself, which appends a `STARTUP` and a `HALT` of
+its own, but it then refuses instead of acting: no `CAMPAIGN` start reaches the
+tick loop, because `SELF_CHECK` halts before `RECOVER`, so
+`cursor.last_minute_processed` is still null and `flatten` stops on *"nothing has
+been processed yet, so there is nothing to flatten"* — before
+`_require_recordable`, before either leg moves, and before the `OPERATOR` append.
+It stops by raising, and the CLI's `flatten` branch does not catch it, so what an
+operator meets there is a traceback rather than a refusal. (The cursor is stored
+per state directory and not per profile, so pointing a `CAMPAIGN` config at a
+directory some `SOAK` or `TEST` run already advanced hands `flatten` a minute and
+this stops holding. Do not do that for a second reason: the two runs would share
+one decision log under two `config_hash` values.) `resume` refuses on this
+profile too (section 7), and `resolve` cannot run from the CLI at all (a fifth,
+below). Reaching any other kind needs a `SOAK` or `TEST` profile, and
+there a `run` with `--allow-dirty` first, because `self_check` refuses a dirty
+tree on **every** profile and this bug makes every tree read as dirty. That is a
+necessary condition and not a promise that each remaining kind is then reachable:
+`RESUME` stays out of reach on those profiles as well, because the CLI arrives at
+`resume` without `start()` and the runner is therefore never in `HALT` (section
+7). Where section 6's emergency procedure IS followable is `SOAK` or `TEST`: once
+a minute has been processed there, a `flatten` does append its `OPERATOR` record.
 
 The remedy is **not** just passing the argument. `source_identity` returns a
 `dict`, and `_software` reads it with `getattr(identity, "revision", "")` and
