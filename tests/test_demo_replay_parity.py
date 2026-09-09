@@ -303,3 +303,140 @@ def test_an_empty_report_is_not_a_pass():
     report = ParityReport()
     assert report.ok, "an empty comparison is vacuously ok at the type level"
     assert report.compared == 0, "which is why the CLI refuses when nothing was read"
+
+
+# ---------------------------------------------------------------------------
+# PR-10R: a minute may hold more than one record of a kind
+# ---------------------------------------------------------------------------
+def _record(minute, kind, seq, **extra):
+    base = {
+        "schema": "chimera.decision-record/1",
+        "seq": seq,
+        "prev_hash": "sha256:" + "0" * 64,
+        "record_hash": "sha256:" + f"{seq:064d}",
+        "kind": kind,
+        "minute": minute,
+        "runner_now_ns": 1_789_776_060_000_000_000 + seq,
+    }
+    base.update(extra)
+    return base
+
+
+def test_two_records_of_one_kind_in_one_minute_are_each_compared():
+    """The false-pass this fixes: a repeated ``(minute, kind)`` collapsing.
+
+    Catching up across a settlement boundary books two settlements in one
+    minute. Keyed on ``(minute, kind)`` alone the second overwrote the first on
+    both sides, so the first was never compared to anything and a replay could
+    differ on it freely. The alignment key carries an ordinal, so each is
+    compared to its own counterpart.
+    """
+    minute = "2026-09-19T07:59:00+00:00"
+    live = [
+        _record(minute, "FUNDING", 1, ledger_effect={"funding": "10"}),
+        _record(minute, "FUNDING", 2, ledger_effect={"funding": "20"}),
+    ]
+    # The replay differs ONLY on the first of the two.
+    replay = [
+        _record(minute, "FUNDING", 1, ledger_effect={"funding": "999"}),
+        _record(minute, "FUNDING", 2, ledger_effect={"funding": "20"}),
+    ]
+
+    report = compare_logs(live, replay)
+
+    assert not report.ok
+    assert report.compared == 2, "both records were compared, not one twice"
+    assert [d.field_name for d in report.divergences] == ["ledger_effect"]
+    assert report.divergences[0].live == {"funding": "10"}
+
+
+def test_a_replay_that_drops_one_of_two_records_in_a_minute_diverges():
+    """The other half: a missing duplicate must not look like a present one."""
+    minute = "2026-09-19T07:59:00+00:00"
+    live = [
+        _record(minute, "FUNDING", 1, ledger_effect={"funding": "10"}),
+        _record(minute, "FUNDING", 2, ledger_effect={"funding": "20"}),
+    ]
+    replay = [_record(minute, "FUNDING", 1, ledger_effect={"funding": "10"})]
+
+    report = compare_logs(live, replay)
+
+    assert not report.ok
+    assert report.live_only == ["FUNDING #2 at 2026-09-19T07:59:00+00:00"]
+
+
+def test_a_deliberate_mutation_of_a_funding_flow_fails_parity():
+    """Section 10's failure criterion, on a kind PR-10R made reachable."""
+    minute = "2026-09-19T07:59:00+00:00"
+    live = [_record(minute, "FUNDING", 1, ledger_effect={"funding": "24.982411236"})]
+    replay = [_record(minute, "FUNDING", 1, ledger_effect={"funding": "-24.982411236"})]
+    assert not compare_logs(live, replay).ok
+
+
+def test_a_deliberate_mutation_of_a_reconciliation_outcome_fails_parity():
+    minute = "2026-09-19T01:00:00+00:00"
+    live = [_record(minute, "RECONCILIATION", 1, position_after={"perp_qty": "8.292"})]
+    replay = [_record(minute, "RECONCILIATION", 1, position_after={"perp_qty": "0"})]
+    assert not compare_logs(live, replay).ok
+
+
+def test_a_deliberate_mutation_of_a_settlement_identity_fails_parity():
+    minute = "2026-09-19T07:59:00+00:00"
+    live = [_record(minute, "FUNDING", 1, inputs={"inputs_hash": "sha256:" + "a" * 64})]
+    replay = [_record(minute, "FUNDING", 1, inputs={"inputs_hash": "sha256:" + "b" * 64})]
+    assert not compare_logs(live, replay).ok
+
+
+def test_a_deliberate_mutation_of_a_liquidation_event_fails_parity():
+    minute = "2026-09-19T00:03:00+00:00"
+    live = [
+        _record(
+            minute,
+            "LIQUIDATION_TOUCH",
+            1,
+            veto_or_rejection={"stage": "carry", "label": "liquidation_touch"},
+        )
+    ]
+    replay = [_record(minute, "LIQUIDATION_TOUCH", 1, veto_or_rejection=None)]
+    assert not compare_logs(live, replay).ok
+
+
+def test_a_stale_minute_is_excluded_and_the_exclusion_is_reported():
+    """Section 10's "explained and excluded once", made executable.
+
+    A live run that came back from an outage skipped a minute; a replay is never
+    late and decides it. The minute is excluded and the reason is REPORTED --
+    silently dropping it would make the parity result worth nothing.
+    """
+    stale_minute = "2026-09-19T00:05:00+00:00"
+    other = "2026-09-19T00:09:00+00:00"
+    live = [
+        _record(
+            stale_minute,
+            "SKIPPED_STALE",
+            1,
+            stale={"age_minutes": 9, "max_catchup_minutes": 3},
+        ),
+        _record(other, "DECISION", 2, ledger_effect={"equity": "1"}),
+    ]
+    replay = [
+        _record(stale_minute, "DECISION", 1, ledger_effect={"equity": "1"}),
+        _record(other, "DECISION", 2, ledger_effect={"equity": "1"}),
+    ]
+
+    report = compare_logs(live, replay)
+
+    assert report.ok
+    assert report.compared == 1
+    assert len(report.explained_exclusions) == 1
+    assert stale_minute in report.explained_exclusions[0]
+    assert "stale" in report.explained_exclusions[0]
+    assert "explained_exclusions" in report.to_dict()
+
+
+def test_a_run_with_nothing_to_explain_excludes_nothing():
+    """The two-sided control: exclusions are never silently non-empty."""
+    minute = "2026-09-19T00:00:00+00:00"
+    live = [_record(minute, "DECISION", 1, ledger_effect={"equity": "1"})]
+    report = compare_logs(live, list(live))
+    assert report.ok and report.explained_exclusions == []

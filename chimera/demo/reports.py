@@ -32,15 +32,20 @@ and a failed reconciliation are *reported* — as a chain verdict and as records
 quoted verbatim — never repaired, re-derived into a success, or smoothed over
 by inferring the record that should have been there.
 
-**Absence is reported as absence.** The runner at this revision writes only seven
-of the twelve record kinds: :data:`RUNNER_WRITTEN_KINDS`. A campaign run by it
-therefore produces no ``FUNDING``, ``RECONCILIATION``, ``LIQUIDATION_TOUCH``,
-``RECOVERY`` or ``SKIPPED_STALE`` record at all — and a bare ``0`` beside those
-names would read exactly like "nothing happened" when it means "this build cannot
-say". So every daily report carries :data:`INPUT_COVERAGE_NOTE`'s block: per
-kind, whether the day's log held one, and whether the runner in this build can
-write one. The arithmetic below nevertheless handles all twelve kinds, because
-the day PR-10's gap is closed the report has to be right without being rewritten.
+**Absence is reported as absence.** A bare ``0`` beside a record kind reads
+exactly like "nothing happened" when it may mean "this build cannot say", so
+every daily report carries :data:`INPUT_COVERAGE_NOTE`'s block: per kind, whether
+the day's log held one, and whether the runner in this build can write one at
+all. :data:`RUNNER_WRITTEN_KINDS` is the second answer, read off the runner's own
+``self._append`` call sites by a test rather than maintained by hand.
+
+PR-10R closed the gap this block was written for. The runner now writes all
+twelve kinds; on the revision that introduced this module it wrote seven, and the
+five it could not write — ``FUNDING``, ``RECONCILIATION``, ``LIQUIDATION_TOUCH``,
+``RECOVERY`` and ``SKIPPED_STALE`` — were the whole reason the distinction had to
+be published rather than assumed. The block stays because the question it answers
+does not go away: a future kind, or a build in which one of these paths is again
+unreachable, is exactly the case a reader cannot see from a zero.
 
 **HALT, RESUME and RECOVERY are counted and not classified.** Section 9.4 puts
 them in neither the evidence set nor the operational set, and
@@ -118,21 +123,32 @@ LEGS: tuple[str, ...] = ("spot", "perp")
 
 #: The kinds ``chimera/demo/runner.py`` can write at this revision, read off its
 #: ``self._append(RecordKind.X, ...)`` call sites and pinned here because the
-#: consequence is scientific rather than cosmetic: five of the twelve kinds have
-#: no writer, ``HedgedPosition.settle_funding`` and ``.liquidation_touched`` have
-#: no caller, and a campaign run today would therefore produce no funding
-#: evidence and no reconciliation evidence at all. Emitting those records is
-#: runner behaviour and belongs to the change that owns the runner; what belongs
-#: here is refusing to present the resulting zeros as observations.
+#: consequence is scientific rather than cosmetic: a kind with no writer produces
+#: a zero that looks like an observation. Emitting a record is runner behaviour
+#: and belongs to the change that owns the runner; what belongs here is refusing
+#: to present the resulting zeros as observations.
 #: ``tests/test_demo_reports.py`` walks the runner's AST and fails if this tuple
 #: and its call sites disagree, so the disclosure cannot quietly go stale.
+#:
+#: PR-10R made the remaining five reachable: ``FUNDING`` from section 6.5's
+#: settlement path, ``RECONCILIATION`` from section 8.1's hourly and
+#: post-execution checks, ``LIQUIDATION_TOUCH`` from section 6.7's per-minute
+#: check, ``RECOVERY`` from section 9.3's crash handling and ``SKIPPED_STALE``
+#: from section 2.2's catch-up rule. All twelve are now written, and the tuple is
+#: kept — not deleted — because it is what makes that a checked fact rather than
+#: a claim in a docstring.
 RUNNER_WRITTEN_KINDS: tuple[str, ...] = (
     "DECISION",
+    "FUNDING",
     "HALT",
     "INCOMPLETE_STATE",
+    "LIQUIDATION_TOUCH",
     "OPERATOR",
+    "RECONCILIATION",
+    "RECOVERY",
     "RESUME",
     "SHUTDOWN",
+    "SKIPPED_STALE",
     "STARTUP",
 )
 
@@ -142,21 +158,30 @@ RUNNER_WRITTEN_KINDS: tuple[str, ...] = (
 INPUT_COVERAGE_NOTE = (
     "per record kind: whether this day's log held one, and whether the runner in "
     "this build can write one at all. The two are different facts and a bare zero "
-    "conflates them: five kinds -- FUNDING, RECONCILIATION, LIQUIDATION_TOUCH, "
-    "RECOVERY and SKIPPED_STALE -- have no writer in chimera/demo/runner.py at "
-    "this revision, so their counts below say 'this build cannot record it' and "
-    "not 'it did not happen'. The arithmetic in this report handles all twelve "
-    "kinds regardless, so it is already correct on a log that holds them."
+    "conflates them. In this build the runner writes every one of the twelve "
+    "kinds, so every zero below means 'it did not happen' and none of them means "
+    "'this build cannot record it'; kinds_the_runner_can_write is what says so, "
+    "and it is read off the runner's own append sites rather than asserted. The "
+    "arithmetic in this report handles all twelve kinds regardless."
 )
 
 #: How a free-text halt reason is collapsed into a bounded label, longest and
 #: most specific prefix first. Every prefix is quoted from a live ``halt(...)``
-#: or ``_halt(...)`` site -- ``chimera/demo/runner.py`` lines 303-313, 373, 397,
-#: 402, 419, 456, 463, 473 and ``self_check``; ``chimera/risk.py`` 467, 479, 771,
-#: 787, 797, 814; ``chimera/carry/hedge.py`` 275, 589 -- so the table describes
-#: this repository rather than a vocabulary invented for a dashboard. The
-#: fallback is ``other``: a reason nobody anticipated is grouped under a name
-#: that says so, never renamed into one of these.
+#: or ``_halt(...)`` site across ``chimera/demo/runner.py``, ``chimera/risk.py``
+#: and ``chimera/carry/hedge.py``, so the table describes this repository rather
+#: than a vocabulary invented for a dashboard, and
+#: ``tests/test_demo_reports.py`` reads those three files and fails on any prefix
+#: that no longer occurs in one of them. The fallback is ``other``: a reason
+#: nobody anticipated is grouped under a name that says so, never renamed into
+#: one of these.
+#:
+#: ``log_behind_state:`` is gone from this table and the removal is not a
+#: rename. Section 9.3's ``LOG_BEHIND_STATE`` is a RECOVERY cause, not a halt
+#: reason: PR-10R made the runner recover from that crash and continue, as
+#: section 9.3 asks, so no halt carries the prefix any more. It survives as
+#: ``recovery.cause`` on the RECOVERY record and is counted by
+#: :func:`_halts_block`'s ``recovery_events``. A halt label that matched nothing
+#: would report ``0`` for a condition that still happens.
 HALT_CAUSES: tuple[tuple[str, str], ...] = (
     ("kill_switch", "kill_switch"),
     ("dispute:", "dispute"),
@@ -165,7 +190,15 @@ HALT_CAUSES: tuple[tuple[str, str], ...] = (
     ("identity_violation", "identity_violation"),
     ("more than one rule", "multiple_actionable_rules"),
     ("source_identity:", "source_identity"),
-    ("log_behind_state:", "log_behind_state"),
+    ("log_forged:", "log_forged"),
+    ("liquidation_touch:", "liquidation_touch"),
+    ("liquidation_unknown:", "liquidation_unknown"),
+    ("funding_window_unknown:", "funding_unbookable"),
+    ("funding_unbookable:", "funding_unbookable"),
+    ("funding_not_booked:", "funding_unbookable"),
+    ("funding_source_unreadable:", "funding_unbookable"),
+    ("feed_unreadable:", "feed_unreadable"),
+    ("reconciliation_error:", "reconciliation_error"),
     ("store_error:", "store_error"),
     ("max daily loss", "daily_loss"),
     ("max drawdown", "drawdown"),
@@ -197,8 +230,8 @@ FUNDING_SOURCE = (
     "settlement it received. The split is exact while at most one settlement is "
     "booked per record, which the contract's 8-hourly settlement schedule "
     "guarantees; a record carrying two would understate both magnitudes by the "
-    "smaller of them, and no such record exists at this revision because no "
-    "settlement is booked at all."
+    "smaller of them. The runner writes one FUNDING record per settlement and "
+    "skips a settlement it has already booked, so no such record is produced."
 )
 
 #: The quantities :func:`monthly_report` knows how to compute. Counting only, on
@@ -644,8 +677,8 @@ def _ledger_and_funding(
 
     Every record that carries a ``ledger_effect`` is used, not only the
     ``DECISION`` records: section 9.1 gives one record shape to all twelve kinds,
-    so a ``FUNDING`` record -- which the runner cannot write yet and one day will
-    -- moves ``ledger_effect.funding`` exactly as a decision minute does. Reading
+    so a ``FUNDING`` record moves ``ledger_effect.funding`` exactly as a decision
+    minute does, and PR-10R makes the runner write one per settlement. Reading
     only decisions would drop a settlement's whole cash flow the day funding is
     booked at all, which is precisely the kind of silent zero this report exists
     not to produce.
@@ -803,13 +836,17 @@ RECONCILIATION_NOTE = (
     "neither is a judgement about whether the disagreement was real."
 )
 
-#: Why a LIQUIDATION_TOUCH block exists on a build that cannot write one.
+#: What a LIQUIDATION_TOUCH block does and does not claim.
 LIQUIDATION_NOTE = (
-    "HedgedPosition.liquidation_touched has no caller at this revision, so no run "
-    "of this build produces a LIQUIDATION_TOUCH record. The block is computed "
-    "from the log anyway, so it is already right on a log that holds them; "
-    "input_coverage is where the difference between 'none happened' and 'none "
-    "can be written' is stated."
+    "events is null when the day's log holds no LIQUIDATION_TOUCH record. The "
+    "runner evaluates section 6.7's check on every complete minute the position "
+    "is HEDGED or PARTIAL, so on this build an empty block means the check ran "
+    "and did not fire; input_coverage is where 'none happened' and 'none can be "
+    "written' are told apart. The portfolio test is section 6.7's own, against "
+    "the recorded mark HIGH -- the most adverse mark the minute can be shown to "
+    "have reached -- falling back to the mark close only on a minute that "
+    "carries no high, which is chimera.carry.accounting.Quote's ported rule and "
+    "not a new one. A non-flat position on a minute carrying neither is refused."
 )
 
 #: The six operator commands this report groups by, plus the collapse target.
