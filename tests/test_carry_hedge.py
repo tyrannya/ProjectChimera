@@ -48,7 +48,39 @@ def minute(index: int = 0, *, spot: str = "30000", perp: str = "30030", complete
     )
 
 
-def book(model: RecordedQuoteFillModel, at: Minute, *, bid="30000", ask="30001", size="50"):
+class BothLegModels:
+    """Every leg's fill model, driven together.
+
+    The tests in this file are fill-mechanics tests: they install ONE book and
+    read the spread, the slippage and the resulting entry basis straight off it,
+    so giving both legs that same book is the point rather than an oversight.
+    ``-13.00`` below is the cost of crossing one spread twice, not a basis.
+
+    Production does NOT share a model. ``build_hedged_position`` builds one per
+    leg and ``HedgedPosition.install_quote`` gives each its own side of the
+    market; the witness that the spot leg fills inside the SPOT book lives in
+    ``tests/test_demo_runner.py``, where there are two books to tell apart.
+    """
+
+    def __init__(self, models):
+        self._models = tuple(models)
+        assert self._models, "a position with no fill models cannot be quoted"
+
+    def set_quote(self, quote, now_ns):
+        for model in self._models:
+            model.set_quote(quote, now_ns)
+
+    @property
+    def now_ns(self):
+        return self._models[0].now_ns
+
+    @now_ns.setter
+    def now_ns(self, value):
+        for model in self._models:
+            model.now_ns = value
+
+
+def book(model: BothLegModels, at: Minute, *, bid="30000", ask="30001", size="50"):
     model.set_quote(
         TopOfBook(
             instant_ns=at.minute_ns,
@@ -71,7 +103,7 @@ def position(tmp_path):
     )
     hedged.spot.recover({})
     hedged.perp.recover({})
-    hedged.model = model  # type: ignore[attr-defined]
+    hedged.model = BothLegModels(hedged.fill_models.values())  # type: ignore[attr-defined]
     return hedged
 
 
@@ -86,6 +118,54 @@ def assert_hedged_is_balanced(position: HedgedPosition) -> None:
     """The invariant, asserted wherever the state could have changed."""
     if position.state is HedgeState.HEDGED:
         assert position.imbalance() == D("0"), "HEDGED with a non-zero imbalance"
+
+
+class FrictionRecorder:
+    """Every friction the position COMPUTES, captured before the ledger sees it.
+
+    The oracle for "nothing was dropped" cannot be the accumulator under test.
+    This wraps `_frictions`, which is where a fee and a slippage first exist, so
+    a cycle whose booking is deferred or refused still shows up here -- which is
+    exactly how the lost exit slippage was invisible to a test that compared the
+    ledger against itself.
+    """
+
+    def __init__(self, position: HedgedPosition) -> None:
+        original = HedgedPosition._frictions
+        self.fees = D("0")
+        self.slippage = D("0")
+
+        def wrapper(records, reference):
+            fee, slip = original(records, reference)
+            self.fees += fee
+            self.slippage += slip
+            return fee, slip
+
+        position._frictions = wrapper
+
+
+@pytest.fixture
+def recorder(position) -> FrictionRecorder:
+    return FrictionRecorder(position)
+
+
+def cash_from_the_legs(position: HedgedPosition) -> D:
+    """``free_cash`` as the two EXECUTORS describe it. Section 6.6's identity.
+
+    Every term is read from an executor: the inventory each leg holds at its own
+    VWAP, its cumulative fees, its cumulative realised PnL and its funding.
+    Slippage is deliberately absent -- it is a measurement of a price, already
+    inside those VWAPs, and not a transfer.
+    """
+    spot, perp = position.leg(SPOT), position.leg(PERP)
+    return (
+        CAPITAL
+        - spot.quantity * spot.entry_price
+        - perp.quantity * perp.entry_price
+        - (position.spot.ledger.trading_fees + position.perp.ledger.trading_fees)
+        + (position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl)
+        + (position.spot.ledger.net_funding + position.perp.ledger.net_funding)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -199,11 +279,34 @@ def test_correction_is_a_no_op_when_the_position_is_not_partial(position):
 
 
 def test_emergency_reduce_flattens_the_perpetual_before_the_spot(position):
+    """Section 6.8 fixes the order, and this test used not to check it.
+
+    It asserted that both legs ended flat and that both stores recorded the
+    cause -- both of which are true whichever leg goes first. Reversing the loop
+    left it green. The order is the whole point: the perpetual is the leg whose
+    refusal is more likely, so it is the one to discover a refusal on before the
+    other side has been sold.
+
+    The two real `emergency_flatten` methods are wrapped rather than replaced,
+    so what is observed is the production call graph and not a stand-in.
+    """
     open_hedge(position)
     bar = minute(1)
     book(position.model, bar)
+
+    order: list[str] = []
+    for name, executor in ((SPOT, position.spot), (PERP, position.perp)):
+        original = executor.emergency_flatten
+
+        def watched(*args, _name=name, _original=original, **kwargs):
+            order.append(_name)
+            return _original(*args, **kwargs)
+
+        executor.emergency_flatten = watched
+
     outcome = position.emergency_reduce(FlattenCause.RISK_HALT, bar)
 
+    assert order == [PERP, SPOT], f"section 6.8's order was {order}"
     assert position.state is HedgeState.FLAT
     assert outcome.detail.endswith(FlattenCause.RISK_HALT.value)
     assert position.leg(SPOT).is_flat and position.leg(PERP).is_flat
@@ -376,6 +479,7 @@ def test_hedged_always_means_zero_imbalance_under_random_fill_and_fault_sequence
     )
     hedged.spot.recover({})
     hedged.perp.recover({})
+    model = BothLegModels(hedged.fill_models.values())
 
     seen = set()
     for index in range(40):
@@ -473,11 +577,194 @@ def test_the_hand_traced_long_spot_short_perp_example(position):
     assert position.state is HedgeState.HEDGED
 
     # -- the net, reached two independent ways -------------------------------
+    #   0.500 x (-13.00 - 5.00)  = -9.00000   the basis moved against the position
+    # + 1.500500000               funding, received by the SHORT (A10)
+    # - 22.50200000               both legs' entry fees
+    #                             = -30.00150000
+    # Slippage is NOT a term: it is the gap between the fills and the decision
+    # closes, and those fills are the prices `spot_pnl`, `perp_pnl` and the
+    # entry basis above are all measured from, so it is inside the -9.00000
+    # already. Subtracting it here as well was the second charge.
     from_components = (
-        D("0.500") * (ledger.entry_basis - marked.basis)
-        + ledger.net_funding
-        - ledger.fees
-        - ledger.slippage
+        D("0.500") * (ledger.entry_basis - marked.basis) + ledger.net_funding - ledger.fees
     )
     assert marked.equity - ledger.capital == from_components
-    assert from_components == D("-30.00150000") - ledger.slippage
+    assert from_components == D("-30.00150000")
+    assert ledger.slippage > D("0"), "a run with no slippage cannot show it is not spent"
+
+
+def test_a_correction_flatten_returns_the_cash_of_a_booked_entry(position):
+    """The correction path books a reduction too, not only the emergency one.
+
+    `flatten_for_correction` is reachable from a HEDGED position: a rebalance
+    that leaves one leg behind goes PARTIAL, and an exhausted correction
+    flattens. Before `book_reduction` existed neither flatten path told the carry
+    ledger anything, so `free_cash` kept the whole entry debit and every later
+    equity reading was wrong by roughly the position's notional.
+
+    The oracle is the ENTRY record plus the legs' own realised PnL -- neither of
+    them written by the code under test.
+    """
+    open_hedge(position, "0.500")
+    ledger = position.ledger.state
+    assert ledger.quantity == D("0.500") and ledger.spot_entry is not None
+    principal = ledger.quantity * ledger.spot_entry
+    margin = ledger.perp_margin
+    cash_before = ledger.free_cash
+    fees_before = ledger.fees
+    slippage_before = ledger.slippage
+    realised_before = ledger.realised
+
+    later = minute(1)
+    book(position.model, later)
+    position.flatten_for_correction(later)
+
+    assert position.state is HedgeState.FLAT
+    assert ledger.quantity == D("0") and ledger.perp_margin == D("0")
+    assert ledger.spot_entry is None and ledger.entry_basis is None
+
+    returned = ledger.free_cash - cash_before
+    exit_fees = ledger.fees - fees_before
+    assert returned == principal + margin + (ledger.realised - realised_before) - exit_fees
+    # The exit's slippage is recorded and is not spent: it is already inside the
+    # exit fills that `realised` is measured against.
+    assert ledger.slippage > slippage_before, "the exit crossed no spread"
+
+    # The realised half, cross-checked against the executors rather than against
+    # the ledger that is under test.
+    legs_realised = position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl
+    assert ledger.realised == legs_realised
+
+
+def test_a_close_that_leaves_one_leg_holding_disputes_but_loses_no_cash(position, recorder):
+    """`emergency_flatten` returns normally when the venue REJECTS the order.
+
+    So a close can leave the perpetual flat and the spot still LONG. Reading the
+    closed quantity as `ledger.quantity - min(spot, perp)` made that look like a
+    full close: the ledger credited the whole principal and the whole margin and
+    reset the entry, while the spot inventory was still there and still counted
+    by `mark_to_market`. Equity jumped by the position's notional.
+
+    The answer is a dispute, and it always was. What it is NOT is a reason to
+    lose money: refusing to book anything discarded the closed leg's exit
+    slippage, which no executor accumulates and nothing can recover later. Each
+    leg is booked at its own level -- the perpetual's margin comes back because
+    the perpetual really did close, the spot's principal stays out because the
+    spot really is still held -- and the position is disputed on top.
+    """
+    open_hedge(position, "0.500")
+    ledger = position.ledger.state
+    cash_before = ledger.free_cash
+    spot_principal_before = ledger.spot_principal
+    slippage_before = recorder.slippage
+
+    later = minute(1)
+    book(position.model, later)
+    # The spot leg refuses its closing order: a market condition, not a fault.
+    position.fill_models["spot"].max_reference_deviation_bps = D("0")
+    position.emergency_reduce(FlattenCause.RISK_HALT, later)
+
+    assert position.leg(PERP).is_flat and not position.leg(SPOT).is_flat
+    # The leg that closed returned its margin; the leg that did not keeps its
+    # principal. Neither is guessed at: both are that leg's own level.
+    assert ledger.perp_margin == D("0")
+    assert ledger.spot_principal == spot_principal_before
+    assert ledger.free_cash > cash_before, "the closed leg returned nothing"
+    # The oracle is the EXECUTORS and the frictions the position measured --
+    # never this ledger's own arithmetic.
+    assert ledger.free_cash == cash_from_the_legs(position)
+    assert recorder.slippage > slippage_before, "the perpetual's exit was free"
+    assert ledger.slippage == recorder.slippage, "an exit's slippage was dropped"
+    # And the position says so rather than carrying on.
+    assert position.is_disputed
+    assert "asymmetric_close" in (ledger.disputed or "")
+
+    # The operator's remedy: flatten again once the leg will take the order.
+    # The FIRST leg closed a call ago, so a booking computed from a before/after
+    # snapshot around this call would see zero realised and zero fee for it and
+    # lose that leg's close for ever, silently -- `reconstruct()` compares
+    # quantities, which agree. Booking against the executors' TOTALS cannot.
+    position.fill_models["spot"].max_reference_deviation_bps = D("50")
+    book(position.model, later)
+    position.emergency_reduce(FlattenCause.RISK_HALT, later)
+
+    assert position.leg(SPOT).is_flat and position.leg(PERP).is_flat
+    assert ledger.quantity == D("0") and ledger.perp_margin == D("0")
+    legs_realised = position.spot.ledger.realised_pnl + position.perp.ledger.realised_pnl
+    legs_fees = position.spot.ledger.trading_fees + position.perp.ledger.trading_fees
+    assert legs_realised != D("0"), "the legs realised nothing, so this proves nothing"
+    assert ledger.realised == legs_realised
+    assert ledger.fees == legs_fees
+
+
+def test_the_exit_fee_and_slippage_reach_the_carry_ledger(position):
+    """A close is charged, and the carry ledger has to see the charge.
+
+    The executors charge the closing fill and the carry ledger was never told, so
+    `free_cash` and every equity reading after a close overstated by the exit
+    cost, once per round trip. The identity test could not catch it: it computed
+    the exit frictions from `ledger.fees`, the accumulator that was not moving.
+    The oracle here is the EXECUTORS' own fee accumulators.
+    """
+    open_hedge(position, "0.500")
+    ledger = position.ledger.state
+    fees_before = ledger.fees
+    executor_fees_before = (
+        position.spot.ledger.trading_fees + position.perp.ledger.trading_fees
+    )
+
+    later = minute(1)
+    book(position.model, later)
+    position.emergency_reduce(FlattenCause.RISK_HALT, later)
+
+    executor_charged = (
+        position.spot.ledger.trading_fees + position.perp.ledger.trading_fees
+    ) - executor_fees_before
+    assert executor_charged > D("0"), "the exit was free, so this proves nothing"
+    assert ledger.fees - fees_before == executor_charged
+
+
+def test_the_ordinary_rule_driven_close_books_the_reduction(position):
+    """The exit a campaign actually takes goes through `apply`, not a flatten.
+
+    `CarryRule` returns `HedgeTarget(0)` when the basis falls below
+    `min_basis`, and that reaches the ledger through `apply` -> `_book`.
+    `book_reduction` was wired into `emergency_reduce` and
+    `flatten_for_correction` only, so the ORDINARY close booked fees and
+    nothing else: the legs went flat while the ledger kept the whole entry, and
+    `mark_to_market` -- free_cash + Q x spot_close + perp_margin + perp_pnl --
+    read about a quarter of capital too low. That number reaches
+    `risk.update_equity` and the DECISION record's `ledger_effect`, so the first
+    ordinary exit of a campaign booked a ~25% drawdown that never happened.
+
+    The witness that missed this closed with `flatten`, which is the emergency
+    path; this one closes the way the rule does.
+    """
+    open_hedge(position, "0.500")
+    ledger = position.ledger.state
+    principal = ledger.quantity * ledger.spot_entry
+    margin = ledger.perp_margin
+    cash_before = ledger.free_cash
+    fees_before = ledger.fees
+    slippage_before = ledger.slippage
+    realised_before = ledger.realised
+
+    later = minute(1)
+    book(position.model, later)
+    outcome = position.apply(position.plan(HedgeTarget(D("0")), later), later, equity=EQUITY)
+
+    assert outcome.state is HedgeState.FLAT
+    assert position.leg(SPOT).is_flat and position.leg(PERP).is_flat
+    # The entry is unwound, so a later re-open books a fresh entry.
+    assert ledger.quantity == D("0") and ledger.perp_margin == D("0")
+    assert ledger.spot_entry is None and ledger.entry_basis is None
+
+    # Same identity as the emergency paths, from the entry record and the legs.
+    returned = ledger.free_cash - cash_before
+    exit_fees = ledger.fees - fees_before
+    assert returned == principal + margin + (ledger.realised - realised_before) - exit_fees
+    assert ledger.slippage > slippage_before, "the exit crossed no spread"
+
+    # A flat account holds only cash.
+    marked = position.mark_to_market(later)
+    assert marked.equity == ledger.free_cash

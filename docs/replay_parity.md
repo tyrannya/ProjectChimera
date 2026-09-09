@@ -64,9 +64,82 @@ replay design rests on.
 ## What may differ
 
 **Operational records.** `STARTUP`, `SHUTDOWN`, `RECOVERY`, `HALT` and `RESUME`
-are aligned by `(minute, kind)` and their contents are not compared, because
-"the replay may have fewer restarts". Dropping a `STARTUP` is not a parity
-failure; dropping a `DECISION` is.
+are aligned by `(minute, kind, ordinal)` and their contents are not compared,
+because "the replay may have fewer restarts". Dropping a `STARTUP` is not a
+parity failure; dropping a `DECISION` is.
+
+> **Known limitation, not fixed here: a live run with more restarts than its
+> replay diverges on `seq` regardless of any exclusion.** Section 10's table
+> requires `seq` to match byte-for-byte *and* permits the replay to have fewer
+> restarts, and those two cannot both hold: `seq` is one counter over **every**
+> record, operational kinds included (`DecisionLog.append` assigns it before it
+> knows the kind), so each extra live `STARTUP`/`SHUTDOWN`/`RECOVERY` shifts the
+> `seq` of every record after it. A clean restart in the middle of a run
+> therefore produces one `seq` divergence per subsequent record, and because
+> every `RECOVERY` is by construction preceded by a restart, the explained
+> exclusions below cannot turn such a run into `PARITY` — they remove the
+> crashed minute, not the offset.
+>
+> This is inherited, not introduced: `seq` was already in `MUST_MATCH` at
+> `e02b871`, taken verbatim from section 10. It is recorded rather than repaired
+> because both available repairs are worse than the disclosure. Dropping `seq`
+> from the comparison weakens a frozen must-match field, and renumbering the
+> live log to hide its restarts would edit committed evidence. Reconciling the
+> two halves of section 10's own table is a decision for the plan, not for this
+> tool; until it is made, treat a restarted run's `seq` divergences as expected
+> and read the other fields.
+>
+> The same applies to a run whose live catch-up skipped minutes: the replay
+> decides them, so it opens its position earlier and every later `signal`,
+> `position_after` and `ledger_effect` differs. A minute-level exclusion cannot
+> undo a state divergence that propagates.
+
+**Everything else is compared, including the kinds PR-10R made reachable.**
+`FUNDING`, `RECONCILIATION`, `LIQUIDATION_TOUCH`, `SKIPPED_STALE` and
+`INCOMPLETE_STATE` all go through the full must-match comparison. None of them is
+exempted to make a run green: a replay that booked a different funding flow,
+reconciled to a different outcome, or missed a settlement diverges.
+
+> **Known gap, not decided here: `OPERATOR` records have no completed parity
+> policy.** `OPERATOR` is not in `OPERATIONAL_KINDS` and not in
+> `EXCLUDING_KINDS`, so it falls into "everything else" and is compared field by
+> field — but a replay drives no CLI and issues no operator command, so it can
+> never produce a counterpart. A live campaign in which an operator ran `flatten`
+> or `resolve` therefore reports that record as `live_only` and the day comes
+> back `DIVERGED`, with nothing wrong with the decision logic.
+>
+> This is not a defect the tool may fix on its own initiative. Section 9.4 puts
+> `OPERATOR` in the **evidence** set, alongside `DECISION` and `FUNDING`, so
+> quietly adding it to the ignored-operational set would exempt a
+> safety-significant action from the comparison — the same shape of decision
+> `chimera/demo/decision_log.py` declines to make for `HALT` and `RESUME`.
+> Whether the correct treatment is a deterministic replay counterpart, an
+> explicit and explained exclusion, or some other adopted mechanism is a
+> question for section 10 and PR-11, not for this file. Until it is adopted, a
+> campaign day containing an operator action cannot reach `PARITY`, and that is
+> recorded here rather than worked around.
+
+**The alignment key carries an ordinal.** A minute may produce more than one
+record of a kind — catching up across a settlement boundary books two `FUNDING`
+settlements in one minute — and the key is `(minute, kind, n)` so each is
+compared to its own counterpart. Keyed on `(minute, kind)` alone the later record
+overwrote the earlier one on both sides, so the earlier one was compared to
+nothing and a replay that emitted fewer of them produced no `replay_only` entry
+at all. Where a minute produces one record of a kind, which is every case before
+PR-10R, the ordinal is `0` and the key is the old one.
+
+**The Aegis day, and the wall clock.** `risk` is a must-match block, and
+`RiskEngine` rolls its trading day on `datetime.fromtimestamp(self._clock())` --
+the real wall clock -- while `tools/demo_run.py` and the test harness both
+construct it without a clock. `day_start_equity` and `daily_pnl` are therefore
+functions of *when the process ran*, not of the minutes it read. A live campaign
+crossing a UTC midnight rolls them; a replay of the same minutes on a later date
+does not, so every record after the first day differs in the `risk` block and the
+daily-loss rule is evaluated over a different window. `_risk_hash`
+(`chimera/demo/runner.py`) excludes `day` from the hashed snapshot but not those
+two fields. Pre-existing and disclosed here
+rather than repaired, because giving Aegis the runner's clock changes a frozen
+risk path that is not this change's to move.
 
 **The environment.** If the two runs declare a different `software.python` or
 `software.libs`, the whole run is labelled **`ENVIRONMENT_PARITY`** and reported
@@ -103,10 +176,23 @@ A divergence is never repaired by the tool. Section 10's failure criterion is
 "any mismatch in a must-match field", and a parity tool that could paper over
 one would be worse than no tool at all.
 
-The one divergence the plan permits to be explained away is a minute where the
-runner started from `LOG_BEHIND_STATE`; section 10 says it "is explained and
-excluded once". That exclusion is an operator's judgement recorded in the
-campaign's notes, not something this tool applies on its own.
+**Explained exclusions.** Section 10 permits one divergence to be explained away:
+a minute the runner started from `LOG_BEHIND_STATE` "is explained and excluded
+once". PR-10R makes that executable and gives it a second, identical case.
+
+The tool excludes a **minute** — never a record kind — when the *live* log says
+that minute was not one the campaign decided from its files:
+
+| live record | minute excluded | why a replay cannot reproduce it |
+| --- | --- | --- |
+| `SKIPPED_STALE` | the skipped minute | the live process came back from an outage and the minute was already older than `max_catchup_minutes`. Which minutes were stale depends on when the process restarted, and no recorded file holds that. |
+| `RECOVERY` | `recovery.evidence_excluded_minute` | section 9.3: the minute a crash left inconsistent "is excluded from the campaign's evidence and counted in the monthly report". |
+
+Every exclusion is reported. `explained_exclusions` lists each excluded minute
+with its reason, in the JSON and in the printed summary, and the count is printed
+even when it is zero. A run with no restarts and no crashes excludes nothing, and
+the 48-hour synthetic acceptance is such a run — so its parity result is an exact
+comparison of every record, not a comparison with something taken out of it.
 
 ## Scope
 

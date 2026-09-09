@@ -21,7 +21,7 @@ from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
 from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, ShadowParams
 from chimera.demo.runner import DemoRunner
-from chimera.futures.fills import RecordedQuoteFillModel, TopOfBook
+from chimera.futures.fills import RecordedQuoteFillModel
 from chimera.recorder.contract import load_recorder_contract
 from chimera.risk import RiskEngine, RiskLimits
 
@@ -88,7 +88,11 @@ class Harness:
     """A runner and everything it was built from, so a test can reach in."""
 
     runner: DemoRunner
-    model: RecordedQuoteFillModel
+    #: One fill model per leg, keyed by leg name -- the mapping the position
+    #: itself holds. Never one shared model: the spot leg prices from the spot
+    #: book and the perpetual from its own, so a test that tightens a fill
+    #: setting has to say which leg it means.
+    models: Mapping[str, RecordedQuoteFillModel]
     root: Path
     state_dir: Path
     feed: SyntheticFeed
@@ -99,31 +103,26 @@ class Harness:
         assert minute is not None, "the fixture wrote no minutes"
         return minute
 
-    def quote_for(self, minute_ms: int) -> None:
-        """Install the book the fill model prices this minute against."""
-        state = self.runner.cursor.state_for(minute_ms)
-        book = state.book_perp or state.book_spot
-        if not book:
-            return
-        self.model.set_quote(
-            TopOfBook(
-                instant_ns=minute_ms * 1_000_000,
-                bid=book["bid"],
-                bid_qty=Decimal("100"),
-                ask=book["ask"],
-                ask_qty=Decimal("100"),
-            ),
-            minute_ms * 1_000_000,
-        )
+    def tick(self, minute_ms: int):
+        """One minute, exactly as the production entry point drives it.
 
-    def tick(self, minute_ms: int, *, quote: bool = True):
-        if quote:
-            self.quote_for(minute_ms)
+        This helper used to install the decision minute's book on the fill model
+        before each tick, and take a ``quote=False`` flag to suppress it. Both are
+        gone: `DemoRunner.tick` installs the book itself now, which is what
+        `RecordedQuoteFillModel` always said the runner owed it.
+
+        The harness doing that job is what hid its absence. Every test here ran
+        against a model somebody else had loaded, so a suite that exercised
+        funding, reconciliation and liquidation end to end still never noticed
+        that through `tools/demo_run.py` no order could fill and a campaign could
+        not open a position at all. A harness that supplies what production does
+        not is a harness that tests itself.
+        """
         return self.runner.tick(minute_ms)
 
-    def run(self, count: int, *, start: int | None = None, quote: bool = True) -> list:
+    def run(self, count: int, *, start: int | None = None) -> list:
         first = start if start is not None else self.first_minute_ms()
-        return [self.tick(first + i * 60_000, quote=quote) for i in range(count)]
+        return [self.tick(first + i * 60_000) for i in range(count)]
 
     def records(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -159,10 +158,7 @@ def build(
         kill_switch_path=state_dir / "KILL_SWITCH",
     )
     risk.update_equity(float(CAPITAL))
-    model = RecordedQuoteFillModel()
-    position = build_hedged_position(
-        risk=risk, capital=CAPITAL, state_dir=state_dir, fill_model=model
-    )
+    position = build_hedged_position(risk=risk, capital=CAPITAL, state_dir=state_dir)
     position.spot.recover({})
     position.perp.recover({})
 
@@ -190,7 +186,7 @@ def build(
         software={"revision": "synthetic", "dirty": False, "python": "3.11"},
         telemetry=telemetry,
     )
-    harness = Harness(runner, model, root, state_dir, feed, risk)
+    harness = Harness(runner, dict(position.fill_models or {}), root, state_dir, feed, risk)
     if start:
         runner.start()
     return harness

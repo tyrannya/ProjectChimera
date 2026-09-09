@@ -79,6 +79,23 @@ def _text(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
 
 
+def _spot_principal(data: Mapping[str, Any]) -> Decimal:
+    """The persisted spot principal, or what a file without one had booked.
+
+    Before this field existed the only spot principal the ledger could hold was
+    ``quantity * spot_entry`` -- ``book_entry`` debited exactly that and
+    ``book_reduction`` credited exactly a share of it. So the fallback restates
+    the old file rather than guessing at it, and a ledger written by either
+    build reloads with the same cash meaning under the same schema id.
+    """
+    raw = data.get("spot_principal")
+    if raw is not None:
+        return _decimal(raw, "spot_principal")
+    quantity = _decimal(data.get("quantity", "0"), "quantity")
+    entry = _optional_decimal(data.get("spot_entry"), "spot_entry")
+    return ZERO if entry is None else quantity * entry
+
+
 @dataclass
 class LegAccrual:
     """One leg's cost and realisation accumulators, reported per leg (section 6.5)."""
@@ -117,6 +134,21 @@ class CarryLedgerState:
     quantity: Decimal = ZERO
     spot_entry: Decimal | None = None
     perp_entry: Decimal | None = None
+    #: What the spot inventory now held COST, in quote currency, and the
+    #: counterpart of :attr:`perp_margin` on the other leg. Both are LEVELS:
+    #: :meth:`CarryLedger.book_position` moves ``free_cash`` by the change in
+    #: them, so an entry, an increase, a partial reduction and a close are one
+    #: piece of arithmetic rather than three.
+    #:
+    #: It is persisted rather than derived from ``quantity * spot_entry``
+    #: because ``quantity`` is the HEDGED quantity -- ``min(spot, perp)`` -- and
+    #: the spot leg can hold more than that while a correction is outstanding.
+    #: Deriving it would then value the inventory at a quantity the spot leg
+    #: does not hold. Additive: :meth:`from_dict` falls back to
+    #: ``quantity * spot_entry``, which is exactly what a file written before
+    #: this field existed had booked, so the fallback is a restatement and not
+    #: a guess.
+    spot_principal: Decimal = ZERO
     perp_margin: Decimal = ZERO
     entry_basis: Decimal | None = None
     current_basis: Decimal | None = None
@@ -125,6 +157,21 @@ class CarryLedgerState:
     #: Settlement instants already booked. The dedup key, persisted so a restart
     #: cannot re-book a settlement the previous process already applied.
     settled: list[int] = field(default_factory=list)
+    #: When the position now held was opened, in integer ns. Section 6.9's
+    #: funding window is ``open_instant < settlement <= now``, so the lower bound
+    #: is a fact about THIS position and has to outlive the process that opened
+    #: it; a restart that forgot it would either re-charge settlements from
+    #: before the open or, defaulting the other way, charge none at all.
+    #:
+    #: ``None`` means one of two things and they are deliberately not
+    #: distinguished here: the position is flat, or the ledger was written by a
+    #: build that did not record the instant. Both are answered the same way by
+    #: the caller -- a non-flat position with no open instant has an unknowable
+    #: funding window and is refused rather than guessed at. This field is
+    #: additive: :meth:`from_dict` reads it with a ``None`` default, so a file
+    #: written before it existed still loads under the same schema id, and the
+    #: absence means exactly what it says.
+    open_instant_ns: int | None = None
     #: The most recent identity residual, kept so a report can show how close the
     #: position runs to its tolerance rather than only whether it broke it.
     identity_gap: Decimal | None = None
@@ -168,12 +215,14 @@ class CarryLedgerState:
             "quantity": str(self.quantity),
             "spot_entry": _text(self.spot_entry),
             "perp_entry": _text(self.perp_entry),
+            "spot_principal": str(self.spot_principal),
             "perp_margin": str(self.perp_margin),
             "entry_basis": _text(self.entry_basis),
             "current_basis": _text(self.current_basis),
             "last_equity": _text(self.last_equity),
             "worst_equity": _text(self.worst_equity),
             "settled": list(self.settled),
+            "open_instant_ns": self.open_instant_ns,
             "identity_gap": _text(self.identity_gap),
             "disputed": self.disputed,
             "resolutions": [dict(r) for r in self.resolutions],
@@ -207,6 +256,14 @@ class CarryLedgerState:
                 f"marked_at_ns holds a non-integer instant: {marked_raw!r}"
             ) from exc
 
+        opened_raw = data.get("open_instant_ns")
+        try:
+            opened = None if opened_raw is None else int(opened_raw)
+        except (TypeError, ValueError) as exc:
+            raise LedgerError(
+                f"open_instant_ns holds a non-integer instant: {opened_raw!r}"
+            ) from exc
+
         disputed = data.get("disputed")
         return cls(
             capital=_decimal(data.get("capital", "0"), "capital"),
@@ -219,12 +276,14 @@ class CarryLedgerState:
             quantity=_decimal(data.get("quantity", "0"), "quantity"),
             spot_entry=_optional_decimal(data.get("spot_entry"), "spot_entry"),
             perp_entry=_optional_decimal(data.get("perp_entry"), "perp_entry"),
+            spot_principal=_spot_principal(data),
             perp_margin=_decimal(data.get("perp_margin", "0"), "perp_margin"),
             entry_basis=_optional_decimal(data.get("entry_basis"), "entry_basis"),
             current_basis=_optional_decimal(data.get("current_basis"), "current_basis"),
             last_equity=_optional_decimal(data.get("last_equity"), "last_equity"),
             worst_equity=_optional_decimal(data.get("worst_equity"), "worst_equity"),
             settled=settled,
+            open_instant_ns=opened,
             identity_gap=_optional_decimal(data.get("identity_gap"), "identity_gap"),
             disputed=None if disputed is None else str(disputed),
             resolutions=[
@@ -306,9 +365,33 @@ class CarryLedger:
         return cls(path=location, state=state, outcome=LoadOutcome.LOADED)
 
     def save(self, *, now_ns: int | None = None) -> None:
-        """Write atomically: temp -> flush -> fsync -> replace."""
+        """Write atomically: temp -> flush -> fsync -> replace.
+
+        **A ledger that loaded UNREADABLE never writes itself back.** :meth:`open`
+        promises it in terms -- "the file is left untouched: it is the only record
+        of what this position did, and a ledger that resets itself is
+        indistinguishable from one that never traded" -- and until this guard
+        that promise held only for as long as nobody called ``save()``. The
+        placeholder :meth:`open` returns carries ``free_cash == capital`` and no
+        position, so persisting it destroys the cash record and replaces it with
+        a ledger that says the campaign never traded. The operator ``resolve``
+        command did exactly that: it cleared the ``ledger_unreadable`` dispute and
+        saved, so the one command that exists to be the safe path was the one that
+        erased the evidence.
+
+        Refusing is louder than skipping: a caller that silently did not persist
+        would believe it had.
+        """
         if self.path is None:
             return
+        if self.outcome is LoadOutcome.UNREADABLE:
+            raise LedgerError(
+                f"refusing to overwrite the carry ledger at {self.path}: it could not be "
+                f"read ({self.state.disputed}), so this object holds a placeholder and "
+                "not what the position did. Writing it would replace the only record of "
+                "the campaign's cash with one that says it never traded. Repair or move "
+                "the file by hand, with the damaged bytes preserved."
+            )
         self.state.updated_at = _now_text(now_ns)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
@@ -319,6 +402,25 @@ class CarryLedger:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self.path)
+            # The rename, too, and not only the bytes. `os.replace` is atomic
+            # with respect to a reader, but on a filesystem without global
+            # metadata ordering it is not guaranteed DURABLE until the parent
+            # directory is synced. Without this, a power loss can leave the
+            # decision log's later fsync on disk and this rename not -- the one
+            # crash that can genuinely produce a ledger holding less than the log
+            # committed, which `DemoRunner._ledger_regressed_against_the_log`
+            # would then report as deletion or tampering. Best effort: a
+            # directory that cannot be opened for sync is not a reason to fail a
+            # write that has already landed.
+            try:
+                directory = os.open(self.path.parent, os.O_RDONLY)
+            except OSError:  # pragma: no cover - platform without directory fds
+                pass
+            else:
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         except OSError as exc:
             raise LedgerError(
                 f"could not persist the carry ledger to {self.path}: {exc}. Continuing "
@@ -358,32 +460,99 @@ class CarryLedger:
 
     # -- booking -----------------------------------------------------------
 
-    def book_entry(
+    def book_position(
         self,
         *,
-        quantity: Decimal,
-        spot_fill: Decimal,
-        perp_fill: Decimal,
-        spot_fee: Decimal,
-        perp_fee: Decimal,
-        spot_slippage: Decimal,
-        perp_slippage: Decimal,
-        perp_margin: Decimal,
-    ) -> None:
-        """Record an opened hedge: quantities, entry prices, entry basis and costs."""
-        self.state.quantity = quantity
-        self.state.spot_entry = spot_fill
-        self.state.perp_entry = perp_fill
-        self.state.perp_margin = perp_margin
-        self.state.entry_basis = perp_fill - spot_fill
-        self.state.current_basis = self.state.entry_basis
-        self.state.spot.fees += spot_fee
-        self.state.perp.fees += perp_fee
-        self.state.spot.slippage += spot_slippage
-        self.state.perp.slippage += perp_slippage
-        self.state.free_cash -= quantity * spot_fill
-        self.state.free_cash -= perp_margin
-        self.state.free_cash -= spot_fee + perp_fee + spot_slippage + perp_slippage
+        spot_quantity: Decimal,
+        spot_entry: Decimal,
+        perp_quantity: Decimal,
+        perp_entry: Decimal,
+    ) -> Decimal:
+        """Move the ledger to the position the LEGS hold, at the legs' own cost.
+
+        **The one place principal and margin move.** It replaced ``book_entry``
+        and ``book_reduction``, which were two different pieces of arithmetic
+        reached by two different triggers -- and a third state, an increase, had
+        no trigger at all. Every miss of that kind is the same defect: a
+        transition nobody wrote a branch for.
+
+        This takes LEVELS, not events. The spot inventory the position holds
+        cost ``spot_quantity * spot_entry`` and the perpetual's 1x margin is
+        ``perp_quantity * perp_entry``, where the two entry prices are the
+        executors' own VWAPs (:class:`chimera.futures.domain.Position`'s
+        ``entry_price``, maintained by ``apply_fill`` and left unchanged by a
+        partial close). ``free_cash`` then moves by the CHANGE in those levels,
+        and the same line of arithmetic covers every transition:
+
+            open      0     -> Q.w        debits exactly Q.w
+            increase  Q.w   -> Q'.w'      debits the increment at its own fill
+            reduce    Q.w   -> (Q-c).w    credits c.w, the principal AT COST
+            close     Q.w   -> 0          credits the whole principal
+            reopen    0     -> Q''.w''    debits fresh, inheriting no basis
+
+        There is no division, so a partial reduction releases margin exactly pro
+        rata and the final one clears the exact remainder with no residue to
+        accumulate -- the pro-rata branch that needed a fuzz test to hold it is
+        gone rather than fixed.
+
+        It is also **idempotent**: called again with the same levels it computes
+        zero differences and moves nothing. That is what lets a reconciliation
+        run after every cycle, and what makes a cycle that could not book
+        (an asymmetric close, section 6.8) recoverable rather than lost -- the
+        next cycle reconciles to the level, and levels do not remember how many
+        calls it took to reach them.
+
+        ``quantity`` stays the HEDGED quantity, ``min(spot, perp)``: it is what
+        section 6.5's identity and the reports are defined on. The two
+        principals are per leg precisely so that this method never has to
+        invent a single quantity for a position whose legs disagree.
+
+        Returns the signed cash moved, for the caller to record.
+        """
+        state = self.state
+        if spot_quantity < ZERO or perp_quantity < ZERO:
+            raise LedgerError(
+                f"a leg cannot hold a negative quantity (spot {spot_quantity}, perp "
+                f"{perp_quantity}); a position read this way is a store to dispute, "
+                "not one to book"
+            )
+        if spot_quantity > ZERO and spot_entry <= ZERO:
+            raise LedgerError(
+                f"the spot leg holds {spot_quantity} at an entry price of {spot_entry}. "
+                "Booking it would value real inventory at nothing and credit the "
+                "difference to free cash on the next reduction"
+            )
+        if perp_quantity > ZERO and perp_entry <= ZERO:
+            raise LedgerError(
+                f"the perpetual leg holds {perp_quantity} at an entry price of "
+                f"{perp_entry}. Booking it would post no margin for a real short"
+            )
+
+        principal = spot_quantity * spot_entry
+        margin = perp_quantity * perp_entry
+        moved = (principal - state.spot_principal) + (margin - state.perp_margin)
+        state.free_cash -= moved
+        state.spot_principal = principal
+        state.perp_margin = margin
+
+        state.quantity = min(spot_quantity, perp_quantity)
+        if state.quantity > ZERO:
+            state.spot_entry = spot_entry
+            state.perp_entry = perp_entry
+            # Re-derived rather than kept: an increase moves both VWAPs, and an
+            # entry basis left at the first fill's would make section 6.5's
+            # identity disagree with the legs by the whole size of the increment.
+            state.entry_basis = perp_entry - spot_entry
+            if state.current_basis is None:
+                state.current_basis = state.entry_basis
+        else:
+            # No hedged quantity: the identity has nothing to check and a
+            # retained entry basis would be inherited by the next position.
+            state.spot_entry = None
+            state.perp_entry = None
+            state.entry_basis = None
+            state.current_basis = None
+        return -moved
 
     def book_funding(self, instant_ns: int, flow: Decimal) -> Decimal:
         """Book one settlement's signed flow. Returns 0 if already booked.
@@ -411,12 +580,46 @@ class CarryLedger:
         realised: Decimal = ZERO,
         rebalance: bool = False,
     ) -> None:
-        """Attribute a fill's frictions and realisation to one leg."""
+        """Attribute a fill's frictions and realisation to one leg.
+
+        **Slippage is measured, not spent.** Adopted as amendment A12
+        (`docs/amendment_a12_recorded_quote_slippage.md`), which is the authority
+        for what follows; until that amendment this docstring was the only place
+        the question had been answered, and an engineering argument in a
+        docstring is not an adopted decision. It is accumulated and reported, and
+        it does NOT move ``free_cash``. Section 6.5 defines it as "the difference
+        between the fill price and the mid at decision" -- a measurement of a
+        price, not a transfer -- and in this build that difference is already
+        inside the price every other term is computed from.
+        :class:`~chimera.futures.fills.RecordedQuoteFillModel` says so in terms:
+        "A BUY crosses to the recorded ask and a SELL to the recorded bid, and
+        the configured slippage is applied *on top of* that crossing." So the
+        executor's VWAP -- which :meth:`book_position` values the inventory and
+        the margin at, and which ``Position.apply_fill`` realises PnL against --
+        is the slipped price. Deducting the measured slippage as well charged
+        the crossing twice.
+
+        Section 6.6's cash line does read ``- slippage_paid``, and it is right
+        for the model it was written for. The frozen arithmetic in
+        :mod:`chimera.carry.accounting` fills at ``entry.spot_fill`` and charges
+        ``spot_notional * costs.spot_slippage`` as a SEPARATE modelled friction
+        on an un-slipped notional; there the two terms are disjoint. The demo
+        fills against a recorded book, so its notional is the slipped one and the
+        second term is money already inside the first. Booking at the executed
+        price and reporting the slippage beside it satisfies both sections; going
+        on to spend it satisfied neither.
+
+        The error was not cosmetic. It grew monotonically with turnover and it
+        reached ``risk.update_equity``, so a campaign that traded enough would
+        have halted on a drawdown limit against cash it had never spent -- the
+        same phantom-equity failure as the un-booked close, arriving slowly
+        instead of all at once.
+        """
         accrual = self._leg(leg)
         accrual.fees += fee
         accrual.slippage += slippage
         accrual.realised += realised
-        self.state.free_cash -= fee + slippage
+        self.state.free_cash -= fee
         self.state.free_cash += realised
         if rebalance:
             self.state.rebalance_cost += fee + slippage
@@ -427,6 +630,33 @@ class CarryLedger:
         if leg == "perp":
             return self.state.perp
         raise LedgerError(f"unknown leg {leg!r}; the carry position has exactly spot and perp")
+
+    def note_open_instant(self, *, flat: bool, instant_ns: int) -> None:
+        """Move section 6.9's funding window with the position it belongs to.
+
+        ``instant_ns`` is the instant the position came into EXISTENCE, which is
+        the minute's CLOSE -- the price a leg fills at. The caller converts; this
+        method stores what it is given and never guesses which end of a minute it
+        was handed.
+
+        Set when a flat position becomes non-flat, cleared when it returns to
+        flat, and left alone in between -- so a position that is increased,
+        corrected or rebalanced keeps the instant it was OPENED at, which is what
+        ``open_instant < settlement <= now`` names.
+
+        Clearing on flat is the half that matters. Without it a position that
+        closed and later reopened would carry the FIRST open's instant, and a
+        settlement that fell in the gap -- while nothing was held -- would land
+        inside the window and be charged against the second position. The
+        settlement instants already in :attr:`CarryLedgerState.settled` happen to
+        cover the common case, but only because the runner books each settlement
+        as it passes; the window is what makes the answer right by construction
+        rather than by luck.
+        """
+        if flat:
+            self.state.open_instant_ns = None
+        elif self.state.open_instant_ns is None:
+            self.state.open_instant_ns = int(instant_ns)
 
     def note_leg_mark(self, leg: str, instant_ns: int) -> None:
         """Record when a leg was last observed, for the stale-leg rule."""

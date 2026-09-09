@@ -24,11 +24,12 @@ common hedge quantity is floored to.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
-from chimera.carry.hedge import HedgeConfig, HedgedPosition
+from chimera.carry.hedge import PERP, SPOT, HedgeConfig, HedgedPosition
 from chimera.carry.ledger import CarryLedger
 from chimera.futures.executor import FuturesExecutionConfig, FuturesExecutor
 from chimera.futures.fills import RecordedQuoteFillModel
@@ -97,6 +98,35 @@ def common_step_size(table: Mapping[str, Mapping[str, Any]] | None = None) -> De
     )
 
 
+def _venue(
+    source: StaticConstraintSource, model: RecordedQuoteFillModel, store: FuturesStore
+) -> DryRunFuturesVenue:
+    """One leg's simulated venue, with its view restored from the leg's store.
+
+    Section 6.8 records the fact this exists for: **the venue is in-memory.** It
+    holds the simulated account's positions in a dict that a new process starts
+    empty, while the store on disk still holds what the account was left
+    holding. Section 8.1 then reconciles the two every sixty minutes, and
+    `FuturesExecutor.reconcile` asks the venue -- so without this the first
+    reconciliation after any restart compares a held position against an empty
+    simulator, reports MISMATCH, disputes both legs and halts the campaign. A
+    restart is a normal event this design expects (section 2.1), so a build that
+    could not survive one would have no campaign at all.
+
+    What is restored is only what this process's predecessor already persisted,
+    so the reconciliation it makes possible is still a real check: within a
+    process the venue applies fills to its own position as it reports them
+    (`DryRunFuturesVenue.submit`), and a fill the executor dropped still shows up
+    as a disagreement. Nothing is adopted INTO the executor here -- that is
+    `recover()`'s job, and section 6.8 has it read the stores for the same
+    reason.
+    """
+    venue = DryRunFuturesVenue(source=source, fill_model=model)
+    for symbol, position in store.state.positions.items():
+        venue.apply_settlement(symbol, position)
+    return venue
+
+
 def build_hedged_position(
     *,
     risk: RiskEngine,
@@ -112,13 +142,31 @@ def build_hedged_position(
     tests and the replay protocol use; a path gives each leg its own store file
     and the ledger its own, all under that directory.
 
-    One :class:`RecordedQuoteFillModel` instance is shared by both legs on
-    purpose: the runner installs the decision minute's book once and every leg
-    of that minute is priced from it, and the model's clock must be advanced
-    every cycle so a frozen quote can age out.
+    **Each leg gets its own** :class:`RecordedQuoteFillModel`. The model holds
+    one book and one clock, and :mod:`chimera.futures.fills` states the pairing
+    rule: "a snapshot carries no symbol, so pairing the two is the caller's job
+    -- one venue and one fill model per leg." Sharing one instance made the spot
+    leg fill at the perpetual's touch, because
+    :meth:`HedgedPosition.install_quote` can install only one book on one model
+    and the perpetual's is the one it reached first. On the synthetic day that
+    recorded ``entry_basis -13.06`` where the true basis was ``+30.00``, and a
+    spot fill of ``30134.86`` against a spot ask of ``30098.83``. Worse than the
+    wrong number: ``RecordedQuoteFillModel.plan`` measures the fill against the
+    leg's own ``reference_price``, so once the real basis exceeds
+    ``max_reference_deviation_bps`` the spot leg is refused *after* the perpetual
+    has filled, leaving a naked SHORT that ``liquidation_touched`` -- which reads
+    ``min(spot, perp)`` -- does not check.
+
+    ``fill_model`` is therefore a **prototype**: its settings are cloned onto one
+    model per leg, so a caller that wants different slippage still gets it on
+    both legs while neither leg can see the other's book or clock.
     """
     source = StaticConstraintSource.from_mapping(constraints or demo_constraints_table())
-    model = fill_model if fill_model is not None else RecordedQuoteFillModel()
+    prototype = fill_model if fill_model is not None else RecordedQuoteFillModel()
+    # A fresh book and clock per leg: cloning the prototype's settings would
+    # otherwise carry its installed quote to both legs and reintroduce the share.
+    spot_model = replace(prototype, quote=None, now_ns=0)
+    perp_model = replace(prototype, quote=None, now_ns=0)
 
     root = Path(state_dir) if state_dir is not None else None
     spot_store = FuturesStore.open(root / "spot_store.json" if root else None)
@@ -127,13 +175,13 @@ def build_hedged_position(
 
     execution = FuturesExecutionConfig(dry_run=True, leverage=Decimal("1"))
     spot = FuturesExecutor(
-        venue=DryRunFuturesVenue(source=source, fill_model=model),
+        venue=_venue(source, spot_model, spot_store),
         risk=risk,
         store=spot_store,
         config=execution,
     )
     perp = FuturesExecutor(
-        venue=DryRunFuturesVenue(source=source, fill_model=model),
+        venue=_venue(source, perp_model, perp_store),
         risk=risk,
         store=perp_store,
         config=execution,
@@ -143,5 +191,9 @@ def build_hedged_position(
         perp=perp,
         risk=risk,
         ledger=ledger,
+        # The position is what the runner reaches execution through, so it is
+        # what carries the models the runner installs each minute's books on --
+        # one per leg, each priced from its own side of the market.
+        fill_models={SPOT: spot_model, PERP: perp_model},
         config=config or HedgeConfig(spot_symbol=SPOT_SYMBOL, perp_symbol=PERP_SYMBOL),
     )

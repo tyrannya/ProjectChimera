@@ -63,6 +63,23 @@ plan/design
 
 A planner may inspect allowed evidence needed to design the protocol, but it may not calculate/read a result whose contract requires a future preregistration boundary first.
 
+## 2A. Model selection is external governance
+
+Foundation-model choice is made outside Claude Code by the owner/planning layer before a session starts. It is not an architect, executor, reviewer, workflow, skill, MCP, or subagent decision.
+
+Rules:
+
+- treat the current serving model as fixed unless the user explicitly changes it;
+- never select, switch, route to, invoke, or fall back to another foundation model on your own;
+- never invoke Claude Fable or create a Fable-based reviewer/subagent unless the user explicitly authorizes that specific Fable invocation in the current request;
+- `high-stakes`, `merge-blocking`, `scientific`, `causal`, `accounting`, `independent`, and similar labels do not authorize different-model or higher-tier quota use;
+- project subagent definitions use `model: inherit`; same-model subagents are the default and subagent creation must not be used as model routing;
+- if model diversity is desired but not explicitly authorized, perform only the review allowed on the current model or report model diversity as an external governance gate;
+- model matrices and effort recommendations belong to operator/planner guidance, not Claude execution policy. Model/effort material in `docs/claude_code_operating_guide.md` is planner-facing and cannot authorize self-routing;
+- references to Fable or other models in historical audit/roadmap documents are descriptive unless the current user explicitly authorizes a model invocation.
+
+This section controls Claude Code behavior even when a lower-authority document recommends a particular model for a task type.
+
 ## 3. Architect responsibilities
 
 Before edits, the architect must:
@@ -174,6 +191,8 @@ Recommended temporary roles:
 
 Rules:
 
+- subagents inherit the current serving model; keep project agent definitions at `model: inherit`;
+- never request a different model from a subagent unless the user explicitly authorized that exact cross-model invocation in the current request;
 - restate load-bearing boundaries in each critical subagent prompt;
 - do not let subagents silently edit the same files in parallel;
 - do not run source-rewriting mutation tools concurrently with ordinary tests in the same worktree;
@@ -189,6 +208,8 @@ Use normal workflow when the plan is mostly serial.
 Use Ultracode only after the architect establishes that the task contains independent lanes that can safely run in parallel without violating scientific chronology.
 
 Do not use Ultracode merely because a task is important or because more agents appear stronger.
+
+Ultracode may parallelize work; it does not authorize model switching or cross-model subagents.
 
 ## 9. Verification before completion
 

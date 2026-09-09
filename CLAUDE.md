@@ -43,16 +43,17 @@ A skill, MCP server, memory system, or subagent may improve execution technique.
 - No real-money promotion follows from a historical backtest, smoke test, short paper run, or single positive checkpoint.
 - Aegis remains the sole central risk authority unless an explicit later governance decision changes that.
 
-## Model / effort default
+## Model selection is external
 
-Choose deliberately before a major session; do not use one model for everything.
+**Foundation-model selection is not a Claude Code task.** The owner/planning layer chooses the serving model and effort before the session starts. Treat the current serving model as fixed for the task unless the user explicitly changes it.
 
-- **Opus 5 + xhigh**: default executor for large autonomous coding, research implementation, complex refactors, and end-to-end checkpoints.
-- **Fable 5.1 + xhigh**: preferred independent adversarial reviewer / deep scientific auditor. Use `max` only for a genuinely highest-stakes one-shot design, causal, accounting, or merge-blocking decision.
-- **Sonnet 5 + medium/high**: routine fixes, focused implementation, docs, straightforward tests, and CI repair when the task is well bounded.
-- Use `high` for normal quality-sensitive work and `xhigh` for demanding coding/agentic work. Reserve `max` for cases where maximum reasoning quality is worth the additional usage.
-
-A named Fable 5.1 audit must actually be served by Fable 5.1; a fallback model does not silently inherit that certification.
+- Do **not** select, switch, route to, fall back to, or invoke a different foundation model on your own.
+- In particular, do **not** invoke Claude Fable or create Fable-based reviewers/subagents unless the user explicitly authorizes that specific Fable invocation in the current request.
+- Repository labels such as `high-stakes`, `merge-blocking`, `scientific`, `causal`, `accounting`, `independent review`, or `deep audit` never authorize a model change or higher-tier quota spend.
+- Subagents use the current serving model by default. Project agent definitions must use `model: inherit`; do not use subagent creation as a model-routing mechanism.
+- Cross-model/model-diverse review is external governance. If it is desired but not explicitly authorized, either perform the permitted review with the current model in an appropriately fresh/read-only context or report model diversity as an external gate. Do not satisfy it yourself by changing models.
+- Any model names, model matrices, effort recommendations, or historical reviewer names in roadmap/research/operating documents are descriptive or **operator/planner-only**. They are not execution authority for Claude Code. In particular, the model/effort advice in `docs/claude_code_operating_guide.md` is planner-facing and must not be used to self-route.
+- No Claude-facing policy may create automatic model routing based on task type. Model choice belongs outside the agent execution layer.
 
 ## Session discipline
 
@@ -91,6 +92,7 @@ Rules:
 - Critical subagent prompts must restate load-bearing scientific/safety boundaries explicitly.
 - Subagent output is evidence, not authority; the lead agent must reconcile disagreements.
 - An author's subagent is not equivalent to a later independent reviewer.
+- Do not create redundant parallel agents merely because parallelism is available; usage can grow rapidly.
 - Ultracode/dynamic workflows are appropriate only for genuinely large, decomposable, high-value tasks. They are not an intelligence level and can consume substantially more usage.
 - Scientific stage order remains serial even when independent work inside one stage is parallelized.
 
@@ -102,6 +104,7 @@ Rules:
 - Keep important Git chronology visible. Do not amend/squash/rebase/force-push away preregistration-before-result history.
 - Large research PRs stay draft until independently audited. Do not merge them merely because their author reports green tests.
 - Exact-head CI is required when the governing task/PR contract requires CI; CI on an older head does not certify a newer head.
+- If a mutation tool rewrites source in place, never run it concurrently with ordinary tests in the same worktree.
 
 ## Platform awareness
 
