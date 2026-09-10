@@ -41,6 +41,7 @@ from chimera.demo.risk_wiring import (
     build_risk_engine,
     check_exhaustive,
     risk_limits,
+    sizing_cap_binds,
 )
 from chimera.futures.domain import PositionSide
 from chimera.risk import RiskEngine, RiskLimits
@@ -262,7 +263,55 @@ def test_the_invented_stop_never_decides_a_size():
     ):
         stake = eng.position_size(equity, 100.0, 100.0 * (1 - distance), leverage=1.0)
         assert stake == pytest.approx(equity * mapped.max_position_pct), distance
-    assert DEMO_RISK_PER_TRADE_PCT >= mapped.max_position_pct * mapped.max_stop_distance_pct
+    # The constant really is what the mapping emits -- `UNCONFIGURED_LIMITS`'
+    # default check has to skip this field, so nothing else pins it.
+    assert mapped.risk_per_trade_pct == pytest.approx(DEMO_RISK_PER_TRADE_PCT)
+    assert sizing_cap_binds(mapped)
+
+
+def cap_really_binds(limits, equity: float = 1_000_000.0) -> bool:
+    """What `position_size` ACTUALLY does at the worst case, computed not asserted.
+
+    The widest stop the band admits, at the highest leverage the engine will
+    accept. `sizing_cap_binds` is a claim about this; this is the observation.
+    """
+    stake = RiskEngine(limits).position_size(
+        equity,
+        100.0,
+        100.0 * (1 - limits.max_stop_distance_pct),
+        leverage=limits.max_leverage,
+    )
+    return bool(stake == pytest.approx(equity * limits.max_position_pct))
+
+
+@pytest.mark.parametrize(
+    "max_leverage, expected",
+    [
+        # 0.5 >= 1.0 * 0.15 * 1.0 -> the committed campaign, with room to spare.
+        (1.0, True),
+        # 0.5 >= 1.0 * 0.15 * 3.0 = 0.45 -> still binds, barely.
+        (3.0, True),
+        # 0.5 >= 1.0 * 0.15 * 4.0 = 0.60 -> it does NOT, and the invented stop
+        # starts deciding sizes. WITHOUT the leverage factor the predicate reads
+        # `0.5 >= 0.15` and wrongly says True here, so this row is what holds the
+        # factor in place.
+        (4.0, False),
+    ],
+)
+def test_the_sizing_invariant_counts_leverage(max_leverage, expected):
+    """`sizing_cap_binds` must agree with `position_size`, not just with itself.
+
+    `position_size` divides the stop-based notional by
+    `max(1.0, min(leverage, max_leverage))`, so a HIGHER ceiling makes the
+    stop-based stake smaller and the cap less likely to bind. A predicate that
+    omits the factor is right only at 1x -- which is the committed campaign, and
+    therefore exactly the case that would never reveal the omission.
+    """
+    mapped = risk_limits(demo_limits(max_leverage=max_leverage))
+    assert mapped.max_leverage == pytest.approx(max_leverage)
+    assert sizing_cap_binds(mapped) is expected
+    # The claim and the behaviour, on the same limits.
+    assert cap_really_binds(mapped) is expected
 
 
 def test_nothing_on_the_demo_path_supplies_an_inference_age():
