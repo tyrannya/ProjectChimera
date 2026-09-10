@@ -201,18 +201,34 @@ FAULT_PROFILES: frozenset[ConfigProfile] = frozenset({ConfigProfile.SOAK, Config
 class DemoLimits:
     """Section 7.4's demo limits, as the config carries them.
 
-    A separate type from :class:`chimera.risk.RiskLimits`, deliberately, for
-    three reasons that all point the same way. The names differ — 7.4 asks for
-    ``max_funding_cost_rate`` where ``RiskLimits`` has ``max_funding_rate`` — and
-    7.4's ``funding_adverse_streak_limit`` does not exist there at all; it is
-    PR-03's to add, and PR-09 does not depend on PR-03. ``RiskLimits.from_dict``
-    silently drops unknown keys, which is the one behaviour this module exists to
-    refuse. And importing ``chimera.risk`` here would make the demo config depend
-    on a module that is being changed concurrently, for the sake of a dataclass
-    that would then have to be filtered on the way in and on the way out. The
-    runner (PR-10) is where the two meet: it is the thing that builds a
-    ``RiskEngine`` from a parsed campaign config, and mapping one to the other in
-    one visible place is better than sharing a type that fits neither.
+    A separate type from :class:`chimera.risk.RiskLimits`, deliberately.
+    ``RiskLimits.from_dict`` silently drops unknown keys, which is the one
+    behaviour this module exists to refuse; importing ``chimera.risk`` here would
+    make the demo config depend on it for the sake of a dataclass that would then
+    have to be filtered on the way in and on the way out; and the two types do not
+    describe the same thing. ``RiskLimits`` carries fields section 7.4 does not
+    configure at all -- ``risk_per_trade_pct`` and the stop-distance band, which a
+    carry hedge has no stop for -- and section 7.4 is a campaign's declared bounds
+    rather than an engine's full configuration.
+
+    :mod:`chimera.demo.risk_wiring` is where the two meet, and it is the ONLY
+    place they meet: it maps every field here to the ``RiskLimits`` field that
+    enforces it, names every ``RiskLimits`` field that has no campaign source and
+    why, and refuses to import if either type gains a field it does not account
+    for. Both ``tools/demo_run.py`` and ``tests/demo_harness.py`` build their
+    engine through it. They did not always: each constructed a partial
+    ``RiskLimits`` of its own, so a campaign was hashed under the limits in its
+    file and enforced under ``RiskLimits``' defaults, and the harness's separate
+    copy is why no test could see it.
+
+    Two field names once differed and no longer do. Section 7.4 asks for
+    ``max_funding_cost_rate``, which PR-03 added to ``RiskLimits`` beside the
+    sign-blind ``max_funding_rate`` rather than as a rename of it, and PR-03 added
+    ``funding_adverse_streak_limit`` too. Identical names are still not on their
+    own evidence of identical meaning: ``max_exposure_per_asset_pct`` is a
+    cumulative per-pair ceiling in both types, while ``RiskLimits``' neighbouring
+    ``max_position_pct`` bounds one order's stake and has no counterpart here.
+    The mapping states each destination explicitly for that reason.
     """
 
     funding_adverse_streak_limit: int

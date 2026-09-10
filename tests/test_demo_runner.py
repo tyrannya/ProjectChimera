@@ -2222,7 +2222,24 @@ def test_the_cash_identity_holds_across_every_transition_of_a_campaign(tmp_path)
     retry the runbook describes. Every transition -- close, open, and an entry
     completed a minute late -- is checked against the executors.
     """
-    harness = build(tmp_path)
+    # Forty campaign-minutes and eight transitions, run inside one wall-clock
+    # second. Aegis measures its order-rate window on the WALL clock -- the
+    # runner clock is not injected into `RiskEngine`, which the master plan's
+    # F->G row (section 2.4) says it should be -- so the campaign's four orders
+    # per minute would see all sixteen of this test's orders as one minute's
+    # worth and halt on minute 11. The limit is raised HERE, in the fixture that
+    # compresses the time, rather than anywhere a limit could reach a campaign.
+    # Nothing else is changed: every other limit is section 7.4's, and this test
+    # asserts nothing about the order rate.
+    harness = build(
+        tmp_path,
+        config=campaign_config(
+            tmp_path / "state",
+            limits={
+                "max_orders_per_minute": 64,
+            },
+        ),
+    )
     first = harness.first_minute_ms()
     position = harness.runner.position
 
