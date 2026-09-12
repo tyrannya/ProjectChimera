@@ -632,3 +632,181 @@ def test_the_cli_and_the_harness_agree_field_for_field(tmp_path):
 
     assert from_harness == from_cli == risk_limits(committed())
     assert demo_run.build_risk_engine is build_risk_engine
+
+
+def test_unstarted_clock_refuses_access_to_time_and_risk(tmp_path):
+    """V3-1b regression test: unstarted clock refuses to be read and risk is unavailable."""
+    tight = build(
+        tmp_path / "tight",
+        config=campaign_config(
+            tmp_path / "tight" / "state", limits={"max_orders_per_minute": 1}
+        ),
+        start=False
+    )
+    runner = tight.runner
+
+    # Clock is unstarted
+    assert not runner.clock.started
+
+    # Accessing risk before start() raises RunnerError
+    with pytest.raises(Exception, match="before the clock starts"):
+        _ = runner.risk
+
+    with pytest.raises(Exception, match="before the clock starts"):
+        _ = runner.position
+
+def test_kill_switch_engaged_at_startup_halts_immediately(tmp_path):
+    """V3-1b regression test: kill switch checked correctly when RiskEngine initialized in start()."""
+    state_dir = tmp_path / "tight" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    kill_switch_path = state_dir / "KILL_SWITCH"
+
+    tight = build(
+        tmp_path / "tight",
+        config=campaign_config(
+            state_dir, limits={"max_orders_per_minute": 1}
+        ),
+        start=False
+    )
+    # Engage the kill switch before starting
+    kill_switch_path.write_text("stop")
+
+    tight.runner.start()
+
+    # The runner should be halted by the kill switch upon RiskEngine initialization
+    assert tight.runner.risk.state.halted
+    assert "kill_switch" in tight.runner.risk.state.halt_reason
+
+def test_replay_catch_up_determinism_for_order_rate(tmp_path):
+    """V3-1b regression test: compressed catch-up cannot manufacture an order-rate HALT.
+
+    Processing 5 orders over 5 minutes (recorded time) quickly on the host (wall clock)
+    should not trigger a 2-orders-per-minute limit, because recorded time governs.
+    """
+    import time
+
+    tight = build(
+        tmp_path / "tight",
+        config=campaign_config(
+            tmp_path / "tight" / "state", limits={"max_orders_per_minute": 2}
+        ),
+        start=False
+    )
+    tight.runner.start()
+    risk = tight.runner.risk
+
+    # Start time
+    base_ns = tight.first_minute_ms() * 1_000_000 + 60_000_000_000
+
+    # Simulate processing 5 orders in a fast loop where host time barely moves
+    for i in range(5):
+        tight.runner.clock.observe(base_ns + (i * 60_000_000_000))
+        # This checks prune order times using the mock clock
+        risk.record_order()
+
+    # Since they are spaced by 60 seconds each in the mock clock, we never have > 2 in window
+    assert not risk.state.halted
+
+def test_production_defaults_retain_time_time():
+    """V3-1b regression test: RiskEngine and FuturesExecutor default to time.time when clock not injected."""
+    import time
+    from chimera.risk import RiskEngine
+    from chimera.futures.executor import FuturesExecutor
+    from chimera.futures.executor import FuturesExecutionConfig
+    from chimera.futures.venue import DryRunFuturesVenue, StaticConstraintSource
+
+    risk = RiskEngine()
+    assert risk._clock is time.time
+
+    from chimera.futures.fills import RecordedQuoteFillModel
+    from chimera.futures.store import FuturesStore
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FuturesStore.open(Path(tmpdir) / "store.json")
+        executor = FuturesExecutor(
+            venue=DryRunFuturesVenue(StaticConstraintSource({}), RecordedQuoteFillModel()),
+            risk=risk,
+            store=store,
+            config=FuturesExecutionConfig()
+        )
+    assert executor.clock is time.time
+
+def test_order_rate_timing_respects_injected_clock(tmp_path):
+    """V3-1b regression test: order-rate timing is governed by the injected clock.
+
+    A runner running through a replay should be governed by the recorded clock. We test this by
+    triggering an order-rate limit, advancing the runner's clock (but not the wall clock),
+    and confirming the limit expires properly.
+    """
+    tight = build(
+        tmp_path / "tight",
+        config=campaign_config(
+            tmp_path / "tight" / "state", limits={"max_orders_per_minute": 1}
+        ),
+    )
+    tight.runner.start()
+    risk = tight.runner.risk
+    assert risk._clock == tight.runner.clock.time
+
+    # Observe an initial time based on first_minute_ms
+    start_ns = tight.first_minute_ms() * 1_000_000 + 60_000_000_000
+    tight.runner.clock.observe(start_ns)
+    risk.record_order()
+    risk.record_order()
+
+    # We should be halted because record_order halts when the limit is exceeded.
+    assert risk.state.halted is True
+    assert "order rate limit exceeded" in risk.state.halt_reason
+
+    # We resume and verify prune works
+    risk.resume()
+    assert risk.state.halted is False
+
+    # Advance the mock clock past the 60 second order window
+    tight.runner.clock.observe(start_ns + 61_000_000_000)
+
+    # Prune should drop the previous orders, allowing us to record another without halting
+    risk.record_order()
+    assert risk.state.halted is False
+
+
+def test_cooldown_timing_respects_injected_clock(tmp_path):
+    """V3-1b regression test: cooldown timing is governed by the injected clock."""
+    harness = build(
+        tmp_path / "cooldown",
+        config=campaign_config(
+            tmp_path / "cooldown" / "state",
+            limits={"loss_streak_limit": 1, "cooldown_seconds": 300}
+        ),
+    )
+    harness.runner.start()
+    risk = harness.runner.risk
+
+    start_ns = harness.first_minute_ms() * 1_000_000 + 60_000_000_000
+    harness.runner.clock.observe(start_ns)
+    risk.record_trade_result(-10.0) # Hit the loss streak limit
+
+    decision = risk.evaluate_entry("pair", 1000, 100, 90)
+    assert decision.allowed is False
+    assert "cooldown active" in decision.reason
+
+    # Advance clock past cooldown
+    harness.runner.clock.observe(start_ns + 301_000_000_000)
+    decision = risk.evaluate_entry("pair", 1000, 100, 90)
+    assert decision.allowed is True
+
+
+def test_executor_timing_respects_injected_clock(tmp_path):
+    """V3-1b regression test: FuturesExecutors use the injected clock."""
+    harness = build(tmp_path / "executors")
+    harness.runner.start()
+
+    executor = harness.runner.position.spot
+    assert executor.clock == harness.runner.clock.time
+
+    # Observe an instant larger than the initial harness clock
+    # Harness start() will seed the clock with `first_minute_ms * 1_000_000 + 60_000_000_000` (which is > 1.7e18 ns)
+    harness.runner.clock.observe(1_800_000_000_000_000_000)
+    assert executor.clock() == 1_800_000_000.0

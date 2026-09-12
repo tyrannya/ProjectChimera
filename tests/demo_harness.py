@@ -171,16 +171,6 @@ def build(
     feed.write_settlements(list(days))
 
     cfg = config or campaign_config(state_dir)
-    # The production mapping, not a second one. This harness used to build
-    # `RiskLimits(max_position_pct=1.0, risk_per_trade_pct=0.5)` with its own
-    # literals, which is why no test could see that `tools/demo_run.py` was
-    # dropping twelve of section 7.4's thirteen limits: the harness was not
-    # exercising the wiring, it was reimplementing a different one.
-    risk = build_risk_engine(cfg, capital=CAPITAL, state_dir=state_dir)
-    position = build_hedged_position(risk=risk, capital=CAPITAL, state_dir=state_dir)
-    position.spot.recover({})
-    position.perp.recover({})
-
     rules = RuleRegistry([CarryRule(CarryParams.from_config(cfg.rule_params("R1_carry")))])
     if with_shadow:
         rules.register(
@@ -194,20 +184,35 @@ def build(
             )
         )
 
+    # The production mapping, not a second one. This harness used to build
+    # `RiskLimits(max_position_pct=1.0, risk_per_trade_pct=0.5)` with its own
+    # literals, which is why no test could see that `tools/demo_run.py` was
+    # dropping twelve of section 7.4's thirteen limits: the harness was not
+    # exercising the wiring, it was reimplementing a different one.
+    def _risk_factory(clock: Any) -> Any:
+        return build_risk_engine(cfg, capital=CAPITAL, state_dir=state_dir, clock=clock)
+
+    def _position_factory(risk: Any, clock: Any) -> Any:
+        pos = build_hedged_position(risk=risk, capital=CAPITAL, state_dir=state_dir, clock=clock)
+        pos.spot.recover({})
+        pos.perp.recover({})
+        return pos
+
     runner = DemoRunner(
         cfg,
         root,
         contract=contract,
-        risk=risk,
-        position=position,
+        risk_factory=_risk_factory,
+        position_factory=_position_factory,
         rules=rules,
         capital=CAPITAL,
         software={"revision": "synthetic", "dirty": False, "python": "3.11"},
         telemetry=telemetry,
     )
-    harness = Harness(runner, dict(position.fill_models or {}), root, state_dir, feed, risk)
     if start:
         runner.start()
+
+    harness = Harness(runner, dict(runner.position.fill_models or {}) if runner.clock.started else {}, root, state_dir, feed, runner.risk if runner.clock.started else None)
     return harness
 
 

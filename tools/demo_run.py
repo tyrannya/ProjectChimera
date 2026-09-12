@@ -114,18 +114,6 @@ def _load(args: argparse.Namespace) -> DemoRunner:
     contract = load_recorder_contract("btcusdt-prospective-gen3")
     state_dir = Path(config.runner_setting("state_dir"))
     capital = Decimal("1000000")
-    # Section 7.4's limits reach Aegis through `chimera.demo.risk_wiring` and
-    # nowhere else. Building `RiskLimits` here is what let a campaign be hashed
-    # under one risk regime and enforced under another; the mapping is one
-    # audited function now, and `tests/test_demo_risk_wiring.py` holds this file
-    # to using it.
-    risk = build_risk_engine(config, capital=capital, state_dir=state_dir)
-    position = build_hedged_position(
-        risk=risk,
-        capital=capital,
-        state_dir=state_dir,
-        fill_model=RecordedQuoteFillModel(),
-    )
     rules = RuleRegistry([CarryRule(CarryParams.from_config(config.rule_params("R1_carry")))])
     for rule_id, cls in (
         ("R2_frozen_logistic", FrozenLogisticRule),
@@ -134,12 +122,32 @@ def _load(args: argparse.Namespace) -> DemoRunner:
         params = config.rule_params(rule_id)
         if params:
             rules.register(cls(ShadowParams.from_config(rule_id, params)))
+
+    # Section 7.4's limits reach Aegis through `chimera.demo.risk_wiring` and
+    # nowhere else. Building `RiskLimits` here is what let a campaign be hashed
+    # under one risk regime and enforced under another; the mapping is one
+    # audited function now, and `tests/test_demo_risk_wiring.py` holds this file
+    # to using it.
+    def _risk_factory(clock: Any) -> Any:
+        return build_risk_engine(
+            config, capital=capital, state_dir=state_dir, clock=clock
+        )
+
+    def _position_factory(risk: Any, clock: Any) -> Any:
+        return build_hedged_position(
+            risk=risk,
+            capital=capital,
+            state_dir=state_dir,
+            fill_model=RecordedQuoteFillModel(),
+            clock=clock,
+        )
+
     return DemoRunner(
         config,
         args.root,
         contract=contract,
-        risk=risk,
-        position=position,
+        risk_factory=_risk_factory,
+        position_factory=_position_factory,
         rules=rules,
         capital=capital,
         software=_software(),

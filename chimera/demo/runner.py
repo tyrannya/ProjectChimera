@@ -37,7 +37,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from chimera.carry.hedge import PERP, SPOT, HedgedPosition, HedgeState
 from chimera.carry.ledger import LoadOutcome
@@ -234,8 +234,8 @@ class DemoRunner:
         clock: RunnerClock | None = None,
         *,
         contract: Any,
-        risk: RiskEngine,
-        position: HedgedPosition,
+        risk_factory: Callable[[Callable[[], float]], RiskEngine],
+        position_factory: Callable[[RiskEngine, Callable[[], float]], HedgedPosition],
         rules: RuleRegistry,
         capital: Decimal,
         software: Mapping[str, Any] | None = None,
@@ -245,8 +245,10 @@ class DemoRunner:
         self.root = Path(root)
         self.clock = clock or RunnerClock()
         self.contract = contract
-        self.risk = risk
-        self.position = position
+        self._risk_factory = risk_factory
+        self._position_factory = position_factory
+        self._risk: RiskEngine | None = None
+        self._position: HedgedPosition | None = None
         self.rules = rules
         self.capital = Decimal(capital)
         self.software = dict(software or {})
@@ -264,73 +266,32 @@ class DemoRunner:
                 state_dir=self.state_dir, states=_STATE_NAMES, rules=self.rules.ids
             )
         )
-        self._enter(RunnerState.STARTUP)
         self.halt_reason: str | None = None
 
         persisted = self._load_state()
         self.cursor = FeedCursor(self.root, contract, persisted)
-        # `save_state` writes `clock_now_ns` and nothing reads it back. That is
-        # deliberate now, and the reason is worth keeping: an earlier revision of
-        # this change DID carry it over, so a new process could record an
-        # operator command without `start()`. It made `start()` raise on the very
-        # crash section 9.3 exists for. `RunnerClock.observe` sets `started`, and
-        # `start()` reads the feed only `elif not self.clock.started` -- so a
-        # carried instant suppressed that read, and after a crash between
-        # `_append` and `save_state` the carried instant is the PREVIOUS minute's
-        # while the log's tail is the current one. `DecisionLog.append` refuses a
-        # `runner_now_ns` that precedes the tail, so the STARTUP record raised
-        # `DecisionLogError` and the campaign died on a traceback at exactly the
-        # moment it was supposed to recover.
-        #
-        # The operator commands therefore still refuse rather than run on a
-        # process that has not started; `resolve` fails before it touches
-        # anything, which is the property that mattered. Making them usable needs
-        # the clock seeded from the LOG's tail, not from the state file that
-        # lagged it, and that is a change with its own crash matrix to prove.
-        self.last_record_hash: str = persisted.get("last_record_hash", "")
-        #: Why this ledger holds less than the log already committed, or None.
-        #: Decided ONCE and decided HERE, and it is the SAME value SELF_CHECK
-        #: refuses on and :meth:`_ledger_may_speak` mutes on -- one computation,
-        #: so the halt and the mute cannot drift apart.
-        #:
-        #: Taken from the ledger as it was LOADED, before anything books into it.
-        #: `HedgedPosition._reconcile_ledger` re-derives fees from the executors'
-        #: accumulators, so an operator `flatten` raises a stale ledger's fees
-        #: toward the committed ones before the first save. A verdict computed
-        #: after that booking is therefore a verdict on a ledger the command
-        #: itself has already moved.
-        #:
-        #: The precise limit of that, because this was once stated too broadly.
-        #: `slippage` is compared too and NOTHING re-derives it, so a stale copy
-        #: restored onto a FLAT position is refused whenever the verdict is
-        #: taken -- on slippage and funding, not on fees, which a flatten
-        #: re-derives even when flat. The ordering is not what saves that case,
-        #: and saying it was overstated the claim. What the ordering saves is a
-        #: ledger that may not speak while the position is still OPEN, where the
-        #: flatten's own exit
-        #: booking can carry every compared accumulator up to what the log holds.
-        #: Two tests are that case, one for each way a ledger comes to be unable
-        #: to speak: `test_a_flatten_on_a_deleted_ledger_writes_neither_a_ledger_
-        #: nor_a_block` for a deleted file, and
-        #: `test_a_stale_ledger_with_an_open_position_never_speaks_again` for a
-        #: restored older copy. A verdict taken lazily fails both.
-        #:
-        #: The second existed only because a reviewer disproved this comment's
-        #: previous claim that it could not be built. It needs the TWO-MINUTE
-        #: hedge -- defect #1 of this PR -- which the fixture produces readily
-        #: once one leg's fill is refused for a minute.
-        self._ledger_regression = self._ledger_regressed_against_the_log()
-        #: The minute the last reconciliation was performed for, or None when
-        #: none has been. A version 1 state file carries no such field, and its
-        #: absence means "none has been" -- see RUNNER_STATE_SCHEMAS_READ.
+
         raw_reconcile = persisted.get("last_reconcile_minute_ms")
         self.last_reconcile_minute_ms: int | None = (
             None if raw_reconcile is None else int(raw_reconcile)
         )
+        self.last_record_hash: str = persisted.get("last_record_hash", "")
+        self._ledger_regressed_reason: str | None = None
         self._log: DecisionLog | None = None
         self._config_hash = _config_hash(config)
         self._enter(RunnerState.STARTUP)
 
+    @property
+    def risk(self) -> RiskEngine:
+        if self._risk is None:
+            raise RunnerError("risk engine is not available before the clock starts")
+        return self._risk
+
+    @property
+    def position(self) -> HedgedPosition:
+        if self._position is None:
+            raise RunnerError("hedged position is not available before the clock starts")
+        return self._position
     def _enter(self, state: RunnerState) -> RunnerState:
         """The one place `self.state` changes, so the gauge cannot drift from it.
 
@@ -450,6 +411,11 @@ class DemoRunner:
                 )
             self.clock.observe(first * _MS_TO_NS + MINUTE_NS)
 
+        if self._risk is None:
+            self._risk = self._risk_factory(self.clock.time)
+            self._position = self._position_factory(self._risk, self.clock.time)
+            self._ledger_regressed_reason = self._ledger_regressed_against_the_log()
+
         # Triage the log BEFORE the first append, and the order is the whole
         # point. Appending opens the log, and `DecisionLog.open` refuses a tail
         # that does not verify -- so a crash that left a torn tail made every
@@ -530,7 +496,7 @@ class DemoRunner:
             return f"store_error: {exc}"
         if self.position.ledger.disputed:
             return f"dispute: {self.position.ledger.disputed}"
-        return self._ledger_regression
+        return self._ledger_regressed_reason
 
     def _ledger_regressed_against_the_log(self) -> str | None:
         """Refuse a carry ledger that holds LESS than the log already committed.
@@ -709,7 +675,7 @@ class DemoRunner:
         if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
             # No path here: every caller has already named the file.
             return f"UNREADABLE -- it could not be read: {self.position.ledger.disputed}"
-        return self._ledger_regression or "it may not speak for this campaign"
+        return self._ledger_regressed_reason or "it may not speak for this campaign"
 
     def _ledger_may_speak(self) -> bool:
         """Whether this ledger object is entitled to be persisted or quoted.
@@ -750,7 +716,7 @@ class DemoRunner:
         """
         return (
             self.position.ledger.outcome is not LoadOutcome.UNREADABLE
-            and self._ledger_regression is None
+            and self._ledger_regressed_reason is None
         )
 
     def _save_ledger(self) -> None:
@@ -775,7 +741,7 @@ class DemoRunner:
                 "not persisting this object. Writing it would replace what the campaign "
                 "did with a ledger that holds less than the log already committed.",
                 self.position.ledger.path,
-                self._ledger_regression or "the file could not be read",
+                self._ledger_regressed_reason or "the file could not be read",
             )
             return
         self.position.ledger.save()
