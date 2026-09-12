@@ -1,7 +1,7 @@
-# ADOPTED: development plan after the Fable 5.1 strategic audit
+# HISTORICALLY ADOPTED: development plan after the Fable 5.1 strategic audit
 
-Status: **ADOPTED 2026-09-03 by owner decision (stage S0).** This is the
-authoritative research and development roadmap. It replaces the roadmap
+Status: **ADOPTED 2026-09-03; SUPERSEDED FOR ACTIVE SEQUENCING 2026-09-12 BY ROADMAP V3.**
+This remains the historical adopted research/development roadmap for its period. It replaces the roadmap
 recorded in `docs/current_development_plan.md`, which stays in the repository
 as the history of how the programme reached this point and carries the adoption
 record at its head. `docs/research_roadmap.md` remains authoritative for what
