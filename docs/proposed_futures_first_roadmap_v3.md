@@ -1,11 +1,11 @@
 # ProjectChimera — Futures-First Roadmap v3
 
-**Status:** PROPOSED — DECISION DRAFT, NOT YET ADOPTED IN REPOSITORY GOVERNANCE  
-**Date:** 2026-09-09  
-**Current verified main at drafting:** `413d597d9d609fcec79558722f5acff463387412`  
+**Status:** PROPOSED — DECISION DRAFT, NOT YET ADOPTED IN REPOSITORY GOVERNANCE
+**Date:** 2026-09-09
+**Current verified main at drafting:** `413d597d9d609fcec79558722f5acff463387412`
 **Post-drafting integration baseline:** `eb6fa2e9313bc76b99b944a5cdb448a67dea51ed` (PR #93 merged 2026-09-10)
-**Primary open implementation PR:** PR #76 — recorder archive reconciliation and 30-day coverage gate  
-**Real-money authority:** NONE  
+**Primary open implementation PR:** PR #76 — recorder archive reconciliation and 30-day coverage gate
+**Real-money authority:** NONE
 **Scientific boundary:** no new prospective scientific boundary is activated by this document
 
 ---
