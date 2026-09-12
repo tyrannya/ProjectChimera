@@ -23,19 +23,18 @@ public market data → append-only raw events → one normalized row per minute
 
 **LIVE TRADING: DISABLED BY DEFAULT.** See [Live trading protection](#live-trading-protection).
 
-> **Where the project is going, as of 2026-09-03.** The owner has adopted the
-> Fable 5.1 replacement roadmap:
-> [`docs/proposed_development_plan_post_fable_5_1_audit.md`](docs/proposed_development_plan_post_fable_5_1_audit.md),
-> expanded in
-> [`docs/proposed_demo_implementation_master_plan.md`](docs/proposed_demo_implementation_master_plan.md).
-> The next deciding evidence is a preregistered six-month **prospective**
-> dry-run campaign on data that has not yet occurred, on the Binance USD-M
-> BTCUSDT perpetual with spot BTCUSDT as the hedge leg — not another reading of
-> the four historical outer blocks, which are now closed to deciding use. The
-> active stages are S0 → S6; S0 is done and the next task is the offline
-> prospective recorder. `docs/current_development_plan.md` is **superseded as a
-> roadmap** and kept for its closed-checkpoint findings and standing
-> constraints. Nothing in the adopted plan authorises real money.
+> **Where the project is going, as of 2026-09-12.** The owner has adopted
+> [`docs/proposed_futures_first_roadmap_v3.md`](docs/proposed_futures_first_roadmap_v3.md)
+> as the active strategic/scientific roadmap. ProjectChimera is futures-first,
+> LONG/SHORT, multi-symbol-capable, causal-MTF, and power-designed before any
+> new scientific boundary. Aegis remains the sole central risk authority.
+> PR #76/gen3 stays engineering-only with `prospective_from = null`; its failed
+> 2026-09-10/11 acceptance attempt is preserved rather than rewritten. The next
+> coding blocker is V3-1b deterministic clock injection, while V3-2/V3-3 run
+> separate gen4 engineering/power preflight work. The 2026-09-03 Fable roadmap
+> and demo master plan remain historical predecessor plans and implementation
+> evidence; they no longer control future sequencing. Nothing here authorises
+> real money or creates alpha evidence.
 
 ---
 
@@ -760,7 +759,8 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/trading_modes_v1.md](docs/trading_modes_v1.md) | SCALPING, DAY_TRADING, SWING and FLAT as operating states, their eligibility rule, and what may never select a mode |
 | [docs/p8_preregistration.md](docs/p8_preregistration.md) | Checkpoint P8's committed design. P8 was **never opened** and is **withdrawn as moot**: no router exists and no P8 number exists |
 | [docs/paper_operation_runbook.md](docs/paper_operation_runbook.md) | Running the dry-run paper chain, and the difference between a smoke and sustained paper validation |
-| [docs/proposed_development_plan_post_fable_5_1_audit.md](docs/proposed_development_plan_post_fable_5_1_audit.md) | **The adopted roadmap (2026-09-03).** Stages S0 to S6, the prospective campaign, the finite research budget. Start here for direction |
+| [docs/proposed_futures_first_roadmap_v3.md](docs/proposed_futures_first_roadmap_v3.md) | **Active roadmap (adopted 2026-09-12).** Futures-first V3-0 → V3-14 sequencing, gen4 preflight/power-first design, causal MTF, Aegis, prospective evidence ladder. Start here for direction |
+| [docs/proposed_development_plan_post_fable_5_1_audit.md](docs/proposed_development_plan_post_fable_5_1_audit.md) | **Historical predecessor roadmap (adopted 2026-09-03, superseded for active sequencing on 2026-09-12).** Retained for provenance and prior governance |
 | [docs/proposed_demo_implementation_master_plan.md](docs/proposed_demo_implementation_master_plan.md) | The adopted engineering plan: target architecture, the recorder, the demo runner, the 16-PR sequence, the test plan |
 | [docs/fable_5_1_full_project_strategic_audit.md](docs/fable_5_1_full_project_strategic_audit.md) | The independent audit that produced them. A historical record, not edited after the fact |
 | [docs/current_development_plan.md](docs/current_development_plan.md) | **Superseded as a roadmap.** Retained for the closed checkpoints' findings, the post-audit disclosures, and the standing constraints |

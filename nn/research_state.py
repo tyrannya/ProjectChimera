@@ -233,6 +233,7 @@ FRONT_DOOR_DOCUMENTS: tuple[str, ...] = (
     "docs/research_reproduction.md",
     "docs/current_development_plan.md",
     "docs/proposed_development_plan_post_fable_5_1_audit.md",
+    "docs/proposed_futures_first_roadmap_v3.md",
     "docs/microstructure_v1.md",
     "docs/p4_preregistration.md",
     "docs/p5_preregistration.md",

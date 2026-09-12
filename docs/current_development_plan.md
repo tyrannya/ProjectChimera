@@ -1,29 +1,22 @@
 # ProjectChimera — current development plan
 
-> ## SUPERSEDED AS A ROADMAP, 2026-09-03. DO NOT PLAN FROM THIS FILE.
+> ## SUPERSEDED AS A ROADMAP. DO NOT PLAN FROM THIS FILE.
 >
-> On 2026-09-03 the owner adopted the Fable 5.1 replacement roadmap. **The
-> active roadmap is [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md)**,
-> expanded into engineering packages in
-> [`proposed_demo_implementation_master_plan.md`](proposed_demo_implementation_master_plan.md)
-> and produced by the audit in
-> [`fable_5_1_full_project_strategic_audit.md`](fable_5_1_full_project_strategic_audit.md).
+> **Current governance, 2026-09-12:** the active strategic/scientific roadmap is
+> [`proposed_futures_first_roadmap_v3.md`](proposed_futures_first_roadmap_v3.md),
+> adopted by owner decision after PR #92 merged. The earlier 2026-09-03 Fable 5.1
+> roadmap and demo master plan remain historical predecessor plans and provenance;
+> they no longer control future sequencing.
 >
-> This file remains authoritative for exactly two things: **the closed
-> checkpoints' findings and scope limits**, and **the standing constraints**,
-> which are updated below and carry the adoption. Everything else here —
-> "Development sequence", "Later research axes", "Mandatory post-P6/P7/P8-boundary
-> decision review", "Current one-line roadmap" — is the **retired** roadmap,
-> preserved as the record of how the programme reached the decision. A fresh
-> session must not start work from it.
+> This file remains authoritative for exactly two things: **closed-checkpoint
+> findings/scope limits** and **standing constraints**. Its historical development
+> sequences and old "next task" prose are retained as record, not instructions.
 >
-> The retired direction, in one line: keep selecting the next historical
-> checkpoint on the four outer blocks. The adopted direction, in one line:
-> record prospective data on the Binance USD-M BTCUSDT perpetual, freeze a small
-> menu of rules, and run one preregistered forward campaign. **The next task is
-> PR-04** — the offline recorder contract, events, sink and normalizer.
+> Current V3 direction in one line: preserve PR #76/gen3 as engineering-only,
+> complete V3-1b deterministic clock injection, and run separate gen4 engineering
+> and power preflights before freezing any new prospective scientific boundary.
 
-Status: **SUPERSEDED as a roadmap on 2026-09-03; retained for closed-checkpoint findings and standing constraints.** Written as the working development plan after P6/P6-EXT/P7 and the independent Fable 5 post-merge audit of `main` at `a72f94e021be61df2851b746d9d3ee741df09d0d`. This document is intentionally **not** a research preregistration. It records the intended system direction and the order in which future questions should be formalised. Exact horizons, targets, model families, weighting rules and success criteria still have to be preregistered before the corresponding research run.
+Status: **SUPERSEDED as a roadmap; active planning moved to Roadmap v3 on 2026-09-12. Retained for closed-checkpoint findings and standing constraints.** Written as the working development plan after P6/P6-EXT/P7 and the independent Fable 5 post-merge audit of `main` at `a72f94e021be61df2851b746d9d3ee741df09d0d`. This document is intentionally **not** a research preregistration. It records the intended system direction and the order in which future questions should be formalised. Exact horizons, targets, model families, weighting rules and success criteria still have to be preregistered before the corresponding research run.
 
 The audit's conclusions have been consolidated into this document; [`current_development_plan_post_audit.md`](current_development_plan_post_audit.md) remains the fuller record of how each was reached and is not superseded.
 
@@ -61,18 +54,21 @@ The state below is current; the *direction* it used to point at is retired.
 
 **Current state**
 
-- **The Fable 5.1 replacement roadmap is ADOPTED.** The active stage sequence is
-  **S0 → S1 → S2 → S3 → S4 → S5 → S6**. S0 (this adoption) is complete; nothing
-  in S1 onward has started. The next deciding scientific programme is
-  **prospective-first**: a preregistered forward campaign (PVC-1) on data that
-  has not yet occurred, not another reading of the four historical outer blocks.
+- **Roadmap v3 is ADOPTED and active as of 2026-09-12.** The active sequence is
+  V3-0 → V3-14. V3-0 currently protects PR #76 engineering acceptance; its first
+  2026-09-10/11 campaign is preserved as failed. V3-1 mapping remediation is
+  complete via PR #93; V3-1b deterministic clock injection is the next coding
+  blocker. V3-2/V3-3 are separate gen4 engineering/power preflights. No new
+  prospective scientific boundary is active.
 - **No further deciding use of the four outer blocks** (2023-03-04 to
   2025-05-19). Ten checkpoints have read them. They remain descriptive context
   and supporting engineering data; they may not decide a checkpoint again.
-- **The primary future modelled and executed directional instrument is the
-  Binance USD-M BTCUSDT perpetual.** Binance spot BTCUSDT is the hedge leg of
-  the carry position, the price control and a supporting data source. The
-  instrument modelled is now the instrument executed.
+- **Roadmap v3 broadens the future acquisition/runtime design beyond BTC-only.**
+  The primary lane is liquid USD-M perpetual futures LONG/SHORT, with a
+  multi-symbol-capable gen4 recorder and a limited full-microstructure tier.
+  Spot is a first-class supporting/reference lane and may hedge/support futures
+  where a strategy requires it. The researched instrument must match the
+  executed instrument.
 - P1/v4 through P5 are closed historical research.
 - **P6 is answered, negative under its preregistered deciding family (XGBoost):** none of `1m`, `5m`, `15m`, `30m`, `1h` cleared the 3-of-4 viability gate.
 - **P6-EXT is answered, negative:** neither `4h` nor `1d` is viable, so `SWING` is currently `NOT_ELIGIBLE`.
@@ -102,14 +98,12 @@ The state below is current; the *direction* it used to point at is retired.
 
 **Do now**
 
-1. **Work the adopted roadmap, not this file's retired one.** Read
-   [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md)
-   for the stages and the finite budget, and
-   [`proposed_demo_implementation_master_plan.md`](proposed_demo_implementation_master_plan.md)
-   section 14 for the PR packages.
-2. **The next exact task is PR-04:** the prospective recorder's contract,
-   events, sink and normalizer — **offline only, no network, no economic
-   quantity computed**. It is the first engineering task of stage S1.
+1. **Work Roadmap v3, not this file's retired sequence.** Read
+   [`proposed_futures_first_roadmap_v3.md`](proposed_futures_first_roadmap_v3.md).
+2. **Next coding task: V3-1b deterministic clock injection** for time-dependent
+   Aegis/order-rate/cooldown behaviour. In parallel, run V3-2/V3-3 gen4
+   engineering/source-validity/power preflights on separate infrastructure; do
+   not put gen4 workload on the PR #76 acceptance VPS.
 3. Treat the directional chain as having reached a valid scientific boundary,
    and P8 as withdrawn rather than pending: its eligibility precondition cannot
    be met without work its own rules forbid.
@@ -723,17 +717,21 @@ Initial live operation remains conservative: isolated futures semantics, low lev
 
 These constraints were added by the owner decision recorded at the head of this file. Where one contradicts an earlier constraint, it says so explicitly and the later one governs.
 
-33. **The Fable 5.1 replacement roadmap is ADOPTED and is the authoritative plan.** [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md) is the roadmap; [`proposed_demo_implementation_master_plan.md`](proposed_demo_implementation_master_plan.md) is the engineering plan. The active stage sequence is **S0 → S1 → S2 → S3 → S4 → S5 → S6**. This file's "Development sequence", "Later research axes" and mandatory decision review are retired.
+33. **Historical governance note:** the Fable 5.1 replacement roadmap was adopted on 2026-09-03 and governed the S0→S6 period until Roadmap v3 superseded it for active sequencing on 2026-09-12. [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md) and [`proposed_demo_implementation_master_plan.md`](proposed_demo_implementation_master_plan.md) remain historical governance/implementation records. The active roadmap is now [`proposed_futures_first_roadmap_v3.md`](proposed_futures_first_roadmap_v3.md), with V3-0→V3-14 sequencing. This file's "Development sequence", "Later research axes" and mandatory decision review remain retired.**
 34. **No further DECIDING use of the four historical outer blocks** (2023-03-04 to 2025-05-19). Ten checkpoints have read them; the budget for deciding evidence on them is spent and is zero. They remain descriptive context, engineering fixtures and the source of one-time frozen coefficients disclosed as such. No future checkpoint decides on them, and none may be split into more folds to manufacture independence.
 35. **The next deciding scientific programme is PROSPECTIVE-FIRST.** Evidence that decides comes from data that had not occurred when the rule was frozen. Prospective evidence outranks historical evidence for any promotion decision, and neither Styx nor `P4-HOLD` is ever described as prospective.
 36. **P14 is DECLINED and NOT OPENED — DESIGN DECLINED BEFORE OPENING / NO RESULT.** It was preregistered on branch `claude/p14-native-tradeflow-prereg` at `36cdae48877b1d5fa88b2664c127b5307a917751` and declined before opening, on information-value grounds, after the independent Fable 5.1 audit. **No P14 statistic, signal value, fold score, trade or PnL was ever computed.** P14 is never described as answered, negative, positive, failed or inconclusive; there is no result for any of those words to describe. The branch is retained as historical design evidence and is not deleted. See also constraint 24 for P8, whose withdrawal has the same character and the same prohibition.
-37. **The primary future modelled and executed directional instrument is the Binance USD-M BTCUSDT perpetual.** Binance spot BTCUSDT is the hedge leg of the carry position, the price control and a supporting data source. **The instrument modelled is the instrument executed** — this supersedes the earlier arrangement in which every economic number priced a SHORT leg that spot cannot hold. Constraint 20 still governs any cross-venue choice.
-38. **The research budget is FINITE and authoritative.** Section 6 of the adopted roadmap governs: zero deciding checkpoints on the four outer blocks; at most one new historical checkpoint on genuinely new data, and only after S5 is running; at most two prospective campaigns (PVC-1, PVC-2), six months each, at most three rules each; engineering before S5 capped at eight person-weeks, and exceeding the cap simplifies the plan rather than extending it. At the end of the budget the programme either freezes a candidate for a separately authorised very small live consideration or records "no deployable alpha under the current mandate" and closes or re-mandates. The kill and pivot criteria in section 24 of [`fable_5_1_full_project_strategic_audit.md`](fable_5_1_full_project_strategic_audit.md) are adopted unchanged.
-39. **Every future preregistration carries an effect-size floor, the minimum realised trade or settlement count that makes it detectable, a dependent-data test beside any fold or block count, a declared multiplicity budget, and a per-instrument cost model.** The flat 20 bps per-trade cost is retired. A checkpoint receives an independent review before it opens, with a minimum elapsed time between the preregistration and the first result. Section 5 of the adopted roadmap is the full list and governs.
+37. **Roadmap v3 supersedes the BTCUSDT-only future-instrument restriction.** The primary direction is liquid USD-M perpetual futures LONG/SHORT, and gen4 must be multi-symbol capable from inception; the exact universe is selected only after engineering/source-validity/power preflight. Spot is a first-class supporting/reference lane and may hedge/support futures where a strategy requires it. **The researched instrument must match the executed instrument.** Constraint 20 still governs any cross-venue choice.
+38. **Historical S0→S6 finite-budget rules are superseded where Roadmap v3 changes campaign design.** The prohibition on further deciding use of the burned outer blocks remains absolute. Fixed counts such as "two six-month campaigns / three rules" and S5-tied timing no longer choose the new campaign by convenience; V3-3 must predeclare duration, universe, multiplicity, effect/economic floors and dependence-adjusted power before any scientific boundary. If the design is underpowered, redesign before opening it. No positive result can create real-money authority automatically.
+39. **Every future scientific campaign remains preregistered, effect-size/economic-floor aware, dependence-aware, multiplicity-aware and cost-aware.** The flat 20 bps per-trade cost remains retired as a universal assumption. Roadmap v3 V3-3/V3-10 govern the active campaign-design and no-online-tuning rules; an independent boundary review is required before irreversible prospective evidence accrual.
 
 **Unchanged by the adoption, and restated because they are the ones most likely to be assumed away:** no real money is authorised (constraint 1); no leverage above 1x; Aegis is the sole risk authority (constraint 9); `P4-HOLD` is retired and unread (constraint 2); Styx is sealed and carries its hindsight-era ceiling (constraints 3 and 25); P13's historical economics are not run (constraint 31); negative results stay visible (constraint 11); and no frozen artifact, manifest, hash or preregistration is rewritten (constraint 13).
 
-## Current one-line roadmap
+## Historical one-line roadmap — superseded 2026-09-12
+
+**Current active V3 one-line direction:** preserve PR #76/gen3 as engineering-only → complete V3-1b deterministic clock injection → run separate V3-2 gen4 source/data-rate preflight and V3-3 power analysis → freeze gen4 only after those measurements → build causal MarketContext and a general single-leg futures runtime → prove autonomous demo/recovery engineering → open only preregistered prospective information/economic campaigns that meet their frozen promotion rules. No real money is authorised.
+
+The following is the predecessor S0→S6 sequence retained verbatim as historical governance provenance:
 
 **Merged P5 baseline → P6/P6-EXT specialists answered negative → P7 consensus-v1 answered negative → P8 preregistered and never opened → independent audit returned COHERENT WITH REQUIRED REPAIRS → disclosures + positive-control tests + pandas-2.x constraint merged → decision review selected structural carry → preregister ONE exploratory BTC spot/perpetual delta-hedged funding/basis carry feasibility screen → attempt it and close it NOT EVALUABLE on egress, with no economics computed → independent external audit returned COHERENT WITH REQUIRED REPAIRS → repairs + pre-economic amendments A1/A2/A2R1/A2R2 → obtain egress, build the runtime and acquire all 260 sources (verified) → close P13 on SOURCE VALIDITY, `FUTURE GOVERNED SCREEN NOT EVALUABLE`, with the economic screen still never run and no economics computed → preregister P14 on a branch, then commission an independent Fable 5.1 strategic audit of the whole programme → **audit merged (PR #68) and its replacement roadmap ADOPTED (S0, 2026-09-03): P14 DECLINED BEFORE OPENING with no result ever generated, PR #67 closed unmerged, P8 WITHDRAWN AS MOOT, deciding use of the four outer blocks ended, the USD-M BTCUSDT perpetual made the primary modelled and executed instrument** → **NEXT: S1 — build the prospective recorder, starting with PR-04 (contract, events, sink, normalizer; offline only)** → 30-day coverage gate → S2 freeze a menu of at most three rules and preregister PVC-1, independently reviewed before the first scored day → S3 Minimum Viable Chimera (persisted Aegis, live-data simulated venue, two-leg carry position, decision log, replay parity) → S4 14-day soak and parity → S5 six-month prospective PVC-1 dry-run campaign → S6 closure and independent audit → either a separately authorised very small live consideration under a new contract with a hard capital cap, or a recorded "no deployable alpha under the current mandate". Styx and `P4-HOLD` are not on this path.**
 

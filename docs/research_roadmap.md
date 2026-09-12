@@ -2,14 +2,15 @@
 
 What has been asked, what was answered, and what the next question is.
 
-**Roadmap change, 2026-09-03.** The owner adopted the Fable 5.1 replacement
-roadmap: [`proposed_development_plan_post_fable_5_1_audit.md`](proposed_development_plan_post_fable_5_1_audit.md),
-expanded in [`proposed_demo_implementation_master_plan.md`](proposed_demo_implementation_master_plan.md).
-The next deciding programme is **prospective**, not another historical
-checkpoint, and the four outer blocks are closed to deciding use. This file
-stays authoritative for what each closed checkpoint concluded and did not
-conclude — none of which changed — and its "What runs next" section is updated
-to point at the adopted stages.
+**Roadmap change, 2026-09-12.** The owner adopted
+[`proposed_futures_first_roadmap_v3.md`](proposed_futures_first_roadmap_v3.md)
+as the active strategic/scientific roadmap. The earlier 2026-09-03 Fable 5.1
+roadmap and demo master plan are retained as historical predecessor plans and
+implementation provenance, but no longer control future sequencing. This file
+remains authoritative for what each closed checkpoint concluded and did not
+conclude — none of those historical results changed. Any older "What runs next"
+or S0→S6 sequencing text below is historical unless explicitly restated under
+Roadmap v3.
 
 This file exists because a research programme that cannot say what it already
 ruled out will keep re-asking the same question with a new library. Each entry
@@ -145,7 +146,7 @@ These are part of the results, not softening added afterwards.
 
 ### Next
 
-**NEXT: STAGE S1 — BUILD THE PROSPECTIVE RECORDER.** The exact next task is
+**HISTORICAL NEXT (SUPERSEDED 2026-09-12): STAGE S1 — BUILD THE PROSPECTIVE RECORDER.** The exact task at that time was
 **PR-04**: the recorder's contract, events, sink and normalizer, offline only,
 with no network and no economic quantity computed.
 
@@ -912,7 +913,9 @@ but it did supply one operational lesson that the adopted roadmap builds on:
 a frozen design can be defeated by the coverage of its own preregistered
 sources, so source sufficiency is established **before** freezing.
 
-**What runs next, concretely.**
+**Historical S0→S6 sequence (superseded for active planning on 2026-09-12).**
+
+For current work, follow `proposed_futures_first_roadmap_v3.md`.
 
 | stage | what |
 | --- | --- |
