@@ -3,6 +3,7 @@
 **Status:** PROPOSED — DECISION DRAFT, NOT YET ADOPTED IN REPOSITORY GOVERNANCE  
 **Date:** 2026-09-09  
 **Current verified main at drafting:** `413d597d9d609fcec79558722f5acff463387412`  
+**Post-drafting integration baseline:** `eb6fa2e9313bc76b99b944a5cdb448a67dea51ed` (PR #93 merged 2026-09-10)
 **Primary open implementation PR:** PR #76 — recorder archive reconciliation and 30-day coverage gate  
 **Real-money authority:** NONE  
 **Scientific boundary:** no new prospective scientific boundary is activated by this document
@@ -178,11 +179,13 @@ A statistically significant but economically trivial result is not promotable.
 
 ### Change D — risk configuration must actually reach Aegis
 
-The current demo path contains a confirmed configuration-to-Aegis mapping
-defect.
+At drafting, the demo path contained a confirmed configuration-to-Aegis mapping
+defect. That mapping remediation was subsequently implemented and merged in
+PR #93 on 2026-09-10, with explicit production mapping and behavioural tests.
 
-Before unattended demo/soak, every campaign risk limit must be mapped explicitly
-and tested from parsed config to actual enforcement.
+The remaining pre-soak risk-wiring blocker is deterministic clock injection for
+time-dependent Aegis/order-rate/cooldown behaviour; it must be resolved in a
+separate reviewed PR rather than conflated with the completed mapping fix.
 
 ---
 
@@ -215,18 +218,26 @@ evidence later.
 
 ## 4.2 Current VPS acceptance
 
-The isolated PR #76 recorder deployment is allowed to continue untouched.
+The isolated PR #76 recorder deployment remains limited to recorder/reconciliation
+engineering evidence.
 
-Its purpose is limited to:
+The first genuine two-day acceptance attempt, covering 2026-09-10 and
+2026-09-11 UTC, is preserved as a **failed engineering acceptance campaign**:
 
-- two genuine complete UTC recorder days;
-- first-party archive reconciliation;
-- confirmation of real archive layouts;
-- recorder/reconciliation engineering evidence.
+- 2026-09-10 passed all minute-stream coverage thresholds and remained
+  `UNJUDGEABLE` only because the current-month funding schedule archive was not
+  yet available;
+- 2026-09-11 independently failed the required minute-stream coverage thresholds
+  and was classified as `RECORDER_OUTAGE`;
+- both days were frozen/verified and the failed attempt must not be rescued by
+  retroactively substituting later days.
 
-Do not burden this VPS with gen4 multi-symbol capture.
+A later acceptance campaign may be declared only prospectively after a clean
+operational preflight. Gen3 remains `prospective_from = null`, so all such
+records remain engineering evidence only.
 
-Do not restart or modify it without a concrete operational reason.
+Do not burden this VPS with gen4 multi-symbol capture. Do not modify it without
+a concrete operational reason.
 
 ## 4.3 PR #76 disposition
 
@@ -246,13 +257,15 @@ Its reusable architecture includes:
 
 Before integration into the new direction:
 
-1. complete the real two-day acceptance;
-2. freeze the gen4 source contract;
-3. generalise reconciliation to the gen4 symbol/stream model;
-4. separate stream readiness from campaign-specific eligibility where needed;
-5. preserve health-gated semantics for streams with no defensible archive
+1. preserve and learn from the failed first two-day engineering acceptance;
+2. complete any later acceptance attempt prospectively, without replacing the
+   failed campaign retroactively;
+3. freeze the gen4 source contract;
+4. generalise reconciliation to the gen4 symbol/stream model;
+5. separate stream readiness from campaign-specific eligibility where needed;
+6. preserve health-gated semantics for streams with no defensible archive
    denominator;
-6. integrate on a fresh current-main lineage with normal Git chronology.
+7. integrate on a fresh current-main lineage with normal Git chronology.
 
 No rebase/squash/force-push is required or preferred.
 
@@ -909,7 +922,7 @@ Required properties:
 | recorder machinery | KEEP |
 | gen3 contract | RETAIN FOR ENGINEERING, DO NOT ACTIVATE |
 | PR #76 reconciliation | KEEP + REWORK |
-| Aegis | KEEP + FIX CONFIG WIRING |
+| Aegis | KEEP; CONFIG WIRING REMEDIATED IN PR #93; DETERMINISTIC CLOCK INJECTION STILL REQUIRED PRE-SOAK |
 | futures dry-run domain/executor/store | KEEP |
 | current 1x margin model | KEEP FOR DEMO, EXTEND LATER |
 | recorded-quote fill model | KEEP FOR EARLY DIRECTIONAL DEMO |
@@ -932,46 +945,58 @@ Required properties:
 
 ## V3-0 — protect current acceptance
 
-**Objective:** finish PR #76 VPS engineering acceptance cleanly.
+**Status:** ACTIVE / FIRST CAMPAIGN FAILED AND PRESERVED.
 
-**Scope:**
+**Objective:** finish PR #76 VPS engineering acceptance honestly, preserving
+negative operational evidence.
 
-- current isolated service;
-- two genuine UTC days;
-- archive reconciliation.
+**Observed first campaign:**
 
-**Acceptance:**
+- 2026-09-10: minute-stream thresholds passed; funding verdict unavailable due
+  to expected monthly archive latency;
+- 2026-09-11: required minute-stream thresholds failed and `RECORDER_OUTAGE`
+  was recorded;
+- the 2026-09-10/11 pair is permanently a failed acceptance attempt and is not
+  replaced retroactively.
 
-- service health maintained;
-- no unexplained recorder halt/write error;
-- two real-day reconciliation successfully judged when archives become
-  available.
+A subsequent two-day attempt may start only after a clean prospective preflight.
 
 **Forbidden:**
 
 - gen4 on the same VPS;
 - boundary activation;
 - economic scoring;
+- rewriting or substituting failed acceptance days;
 - merge merely because the service ran.
 
 ---
 
 ## V3-1 — Aegis wiring remediation
 
-**Objective:** make campaign risk config identical to enforced Aegis limits.
+**Status:** MAPPING REMEDIATION COMPLETE VIA PR #93.
+
+PR #93 merged one explicit `DemoLimits → Aegis` production mapping, reused it
+in the test harness, and added behavioural witnesses without changing any
+scientific artifact or contract.
+
+### V3-1b — deterministic clock injection
+
+**Objective:** remove wall-clock dependence from time-sensitive Aegis/order-rate/
+cooldown behaviour before unattended demo/soak and compressed deterministic
+replay.
 
 **Acceptance:**
 
-- one explicit production mapping;
-- test harness reuses it;
-- two-sided tests for mapped fields;
-- high-consequence behavioural witnesses;
-- no scientific artifact/contract change.
+- one injectable authoritative clock path for relevant risk timing;
+- production defaults preserve real-time behaviour;
+- replay/tests can provide deterministic time;
+- no scientific artifact/contract change;
+- no weakening of risk limits.
 
 **Kill condition:**
 
-- unresolved semantic ambiguity in a risk limit → stop that mapping and resolve
-  governance before guessing.
+- any ambiguity that changes risk semantics must be resolved before implementation,
+  not guessed.
 
 ---
 
@@ -1220,20 +1245,23 @@ No automatic transition from prospective alpha to live money exists.
 
 ## ACTION 1 — now
 
-Leave the current PR #76 acceptance VPS untouched and let the two full UTC days
-complete.
+Keep the PR #76 VPS isolated. Preserve the failed 2026-09-10/11 acceptance
+campaign and allow a new two-day campaign only after a clean prospective
+operational preflight.
 
-## ACTION 2 — now / next
+## ACTION 2 — next coding PR
 
-Fix the confirmed `DemoLimits → Aegis` mapping defect with a narrow,
-independently verified remediation.
+Implement V3-1b deterministic clock injection for the time-sensitive Aegis/
+order-rate/cooldown path. The `DemoLimits → Aegis` mapping itself is already
+remediated by merged PR #93.
 
-## ACTION 3 — immediately after
+## ACTION 3 — in parallel on separate infrastructure
 
-Run a separate gen4 data-rate + source-validity + power preflight.
+Run the separate gen4 data-rate + source-validity + power preflight. Do not put
+gen4 workload on the PR #76 acceptance VPS.
 
-Only after that should the exact symbol universe, contract and first campaign be
-frozen.
+Only after the preflight and power work should the exact symbol universe,
+contract and first scientific campaign be frozen.
 
 ---
 
