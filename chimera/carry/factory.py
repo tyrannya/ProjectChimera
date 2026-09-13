@@ -185,14 +185,14 @@ def build_hedged_position(
         risk=risk,
         store=spot_store,
         config=execution,
-        **kwargs
+        **kwargs,
     )
     perp = FuturesExecutor(
         venue=_venue(source, perp_model, perp_store),
         risk=risk,
         store=perp_store,
         config=execution,
-        **kwargs
+        **kwargs,
     )
     return HedgedPosition(
         spot=spot,

@@ -270,7 +270,7 @@ def build_risk_engine(
         risk_limits(config.limits),
         state_path=root / "risk.json",
         kill_switch_path=root / "KILL_SWITCH",
-        **kwargs
+        **kwargs,
     )
     engine.update_equity(float(capital))
     return engine

@@ -17,6 +17,7 @@ from chimera.carry.factory import build_hedged_position
 from chimera.demo.config import ConfigProfile, DemoConfig, parse_demo_config
 from chimera.demo.feed import FeedCursor
 from chimera.demo.fixtures import MinuteShape, SyntheticFeed
+from chimera.demo.inspection import inspect_demo_state
 from chimera.demo.risk_wiring import build_risk_engine
 from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
@@ -68,12 +69,9 @@ def campaign_config(
     """The committed campaign's limits, on a test profile, in a test directory.
 
     ``limits`` merges over section 7.4's values and exists for ONE reason: a test
-    that compresses campaign time. Aegis measures its order-rate window and its
-    cooldown on the wall clock -- the runner clock is not injected into
-    `RiskEngine`, which the master plan's F->G row (section 2.4) says it should be
-    -- so a test that runs forty campaign-minutes inside one wall-clock second
-    presents forty minutes of orders as one minute of orders. Such a test has to
-    say which bound it cannot honour and why.
+    that changes one campaign limit deliberately. Aegis now measures its
+    order-rate window and cooldown on the runner's recorded clock, so compressed
+    host execution is not a reason to loosen either bound.
 
     It is NOT for loosening a limit a test is about. Every test that asserts what
     a limit does must get that limit from the campaign, which is what
@@ -107,15 +105,18 @@ class Harness:
     """A runner and everything it was built from, so a test can reach in."""
 
     runner: DemoRunner
-    #: One fill model per leg, keyed by leg name -- the mapping the position
-    #: itself holds. Never one shared model: the spot leg prices from the spot
-    #: book and the perpetual from its own, so a test that tightens a fill
-    #: setting has to say which leg it means.
-    models: Mapping[str, RecordedQuoteFillModel]
     root: Path
     state_dir: Path
     feed: SyntheticFeed
-    risk: RiskEngine
+
+    @property
+    def models(self) -> Mapping[str, RecordedQuoteFillModel]:
+        """The active per-leg models; unavailable before runner startup."""
+        return dict(self.runner.position.fill_models or {})
+
+    @property
+    def risk(self) -> RiskEngine:
+        return self.runner.risk
 
     def first_minute_ms(self) -> int:
         minute = self.runner.cursor.next_minute_ms()
@@ -193,15 +194,21 @@ def build(
         return build_risk_engine(cfg, capital=CAPITAL, state_dir=state_dir, clock=clock)
 
     def _position_factory(risk: Any, clock: Any) -> Any:
-        pos = build_hedged_position(risk=risk, capital=CAPITAL, state_dir=state_dir, clock=clock)
-        pos.spot.recover({})
-        pos.perp.recover({})
-        return pos
+        return build_hedged_position(
+            risk=risk,
+            capital=CAPITAL,
+            state_dir=state_dir,
+            clock=clock,
+        )
+
+    def _inspection_factory():
+        return inspect_demo_state(cfg, capital=CAPITAL, state_dir=state_dir)
 
     runner = DemoRunner(
         cfg,
         root,
         contract=contract,
+        inspection_factory=_inspection_factory,
         risk_factory=_risk_factory,
         position_factory=_position_factory,
         rules=rules,
@@ -212,8 +219,7 @@ def build(
     if start:
         runner.start()
 
-    harness = Harness(runner, dict(runner.position.fill_models or {}) if runner.clock.started else {}, root, state_dir, feed, runner.risk if runner.clock.started else None)
-    return harness
+    return Harness(runner, root, state_dir, feed)
 
 
 def cursor_for(harness: Harness) -> FeedCursor:

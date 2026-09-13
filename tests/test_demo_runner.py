@@ -1510,18 +1510,20 @@ def test_resolve_refuses_when_the_log_itself_cannot_take_the_record(tmp_path):
     day_file = day_files(harness.state_dir / LOG_DIR_NAME)[-1]
     lines = day_file.read_bytes().splitlines(keepends=True)
     day_file.write_bytes(b"".join(lines[:-1]) + lines[-1][: len(lines[-1]) // 2])
+    perp_path = harness.state_dir / "perp_store.json"
+    risk_path = harness.state_dir / "risk.json"
+    perp_before = perp_path.read_bytes()
+    risk_before = risk_path.read_bytes()
 
     resumed = build(tmp_path, config=harness.runner.config, start=False).runner
     resumed.clock.observe(harness.runner.clock.now_ns)
-    resumed._risk = harness.runner.risk
-    resumed._position = harness.runner.position
 
     with pytest.raises(RunnerError, match="cannot be recorded"):
         resumed.resolve(symbol, "operator checked both legs")
 
-    # Nothing moved: the dispute is still frozen and Aegis still knows.
-    assert symbol in resumed.position.perp.store.state.disputed
-    assert resumed.risk.state.reconciliation_disputed
+    # Nothing moved: both persisted copies of the dispute are byte-identical.
+    assert perp_path.read_bytes() == perp_before
+    assert risk_path.read_bytes() == risk_before
 
 
 def test_an_unreadable_ledger_does_not_turn_flatten_into_a_traceback(tmp_path):
@@ -2430,6 +2432,7 @@ def test_a_halt_before_the_first_mark_leaves_the_day_reportable(tmp_path):
     from chimera.demo.reports import daily_report
 
     harness = build(tmp_path, start=False)
+    harness.state_dir.mkdir(parents=True, exist_ok=True)
     (harness.state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
     harness.runner.start()
 
@@ -2749,10 +2752,9 @@ def test_a_restart_after_a_dispute_halt_reads_the_slippage_the_halt_booked(tmp_p
 
     # A new process, with no `shutdown()` in between.
     restarted = build(tmp_path, config=config, start=False)
-    restarted.runner.start()
-    assert restarted.runner.position.ledger.state.slippage == booked
+    assert restarted.runner.inspection.ledger.state.slippage == booked
     assert (
-        restarted.runner.position.ledger.state.perp_margin
+        restarted.runner.inspection.ledger.state.perp_margin
         == harness.runner.position.ledger.state.perp_margin
     )
 
@@ -3085,11 +3087,10 @@ def test_the_recovery_comparison_ignores_a_ledger_it_could_not_read(tmp_path):
     _damage_the_ledger(harness)
 
     resumed = build(tmp_path, config=harness.runner.config, start=False).runner
-    resumed.start()
-    assert resumed.position.ledger.outcome is LoadOutcome.UNREADABLE
+    assert resumed.inspection.ledger.outcome is LoadOutcome.UNREADABLE
     # The log carries real economics; the placeholder carries none.
     assert D(resumed._last_block("ledger_effect")["fees"]) > 0
-    assert resumed.position.ledger.state.fees == 0
+    assert resumed.inspection.ledger.state.fees == 0
 
     assert (
         resumed._state_ahead_of_log() == ""
@@ -3298,8 +3299,7 @@ def test_an_unreadable_ledger_may_not_speak_even_with_an_empty_log(tmp_path):
 
     harness = build(tmp_path, config=campaign_config(state_dir), start=False)
     runner = harness.runner
-    runner.start()
-    assert runner.position.ledger.outcome is LoadOutcome.UNREADABLE
+    assert runner.inspection.ledger.outcome is LoadOutcome.UNREADABLE
     assert runner._last_block("ledger_effect") is None, "nothing is committed yet"
     assert runner._ledger_regressed_against_the_log() is None, "so the guard says nothing"
 
@@ -3327,8 +3327,7 @@ def test_the_ledger_verdict_is_taken_before_the_torn_tail_is_repaired(tmp_path):
 
     # Constructed, not started: this is the read that happens before any repair.
     unstarted = build(tmp_path, config=config, start=False).runner
-    unstarted.start()
-    assert unstarted._ledger_regressed_reason is None
+    assert unstarted._ledger_regression is None
     assert unstarted._ledger_may_speak() is True
 
     # And the ordinary torn-tail recovery still happens on top of it.
@@ -3427,7 +3426,7 @@ def test_resume_refuses_an_unreadable_ledger_that_never_traded(tmp_path):
     assert resumed.state is RunnerState.HALT
     assert resumed.position.ledger.outcome is LoadOutcome.UNREADABLE
     # Nothing was ever committed, so the accumulator comparison finds nothing.
-    assert resumed._ledger_regressed_reason is None
+    assert resumed._ledger_regression is None
     assert resumed._ledger_may_speak() is False
 
     with pytest.raises(RunnerError, match="could not be read"):

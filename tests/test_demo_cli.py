@@ -131,6 +131,73 @@ def test_status_reports_the_runner_without_changing_it(tmp_path, capsys):
     assert harness.runner.cursor.last_minute_processed == before
 
 
+def _persisted_bytes(root: Path) -> dict[str, bytes]:
+    """Every file below the runner state directory, keyed without host paths."""
+    if not root.exists():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_status_production_load_is_strictly_read_only(tmp_path):
+    """No active runtime, clock seed, directory, or persisted write for status."""
+    import argparse
+
+    from chimera.demo.runner import RunnerError
+    from chimera.demo.telemetry import NullTelemetry
+
+    harness = build(tmp_path, start=False, telemetry=NullTelemetry())
+    config_path = written_config(tmp_path, harness)
+    assert not harness.state_dir.exists()
+
+    runner = demo_run._load(
+        argparse.Namespace(
+            config=config_path,
+            root=harness.root,
+            profile="TEST",
+            command="status",
+        )
+    )
+    payload = demo_run._status(runner)
+
+    assert payload["runner_state"] == RunnerState.STARTUP.value
+    assert payload["ledger_may_speak"] is True
+    assert not runner.clock.started
+    assert not harness.state_dir.exists(), "status created runner state"
+    for attribute in ("risk", "position"):
+        with pytest.raises(RunnerError, match="before the clock starts"):
+            getattr(runner, attribute)
+
+
+def test_status_does_not_change_any_existing_persisted_byte(tmp_path):
+    """The production status path reads a complete prior run without mutation."""
+    import argparse
+
+    harness = build(tmp_path)
+    harness.run(2)
+    harness.runner.shutdown("status inspection fixture")
+    config_path = written_config(tmp_path, harness)
+    before = _persisted_bytes(harness.state_dir)
+
+    runner = demo_run._load(
+        argparse.Namespace(
+            config=config_path,
+            root=harness.root,
+            profile="TEST",
+            command="status",
+        )
+    )
+    payload = demo_run._status(runner)
+
+    assert payload["last_minute_processed"] is not None
+    assert payload["ledger_may_speak"] is True
+    assert not runner.clock.started
+    assert _persisted_bytes(harness.state_dir) == before
+
+
 def test_status_names_the_ledger_verdict_fields_the_runbook_names(tmp_path):
     """The keys are an operator-facing contract, and the runbook quotes them.
 

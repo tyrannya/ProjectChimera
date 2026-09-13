@@ -634,179 +634,207 @@ def test_the_cli_and_the_harness_agree_field_for_field(tmp_path):
     assert demo_run.build_risk_engine is build_risk_engine
 
 
-def test_unstarted_clock_refuses_access_to_time_and_risk(tmp_path):
-    """V3-1b regression test: unstarted clock refuses to be read and risk is unavailable."""
-    tight = build(
-        tmp_path / "tight",
-        config=campaign_config(
-            tmp_path / "tight" / "state", limits={"max_orders_per_minute": 1}
-        ),
-        start=False
-    )
-    runner = tight.runner
+def test_unstarted_runtime_is_inspectable_but_cannot_mutate(tmp_path):
+    """No fake time and no active decision object before recorded startup."""
+    from chimera.demo.runner import RunnerError, RunnerState
+    from chimera.demo.telemetry import NullTelemetry
 
-    # Clock is unstarted
+    harness = build(tmp_path, start=False, telemetry=NullTelemetry())
+    runner = harness.runner
+
     assert not runner.clock.started
+    assert runner.state is RunnerState.STARTUP
+    assert runner.inspection.ledger.state.capital == Decimal("1000000")
+    assert not harness.state_dir.exists(), "inspection created persisted state"
 
-    # Accessing risk before start() raises RunnerError
-    with pytest.raises(Exception, match="before the clock starts"):
-        _ = runner.risk
+    for attribute in ("risk", "position"):
+        with pytest.raises(RunnerError, match="before the clock starts"):
+            getattr(runner, attribute)
 
-    with pytest.raises(Exception, match="before the clock starts"):
-        _ = runner.position
+    with pytest.raises(RunnerError, match="before start"):
+        runner.tick(harness.first_minute_ms())
+    with pytest.raises(RunnerError, match="before start"):
+        runner.shutdown("must not persist")
 
-def test_kill_switch_engaged_at_startup_halts_immediately(tmp_path):
-    """V3-1b regression test: kill switch checked correctly when RiskEngine initialized in start()."""
-    state_dir = tmp_path / "tight" / "state"
+    assert not runner.clock.started, "a rejected mutation seeded the clock"
+    assert runner.state is RunnerState.STARTUP
+    assert not harness.state_dir.exists(), "a rejected mutation persisted state"
+
+
+def test_kill_switch_present_before_start_halts_before_any_decision(tmp_path):
+    """The delayed active engine still checks the switch at construction."""
+    state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    kill_switch_path = state_dir / "KILL_SWITCH"
+    (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+    harness = build(tmp_path, config=campaign_config(state_dir), start=False)
 
-    tight = build(
-        tmp_path / "tight",
-        config=campaign_config(
-            state_dir, limits={"max_orders_per_minute": 1}
-        ),
-        start=False
+    harness.runner.start()
+
+    assert harness.runner.risk.state.halted
+    assert harness.runner.risk.state.halt_reason == "kill_switch"
+    assert not [record for record in harness.records() if record["kind"] == "DECISION"]
+
+
+@pytest.mark.parametrize(
+    ("delta_ns", "halted", "live_orders"),
+    [
+        (59_999_000_000, True, 2),
+        (60_000_000_000, False, 1),
+        (60_001_000_000, False, 1),
+    ],
+    ids=("before-60s", "exactly-60s", "after-60s"),
+)
+def test_order_rate_uses_recorded_time_on_both_sides_of_60_seconds(
+    tmp_path, delta_ns, halted, live_orders
+):
+    """The existing window is ``now - order < 60``; equality expires."""
+    state_dir = tmp_path / f"state-{delta_ns}"
+    harness = build(
+        tmp_path / f"run-{delta_ns}",
+        config=campaign_config(state_dir, limits={"max_orders_per_minute": 1}),
     )
-    # Engage the kill switch before starting
-    kill_switch_path.write_text("stop")
+    risk = harness.runner.risk
+    start_ns = harness.runner.clock.now_ns
 
-    tight.runner.start()
+    risk.record_order()
+    harness.runner.clock.observe(start_ns + delta_ns)
+    risk.record_order()
 
-    # The runner should be halted by the kill switch upon RiskEngine initialization
-    assert tight.runner.risk.state.halted
-    assert "kill_switch" in tight.runner.risk.state.halt_reason
+    assert risk.state.halted is halted
+    assert len(risk.state.order_times) == live_orders
+    assert risk.state.order_times[-1] == pytest.approx((start_ns + delta_ns) / 1e9)
 
-def test_replay_catch_up_determinism_for_order_rate(tmp_path):
-    """V3-1b regression test: compressed catch-up cannot manufacture an order-rate HALT.
 
-    Processing 5 orders over 5 minutes (recorded time) quickly on the host (wall clock)
-    should not trigger a 2-orders-per-minute limit, because recorded time governs.
-    """
+def test_non_demo_constructors_retain_real_time_defaults():
+    """Callers that omit the new injection keep the existing ``time.time``."""
     import time
 
-    tight = build(
-        tmp_path / "tight",
-        config=campaign_config(
-            tmp_path / "tight" / "state", limits={"max_orders_per_minute": 2}
-        ),
-        start=False
-    )
-    tight.runner.start()
-    risk = tight.runner.risk
-
-    # Start time
-    base_ns = tight.first_minute_ms() * 1_000_000 + 60_000_000_000
-
-    # Simulate processing 5 orders in a fast loop where host time barely moves
-    for i in range(5):
-        tight.runner.clock.observe(base_ns + (i * 60_000_000_000))
-        # This checks prune order times using the mock clock
-        risk.record_order()
-
-    # Since they are spaced by 60 seconds each in the mock clock, we never have > 2 in window
-    assert not risk.state.halted
-
-def test_production_defaults_retain_time_time():
-    """V3-1b regression test: RiskEngine and FuturesExecutor default to time.time when clock not injected."""
-    import time
-    from chimera.risk import RiskEngine
-    from chimera.futures.executor import FuturesExecutor
-    from chimera.futures.executor import FuturesExecutionConfig
+    from chimera.futures.executor import FuturesExecutionConfig, FuturesExecutor
+    from chimera.futures.fills import RecordedQuoteFillModel
+    from chimera.futures.store import FuturesStore
     from chimera.futures.venue import DryRunFuturesVenue, StaticConstraintSource
 
     risk = RiskEngine()
+    executor = FuturesExecutor(
+        venue=DryRunFuturesVenue(StaticConstraintSource({}), RecordedQuoteFillModel()),
+        risk=risk,
+        store=FuturesStore.open(None),
+        config=FuturesExecutionConfig(),
+    )
+
     assert risk._clock is time.time
-
-    from chimera.futures.fills import RecordedQuoteFillModel
-    from chimera.futures.store import FuturesStore
-    import tempfile
-    from pathlib import Path
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store = FuturesStore.open(Path(tmpdir) / "store.json")
-        executor = FuturesExecutor(
-            venue=DryRunFuturesVenue(StaticConstraintSource({}), RecordedQuoteFillModel()),
-            risk=risk,
-            store=store,
-            config=FuturesExecutionConfig()
-        )
     assert executor.clock is time.time
 
-def test_order_rate_timing_respects_injected_clock(tmp_path):
-    """V3-1b regression test: order-rate timing is governed by the injected clock.
 
-    A runner running through a replay should be governed by the recorded clock. We test this by
-    triggering an order-rate limit, advancing the runner's clock (but not the wall clock),
-    and confirming the limit expires properly.
+def test_cooldown_uses_recorded_time_before_at_and_after_expiry(tmp_path):
+    """The gate is active while ``now < cooldown_until`` and open at equality.
+
+    ``record_trade_result`` has no demo production caller today. This witnesses
+    the already-existing Aegis path once the demo clock is wired; it does not
+    claim that the runner can currently open a cooldown itself.
     """
-    tight = build(
-        tmp_path / "tight",
-        config=campaign_config(
-            tmp_path / "tight" / "state", limits={"max_orders_per_minute": 1}
-        ),
-    )
-    tight.runner.start()
-    risk = tight.runner.risk
-    assert risk._clock == tight.runner.clock.time
-
-    # Observe an initial time based on first_minute_ms
-    start_ns = tight.first_minute_ms() * 1_000_000 + 60_000_000_000
-    tight.runner.clock.observe(start_ns)
-    risk.record_order()
-    risk.record_order()
-
-    # We should be halted because record_order halts when the limit is exceeded.
-    assert risk.state.halted is True
-    assert "order rate limit exceeded" in risk.state.halt_reason
-
-    # We resume and verify prune works
-    risk.resume()
-    assert risk.state.halted is False
-
-    # Advance the mock clock past the 60 second order window
-    tight.runner.clock.observe(start_ns + 61_000_000_000)
-
-    # Prune should drop the previous orders, allowing us to record another without halting
-    risk.record_order()
-    assert risk.state.halted is False
-
-
-def test_cooldown_timing_respects_injected_clock(tmp_path):
-    """V3-1b regression test: cooldown timing is governed by the injected clock."""
     harness = build(
-        tmp_path / "cooldown",
+        tmp_path,
         config=campaign_config(
-            tmp_path / "cooldown" / "state",
-            limits={"loss_streak_limit": 1, "cooldown_seconds": 300}
+            tmp_path / "state",
+            limits={"loss_streak_limit": 1, "cooldown_seconds": 300},
         ),
     )
-    harness.runner.start()
     risk = harness.runner.risk
+    start_ns = harness.runner.clock.now_ns
+    risk.record_trade_result(-1.0)
+    assert risk.state.cooldown_until == pytest.approx(start_ns / 1e9 + 300)
 
-    start_ns = harness.first_minute_ms() * 1_000_000 + 60_000_000_000
-    harness.runner.clock.observe(start_ns)
-    risk.record_trade_result(-10.0) # Hit the loss streak limit
+    harness.runner.clock.observe(start_ns + 299_999_000_000)
+    before = risk.evaluate_entry("pair", 1000, 100, 90)
+    harness.runner.clock.observe(start_ns + 300_000_000_000)
+    boundary = risk.evaluate_entry("pair", 1000, 100, 90)
+    harness.runner.clock.observe(start_ns + 300_001_000_000)
+    after = risk.evaluate_entry("pair", 1000, 100, 90)
 
-    decision = risk.evaluate_entry("pair", 1000, 100, 90)
-    assert decision.allowed is False
-    assert "cooldown active" in decision.reason
-
-    # Advance clock past cooldown
-    harness.runner.clock.observe(start_ns + 301_000_000_000)
-    decision = risk.evaluate_entry("pair", 1000, 100, 90)
-    assert decision.allowed is True
+    assert not before.allowed and "cooldown active" in before.reason
+    assert boundary.allowed
+    assert after.allowed
 
 
-def test_executor_timing_respects_injected_clock(tmp_path):
-    """V3-1b regression test: FuturesExecutors use the injected clock."""
-    harness = build(tmp_path / "executors")
-    harness.runner.start()
+def test_aegis_and_both_executors_persist_the_same_recorded_instant(tmp_path):
+    """A behavioral witness for all three consumers, not callable identity."""
+    from datetime import datetime, timezone
 
-    executor = harness.runner.position.spot
-    assert executor.clock == harness.runner.clock.time
+    from chimera.futures.executor import FlattenCause
 
-    # Observe an instant larger than the initial harness clock
-    # Harness start() will seed the clock with `first_minute_ms * 1_000_000 + 60_000_000_000` (which is > 1.7e18 ns)
-    harness.runner.clock.observe(1_800_000_000_000_000_000)
-    assert executor.clock() == 1_800_000_000.0
+    harness = build(tmp_path)
+    instant_ns = 1_900_000_000_123_456_789
+    harness.runner.clock.observe(instant_ns)
+    expected_s = instant_ns / 1e9
+    expected_text = datetime.fromtimestamp(expected_s, tz=timezone.utc).isoformat()
+
+    harness.runner.risk.record_order()
+    for name, executor, symbol in (
+        ("spot", harness.runner.position.spot, "BTC/USDT"),
+        ("perp", harness.runner.position.perp, "BTC/USDT:USDT"),
+    ):
+        executor.emergency_flatten(symbol, FlattenCause.RISK_HALT, Decimal("1"))
+        assert executor.store.state.flatten_reasons[-1] == {
+            "symbol": symbol,
+            "reason": FlattenCause.RISK_HALT.value,
+            "at": expected_text,
+        }, name
+
+    assert harness.runner.risk.state.order_times[-1] == pytest.approx(expected_s)
+
+
+def test_recorded_risk_timing_is_independent_of_host_clock_behavior(tmp_path):
+    """The same recorded input survives host clocks that move 0s versus 61s.
+
+    A fresh subprocess patches ``time.time`` *before* importing Aegis, so its
+    non-injected default binds the hostile host clock. If demo construction ever
+    drops the injection, one run keeps two orders inside the window while the
+    other expires the first; with RunnerClock both produce the same halt and
+    the same persisted order instants.
+    """
+    import subprocess
+    import sys
+
+    program = r"""
+import json
+import sys
+import time
+from pathlib import Path
+
+host = [100.0]
+time.time = lambda: host[0]
+
+from chimera.demo.telemetry import NullTelemetry
+from tests.demo_harness import build, campaign_config
+
+root = Path(sys.argv[1])
+harness = build(
+    root,
+    config=campaign_config(root / "state", limits={"max_orders_per_minute": 1}),
+    telemetry=NullTelemetry(),
+)
+risk = harness.runner.risk
+recorded = harness.runner.clock.now_ns
+risk.record_order()
+host[0] += float(sys.argv[2])
+harness.runner.clock.observe(recorded + 30_000_000_000)
+risk.record_order()
+print(json.dumps({"halted": risk.state.halted, "times": risk.state.order_times}))
+"""
+
+    def run(where: Path, host_delta: int) -> dict:
+        completed = subprocess.run(
+            [sys.executable, "-c", program, str(where), str(host_delta)],
+            cwd=REPO,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
+    frozen_host = run(tmp_path / "frozen", 0)
+    jumping_host = run(tmp_path / "jumping", 61)
+    assert frozen_host == jumping_host
+    assert frozen_host["halted"] is True
+    assert frozen_host["times"][1] - frozen_host["times"][0] == pytest.approx(30.0)

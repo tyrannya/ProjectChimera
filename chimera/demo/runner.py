@@ -24,9 +24,10 @@ comes *after* RISK_CHECK in the same tick, so "back to" is a wording slip for
 "forward to, skipping the two states between". Recorded here rather than
 silently interpreted.
 
-**No clock is read.** Every instant comes from `RunnerClock`, which is advanced
-only by observed record instants, so a replay of the same files produces the
-same records -- which is what section 10's byte comparison rests on.
+**No host clock is read on the decision path.** Every decision instant comes
+from `RunnerClock`, which is advanced only by observed record instants, so a
+replay of the same files produces the same records -- which is what section
+10's byte comparison rests on. Wall time is confined to telemetry.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from chimera.carry.hedge import PERP, SPOT, HedgedPosition, HedgeState
-from chimera.carry.ledger import LoadOutcome
+from chimera.carry.ledger import CarryLedger, LoadOutcome
 from chimera.demo.clock import RunnerClock
 from chimera.demo.config import DemoConfig
 from chimera.demo.decision_log import (
@@ -59,6 +60,7 @@ from chimera.demo.feed import (
     plain_json,
     settlement_from_row,
 )
+from chimera.demo.inspection import DemoInspection
 from chimera.demo.rules import HedgeTarget, RuleDecision, RuleError, RuleRegistry
 from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.domain import PositionSide
@@ -80,6 +82,7 @@ __all__ = [
     "RUNNER_STATE_SCHEMA",
     "RUNNER_STATE_SCHEMAS_READ",
     "RecoveryCause",
+    "DemoInspection",
 ]
 
 RUNNER_STATE_SCHEMA = "chimera.demo-runner-state/2"
@@ -234,6 +237,7 @@ class DemoRunner:
         clock: RunnerClock | None = None,
         *,
         contract: Any,
+        inspection_factory: Callable[[], DemoInspection],
         risk_factory: Callable[[Callable[[], float]], RiskEngine],
         position_factory: Callable[[RiskEngine, Callable[[], float]], HedgedPosition],
         rules: RuleRegistry,
@@ -245,6 +249,11 @@ class DemoRunner:
         self.root = Path(root)
         self.clock = clock or RunnerClock()
         self.contract = contract
+        self.state_dir = Path(config.runner_setting("state_dir"))
+        # First, before any active object can check a switch, seed equity,
+        # bootstrap a store, repair a log tail, or persist anything.  This is
+        # the evidence the load-time ledger verdict is about.
+        self._inspection = inspection_factory()
         self._risk_factory = risk_factory
         self._position_factory = position_factory
         self._risk: RiskEngine | None = None
@@ -253,8 +262,6 @@ class DemoRunner:
         self.capital = Decimal(capital)
         self.software = dict(software or {})
 
-        self.state_dir = Path(config.runner_setting("state_dir"))
-        self.state_dir.mkdir(parents=True, exist_ok=True)
         # Built before the first `_enter`, because `_enter` publishes through it.
         # Injectable so a test can drive the same campaign through a no-op
         # emitter and compare the two decision logs byte for byte; the runner
@@ -271,12 +278,35 @@ class DemoRunner:
         persisted = self._load_state()
         self.cursor = FeedCursor(self.root, contract, persisted)
 
+        # `save_state` writes `clock_now_ns` and nothing reads it back. That is
+        # deliberate: an earlier build restored it, which allowed an operator
+        # command before the new process had observed recorded data and made
+        # `start()` fail on LOG_AHEAD_OF_STATE. In that crash window the runner
+        # state carries the previous minute while the log already carries the
+        # current one, so restoring the state's clock makes the next STARTUP
+        # move backwards. Startup must observe the feed; making pre-start
+        # operator commands usable would require a separately proved log-tail
+        # seeding design and is outside V3-1b.
+
         raw_reconcile = persisted.get("last_reconcile_minute_ms")
         self.last_reconcile_minute_ms: int | None = (
             None if raw_reconcile is None else int(raw_reconcile)
         )
         self.last_record_hash: str = persisted.get("last_record_hash", "")
-        self._ledger_regressed_reason: str | None = None
+        #: Why the ledger AS LOADED holds less than the log already committed.
+        #: This is decided once during construction from the read-only snapshot,
+        #: before start can repair a torn tail, seed Aegis equity, bootstrap a
+        #: store, reconstruct, or book anything. `HedgedPosition` can reconcile
+        #: executor fees into a stale ledger, and an emergency flatten can book
+        #: enough later costs to hide that the file was behind. A verdict taken
+        #: afterwards would therefore be about evidence the command itself had
+        #: changed. Startup may add a refusal if the file degrades between
+        #: inspection and activation; it may never clear this load-time one.
+        self._ledger_regression = self._ledger_regressed_against_the_log()
+        self._inspection_ledger_unreadable = (
+            self._inspection.ledger.outcome is LoadOutcome.UNREADABLE
+        )
+        self._inspection_ledger_complaint = self._inspection.ledger.disputed
         self._log: DecisionLog | None = None
         self._config_hash = _config_hash(config)
         self._enter(RunnerState.STARTUP)
@@ -292,6 +322,27 @@ class DemoRunner:
         if self._position is None:
             raise RunnerError("hedged position is not available before the clock starts")
         return self._position
+
+    @property
+    def inspection(self) -> DemoInspection:
+        """A read-only status view, whether or not the runtime has started."""
+        if self._risk is not None and self._position is not None:
+            return DemoInspection.from_active(self._risk, self._position)
+        return self._inspection
+
+    def _ledger_for_read(self) -> CarryLedger:
+        """The active ledger when one exists, otherwise the load-time view."""
+        if self._position is not None:
+            return self._position.ledger
+        return self._inspection.ledger
+
+    def _require_active(self, operation: str) -> None:
+        """Refuse mutations until startup has supplied authoritative time."""
+        if self._risk is None or self._position is None:
+            raise RunnerError(
+                f"{operation} is unavailable before start() establishes recorded time"
+            )
+
     def _enter(self, state: RunnerState) -> RunnerState:
         """The one place `self.state` changes, so the gauge cannot drift from it.
 
@@ -412,9 +463,15 @@ class DemoRunner:
             self.clock.observe(first * _MS_TO_NS + MINUTE_NS)
 
         if self._risk is None:
-            self._risk = self._risk_factory(self.clock.time)
-            self._position = self._position_factory(self._risk, self.clock.time)
-            self._ledger_regressed_reason = self._ledger_regressed_against_the_log()
+            # One bound callable object, not three separately created bound
+            # methods: Aegis and both executors share one time domain and one
+            # injection path for this active runtime.
+            decision_time = self.clock.time
+            self._risk = self._risk_factory(decision_time)
+            self._position = self._position_factory(self._risk, decision_time)
+            active_regression = self._ledger_regressed_against_the_log()
+            if self._ledger_regression is None:
+                self._ledger_regression = active_regression
 
         # Triage the log BEFORE the first append, and the order is the whole
         # point. Appending opens the log, and `DecisionLog.open` refuses a tail
@@ -496,7 +553,7 @@ class DemoRunner:
             return f"store_error: {exc}"
         if self.position.ledger.disputed:
             return f"dispute: {self.position.ledger.disputed}"
-        return self._ledger_regressed_reason
+        return self._ledger_regression
 
     def _ledger_regressed_against_the_log(self) -> str | None:
         """Refuse a carry ledger that holds LESS than the log already committed.
@@ -534,7 +591,7 @@ class DemoRunner:
         guard passed, and the false ``LOG_BEHIND_STATE`` recovery and its false
         minute exclusion were written after all.
         """
-        ledger = self.position.ledger.state
+        ledger = self._ledger_for_read().state
         sources = (
             (
                 self._last_block("ledger_effect"),
@@ -672,10 +729,15 @@ class DemoRunner:
 
     def _ledger_state_complaint(self) -> str:
         """Why the ledger may not speak, in the words that fit its actual state."""
-        if self.position.ledger.outcome is LoadOutcome.UNREADABLE:
+        ledger = self._ledger_for_read()
+        if self._inspection_ledger_unreadable:
+            return (
+                "UNREADABLE -- it could not be read: " f"{self._inspection_ledger_complaint}"
+            )
+        if ledger.outcome is LoadOutcome.UNREADABLE:
             # No path here: every caller has already named the file.
-            return f"UNREADABLE -- it could not be read: {self.position.ledger.disputed}"
-        return self._ledger_regressed_reason or "it may not speak for this campaign"
+            return f"UNREADABLE -- it could not be read: {ledger.disputed}"
+        return self._ledger_regression or "it may not speak for this campaign"
 
     def _ledger_may_speak(self) -> bool:
         """Whether this ledger object is entitled to be persisted or quoted.
@@ -715,8 +777,9 @@ class DemoRunner:
         `_ledger_regression` there for why the moment matters.
         """
         return (
-            self.position.ledger.outcome is not LoadOutcome.UNREADABLE
-            and self._ledger_regressed_reason is None
+            not self._inspection_ledger_unreadable
+            and self._ledger_for_read().outcome is not LoadOutcome.UNREADABLE
+            and self._ledger_regression is None
         )
 
     def _save_ledger(self) -> None:
@@ -741,7 +804,7 @@ class DemoRunner:
                 "not persisting this object. Writing it would replace what the campaign "
                 "did with a ledger that holds less than the log already committed.",
                 self.position.ledger.path,
-                self._ledger_regressed_reason or "the file could not be read",
+                self._ledger_regression or "the file could not be read",
             )
             return
         self.position.ledger.save()
@@ -937,14 +1000,18 @@ class DemoRunner:
         frictions that was booked and never recorded -- which moves no quantity
         at all, and which the leg comparison alone therefore cannot see.
 
-        Both sides are read from files that are already loaded: the executors'
-        stores and the carry ledger. ``self.position.state`` is deliberately NOT
-        consulted -- it is an in-memory attribute that reads FLAT on a freshly
-        constructed runner whatever the stores hold, and reading it here (before
-        ``reconstruct()`` has run) made every branch of this answer False.
+        Both sides are read from files that are already loaded: the active
+        executors' stores when startup has built them, otherwise the dedicated
+        read-only inspection snapshot, plus the carry ledger. The derived hedge
+        state is deliberately not consulted -- it reads FLAT until
+        ``reconstruct()`` runs whatever the stores hold.
         """
         last_position = self._last_block("position_after")
-        legs = self._position_block()
+        legs = (
+            self._position_block()
+            if self._position is not None
+            else self._inspection.position_block()
+        )
         if last_position is None:
             if legs["spot_qty"] != "0" or legs["perp_qty"] != "0":
                 return (
@@ -962,7 +1029,7 @@ class DemoRunner:
         last_ledger = self._last_block("ledger_effect")
         if (
             last_ledger is not None
-            and self.position.ledger.outcome is not LoadOutcome.UNREADABLE
+            and self._ledger_for_read().outcome is not LoadOutcome.UNREADABLE
         ):
             # An UNREADABLE ledger is a placeholder holding nothing, so every
             # field disagrees with the log and the comparison would manufacture
@@ -970,7 +1037,7 @@ class DemoRunner:
             # halts on the dispute before RECOVER runs, so this is defence in
             # depth rather than a live path -- but the guard is what makes that
             # true by design instead of by ordering.
-            ledger = self.position.ledger.state
+            ledger = self._ledger_for_read().state
             booked = {
                 "funding": str(ledger.net_funding),
                 "fees": str(ledger.fees),
@@ -1004,6 +1071,7 @@ class DemoRunner:
     # ------------------------------------------------------------------
     def tick(self, minute_ms: int) -> TickOutcome:
         """One minute, through section 8.1's tick loop."""
+        self._require_active("tick")
         minute_ns = int(minute_ms) * _MS_TO_NS
         self.clock.observe(minute_ns + MINUTE_NS)
 
@@ -2083,6 +2151,10 @@ class DemoRunner:
         note = (note or "").strip()
         if not note:
             raise RunnerError("resolve requires an operator note stating what was checked")
+        # A fresh CLI process has no recorded instant. Establish that the
+        # action could be recorded before even consulting an active position;
+        # this preserves the operator-facing refusal and changes nothing.
+        self._require_recordable("resolve")
         legs = {
             self.position.config.spot_symbol: (SPOT, self.position.spot),
             self.position.config.perp_symbol: (PERP, self.position.perp),
@@ -2101,7 +2173,7 @@ class DemoRunner:
         # does not catch it. The safety-critical dispute was cleared with no
         # OPERATOR record, which is the one outcome section 8.3 forbids. Reading
         # the clock first turns that into a refusal that changes nothing.
-        now_ns = self._require_recordable("resolve")
+        now_ns = self.clock.now_ns
         adopted = executor.position(symbol)
         executor.resolve_reconciliation(symbol, adopted, note)
         # Aegis keeps its own copy of the dispute (section 7.2's reconciliation
@@ -2147,6 +2219,7 @@ class DemoRunner:
 
     def shutdown(self, note: str = "") -> TickOutcome:
         """Finish, persist, write SHUTDOWN, and stop. Never mid-record."""
+        self._require_active("shutdown")
         self._enter(RunnerState.SHUTDOWN)
         self._save_ledger()
         record_hash = self._append(
@@ -2172,6 +2245,7 @@ class DemoRunner:
     # ------------------------------------------------------------------
     def run_minutes(self, minutes: Iterable[int]) -> list[TickOutcome]:
         """Process the given minutes in order, stopping at HALT."""
+        self._require_active("run_minutes")
         outcomes = []
         for minute in minutes:
             if self.state is RunnerState.HALT:
@@ -2218,6 +2292,7 @@ class DemoRunner:
         this one, so a flag both live and replay produce identically cannot break
         parity. Recorded in the PR.
         """
+        self._require_active("catch_up")
         limit = int(self.config.runner_setting("max_catchup_minutes"))
         # Read once. The window is what it was when catching up began; letting it
         # move as minutes are processed would make the answer depend on how long

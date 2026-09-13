@@ -35,11 +35,13 @@ from typing import Any, Sequence
 
 from chimera.carry.factory import build_hedged_position
 from chimera.demo.config import ConfigProfile, parse_demo_config
+from chimera.demo.inspection import inspect_demo_state
 from chimera.demo.risk_wiring import build_risk_engine
 from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
 from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, ShadowParams
 from chimera.demo.runner import DemoRunner, RunnerError
+from chimera.demo.telemetry import NullTelemetry
 from chimera.futures.fills import RecordedQuoteFillModel
 from chimera.recorder.contract import load_recorder_contract
 
@@ -129,9 +131,7 @@ def _load(args: argparse.Namespace) -> DemoRunner:
     # audited function now, and `tests/test_demo_risk_wiring.py` holds this file
     # to using it.
     def _risk_factory(clock: Any) -> Any:
-        return build_risk_engine(
-            config, capital=capital, state_dir=state_dir, clock=clock
-        )
+        return build_risk_engine(config, capital=capital, state_dir=state_dir, clock=clock)
 
     def _position_factory(risk: Any, clock: Any) -> Any:
         return build_hedged_position(
@@ -142,15 +142,22 @@ def _load(args: argparse.Namespace) -> DemoRunner:
             clock=clock,
         )
 
+    def _inspection_factory():
+        return inspect_demo_state(config, capital=capital, state_dir=state_dir)
+
     return DemoRunner(
         config,
         args.root,
         contract=contract,
+        inspection_factory=_inspection_factory,
         risk_factory=_risk_factory,
         position_factory=_position_factory,
         rules=rules,
         capital=capital,
         software=_software(),
+        # `status` is an inspection, not a process-liveness event. In
+        # particular it must not move Prometheus state merely by being read.
+        telemetry=NullTelemetry() if getattr(args, "command", None) == "status" else None,
     )
 
 
@@ -244,18 +251,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _status(runner: DemoRunner) -> dict[str, Any]:
-    ledger = runner.position.ledger.state
+    inspection = runner.inspection
+    ledger = inspection.ledger.state
     return {
         "campaign_id": runner.config.campaign_id,
         "profile": runner.config.profile.value,
         "protocol_frozen": runner.config.protocol_frozen,
         "runner_state": runner.state.value,
         "halt_reason": runner.halt_reason,
-        "hedge_state": runner.position.state.value,
-        "imbalance": str(runner.position.imbalance()),
+        "hedge_state": inspection.hedge_state.value,
+        "imbalance": str(inspection.imbalance),
         "last_minute_processed": runner.cursor.last_minute_processed,
         "last_record_hash": runner.last_record_hash,
-        "risk_halted": runner.risk.state.halted,
+        "risk_halted": inspection.risk_state.halted,
         # The one read-only inspection command must not report a ledger the guard
         # has refused as if it were the campaign's. `_ledger_regression` is
         # decided in `__init__`, so it is available here without `start()` --
@@ -270,7 +278,7 @@ def _status(runner: DemoRunner) -> dict[str, Any]:
             "funding_paid": str(ledger.funding_paid),
             "equity": str(ledger.last_equity) if ledger.last_equity is not None else None,
         },
-        "disputed": runner.position.ledger.disputed,
+        "disputed": inspection.ledger.disputed,
     }
 
 
