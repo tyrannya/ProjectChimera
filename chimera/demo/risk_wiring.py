@@ -42,7 +42,7 @@ from __future__ import annotations
 from dataclasses import fields
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from chimera.demo.config import COUNT_LIMITS, DemoConfig, DemoLimits
 from chimera.risk import RiskEngine, RiskLimits
@@ -247,7 +247,11 @@ def _coerce(demo_field: str, value: float) -> int | float:
 
 
 def build_risk_engine(
-    config: DemoConfig, *, capital: Decimal | float, state_dir: Path | str | None = None
+    config: DemoConfig,
+    *,
+    capital: Decimal | float,
+    state_dir: Path | str | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> RiskEngine:
     """The demo's Aegis: campaign limits, the campaign's state files, its equity.
 
@@ -257,10 +261,16 @@ def build_risk_engine(
     operator runs.
     """
     root = Path(state_dir if state_dir is not None else config.runner_setting("state_dir"))
+
+    kwargs: dict[str, Any] = {}
+    if clock is not None:
+        kwargs["clock"] = clock
+
     engine = RiskEngine(
         risk_limits(config.limits),
         state_path=root / "risk.json",
         kill_switch_path=root / "KILL_SWITCH",
+        **kwargs,
     )
     engine.update_equity(float(capital))
     return engine

@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from chimera.carry.hedge import PERP, SPOT, HedgeConfig, HedgedPosition
 from chimera.carry.ledger import CarryLedger
@@ -135,6 +135,7 @@ def build_hedged_position(
     config: HedgeConfig | None = None,
     fill_model: RecordedQuoteFillModel | None = None,
     constraints: Mapping[str, Mapping[str, Any]] | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> HedgedPosition:
     """Build both legs, their stores and the ledger. The only demo venue path.
 
@@ -174,17 +175,24 @@ def build_hedged_position(
     ledger = CarryLedger.open(root / "carry_ledger.json" if root else None, capital=capital)
 
     execution = FuturesExecutionConfig(dry_run=True, leverage=Decimal("1"))
+
+    kwargs: dict[str, Any] = {}
+    if clock is not None:
+        kwargs["clock"] = clock
+
     spot = FuturesExecutor(
         venue=_venue(source, spot_model, spot_store),
         risk=risk,
         store=spot_store,
         config=execution,
+        **kwargs,
     )
     perp = FuturesExecutor(
         venue=_venue(source, perp_model, perp_store),
         risk=risk,
         store=perp_store,
         config=execution,
+        **kwargs,
     )
     return HedgedPosition(
         spot=spot,
