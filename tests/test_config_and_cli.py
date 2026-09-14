@@ -327,11 +327,27 @@ def test_env_example_contains_no_values():
         assert value == "", f"{name} in .env.example must have an empty value"
 
 
+#: Immutable, externally produced governance records imported byte for byte on
+#: 2026-09-14 (the corrected independent audit and the owner corrigendum). Each
+#: draws its §37.0 phase map with an intentional `================` separator
+#: row, which is not a conflict remnant. They are exempted by exact path, never
+#: by directory, and tests/test_r0_governance_records.py pins their SHA-256 so
+#: the exemption cannot hide a drifted byte.
+IMMUTABLE_GOVERNANCE_RECORDS = (
+    Path("docs/governance/r0_adoption_2026-09-14")
+    / "ProjectChimera_full_audit_and_master_roadmap_2026-09-14_corrected.md",
+    Path("docs/governance/r0_adoption_2026-09-14")
+    / "ProjectChimera_final_owner_corrigendum_and_adoption_ready_roadmap_2026-09-14.md",
+)
+
+
 def test_no_merge_conflict_markers_remain():
     repo = Path(__file__).resolve().parents[1]
     patterns = ("<" * 7, "=" * 7, ">" * 7)
     for path in repo.rglob("*"):
         if not path.is_file() or ".git" in path.parts:
+            continue
+        if path.relative_to(repo) in IMMUTABLE_GOVERNANCE_RECORDS:
             continue
         if path.suffix not in {
             ".py",

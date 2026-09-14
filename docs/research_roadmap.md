@@ -2,15 +2,18 @@
 
 What has been asked, what was answered, and what the next question is.
 
-**Roadmap change, 2026-09-12.** The owner adopted
-[`proposed_futures_first_roadmap_v3.md`](proposed_futures_first_roadmap_v3.md)
-as the active strategic/scientific roadmap. The earlier 2026-09-03 Fable 5.1
-roadmap and demo master plan are retained as historical predecessor plans and
+**Roadmap change, 2026-09-14.** The owner adopted, as corrected, the R0–R18
+master roadmap: [`master_roadmap_r0_r18.md`](master_roadmap_r0_r18.md) is the
+active strategic/scientific roadmap (decision and immutable audit/corrigendum
+under [`governance/r0_adoption_2026-09-14/`](governance/r0_adoption_2026-09-14/)).
+Roadmap v3 (adopted 2026-09-12) and the earlier 2026-09-03 Fable 5.1 roadmap
+and demo master plan are retained as historical predecessor plans and
 implementation provenance, but no longer control future sequencing. This file
 remains authoritative for what each closed checkpoint concluded and did not
-conclude — none of those historical results changed. Any older "What runs next"
-or S0→S6 sequencing text below is historical unless explicitly restated under
-Roadmap v3.
+conclude — none of those historical results changed. Any older "What runs next",
+PVC-1, S0→S6 or V3-x sequencing text below is historical unless explicitly
+restated under the master roadmap. ("R1 of PVC-1" below is a rule name from the
+2026-09-03 plan, unrelated to phase R1 of the master roadmap.)
 
 This file exists because a research programme that cannot say what it already
 ruled out will keep re-asking the same question with a new library. Each entry
@@ -150,11 +153,14 @@ These are part of the results, not softening added afterwards.
 **PR-04**: the recorder's contract, events, sink and normalizer, offline only,
 with no network and no economic quantity computed.
 
-The next *deciding* checkpoint is **PVC-1**, a six-month preregistered forward
-campaign on data that has not yet occurred, frozen and independently reviewed
-before its first scored day (stage S2, then S5). It is not a historical
-checkpoint and it has no number yet, because the data it will read does not
-exist yet. See "What runs next" below and the adopted roadmap.
+At that time the next *deciding* checkpoint was **PVC-1**, a six-month
+preregistered forward campaign (stage S2, then S5). That sequence was superseded
+on 2026-09-12 and again on 2026-09-14. **Current next:** under the R0–R18 master
+roadmap the next deciding evidence is the first prospective campaign, **R10**,
+reachable only after R1 … R9 and the R6 boundary activation, which itself
+requires R9 PASS; the next permitted phases are R1 and R2. No campaign is
+preregistered and no boundary is active. See
+[`master_roadmap_r0_r18.md`](master_roadmap_r0_r18.md).
 
 ---
 
@@ -887,7 +893,9 @@ not run; its own stopping rule forbids re-specifying it against whatever data
 happens to be reachable. Its carry *mechanism* returns as `R1` of PVC-1 — a new,
 prospective design with its own preregistration, on data that has not occurred —
 which is a different question from the one `P13` froze, not a second attempt at
-it.
+it. (Rule `R1` of PVC-1 is a 2026-09-03 name, unrelated to phase R1 of the
+2026-09-14 master roadmap; the carry lane is now the optional Lane B, deferred
+to R4 — see the banner at the top of this file.)
 
 **What actually happened.** The next checkpoint was selected: `P14`, native
 1-minute signed trade flow, preregistered on a branch and frozen before any
@@ -913,9 +921,9 @@ but it did supply one operational lesson that the adopted roadmap builds on:
 a frozen design can be defeated by the coverage of its own preregistered
 sources, so source sufficiency is established **before** freezing.
 
-**Historical S0→S6 sequence (superseded for active planning on 2026-09-12).**
+**Historical S0→S6 sequence (superseded for active planning on 2026-09-12; Roadmap v3 was itself superseded on 2026-09-14).**
 
-For current work, follow `proposed_futures_first_roadmap_v3.md`.
+For current work, follow `master_roadmap_r0_r18.md`.
 
 | stage | what |
 | --- | --- |
@@ -927,7 +935,8 @@ For current work, follow `proposed_futures_first_roadmap_v3.md`.
 | S5 | **the deciding checkpoint** — PVC-1 runs forward for six months with no parameter, cost, rule or menu change |
 | S6 | per-rule verdicts under the S2 rules, reconstructed from the decision log by an independent audit; either a narrow case for a separately authorised very small live consideration under a new contract, or a recorded "no deployable alpha under the current mandate" |
 
-The **research budget is finite**: zero deciding checkpoints on the four outer
+*(Historical, 2026-09-03 budget; superseded 2026-09-14 — the current budget is
+in the standing constraints below.)* The **research budget is finite**: zero deciding checkpoints on the four outer
 blocks, at most one new historical checkpoint on genuinely new data and only
 after S5 is running, at most two prospective campaigns of six months and three
 rules each, and engineering before S5 capped at eight person-weeks. After PVC-2
@@ -1104,18 +1113,22 @@ That is why the adopted roadmap looks forward instead.
   frozen, hashed and independently reviewed before the data it is scored on
   exists. Prospective evidence outranks historical evidence for any promotion
   decision, and neither Styx nor `P4-HOLD` is ever described as prospective.
-- **The instrument modelled is the instrument executed.** The Binance USD-M
-  BTCUSDT perpetual is the primary modelled and executed directional instrument;
-  Binance spot BTCUSDT is the hedge leg, the price control and a supporting data
-  source. Every economic number before this change priced a SHORT leg that spot
-  cannot hold, and that is disclosed wherever those numbers are cited.
+- **The instrument modelled is the instrument executed.** Since 2026-09-14 the
+  primary lane is multi-symbol, single-leg, directional LONG/SHORT Binance USD-M
+  perpetuals (BTCUSDT among them); Binance spot is reference data, a hedge leg
+  where a lane needs one, and support infrastructure. Every economic number
+  before the 2026-09-03 change priced a SHORT leg that spot cannot hold, and that
+  is disclosed wherever those numbers are cited.
 - **The research budget is finite and ends in a decision.** Zero deciding
-  checkpoints on the four outer blocks; at most one new historical checkpoint on
-  genuinely new data, only after stage S5 is running; at most two prospective
-  campaigns of six months and at most three rules each; engineering before S5
-  capped at eight person-weeks. Then the programme freezes a candidate for a
-  separately authorised very small live consideration, or records "no deployable
-  alpha under the current mandate".
+  checkpoints on the four outer blocks; under the R0–R18 master roadmap at most
+  two directional candidates and at most one carry candidate, each holding one
+  first prospective campaign (R10), at most one automatic same-design re-run
+  after a NOT EVALUABLE outcome, and one continuation (R11), with ABORTED and
+  DECLINED consuming the slot, and a mandatory stop-and-decide review after two
+  directional negatives. Then the programme either qualifies a candidate for a
+  separately authorised real-money consideration behind the four-condition
+  boundary, or records "no deployable directional alpha under the current
+  mandate".
 - **A checkpoint may end without a result, and that ending is not a result.**
   `withdrawn` and `declined` mean NO NUMBER WAS EVER PRODUCED. Neither may be
   cited, summarised or tabulated as an answer, a negative, a positive, a failure

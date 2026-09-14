@@ -3,6 +3,10 @@ repos:
     rev: v4.6.0
     hooks:
       - id: trailing-whitespace
+        # An immutable, externally produced governance record imported byte for
+        # byte on 2026-09-14; its trailing spaces are part of the recorded
+        # bytes, and tests/test_r0_governance_records.py pins its SHA-256.
+        exclude: ^docs/governance/r0_adoption_2026-09-14/ProjectChimera_final_owner_corrigendum_and_adoption_ready_roadmap_2026-09-14\.md$
       - id: end-of-file-fixer
         exclude: ^artifacts/diagnostics/btc_regimes_v4/regime_diagnostics\.md$
       - id: check-yaml

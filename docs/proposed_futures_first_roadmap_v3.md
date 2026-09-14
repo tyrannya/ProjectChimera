@@ -1,14 +1,26 @@
 # ProjectChimera — Futures-First Roadmap v3
 
-**Status:** ADOPTED 2026-09-12 BY OWNER DECISION — ACTIVE STRATEGIC / SCIENTIFIC ROADMAP
+**Status:** ADOPTED 2026-09-12; SUPERSEDED BY R0 ON 2026-09-14 — HISTORICAL PROVENANCE, NOT THE ACTIVE ROADMAP
+**Superseded by:** [`master_roadmap_r0_r18.md`](master_roadmap_r0_r18.md), adopted as corrected by owner decision on 2026-09-14 (record: [`governance/r0_adoption_2026-09-14/r0_owner_adoption_record.md`](governance/r0_adoption_2026-09-14/r0_owner_adoption_record.md))
 **Date:** 2026-09-09
 **Current verified main at drafting:** `413d597d9d609fcec79558722f5acff463387412`
 **Post-drafting integration baseline:** `eb6fa2e9313bc76b99b944a5cdb448a67dea51ed` (PR #93 merged 2026-09-10)
 **Roadmap proposal merged:** PR #92 → `c3d9dd4729fdcc7355fa318380fe4d3ee1db5e56` on 2026-09-12
-**Governance adoption:** this separate governance PR records the owner decision; adoption creates no scientific evidence
+**Governance adoption:** PR #94 recorded the 2026-09-12 owner decision; adoption created no scientific evidence
 **Primary open implementation PR:** PR #76 — recorder archive reconciliation and 30-day coverage gate
 **Real-money authority:** NONE
 **Scientific boundary:** no new prospective scientific boundary is activated by this document
+
+> **SUPERSEDED BY R0 (2026-09-14). Do not plan from this file.** The owner adopted the
+> corrected R0–R18 master roadmap, which replaces the V3-0 → V3-14 sequencing, the
+> "immediate next actions" (§20), the "decisions locked now" (§21) and the one-line
+> roadmap (§24) below. Where the two differ, the master roadmap governs: the prospective
+> boundary (R6) activates only after the autonomous soak has passed (R9), the deciding
+> cost semantics are frozen before the first campaign and identical through confirmation,
+> block invalidation is mechanical, multi-timeframe *capability* is required while a
+> mandatory hierarchical MTC model is not, the primary directional futures lane wins any
+> resource conflict, and the optional carry lane is deferred to R4. The text below is
+> preserved unchanged as the historical record of the 2026-09-12 decision.
 
 <!-- research-state:begin -->
 <!--

@@ -23,18 +23,22 @@ public market data → append-only raw events → one normalized row per minute
 
 **LIVE TRADING: DISABLED BY DEFAULT.** See [Live trading protection](#live-trading-protection).
 
-> **Where the project is going, as of 2026-09-12.** The owner has adopted
-> [`docs/proposed_futures_first_roadmap_v3.md`](docs/proposed_futures_first_roadmap_v3.md)
-> as the active strategic/scientific roadmap. ProjectChimera is futures-first,
-> LONG/SHORT, multi-symbol-capable, causal-MTF, and power-designed before any
-> new scientific boundary. Aegis remains the sole central risk authority.
-> PR #76/gen3 stays engineering-only with `prospective_from = null`; its failed
-> 2026-09-10/11 acceptance attempt is preserved rather than rewritten. The next
-> coding blocker is V3-1b deterministic clock injection, while V3-2/V3-3 run
-> separate gen4 engineering/power preflight work. The 2026-09-03 Fable roadmap
-> and demo master plan remain historical predecessor plans and implementation
-> evidence; they no longer control future sequencing. Nothing here authorises
-> real money or creates alpha evidence.
+> **Where the project is going, as of 2026-09-14.** The owner has adopted, as
+> corrected, the independent audit's R0–R18 master roadmap:
+> [`docs/master_roadmap_r0_r18.md`](docs/master_roadmap_r0_r18.md) is the active
+> strategic/scientific roadmap; the decision, the immutable audit and
+> corrigendum, and their hashes are under
+> [`docs/governance/r0_adoption_2026-09-14/`](docs/governance/r0_adoption_2026-09-14/).
+> Roadmap v3 (adopted 2026-09-12) is superseded and kept as historical
+> provenance, as are the 2026-09-03 Fable roadmap and demo master plan.
+> ProjectChimera is futures-first: the primary lane is multi-symbol single-leg
+> directional LONG/SHORT USD-M perpetuals, and it wins any resource conflict;
+> the optional carry lane is deferred to R4. Execution order is the roadmap's
+> dependency graph: R1 and R2 are the next permitted engineering phases, and
+> the prospective boundary (R6) activates only after the autonomous soak has
+> passed (R9). Aegis remains the sole central risk authority. PR #76/gen3 stays
+> engineering-only with `prospective_from = null`. Nothing here authorises real
+> money, activates a boundary or creates alpha evidence.
 
 ---
 
@@ -759,7 +763,9 @@ risk limits in `conf/base.json` are defaults you should review rather than trust
 | [docs/trading_modes_v1.md](docs/trading_modes_v1.md) | SCALPING, DAY_TRADING, SWING and FLAT as operating states, their eligibility rule, and what may never select a mode |
 | [docs/p8_preregistration.md](docs/p8_preregistration.md) | Checkpoint P8's committed design. P8 was **never opened** and is **withdrawn as moot**: no router exists and no P8 number exists |
 | [docs/paper_operation_runbook.md](docs/paper_operation_runbook.md) | Running the dry-run paper chain, and the difference between a smoke and sustained paper validation |
-| [docs/proposed_futures_first_roadmap_v3.md](docs/proposed_futures_first_roadmap_v3.md) | **Active roadmap (adopted 2026-09-12).** Futures-first V3-0 → V3-14 sequencing, gen4 preflight/power-first design, causal MTF, Aegis, prospective evidence ladder. Start here for direction |
+| [docs/master_roadmap_r0_r18.md](docs/master_roadmap_r0_r18.md) | **Active roadmap (adopted as corrected 2026-09-14).** The R0–R18 master roadmap: dependency graph, per-phase contracts, the soak-before-boundary order, the four-condition real-money boundary. Start here for direction |
+| [docs/governance/r0_adoption_2026-09-14/](docs/governance/r0_adoption_2026-09-14/) | The R0 owner adoption record, plus the corrected independent audit and the owner corrigendum it adopts, preserved byte for byte with SHA-256 hashes |
+| [docs/proposed_futures_first_roadmap_v3.md](docs/proposed_futures_first_roadmap_v3.md) | **Historical predecessor roadmap (adopted 2026-09-12, superseded by R0 on 2026-09-14).** Retained intact as provenance |
 | [docs/proposed_development_plan_post_fable_5_1_audit.md](docs/proposed_development_plan_post_fable_5_1_audit.md) | **Historical predecessor roadmap (adopted 2026-09-03, superseded for active sequencing on 2026-09-12).** Retained for provenance and prior governance |
 | [docs/proposed_demo_implementation_master_plan.md](docs/proposed_demo_implementation_master_plan.md) | The adopted engineering plan: target architecture, the recorder, the demo runner, the 16-PR sequence, the test plan |
 | [docs/fable_5_1_full_project_strategic_audit.md](docs/fable_5_1_full_project_strategic_audit.md) | The independent audit that produced them. A historical record, not edited after the fact |
