@@ -153,10 +153,18 @@ create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_lon
 
 Two parsing facts, verified on the same file: the 288 timestamps are **distinct
 and complete but are NOT in chronological order** (the file's first row is
-`00:05:00` and its last is `22:00:00`), so a consumer must sort; and early
-`metrics` files — roughly 2020-09 to 2021-05 — carry **each row exactly twice**
-(576 rows, 288 distinct timestamps), so a naive row count double-counts that
-history.
+`00:05:00` and its last is `22:00:00`), so a consumer must sort.
+
+And early `metrics` files carry **each row exactly twice**, so a naive row count
+double-counts that history. Measured across the transition:
+
+| Object | Rows | Distinct timestamps |
+|---|---|---|
+| `BTCUSDT-metrics-2020-10-01.zip` | 576 | 288 |
+| `BTCUSDT-metrics-2021-05-20.zip` | 576 | 288 |
+| `BTCUSDT-metrics-2021-05-25.zip` | 288 | 288 |
+
+so the duplication ends between **2021-05-20 and 2021-05-25**.
 
 Consequence for R2: this archive carries open interest, but at a **fixed
 5-minute grid stamped at interval end**. R2's Tier A acquires OI **via REST**
@@ -219,9 +227,13 @@ loss without reference to any archive. That makes `aggTrade` the strongest
 verification surface R2 can offer, and it is worth R4's attention when
 verification classes are frozen.
 
-The `trades` stream does **not** share this property — its `id` sequence has
-real holes inside a day, for IDs the venue does not publish — so a contiguity
-check transplanted from `aggTrade` to `trades` would raise false alarms.
+The `trades` stream does **not** share this property. On the same day,
+`BTCUSDT-trades-2026-09-12.zip` (checksum verified,
+`5aaf475f90b199390c2e80c620a7b3fc1cc0309b648d9a96862888f69c92d78c`) gives
+`n = 791576` against a span of `797633` — **6057 identifiers absent inside the
+day**, with zero duplicates. Those are IDs the venue does not publish, not data
+the recorder lost, so a contiguity check transplanted from `aggTrade` to
+`trades` would raise false alarms.
 
 ### funding is monthly-only, and its latency is real
 
@@ -260,19 +272,22 @@ consumer that assumed otherwise, and each was confirmed by retrieving the files.
 2. **`metrics` rows are not chronologically ordered**, and early `metrics` files
    are exactly doubled — see above.
 3. **`bookDepth`'s band set changes within 2026-01-15** — see above.
-4. **Archive objects are mutable.** The first-party README states that archived
-   files "may be updated at a later date as a result of recently discovered
-   issues". Reproducibility therefore requires pinning the **`.CHECKSUM`
-   digest**, not the date — which is what the gen3 contract's acquisition rules
-   already require, and R2 must keep.
+4. **Archive objects are mutable.** The first-party public-data README states,
+   verbatim: "Archived files may be updated at a later date as a result of
+   recently discovered issues." Reproducibility therefore requires pinning the
+   **`.CHECKSUM` digest**, not the date — which is what the gen3 contract's
+   acquisition rules already require, and R2 must keep.
 
 ## First-party documentation coverage is a real gap
 
-The first-party public-data README documents, for futures, **only `aggTrades`,
-`klines` and `trades`**. `metrics`, `bookDepth`, `bookTicker`,
-`markPriceKlines`, `indexPriceKlines`, `premiumIndexKlines` and `fundingRate`
-carry **no first-party availability, cadence or continuity commitment** that
-could be located.
+Binance's own public-data README — the "Public data document" linked from the
+archive site, read at
+`https://raw.githubusercontent.com/binance/binance-public-data/master/README.md`
+— has a `### FUTURES` section containing exactly three subsections:
+**`AggTrades`, `Klines` and `Trades`**. `metrics`, `bookDepth`, `bookTicker`,
+`markPriceKlines`, `indexPriceKlines`, `premiumIndexKlines`, `fundingRate` and
+any liquidation family carry **no first-party availability, cadence or
+continuity commitment** there.
 
 This is not a reason to avoid those streams — R2 measures what is actually
 published. It is a reason to record that **six of the streams R2 depends on are
