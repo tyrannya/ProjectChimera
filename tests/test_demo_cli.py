@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from chimera.demo.config import config_hash
 from chimera.demo.runner import RunnerState
+from nn.source_identity import SOURCE_ROOTS
 from tests.demo_harness import CARRY_PARAMS, DAY, build, campaign_config
 from tools import demo_run
 
@@ -464,3 +467,153 @@ def test_the_config_hash_does_move_with_a_rule_parameter(tmp_path):
         tmp_path / "s", rules={"R1_carry": {**CARRY_PARAMS, "min_basis": "999"}}
     )
     assert config_hash(a) != config_hash(b)
+
+
+# --- R1-a: the software block, against a real checkout -----------------------
+#
+# `_software` called `source_identity()` with no argument -- it REQUIRES a root
+# -- so every call raised `TypeError`, fell into the fail-closed branch, and
+# reported `dirty: True`. No CAMPAIGN could start. The second half is why this
+# section exists at all: the identity is a MAPPING and was read with `getattr`,
+# so repairing only the call signature would have yielded `revision: ""` and
+# `dirty: False` and let a campaign run on a tree nobody could reconstruct.
+#
+# The witnesses below run against REAL git checkouts built in a temporary
+# directory, not against a stubbed identity: a test that stubs `source_identity`
+# passes happily while the real call signature is still wrong, which is exactly
+# how this survived.
+HEX40 = re.compile(r"\A[0-9a-f]{40}\Z")
+HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
+@pytest.fixture
+def checkout(tmp_path: Path) -> Path:
+    """A real git checkout shaped from `SOURCE_ROOTS`, not a stub.
+
+    Built here rather than imported from `tests/test_source_identity.py`, whose
+    module imports pull the whole ML stack in behind `nn.p2b_compare`; this
+    module is the demo CLI's and needs none of it. The roots come from
+    `nn.source_identity` so the fixture follows what the digest actually covers.
+    """
+    root = tmp_path / "checkout"
+    for name in SOURCE_ROOTS:
+        (root / name).mkdir(parents=True)
+        (root / name / "__init__.py").write_text(f'"""{name}"""\n', encoding="utf-8")
+    (root / "nn" / "engine.py").write_text("VALUE = 1\n", encoding="utf-8")
+    run = ["git", "-C", str(root)]
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    for args in (
+        ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "test"],
+        ["add", "-A"],
+        ["commit", "-qm", "initial"],
+    ):
+        subprocess.run(run + args, check=True, capture_output=True)
+    return root
+
+
+def test_a_genuinely_clean_checkout_is_identified_and_reported_clean(checkout):
+    """The positive half: a real clean checkout names itself and is not dirty."""
+    block = demo_run._software(checkout)
+    assert block["dirty"] is False
+    assert HEX40.match(block["revision"]), block["revision"]
+    assert HEX64.match(block["source_digest"]), block["source_digest"]
+
+
+def test_a_genuinely_dirty_checkout_is_reported_dirty(checkout):
+    """The negative half, and the `getattr` witness.
+
+    `getattr(mapping, "dirty", False)` is False for every mapping, so this is
+    the assertion that fails if the identity is ever read as an attribute again.
+    """
+    clean = demo_run._software(checkout)
+    assert clean["dirty"] is False
+
+    (checkout / "nn" / "engine.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    dirty = demo_run._software(checkout)
+    assert dirty["dirty"] is True
+    # Still identified: a dirty tree names the revision it departed from.
+    assert HEX40.match(dirty["revision"])
+
+
+def test_an_untracked_python_file_under_a_source_root_is_dirty(checkout):
+    """Modification is not the only way to become unreconstructible."""
+    (checkout / "nn" / "smuggled.py").write_text("VALUE = 3\n", encoding="utf-8")
+    assert demo_run._software(checkout)["dirty"] is True
+
+
+def test_a_tree_that_is_not_a_checkout_fails_closed(tmp_path):
+    """The fail-closed branch, still reached, and still dirty rather than clean."""
+    block = demo_run._software(tmp_path)
+    assert block == {
+        "revision": "",
+        "source_digest": "",
+        "dirty": True,
+        "python": sys.version.split()[0],
+    }
+
+
+def test_a_checkout_git_cannot_name_a_revision_for_is_dirty(tmp_path):
+    """An identity git only half-answered is refused, not averaged out.
+
+    `source_identity` reports `revision: None` with `dirty: False` for a tree
+    git can list but has no commit to name -- `bool(None)` is False, so a block
+    built field by field would claim a CLEAN tree while naming no source at all,
+    and the campaign whose records exist to say what produced them would start.
+    """
+    root = tmp_path / "uncommitted"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    assert demo_run._software(root)["dirty"] is True
+    assert demo_run._software(root)["revision"] == ""
+
+
+def test_this_checkout_identifies_itself_with_no_argument():
+    """The call-signature witness: the default root is a real checkout.
+
+    `source_identity()` without its `root` raises `TypeError`, which the
+    fail-closed branch swallows into an empty revision. Asserting a real
+    revision here is what makes that regression visible instead of silent.
+    """
+    block = demo_run._software()
+    assert HEX40.match(block["revision"]), block["revision"]
+    assert HEX64.match(block["source_digest"]), block["source_digest"]
+
+
+def _campaign_runner(tmp_path, checkout):
+    """A runner on the CAMPAIGN profile whose software block is a real identity.
+
+    The profile is forced the way `test_allow_dirty_is_refused_for_a_campaign_profile`
+    already forces it: the committed CAMPAIGN configuration cannot build a runner
+    while `protocol_hash` is null (`chimera/demo/config.py` refuses a CAMPAIGN
+    carrying `rules` until the protocol that froze them is named), and that is a
+    separate R1 item.
+    """
+    harness = build(tmp_path, start=False)
+    config = harness.runner.config
+    object.__setattr__(config, "profile", type(config.profile).CAMPAIGN)
+    harness.runner.software = demo_run._software(checkout)
+    return harness
+
+
+def test_a_campaign_passes_self_check_on_a_genuinely_clean_tree(tmp_path, checkout):
+    """The behaviour R1-a restores: a clean campaign starts."""
+    harness = _campaign_runner(tmp_path, checkout)
+    assert harness.runner.software["dirty"] is False
+    assert harness.runner.start() is RunnerState.READY
+    assert harness.runner.halt_reason is None
+
+
+def test_a_campaign_is_refused_on_a_genuinely_dirty_tree(tmp_path, checkout):
+    """The behaviour R1-a must not lose: a dirty campaign is refused.
+
+    Driven by real `git status` rather than by setting the flag by hand, so it
+    fails if the identity is ever read as an attribute or built from a root the
+    runner does not actually run from.
+    """
+    (checkout / "chimera" / "__init__.py").write_text("# edited\n", encoding="utf-8")
+    harness = _campaign_runner(tmp_path, checkout)
+    assert harness.runner.software["dirty"] is True
+    assert harness.runner.start() is RunnerState.HALT
+    assert "source_identity" in (harness.runner.halt_reason or "")
