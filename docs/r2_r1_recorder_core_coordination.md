@@ -1,0 +1,177 @@
+# R2 ↔ R1 recorder-core coordination record
+
+**Phase:** R2 (gen4 engineering preflight), running in parallel with R1.
+**Status:** `RECORDER_CORE_BARRIER` — R2's recorder-generalisation work is held.
+**Base commit:** `13c34c4b89ff3f1a540d749ac41a3ef25aac04b3`.
+**Written:** 2026-09-14.
+
+This is an **operational coordination record**, not evidence and not governance.
+It exists because R1 and R2 are executed by separate sessions that cannot see
+each other's local state, and the adopted roadmap makes them share one recorder
+core. Coordination therefore has to live in the repository. This record is
+expected to be deleted or superseded once R1's recorder items are merged.
+
+## Naming correction (read this first)
+
+R2 task prompts have referred to the shared recorder-hygiene subphase as
+**"R1-f2"**. **No subphase by that name exists in the adopted roadmap.**
+`docs/master_roadmap_r0_r18.md` §37 R1 lists `R1-a … R1-o`, and the substance
+the prompt attributes to "R1-f2" maps onto two adopted items:
+
+| Prompt's term | Adopted roadmap | Substance |
+|---|---|---|
+| "R1-f2" (atomic parquet publication, silence watchdog/reconnect, `recorder.down`/`recorder.up`) | **R1-h** | "Atomic parquet publication and recorder evidence" |
+| "R1-f2" (incremental normalisation freshness) | **R1-g** | "Recorder / runner cadence" — publish the last closed minute incrementally |
+| "R1-g supply-chain/ops files" | **R1-n** | "Supply chain and operations" |
+
+The adopted roadmap's own `R1-f` is *real staleness detection*, which is a
+different item again. This is a **label** mismatch, not a governance conflict:
+the semantics the prompt protects are exactly the semantics R1-g and R1-h own,
+so the coordination rule is applied unchanged, using the adopted labels. It is
+recorded here so that neither session mistakes one letter for another.
+
+## Current state of R1 (verified, not assumed)
+
+As of 2026-09-14, on `origin`:
+
+- `origin/main` = `13c34c4b89ff3f1a540d749ac41a3ef25aac04b3` (unchanged since R0 adoption).
+- Open pull requests: **#76 only** (`pr-06/recorder-reconciliation-coverage`,
+  draft, head `8a8f4a1f7d754cff190a3668873072a7efbb1542`). Not an R1 PR.
+- **No R1 branch and no R1 pull request exists yet.** R1-g and R1-h are
+  therefore unfinished in the strongest sense — not started.
+
+Both sessions should re-verify this from GitHub rather than from this record,
+which ages.
+
+## The overlap map
+
+Reconstructed by reading the modules at HEAD, not from prose.
+
+### R2 needs, and where it lands
+
+R2's recorder generalisation is "the gen3 recorder generalised to
+(symbol, stream)-keyed files". At HEAD the recorder is single-symbol-per-market
+in four concrete ways:
+
+| # | Where | What blocks multi-symbol |
+|---|---|---|
+| 1 | `chimera/recorder/normalize.py` | `MARKET_COLUMNS` is keyed by the literal market names `um` / `spot`; `columns_for(market)` refuses anything else. Normalised output is one parquet per **market**-day. |
+| 2 | `chimera/recorder/streams.py:203` | `WEBSOCKET_STREAMS` is keyed by literal full stream ids (`um.kline_1m`, `um.markPrice`, …). |
+| 3 | `chimera/recorder/service.py:552,599` | Funding and mark-price sinks are addressed as the singletons `UM_FUNDING` / `UM_MARK_PRICE`. |
+| 4 | `chimera/recorder/events.py:107-117` | Stream ids are module constants and frozen sets (`UM_KLINE_1M`, `KLINE_STREAMS`, `BOOK_TICKER_STREAMS`). |
+
+**What is already general and needs no change:**
+
+- `chimera/recorder/contract.py` places **no limit on the number of markets**.
+  Validation only requires each stream's `market.` prefix to name a declared
+  market (`contract.py:564-580`). A gen4 contract may declare twenty markets
+  with twenty symbols today. *The contract schema is not the blocker.*
+- `chimera/recorder/sink.py` is already **(stream)-keyed**: raw paths are
+  `raw/<stream_id>/<day>/events.ndjson`, and `RawSink` is constructed per
+  stream. Raw storage needs no generalisation.
+- `sink.py` already writes atomically — `write_bytes_atomic` (`sink.py:272`)
+  does temp-file + `fsync` + `os.replace`, and `write_json_atomic` wraps it.
+- `health.py` already writes the heartbeat atomically.
+
+### R1-h's surface, and why it collides
+
+R1-h is "temp-file + fsync + rename for **every parquet** and manifest write;
+an in-process **silence watchdog** that reconnects on stream silence; persisted
+`recorder.down` / `recorder.up` records".
+
+Verified gaps at HEAD:
+
+- **`normalize.py:896-899` writes the parquet non-atomically:**
+
+  ```python
+  parquet = self.parquet_path(market, day)
+  parquet.parent.mkdir(parents=True, exist_ok=True)
+  frame.to_parquet(parquet, index=False, compression="zstd", compression_level=19)
+  parquet_sha = hashlib.sha256(parquet.read_bytes()).hexdigest()
+  ```
+
+  This is inside `NormalizedStore.write_day` — **the same function** a
+  (symbol, stream) generalisation must change, and the same module that owns
+  `MARKET_COLUMNS`. The collision is direct and unavoidable.
+- **No silence watchdog exists.** `streams.py` has reconnect-on-error and a
+  proactive 23 h 50 m reconnect, but no symbol for `silence`/`watchdog`; a
+  socket that goes quiet without erroring is not detected.
+- **No persisted `recorder.down`/`recorder.up` records exist** in `health.py`.
+
+### R1-g's surface, and why it collides
+
+R1-g requires the recorder to "publish the last closed minute **incrementally**
+(seconds, not the 300 s full-day cadence)". At HEAD
+`service.py:107` sets `NORMALIZE_INTERVAL_S = 300.0`, and the maintenance loop
+around `service.py:711-733` is built on it. The incremental normaliser's
+per-market `DayState` (`incremental.py:282`) is the structure both R1-g's
+cadence change and R2's per-symbol fan-out would rewrite.
+
+### Classification
+
+| R2 work | Files | Class |
+|---|---|---|
+| Multi-symbol/multi-stream recorder generalisation | `normalize.py`, `streams.py`, `service.py`, `incremental.py` | **RECORDER_CORE_OVERLAP** — held |
+| New Tier A/B parsers (aggTrade, forceOrder, depth, OI) | `events.py`, then wiring into `normalize.py`/`service.py` | **RECORDER_CORE_OVERLAP** once wired; the parsers alone are additive but are not useful unwired, and their payload semantics are unverifiable from this host (`fapi` 451) |
+| gen4 archive layouts / reconciliation for new streams | would duplicate `reconcile.py`/`coverage.py` | **Held for a different reason** — R5 owns generalising **PR #76's** implementation; building a second fetcher now would be the alternate implementation the coordination rule forbids |
+| Candidate-universe selection module | new module | **Blocked on governed inputs** — volume field, tie-break and named date undefined; admissibility needs `exchangeInfo`, which is 451 from this host |
+| First-party source/archive fact verification | none (documentation) | **NON_OVERLAPPING** — done; see `docs/r2_source_archive_facts.md` |
+| This coordination record | none | **NON_OVERLAPPING** — done |
+
+## The barrier
+
+**R2 will not implement the recorder-core generalisation while R1-g and R1-h
+are unmerged.** No alternate abstraction, no "temporary" parallel solution, no
+race.
+
+### What R1 must land before R2 resumes
+
+1. **R1-h**: atomic parquet publication in `NormalizedStore.write_day`; the
+   in-process silence watchdog and its reconnect; persisted `recorder.down` /
+   `recorder.up` records. R1-h's own constraint — "gen3's contract hash is
+   unchanged by any of this" — is compatible with R2, which introduces a
+   *separate* `gen4-preflight` contract and never edits the gen3 file.
+2. **R1-g**: incremental publication of the last closed minute, replacing the
+   300 s cadence.
+
+### What R2 will do once they merge
+
+Fetch the new `main`, read **the implementation actually merged**, and
+generalise *that* to (symbol, stream). R2 will not restore pre-R1 assumptions
+and will not re-derive an atomicity or watchdog design of its own. If an R2
+branch needs current `main`, it takes it as an **ordinary merge commit** —
+never a rebase or force-push of published history.
+
+### What R2 asks R1 not to do
+
+Nothing is asked of R1 beyond its own scope. For symmetry, R2 records that it
+has **not** touched, and will not touch while R1 is active:
+`normalize.py`, `streams.py`, `service.py`, `incremental.py`, `health.py`,
+`events.py`, and the R1-n supply-chain/ops files (`.github/workflows/ci.yml`,
+`requirements-lock.txt`, `Dockerfile`, `docker-compose.yml`, `deploy/`).
+
+## PR #76 isolation
+
+PR #76 is untouched by this work and is not R2's environment. This session did
+not merge, rebase, update, comment on or check out PR #76; did not contact its
+VPS; and read nothing from its quarantine. Its coverage/reconciliation code was
+identified as existing only on its branch, which is a fact about where the code
+lives, established without checking the branch out.
+
+R2 requires a **second host**, physically and logically separate from the PR #76
+recorder deployment and its storage root. None is authorised yet, so no live
+collection has begun and none may begin here.
+
+## Other blocking preconditions for R2 live collection
+
+Independent of the R1 barrier, live collection additionally requires:
+
+- an authorised second host (not provisioned; no paid infrastructure may be
+  bought without owner authorisation);
+- the `gen4-preflight` contract identity fixed, which requires the candidate
+  universe, which requires the governed inputs listed in
+  `docs/r2_source_archive_facts.md`;
+- `exchangeInfo` and the OI REST endpoint reachable from that host — they are
+  **451** from this authoring environment;
+- ≥ 30 consecutive days of real elapsed time, which cannot be simulated,
+  shortened, or substituted.
