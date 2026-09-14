@@ -145,10 +145,18 @@ never a rebase or force-push of published history.
 ### What R2 asks R1 not to do
 
 Nothing is asked of R1 beyond its own scope. For symmetry, R2 records that it
-has **not** touched, and will not touch while R1 is active:
-`normalize.py`, `streams.py`, `service.py`, `incremental.py`, `health.py`,
-`events.py`, and the R1-n supply-chain/ops files (`.github/workflows/ci.yml`,
-`requirements-lock.txt`, `Dockerfile`, `docker-compose.yml`, `deploy/`).
+has **not** touched, and will not touch while R1 is active, the modules R1-g
+and R1-h must change — `normalize.py`, `streams.py`, `service.py`,
+`incremental.py`, `health.py` — nor the R1-n supply-chain/ops files
+(`.github/workflows/ci.yml`, `requirements-lock.txt`, `Dockerfile`,
+`docker-compose.yml`, `deploy/`).
+
+`events.py` is **not** claimed by any R1 item, so R2 may add parsers there. What
+R2 will not do while the barrier stands is **wire** them into the normalisation
+or service path, because that wiring is the overlap. A parser added without its
+wiring would also be unverifiable today: `fapi.binance.com` is 451 from this
+environment, so the live payload semantics it must implement cannot be confirmed
+against the first-party source, and guessing them is precisely what R2 forbids.
 
 ## PR #76 isolation
 
