@@ -5,7 +5,7 @@
 **Phase:** R0 — Adoption and freeze, as defined in §37 of the corrected audit (= Part C of the corrigendum)
 **Base `main` at adoption:** `46921ef1206748c6b7304432a26c8295b7830e27` (ordinary merge of PR #95; verified by `git rev-parse origin/main` at the start of the R0 session, and equal to the SHA both records audited)
 **Governance branch:** `governance/r0-adopt-audit-roadmap-20260914`, created from that exact commit
-**Governance PR / R0 commits:** see the last section; filled in by a follow-up ordinary commit once the PR exists
+**Governance PR / R0 commits:** [PR #96](https://github.com/tyrannya/ProjectChimera/pull/96); R0 content commit `d0e1789d214cd6c54de2e310f12aca4504868784` (parent `46921ef1206748c6b7304432a26c8295b7830e27`); this line and section 7 were filled in by a follow-up ordinary commit
 
 This record is a governance document. It creates **no scientific evidence, no prospective boundary, no alpha claim and no real-money authority**. It changes no runtime behaviour, no recorder behaviour, no scientific artifact, no preregistration and no frozen result.
 
@@ -114,6 +114,6 @@ Consistency check performed before adoption: audit §37 (corrected) and corrigen
 
 | item | value |
 | --- | --- |
-| R0 content commit | recorded by the follow-up commit |
-| governance PR | recorded by the follow-up commit |
+| R0 content commit | `d0e1789d214cd6c54de2e310f12aca4504868784` — `governance: adopt corrected R0–R18 master roadmap`, parent `46921ef1206748c6b7304432a26c8295b7830e27` |
+| governance PR | [tyrannya/ProjectChimera#96](https://github.com/tyrannya/ProjectChimera/pull/96), draft, base `main` |
 | merge | an ordinary merge commit into `main`, only after exact-head CI is green and a final adversarial diff review confirms the frozen R0 scope |
