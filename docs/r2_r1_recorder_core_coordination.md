@@ -32,13 +32,23 @@ recorded here so that neither session mistakes one letter for another.
 
 ## Current state of R1 (verified, not assumed)
 
-As of 2026-09-14, on `origin`:
+As of 2026-09-14 22:50 UTC, on `origin`:
 
 - `origin/main` = `13c34c4b89ff3f1a540d749ac41a3ef25aac04b3` (unchanged since R0 adoption).
-- Open pull requests: **#76 only** (`pr-06/recorder-reconciliation-coverage`,
-  draft, head `8a8f4a1f7d754cff190a3668873072a7efbb1542`). Not an R1 PR.
-- **No R1 branch and no R1 pull request exists yet.** R1-g and R1-h are
-  therefore unfinished in the strongest sense — not started.
+- **PR #97 — `R1-a` source identity / CAMPAIGN self-check**
+  (`claude/projectchimera-r1-remediation-5demn6`, draft, head
+  `fdbb6b2353821162e92e27267d334d8771c228cd`). R1 has started.
+- PR #76 (`pr-06/recorder-reconciliation-coverage`, draft, head
+  `8a8f4a1f7d754cff190a3668873072a7efbb1542`). Not an R1 PR.
+
+**PR #97 does not touch the barrier.** Its three files are
+`tools/demo_run.py`, `tests/test_demo_cli.py` and `docs/demo_runbook.md` —
+none of them a recorder module, and none of them a file R2 touches. R1-a and
+this R2 work are cleanly disjoint.
+
+**R1-g and R1-h are still not started.** No branch, no PR, and nothing in
+`normalize.py`, `streams.py`, `service.py` or `incremental.py` has changed. The
+barrier below therefore stands unchanged.
 
 Both sessions should re-verify this from GitHub rather than from this record,
 which ages.
