@@ -78,7 +78,16 @@ Verified by prefix listing on 2026-09-14.
 
 `data/spot/monthly/`: `aggTrades/`, `klines/`, `trades/`
 
-Two absences are load-bearing and are stated as absences of a *listed prefix*,
+The archive's whole namespace is `data/futures/{um,cm}/{daily,monthly}/…`,
+`data/spot/…` and `data/option/…`. **There is no `exchangeInfo`, metadata,
+symbol-reference or leverage-bracket family anywhere in it.** Tier A's "daily
+`exchangeInfo` snapshot" therefore has no archive path at all and is reachable
+only over REST — which is 451 from this environment. This is what blocks R2's
+candidate-universe admissibility rule here: listing age, contract type, trading
+status, tick/step/`minNotional` filters and leverage brackets all come from
+`exchangeInfo`, and none of them can be established from the archive.
+
+Three absences are load-bearing and are stated as absences of a *listed prefix*,
 not as an inference from a single 404:
 
 - **No `liquidationSnapshot/` (or any liquidation family) under
@@ -86,6 +95,7 @@ not as an inference from a single 404:
   `data/futures/um/daily/liquidationSnapshot/BTCUSDT/` returns
   `<IsTruncated>false</IsTruncated>` with **zero** `<Key>` entries.
 - **No `bookTicker/` under `data/spot/daily/` or `data/spot/monthly/`.**
+- **No `exchangeInfo`/metadata family anywhere under `data/`.**
 
 ## Per-stream findings
 
