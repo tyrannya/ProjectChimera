@@ -30,16 +30,18 @@ remains `null`. No real-money authority is created.
 
 ## Method
 
-This document draws on **two distinct evidence classes from two distinct
-sources**, kept apart deliberately: one is reproducible by object retrieval and
-checksum verification, the other is a documentation claim, and they cannot be
-verified the same way.
+This document draws on **three distinct evidence classes from three distinct
+sources**, kept apart deliberately because they cannot be verified the same way:
+archive **objects** retrieved and checksum-verified from the governed host; a
+**documentation** claim read from a commit-pinned repository; and archive
+**namespace enumeration** taken from a listing origin that is *not* the governed
+host and whose admissibility is unresolved.
 
-### 1. Archive measurements — `data.binance.vision`
+### 1. Archive object measurements — `data.binance.vision`
 
-**Every archive measurement below** — every listing, every object probe, every
-row count and every parsed value — was retrieved by this session from the
-**single allow-listed first-party archive host** the repository already governs:
+**Every archive object measurement below** — every object probe, every row count
+and every parsed value — was retrieved by this session from the **single
+allow-listed first-party archive host** the repository already governs:
 
     https://data.binance.vision
 
@@ -50,9 +52,15 @@ source-integrity rule `chimera/recorder/contracts/btcusdt-prospective-gen3.json`
 object's content is quoted, its published `.CHECKSUM` companion was fetched and
 the digest verified against the bytes received.
 
-That no-credential statement is a fact about **this archive acquisition only**.
-It is not a claim that every input R2 will eventually need is unauthenticated —
-the leverage-bracket dependency recorded below is not.
+**This class does not include namespace enumeration.** Listing which archive
+families exist under a prefix was *not* done against this host and is *not*
+covered by anything in this section — see **§ 3**, which records the separate
+origin those listings actually came from and why it is not interchangeable with
+this one.
+
+That no-credential statement is a fact about **this archive object acquisition
+only**. It is not a claim that every input R2 will eventually need is
+unauthenticated — the leverage-bracket dependency recorded below is not.
 
 ### 2. Documentation claims — Binance's public-data repository, commit-pinned
 
@@ -641,13 +649,32 @@ Items 1, 3 and 5 are the ones carrying the pre-live freeze requirement above.
 
 ## Reproducing this
 
-**The archive measurements** are reproducible with `curl` against the one
-allow-listed archive host, using the listing and probe commands given under
+**There is no single-host reproduction path for this document, and none is
+offered.** The three evidence classes reproduce differently, and one of them
+cannot be reproduced on the governed host at all.
+
+**1. Archive object measurements** — reproducible with `curl` against the one
+allow-listed archive host, using the **object-probe** command given under
 **Method § 1**. For those, no credential is required and none was presented.
 
-**The documentation claims** are reproducible from the commit-pinned README
-recorded under **Method § 2** — a different host, and a source whose identity is
+**2. Documentation claims** — reproducible from the commit-pinned README
+recorded under **Method § 2**: a different host, and a source whose identity is
 fixed by commit SHA and content digest rather than by the `master` branch.
+
+**3. Namespace enumeration** — reproducible **only** through the listing origin
+described in **Method § 3**, which is `s3-ap-northeast-1.amazonaws.com` and
+**not** `data.binance.vision`. Method § 1 contains no listing command and never
+did reproduce these claims. The governed host offers no equivalent listing
+endpoint — `https://data.binance.vision/?prefix=…` returns the site's HTML
+browser page with zero `CommonPrefixes` — so this class **cannot** be reproduced
+against the allow-listed host, and no such path is claimed here. That origin is
+a distinct provenance class whose **governance admissibility remains
+unresolved**; it is carried as a pre-live prerequisite above.
+
+The governed-host absence probes in § 3 **corroborate** certain listing-derived
+claims but do **not** reproduce the enumeration: a 404 shows one object absent,
+while an empty listing shows an entire family absent. They are weaker evidence
+of a different shape, not a substitute.
 
 Neither statement extends to the venue's authenticated endpoints: the
 `leverageBracket` dependency recorded above is signed `USER_DATA`, and **no
