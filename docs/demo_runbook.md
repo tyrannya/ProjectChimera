@@ -482,15 +482,21 @@ Read `risk_continuity.outcome`:
 
 Every refusal halts with a reason beginning `risk_continuity:` and writes one
 `RECOVERY` record with cause `RISK_STATE_DISCONTINUITY`, naming the identity it
-found and the record it compared against. One record per discontinuity, not one
-per restart attempt. Read it with the day report (section 5); the reason itself
+found and the record it compared against. **`resolve --equity` refuses while one
+stands**, and says so: a rolled-back `risk.json` usually disagrees with the
+ledger too, so the equity dispute is what Aegis ends up holding — and settling it
+would clear the halt on the strength of an answer to a different question, and
+leave an `OPERATOR` record where the comparison used to be. One record per
+discontinuity, not one per restart attempt. Read it with the day report (section 5); the reason itself
 is also in `risk.json`'s `halt_reason` once the refusal has persisted.
 
 **The recovery is to restore the file, not to clear the flag.** Take
 `risk.json` from a copy at least as recent as the log's last `risk.state_hash`
-record — section 14's state-directory backup is what that copy is for — and
-start again. **Do not hand-edit `risk.json`,** and in particular do not clear
-`halted` by hand: section 16, and for the reason section 7 gives.
+record — the same kind of copy section 6 needs for `carry_ledger.json`, and with
+the same catch: a daily backup that predates this morning's settlement is not a
+usable restore point — and start again. **Do not hand-edit `risk.json`,** and in
+particular do not clear `halted` by hand: section 16, and for the reason section
+7 gives.
 
 **After a `RISK_STATE_MISSING` refusal there is a `risk.json` again, and it is not
 your campaign's.** A start has to build Aegis before it can halt it, and building

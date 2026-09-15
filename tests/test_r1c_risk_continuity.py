@@ -771,6 +771,54 @@ def test_the_r1b_equity_dispute_still_reaches_the_operator(tmp_path):
     assert resumed.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
 
 
+#: R1-b's settlement anchor, reused because it is the cheapest production-driven
+#: way to move the EQUITY rather than only the day's starting equity: the carry
+#: hedge is delta-neutral, so the mark moves equity only at a funding settlement,
+#: and the minute whose close is the 08:00 boundary is this one.
+MINUTE_BEFORE_A_SETTLEMENT = 479
+
+
+def test_resolve_equity_refuses_while_a_continuity_dispute_stands(tmp_path):
+    """The one command that could clear an R1-c refusal by answering something else.
+
+    A `risk.json` restored from an older copy usually disagrees with the ledger
+    too, so `seed_or_reconcile_equity` halts Aegis on `equity_dispute:` while the
+    engine is being built -- and `RiskEngine.halt` keeps the FIRST reason, so the
+    continuity refusal never reaches the file. Without this guard
+    `resolve --equity` would settle the equity dispute, clear the halt, and write
+    an OPERATOR record that becomes the log's newest risk witness: the next start
+    would find nothing left to compare and the discontinuity would be gone.
+
+    The copy is taken one minute before the 08:00 funding settlement, which is
+    what makes the two equities differ at all.
+    """
+    from chimera.demo.runner import RunnerError
+
+    harness = build(tmp_path, days=(DAY,))
+    first = harness.first_minute_ms()
+    harness.run(MINUTE_BEFORE_A_SETTLEMENT, start=first)
+    earlier = tmp_path / "risk.json.before-the-settlement"
+    shutil.copyfile(harness.state_dir / "risk.json", earlier)
+    harness.run(2, start=first + MINUTE_BEFORE_A_SETTLEMENT * 60_000)
+    harness.runner.shutdown("clean stop after the settlement")
+    config, state_dir = harness.runner.config, harness.state_dir
+
+    shutil.copyfile(earlier, state_dir / "risk.json")
+    resumed = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert resumed.runner.risk_continuity.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
+    assert resumed.runner.start() is RunnerState.HALT
+    assert resumed.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX), (
+        "the fixture must really reach the overlap: Aegis holding the equity "
+        "dispute while the runner is refused on continuity"
+    )
+
+    with pytest.raises(RunnerError, match="does not continue the decision log"):
+        resumed.runner.resolve_equity("the ledger is the campaign's accounting")
+
+    # Nothing moved: the halt Aegis holds is the one it held before the refusal.
+    assert resumed.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
+
+
 def test_a_flatten_then_a_restart_still_runs(tmp_path):
     """Requirement 10, the other R1-b witness: no new refusal on that path."""
     harness = campaign(tmp_path, minutes=12)

@@ -2443,6 +2443,27 @@ class DemoRunner:
                 "why the campaign's accounting is the reading to keep"
             )
         self._require_active("resolve-equity")
+        if self._risk_continuity.disputed:
+            # R1-c stands in front of this command, and the ordering is why it
+            # has to. A `risk.json` restored from an older copy usually disagrees
+            # with the ledger too, so `seed_or_reconcile_equity` halts Aegis on
+            # `equity_dispute:` while the engine is being built -- and
+            # `RiskEngine.halt` keeps the FIRST reason, so the continuity refusal
+            # never reaches the file even though the runner is halted on it.
+            # Settling here would then clear Aegis's halt on the strength of an
+            # answer to a different question, and the OPERATOR record it wrote
+            # would become the log's newest risk witness: the next start would
+            # find nothing left to compare and the discontinuity would be gone
+            # with it. This command settles which of two equities is true; a risk
+            # state that does not continue its own log is not one whose equity is
+            # the question.
+            raise RunnerError(
+                "cannot settle the equity dispute while the persisted risk state does "
+                f"not continue the decision log: {self._risk_continuity.reason} "
+                "Restore risk.json first; settling here would clear the halt and leave "
+                "an OPERATOR record where the comparison used to be, so nothing would "
+                "raise the discontinuity again (docs/demo_runbook.md, section 4)."
+            )
         reason = self.risk.state.halt_reason
         if not self.risk.state.halted or not is_equity_reconciliation_halt(reason):
             held = f"halted on {reason!r}" if self.risk.state.halted else "not halted"
