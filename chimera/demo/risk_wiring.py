@@ -250,6 +250,28 @@ def _coerce(demo_field: str, value: float) -> int | float:
     return int(value) if demo_field in _COUNTS else float(value)
 
 
+#: What a restart's reconciliation halts on when the two files state different
+#: equities. A prefix, because the reason names both numbers after it.
+EQUITY_DISPUTE_PREFIX = "equity_dispute:"
+
+#: What it halts on when the ledger could not be read at all, so the persisted
+#: claim cannot be checked against anything.
+EQUITY_RECONCILIATION_PREFIX = "equity_reconciliation:"
+
+
+def is_equity_reconciliation_halt(reason: str) -> bool:
+    """Whether ``reason`` is one of the two halts THIS module raises on a restart.
+
+    The clearing path (``DemoRunner.resolve_equity``) asks this rather than
+    matching the strings itself, so the reason a restart raises and the reason an
+    operator may settle cannot drift apart: a rewording here would otherwise
+    leave the campaign holding a halt no command would admit to recognising.
+    """
+    return reason.startswith(EQUITY_DISPUTE_PREFIX) or reason.startswith(
+        EQUITY_RECONCILIATION_PREFIX
+    )
+
+
 def ledger_equity(state_dir: Path | str, *, capital: Decimal | float) -> Decimal | None:
     """What the campaign's accounting says the account is worth, or ``None``.
 
@@ -267,6 +289,15 @@ def ledger_equity(state_dir: Path | str, *, capital: Decimal | float) -> Decimal
     already reads it that way (``ledger.last_equity if ... is not None else
     self.capital``) and this repeats that contract rather than inventing a
     second one.
+
+    That split is only worth as much as the loader's ability to tell the two
+    apart, and this is the caller that made it safety-relevant. ``CarryLedger.open``
+    used to decide "absent" with ``Path.exists()``, which answers ``False`` for a
+    path it merely could not EXAMINE -- so a ledger on a degraded mount read as
+    MISSING, which reads here as "worth the configured capital", which is an
+    accounting claim nothing had made. It now lets the read decide, as
+    :meth:`chimera.risk.RiskEngine._load_state` does, and an unexaminable file
+    reaches this function as ``None`` rather than as a number.
     """
     root = Path(state_dir)
     ledger = CarryLedger.open(root / "carry_ledger.json", capital=Decimal(capital))
@@ -369,13 +400,34 @@ def seed_or_reconcile_equity(
     is already halted, so a second restart against the same disagreement writes
     nothing and leaves ``risk.state_hash`` where the first one left it.
 
-    KNOWN WINDOW, NOT WIDENED HERE. ``DemoRunner.tick`` persists the ledger
-    immediately *before* ``update_equity``, so a process killed between those two
-    statements leaves the risk state one mark behind the ledger -- a real
-    disagreement, and one this function will dispute. Closing it means changing
-    the runner's persistence ordering and its crash semantics, which is canonical
-    **R1-i** ("kill at every persistence step, recover, assert consistency"), not
-    this item. R1-b does not reorder the runner's writes.
+    WHERE A DISAGREEMENT CAN COME FROM. The runner has exactly one writer into
+    Aegis's equity -- ``DemoRunner.tick``'s ``update_equity(float(mark.equity))``
+    -- and five places that mark the ledger and persist it. A crash is therefore
+    not the only way the two can part, and an earlier revision of this docstring
+    said it was. Enumerated against the current runner:
+
+    * ``tick``'s own mark is followed by that one writer, so an uninterrupted
+      minute leaves the two equal. A process killed BETWEEN the ledger write and
+      ``update_equity`` leaves the risk state one mark behind -- a real
+      disagreement, reported here. Closing that window means changing the
+      runner's persistence ordering and its crash semantics, which is canonical
+      **R1-i**, not this item; R1-b does not reorder the runner's writes.
+    * ``_funding``'s mark either falls through to that same writer later in the
+      tick, or the tick halts.
+    * both marks on the liquidation-touch path are followed by a halt, and
+      ``halt`` keeps the FIRST reason, so the restart reports the touch rather
+      than the equity. The disagreement is still on disk underneath it and
+      surfaces if the touch is ever resumed.
+    * ``DemoRunner.flatten`` marked, persisted, and told Aegis nothing -- so an
+      ordinary operator flatten, with no crash anywhere, left the two files
+      stating different equities and the campaign halting on its next start. That
+      was a real defect and it is fixed in the runner rather than tolerated here:
+      ``flatten`` now hands the flattened equity to the same single writer, under
+      the same ledger-may-speak condition as the record it writes.
+
+    So a disagreement reaching this function now means a crash in that one
+    window, a state directory restored in pieces, a file copied between hosts, or
+    a truncated ledger -- and not the routine operation of the campaign.
     """
     outcome = engine.load_outcome
     if outcome is RiskStateLoad.UNREADABLE:
@@ -387,16 +439,17 @@ def seed_or_reconcile_equity(
     accounted = ledger_equity(state_dir, capital=capital)
     if accounted is None:
         engine.halt(
-            "equity_reconciliation: the persisted risk state was restored and the carry "
-            "ledger could not be read, so the equity it claims cannot be checked against "
-            "the campaign's accounting"
+            f"{EQUITY_RECONCILIATION_PREFIX} the persisted risk state was restored and "
+            "the carry ledger could not be read, so the equity it claims cannot be "
+            "checked against the campaign's accounting"
         )
         return
     if float(accounted) != engine.state.equity:
         engine.halt(
-            "equity_dispute: the persisted risk state says equity is "
+            f"{EQUITY_DISPUTE_PREFIX} the persisted risk state says equity is "
             f"{engine.state.equity!r} and the carry ledger accounts for {accounted}. "
-            "Neither is overwritten; an operator decides which is right"
+            "Neither is overwritten; an operator decides which is right, and "
+            "`demo_run resolve-equity --note` is how they say so"
         )
 
 

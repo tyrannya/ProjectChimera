@@ -61,6 +61,7 @@ from chimera.demo.feed import (
     settlement_from_row,
 )
 from chimera.demo.inspection import DemoInspection
+from chimera.demo.risk_wiring import is_equity_reconciliation_halt, ledger_equity
 from chimera.demo.rules import HedgeTarget, RuleDecision, RuleError, RuleRegistry
 from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.domain import PositionSide
@@ -2031,6 +2032,25 @@ class DemoRunner:
         # after the save would record a number no file holds.
         mark = self.position.mark_to_market(state)
         self._save_ledger()
+        # Aegis is told what the flatten left the account worth, through the same
+        # single writer the tick uses and under the same condition as the record
+        # below: only when the ledger the number came from is entitled to speak.
+        #
+        # Without this the command was the one legitimate, crash-free way to make
+        # the two persisted equities disagree. `mark_to_market` moves the
+        # ledger's `last_equity` by the reduce orders' fees and slippage and
+        # `_save_ledger` writes that down, while Aegis kept the pre-flatten
+        # reading -- so every ordinary flatten left `risk.json` and
+        # `carry_ledger.json` stating different equities, and R1-b's restart
+        # reconciliation then halted the campaign on its next start. Before R1-b
+        # the same divergence was there and merely invisible, because the restart
+        # overwrote Aegis's equity with the configured capital, which is AEG-1.
+        #
+        # It is the guard, not a setter: a flatten that crystallises a real
+        # drawdown breach halts here, on a position that is already flat, which
+        # is the honest outcome and costs the campaign nothing it still had.
+        if self._ledger_may_speak():
+            self.risk.update_equity(float(mark.equity))
         effect = self._ledger_effect_if_readable(mark.equity)
         record_hash = self._append(
             RecordKind.OPERATOR,
@@ -2210,6 +2230,127 @@ class DemoRunner:
             },
         )
         self.save_state()
+        return TickOutcome(
+            self.cursor.last_minute_processed or 0,
+            self.state,
+            RecordKind.OPERATOR,
+            record_hash=record_hash,
+        )
+
+    def resolve_equity(self, note: str) -> TickOutcome:
+        """Settle the equity dispute a restart raised, with a mandatory note.
+
+        R1-b makes a restart reconcile the persisted risk equity against the
+        carry ledger and HALT when they disagree, which is what canonical R1-b
+        asks for. That halt is unlike every other one the campaign can carry: its
+        cause is re-read at every construction, so `resume` -- which clears the
+        flag and does not touch either equity -- is undone by the very next
+        process before a tick can re-synchronise them. Without this command the
+        only way out of a disagreement is to edit a state file by hand, which the
+        runbook forbids and which R1's own acceptance ("zero manual state edits")
+        rules out. This is that dispute kind's one clearing path, which is what
+        canonical R1-i asks of every dispute kind.
+
+        **What it decides.** That the campaign's ACCOUNTING is the reading to
+        keep, and that Aegis's copy of it was stale. That is the direction the
+        demo's authorities already point: the carry ledger is where the cash and
+        the marks live, and Aegis's equity is a reading the runner hands it. The
+        opposite direction -- keeping Aegis's number and rewriting the ledger --
+        is not offered here and should not be: it would mean writing an accounting
+        record no accounting produced.
+
+        The number adopted is read through
+        :func:`chimera.demo.risk_wiring.ledger_equity`, the same function the
+        reconciliation compares against. That is what makes the settlement stick:
+        the value written into Aegis is by construction the value the next start
+        will compare, so the dispute cannot re-raise itself.
+
+        **What it refuses.** Everything that is not this dispute. It will not run
+        when Aegis is unhalted, nor when Aegis is halted on anything else -- a
+        drawdown breach, a liquidation touch, an identity violation, a kill
+        switch -- and :meth:`chimera.risk.RiskEngine.adopt_reconciled_equity`
+        checks the reason a second time rather than trusting this one. It will
+        not run while the ledger may not speak, because the accounting is
+        precisely what it adopts: an unreadable or log-regressed ledger has to be
+        restored first, and settling from the placeholder would write a number no
+        file holds into the central risk authority.
+
+        **What it is not.** Not a resume of anything else, not a way to clear a
+        real breach, and not a repair of the crash window that can produce the
+        disagreement in the first place -- reordering the runner's writes is
+        canonical R1-i's and is untouched here. If the adopted equity is itself a
+        breach, Aegis halts on that instead, named, and this command has still
+        done its job: the two files now agree, and what remains is a genuine halt
+        an operator resumes in the ordinary way.
+
+        Idempotent: once settled there is no dispute left to settle, so a second
+        invocation refuses and changes nothing.
+        """
+        note = (note or "").strip()
+        if not note:
+            raise RunnerError(
+                "resolve-equity requires an operator note stating what was checked and "
+                "why the campaign's accounting is the reading to keep"
+            )
+        self._require_active("resolve-equity")
+        reason = self.risk.state.halt_reason
+        if not self.risk.state.halted or not is_equity_reconciliation_halt(reason):
+            held = f"halted on {reason!r}" if self.risk.state.halted else "not halted"
+            raise RunnerError(
+                f"there is no equity dispute to settle: Aegis is {held}. This command "
+                "settles only the halt a restart raises when the persisted risk state "
+                "and the carry ledger state different equities, or when the ledger "
+                "could not be read at all"
+            )
+        # Both refusals below change nothing, and both come before Aegis is
+        # touched, for the reason `resolve` states: an operator command that moves
+        # the safety state and only THEN finds it cannot be written down has done
+        # the one thing section 8.3 forbids.
+        self._require_recordable("resolve-equity")
+        if not self._ledger_may_speak():
+            raise RunnerError(
+                f"cannot settle the equity dispute: {self._ledger_state_complaint()}. "
+                "The accounting is what this command adopts, so it cannot run until the "
+                "ledger speaks for this campaign again -- restore it from a copy at "
+                "least as recent as the log's last ledger_effect and FUNDING records, "
+                "then start again. Settling from the placeholder would write a number "
+                "no file holds into Aegis."
+            )
+        accounted = ledger_equity(self.state_dir, capital=self.capital)
+        if accounted is None:
+            # Unreachable while `_ledger_may_speak` covers UNREADABLE, and kept
+            # because this function's contract is the None, not that predicate.
+            raise RunnerError(
+                "cannot settle the equity dispute: the carry ledger could not be read"
+            )
+        before = self.risk.state.equity
+        self.risk.adopt_reconciled_equity(float(accounted), clearing=reason, note=note)
+        record_hash = self._append(
+            RecordKind.OPERATOR,
+            self._minute_ns(),
+            {
+                "operator": {
+                    "command": "resolve-equity",
+                    "note": note,
+                    "settled": reason,
+                    "risk_equity_before": repr(before),
+                    "adopted_equity": str(accounted),
+                    "halted_after": self.risk.state.halt_reason,
+                },
+                "position_after": self._position_block(),
+            },
+        )
+        self.save_state()
+        # Bookkeeping, not a second decision: this runner's HALT came from Aegis
+        # and Aegis has just answered. A process whose state said HALT while the
+        # engine it reads said otherwise would report the wrong thing for as long
+        # as it lived.
+        if self.risk.state.halted:
+            self._enter(RunnerState.HALT)
+            self.halt_reason = self.risk.state.halt_reason
+        else:
+            self.halt_reason = None
+            self._enter(RunnerState.READY)
         return TickOutcome(
             self.cursor.last_minute_processed or 0,
             self.state,

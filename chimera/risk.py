@@ -750,6 +750,86 @@ class RiskEngine:
         self._persist()
         return preserved
 
+    def adopt_reconciled_equity(self, equity: float, *, clearing: str, note: str) -> None:
+        """An operator's explicit decision about which equity reading is true.
+
+        The counterpart of :meth:`adopt_after_unreadable`, for the other thing a
+        restart can find it cannot settle by itself: a persisted equity that does
+        not match what the campaign's accounting says the account holds. The
+        engine halts on that disagreement rather than choosing between the two
+        (:func:`chimera.demo.risk_wiring.seed_or_reconcile_equity`), and this is
+        the way out of it that does not require anybody to edit a state file.
+
+        ``clearing`` is the halt reason this adoption answers, and it is CHECKED
+        rather than trusted: this refuses unless the engine is halted on exactly
+        that reason. So it can settle the equity dispute a restart raised and it
+        can settle nothing else -- not a drawdown breach, not a liquidation
+        touch, not a kill switch, not a legacy halt, not a halt this process
+        raised for some other reason a moment ago. A caller that passes the wrong
+        reason gets a refusal and an engine it has not changed.
+
+        ``note`` is mandatory for the reason :meth:`adopt_after_unreadable`
+        requires one: the decision is a human's, and the record should say who
+        made it and why rather than merely that the equity moved.
+
+        **What moves, and what deliberately does not.** ``equity``,
+        ``peak_equity`` -- monotonically, so an adopted reading can raise a
+        high-water mark but never lower one -- and ``daily_pnl``, after which the
+        two account guards are re-evaluated against the adopted number. ``day``
+        and ``day_start_equity`` are NOT touched: rolling the day is a statement
+        about a mark arriving in a new UTC day, and manufacturing a day baseline
+        out of an operator action is the same class of mistake as AEG-1 itself.
+        Nothing else moves at all -- not the order window, not the cooldown, not
+        the loss streak, not the funding streak, not the reconciliation disputes,
+        not the kill-switch mirror.
+
+        If the adopted equity is itself a breach, the engine stays halted on
+        THAT, named, rather than on the dispute. Either way the disagreement is
+        settled, so the next start does not raise it again.
+        """
+        if not note:
+            raise RiskViolation("adopting a reconciled equity requires a stated reason")
+        if self._state_unreadable:
+            raise RiskViolation(
+                "this engine failed closed on a state file it could not read, so it "
+                "holds no persisted equity to reconcile; adopt_after_unreadable() is "
+                "the decision that applies to that file"
+            )
+        if not self.state.halted or self.state.halt_reason != clearing:
+            held = (
+                f"halted on {self.state.halt_reason!r}"
+                if self.state.halted
+                else "not halted at all"
+            )
+            raise RiskViolation(
+                f"this engine is not halted on {clearing!r}; it is {held}. A reconciled "
+                "equity settles one named dispute and may not clear any other halt"
+            )
+
+        logger.critical(
+            "Operator adopted a reconciled equity of %r, settling %r. Reason: %s",
+            equity,
+            clearing,
+            note,
+        )
+        # Cleared BEFORE the guards run, and the order is the whole point: `halt`
+        # returns early when the engine is already halted, so leaving the dispute
+        # standing here would silently swallow a genuine breach that the adopted
+        # number turns out to be -- the engine would report the settled dispute
+        # while sitting on an unrecorded drawdown.
+        self.state.halted = False
+        self.state.halt_reason = ""
+        if equity <= 0:
+            # The same refusal `update_equity` makes, for the same reason: a
+            # non-positive equity is recorded before it is halted on, so the
+            # daily report shows what happened rather than the last healthy read.
+            self.state.equity = equity
+            self.state.daily_pnl = equity - self.state.day_start_equity
+            self.halt(f"equity is non-positive: {equity}")
+        else:
+            self._record_equity(equity)
+        self._persist()
+
     def _prune_order_times(self) -> None:
         """Drop approvals that have fallen out of the rate window."""
         now = self._clock()
@@ -840,6 +920,23 @@ class RiskEngine:
             self.state.day = today
             self.state.day_start_equity = equity
 
+        self._record_equity(equity)
+        self._persist()
+
+    def _record_equity(self, equity: float) -> None:
+        """Record a positive equity and trip the two account guards on it.
+
+        Split out of :meth:`update_equity` so that
+        :meth:`adopt_reconciled_equity` evaluates the SAME guards on the same
+        fields rather than a second copy of them: two spellings of "is this a
+        drawdown breach" is how one of them ends up enforcing a limit the
+        campaign was not hashed under.
+
+        The day roll deliberately stays in :meth:`update_equity`. Rolling the day
+        is a statement about a MARK arriving in a new UTC day, and the caller
+        that is correcting a stale reading of an old one is not entitled to make
+        it. The caller has already established ``equity > 0``.
+        """
         self.state.equity = equity
         self.state.peak_equity = max(self.state.peak_equity, equity)
         self.state.daily_pnl = equity - self.state.day_start_equity
@@ -850,7 +947,6 @@ class RiskEngine:
                 f"max drawdown breached: {drawdown:.2%} >= "
                 f"{self.limits.max_drawdown_pct:.2%}"
             )
-            self._persist()
             return
 
         if self.state.day_start_equity > 0:
@@ -860,7 +956,6 @@ class RiskEngine:
                     f"max daily loss breached: {daily_loss:.2%} >= "
                     f"{self.limits.max_daily_loss_pct:.2%}"
                 )
-        self._persist()
 
     def current_drawdown(self) -> float:
         if self.state.peak_equity <= 0:

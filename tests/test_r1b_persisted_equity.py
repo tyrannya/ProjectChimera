@@ -31,14 +31,17 @@ from pathlib import Path
 import pytest
 
 import chimera.demo.risk_wiring as risk_wiring
-from chimera.carry.ledger import CarryLedger
+from chimera.carry.ledger import CarryLedger, LoadOutcome
 from chimera.demo.risk_wiring import (
+    EQUITY_DISPUTE_PREFIX,
+    EQUITY_RECONCILIATION_PREFIX,
     build_risk_engine,
+    is_equity_reconciliation_halt,
     ledger_equity,
     seed_or_reconcile_equity,
 )
-from chimera.demo.runner import RunnerState, _risk_hash
-from chimera.risk import RiskEngine, RiskState, RiskStateLoad
+from chimera.demo.runner import RunnerError, RunnerState, _risk_hash
+from chimera.risk import RiskEngine, RiskState, RiskStateLoad, RiskViolation
 from tests.demo_harness import CAPITAL, DAY, NEXT_DAY, build, campaign_config
 
 #: The campaign's own drawdown ceiling, restated only so the arithmetic below
@@ -329,14 +332,32 @@ def _witness_a_state_dir(tmp_path: Path) -> Path:
     state_dir = tmp_path / "state"
     persist_risk_state(state_dir, healthy_end_of_day(**WITNESS_A))
     persist_ledger(state_dir, equity=WITNESS_A["equity"])
-    assert (
-        abs(WITNESS_A["equity"] - float(CAPITAL)) / float(CAPITAL) >= 0.02
-    ), "witness A is stated for a mark/equity move of at least 2%"
+    assert abs(WITNESS_A["equity"] - float(CAPITAL)) / float(CAPITAL) >= 0.02, (
+        "witness A is stated for a persisted equity at least 2% away from the "
+        "configured capital -- the gap the re-seed turns into one day's loss. The "
+        "witness's own docstring says why that is not an intraday move."
+    )
     return state_dir
 
 
 def test_witness_a_a_day_boundary_restart_does_not_halt_a_healthy_campaign(tmp_path):
-    """Roadmap R1-b (a): restart across UTC midnight after a >= 2% move -> no halt."""
+    """Roadmap R1-b (a): a restart across UTC midnight after a >= 2% move -> no halt.
+
+    WHICH >= 2% MOVE. The roadmap writes the clause as "a >= 2% intraday mark
+    move", and the quantity this witness is stated for is the gap between what
+    the account is WORTH and the configured capital -- 3.0% here. That is the
+    quantity the defect is a function of: the re-seed opened the new day's loss
+    budget at `capital`, so the first honest mark of the new day read as a loss
+    of very nearly that whole gap, and 2% is where the campaign's
+    `max_daily_loss_pct` turns it into a halt.
+
+    It is deliberately not a >= 2% move WITHIN the persisted day, and no witness
+    of a healthy restart could be: the campaign's daily-loss limit is 2%, so a
+    persisted state holding a >= 2% intraday loss is one the engine that wrote it
+    would already have halted on. `healthy_end_of_day` re-derives both guards and
+    refuses exactly that fixture, so the restriction is enforced rather than
+    merely described. The persisted intraday move here is 1.52%.
+    """
     state_dir = _witness_a_state_dir(tmp_path)
 
     engine = engine_at(state_dir, stamp=FIRST_MINUTE_OF_NEXT_DAY)
@@ -768,3 +789,600 @@ def test_a_kill_between_the_ledger_write_and_update_equity_is_reported_as_a_disp
     assert str(accounted) in resumed.runner.risk.state.halt_reason
     assert resumed.runner.risk.state.equity == pytest.approx(persisted["equity"])
     assert ledger_equity(resumed.state_dir, capital=CAPITAL) == accounted
+
+
+# ---------------------------------------------------------------------------
+# 8. the crash-free divergence: an ordinary operator flatten
+# ---------------------------------------------------------------------------
+# `DemoRunner.flatten` marks the ledger and persists it. It used to tell Aegis
+# nothing, so every ordinary flatten left `risk.json` and `carry_ledger.json`
+# stating different equities -- with no crash anywhere -- and R1-b's restart
+# reconciliation then halted the campaign on its next start. The divergence
+# pre-dates R1-b; what R1-b changed was the consequence, from a silent re-seed to
+# a halt. It is fixed in the runner: `flatten` hands the flattened equity to the
+# same single writer `tick` uses.
+MINUTES_BEFORE_FLATTEN = 12
+
+
+def _flattened_campaign(tmp_path: Path, *, tell_aegis: bool = True):
+    """Run a few real minutes, then flatten, through the production paths."""
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(MINUTES_BEFORE_FLATTEN)
+    assert (
+        harness.runner.state is not RunnerState.HALT
+    ), "the fixture halted before it flattened"
+    if not tell_aegis:
+        # The mutant: `flatten` marks and persists the ledger and leaves Aegis's
+        # equity where it was, which is exactly what it used to do.
+        harness.runner.risk.update_equity = lambda *a, **k: None
+    harness.runner.flatten("operator: reduce to flat for maintenance")
+    return harness
+
+
+def _two_equities(state_dir: Path) -> tuple[float, Decimal]:
+    persisted = json.loads((state_dir / "risk.json").read_text(encoding="utf-8"))
+    accounted = ledger_equity(state_dir, capital=CAPITAL)
+    assert accounted is not None
+    return persisted["equity"], accounted
+
+
+def test_an_ordinary_flatten_leaves_the_two_persisted_equities_agreeing(tmp_path):
+    """The B1 defect, closed at its source rather than absorbed by the dispute."""
+    harness = _flattened_campaign(tmp_path)
+
+    persisted, accounted = _two_equities(harness.state_dir)
+    assert float(accounted) == persisted
+    assert not harness.runner.risk.state.halted, harness.runner.risk.state.halt_reason
+
+
+def test_a_flatten_really_moves_the_equity_it_reports(tmp_path):
+    """Otherwise the agreement above is an agreement about a number that never moved."""
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(MINUTES_BEFORE_FLATTEN)
+    before, _ = _two_equities(harness.state_dir)
+
+    harness.runner.flatten("operator: reduce to flat for maintenance")
+
+    after, _ = _two_equities(harness.state_dir)
+    assert after != before, (
+        "the reduce orders' fees and slippage must move the equity, or this whole "
+        "section is witnessing nothing"
+    )
+
+
+def test_a_flatten_then_a_restart_runs_rather_than_disputing(tmp_path):
+    """The regression witness: flatten, lose the process, come back, keep going.
+
+    Nothing here edits a persistence file: the campaign is flattened through
+    `DemoRunner.flatten`, the runner is thrown away, and a second one is built
+    from what is on disk by the same factories production uses.
+    """
+    harness = _flattened_campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    persisted, accounted = _two_equities(state_dir)
+
+    resumed = build(tmp_path, days=(DAY,), config=config, start=False)
+    state = resumed.runner.start()
+
+    assert state is not RunnerState.HALT, resumed.runner.halt_reason
+    assert not resumed.runner.risk.state.halted, resumed.runner.risk.state.halt_reason
+    assert (
+        resumed.runner.risk.load_outcome is RiskStateLoad.LOADED
+    ), "a restart that did not restore a persisted state is not the case under test"
+    assert resumed.runner.risk.state.equity == pytest.approx(persisted)
+    assert float(accounted) == persisted
+
+    # And it really can decide again, which is the property the operator cares
+    # about: a campaign that starts and cannot tick is not recovered.
+    minute = resumed.runner.cursor.next_minute_ms()
+    assert minute is not None
+    resumed.tick(minute)
+    assert resumed.runner.state is not RunnerState.HALT, resumed.runner.halt_reason
+
+
+def test_a_flatten_that_tells_aegis_nothing_wedges_the_next_start(tmp_path):
+    """The other side: the defect, reproduced, so the repair is witnessed.
+
+    This is what the independent review demonstrated, and it is why the fix is in
+    `flatten` rather than only in the runbook.
+    """
+    harness = _flattened_campaign(tmp_path, tell_aegis=False)
+    config = harness.runner.config
+    persisted, accounted = _two_equities(harness.state_dir)
+    assert float(accounted) != persisted, "the mutant must actually diverge the two files"
+
+    resumed = build(tmp_path, days=(DAY,), config=config, start=False)
+
+    assert resumed.runner.start() is RunnerState.HALT
+    assert resumed.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
+
+
+def test_a_flatten_tells_aegis_nothing_when_the_ledger_may_not_speak(tmp_path):
+    """The equity would come from a placeholder, and Aegis is not told fictions.
+
+    The same condition the OPERATOR record uses for its `ledger_effect` block:
+    where `_save_ledger` skips and the record omits the economics, Aegis is not
+    handed them either.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(MINUTES_BEFORE_FLATTEN)
+    before = harness.runner.risk.state.equity
+    (harness.state_dir / "carry_ledger.json").write_text("{ truncated", encoding="utf-8")
+    config = harness.runner.config
+
+    resumed = build(tmp_path, days=(DAY,), config=config, start=False)
+    resumed.runner.start()
+    assert not resumed.runner._ledger_may_speak()
+    resumed.runner.flatten("operator: removing exposure on a damaged ledger")
+
+    assert resumed.runner.risk.state.equity == pytest.approx(before), (
+        "a placeholder ledger's equity is not an accounting claim and may not "
+        "become Aegis's"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. the clearing path: `resolve --equity`
+# ---------------------------------------------------------------------------
+# The dispute a restart raises is unlike every other halt the campaign can carry:
+# its cause is re-read at EVERY construction, so `resume` -- which clears the flag
+# and touches neither equity -- is undone by the next process before a tick can
+# re-synchronise them. Without a clearing path the only way out is to edit a
+# state file, which the runbook forbids and R1's acceptance ("zero manual state
+# edits") rules out. Canonical R1-i asks that every dispute kind have exactly
+# one clearing path; this is R1-b's.
+
+
+def _crashed_campaign(tmp_path: Path):
+    """A real divergence, made the way the runner really makes one.
+
+    The kill lands between `_save_ledger()` and `update_equity()` in `tick`, which
+    is the window this item pins rather than closes. Nothing is hand-edited.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    first = harness.first_minute_ms()
+    harness.run(MINUTE_BEFORE_A_SETTLEMENT, start=first)
+
+    def killed(*args, **kwargs):
+        raise _SimulatedKill()
+
+    harness.runner.risk.update_equity = killed
+    with pytest.raises(_SimulatedKill):
+        harness.tick(first + MINUTE_BEFORE_A_SETTLEMENT * 60_000)
+    persisted, accounted = _two_equities(harness.state_dir)
+    assert float(accounted) != persisted, "the crash must actually diverge the two files"
+    return harness.runner.config, persisted, accounted
+
+
+def test_a_disputed_restart_is_settled_by_resolve_equity_and_then_runs(tmp_path):
+    """The whole recovery, end to end, through production paths only.
+
+    crash -> restart HALTS -> `resolve --equity --note` -> restart RUNS. The
+    recovery never touches `risk.json` or `carry_ledger.json` directly; it is the
+    operator command doing it, and the proof it worked is that the campaign
+    decides another minute afterwards.
+    """
+    config, persisted, accounted = _crashed_campaign(tmp_path)
+
+    halted = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert halted.runner.start() is RunnerState.HALT
+    assert halted.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
+
+    # A separate process, as the CLI really is: the settlement has to survive
+    # being written down and read back, not merely hold in the one that made it.
+    settling = build(tmp_path, days=(DAY,), config=config, start=False)
+    settling.runner.start()
+    outcome = settling.runner.resolve_equity(
+        "operator: crash at the settlement; ledger is right"
+    )
+
+    assert outcome.record_hash
+    assert not settling.runner.risk.state.halted, settling.runner.risk.state.halt_reason
+    assert settling.runner.risk.state.equity == pytest.approx(float(accounted)), (
+        "the accounting is what is adopted, and it is the number the next start "
+        "will compare against"
+    )
+
+    resumed = build(tmp_path, days=(DAY,), config=config, start=False)
+    state = resumed.runner.start()
+
+    assert state is not RunnerState.HALT, resumed.runner.halt_reason
+    assert not resumed.runner.risk.state.halted, resumed.runner.risk.state.halt_reason
+    minute = resumed.runner.cursor.next_minute_ms()
+    assert minute is not None
+    resumed.tick(minute)
+    assert resumed.runner.state is not RunnerState.HALT, resumed.runner.halt_reason
+
+
+def test_resume_alone_does_not_settle_the_dispute(tmp_path):
+    """Why the command has to exist. The review's finding, pinned.
+
+    `resume` clears the flag and changes neither equity, so the next construction
+    reads the same disagreement and halts again. A campaign with only `resume`
+    cannot leave this state by any permitted action.
+    """
+    config, _, _ = _crashed_campaign(tmp_path)
+
+    resuming = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert resuming.runner.start() is RunnerState.HALT
+    resuming.runner.resume("operator: I looked at it")
+    assert not resuming.runner.risk.state.halted
+
+    again = build(tmp_path, days=(DAY,), config=config, start=False)
+
+    assert again.runner.start() is RunnerState.HALT
+    assert again.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
+
+
+def test_resolve_equity_is_idempotent(tmp_path):
+    """Retrying must not walk the equity, the peak or the day baselines anywhere."""
+    config, _, accounted = _crashed_campaign(tmp_path)
+
+    first = build(tmp_path, days=(DAY,), config=config, start=False)
+    first.runner.start()
+    first.runner.resolve_equity("operator: settled once")
+    settled = first.runner.risk.state
+    on_disk = (first.state_dir / "risk.json").read_text(encoding="utf-8")
+
+    second = build(tmp_path, days=(DAY,), config=config, start=False)
+    second.runner.start()
+    with pytest.raises(RunnerError, match="no equity dispute to settle"):
+        second.runner.resolve_equity("operator: settled twice")
+
+    assert second.runner.risk.state == settled
+    assert (second.state_dir / "risk.json").read_text(encoding="utf-8") == on_disk
+
+
+def test_resolve_equity_refuses_a_ledger_that_may_not_speak(tmp_path):
+    """The accounting is what it adopts, so it cannot run without one.
+
+    This is also the `equity_reconciliation:` case: the ledger could not be read,
+    which is why the restart halted, and settling from the placeholder would write
+    a number no file holds into the central risk authority.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(MINUTES_BEFORE_FLATTEN)
+    config = harness.runner.config
+    before = json.loads((harness.state_dir / "risk.json").read_text(encoding="utf-8"))
+    (harness.state_dir / "carry_ledger.json").write_text("{ truncated", encoding="utf-8")
+
+    halted = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert halted.runner.start() is RunnerState.HALT
+    assert halted.runner.risk.state.halt_reason.startswith(EQUITY_RECONCILIATION_PREFIX)
+
+    with pytest.raises(RunnerError, match="cannot settle the equity dispute"):
+        halted.runner.resolve_equity("operator: clear it anyway")
+
+    assert halted.runner.risk.state.halted
+    assert halted.runner.risk.state.halt_reason.startswith(
+        EQUITY_RECONCILIATION_PREFIX
+    ), "the refusal must leave the reconciliation halt exactly as it found it"
+    after = json.loads((halted.state_dir / "risk.json").read_text(encoding="utf-8"))
+    assert after["equity"] == before["equity"]
+    assert after["peak_equity"] == before["peak_equity"]
+    assert after["day"] == before["day"]
+    assert after["day_start_equity"] == before["day_start_equity"]
+
+
+def test_resolve_equity_refuses_when_there_is_no_dispute(tmp_path):
+    """It is not a resume with a different name."""
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(MINUTES_BEFORE_FLATTEN)
+
+    with pytest.raises(RunnerError, match="no equity dispute to settle"):
+        harness.runner.resolve_equity("operator: nothing is wrong")
+
+
+def test_resolve_equity_refuses_to_clear_a_genuine_breach(tmp_path):
+    """The one thing a clearing path must never become: a way out of a real halt."""
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(MINUTES_BEFORE_FLATTEN)
+    peak = harness.runner.risk.state.peak_equity
+    harness.runner.risk.update_equity(peak * (1.0 - MAX_DRAWDOWN_PCT) - 1.0)
+    assert harness.runner.risk.state.halted
+    assert "max drawdown breached" in harness.runner.risk.state.halt_reason
+
+    with pytest.raises(RunnerError, match="no equity dispute to settle"):
+        harness.runner.resolve_equity("operator: let me out")
+
+    assert harness.runner.risk.state.halted
+    assert "max drawdown breached" in harness.runner.risk.state.halt_reason
+
+
+def test_resolve_equity_requires_a_note(tmp_path):
+    config, _, _ = _crashed_campaign(tmp_path)
+    halted = build(tmp_path, days=(DAY,), config=config, start=False)
+    halted.runner.start()
+
+    with pytest.raises(RunnerError, match="requires an operator note"):
+        halted.runner.resolve_equity("   ")
+
+    assert halted.runner.risk.state.halted
+
+
+def test_resolve_equity_writes_an_operator_record_naming_both_numbers(tmp_path):
+    """Section 8.3: every operator command writes a record, and this one is audited."""
+    config, persisted, accounted = _crashed_campaign(tmp_path)
+    settling = build(tmp_path, days=(DAY,), config=config, start=False)
+    settling.runner.start()
+
+    settling.runner.resolve_equity("operator: the ledger is the campaign's accounting")
+
+    operator = [
+        r
+        for r in settling.records()
+        if r.get("kind") == "OPERATOR"
+        and r.get("operator", {}).get("command") == "resolve-equity"
+    ]
+    assert len(operator) == 1
+    block = operator[0]["operator"]
+    assert block["note"] == "operator: the ledger is the campaign's accounting"
+    assert block["settled"].startswith(EQUITY_DISPUTE_PREFIX)
+    assert block["risk_equity_before"] == repr(persisted)
+    assert block["adopted_equity"] == str(accounted)
+
+
+# ---------------------------------------------------------------------------
+# 10. what `adopt_reconciled_equity` may and may not move
+# ---------------------------------------------------------------------------
+DISPUTE = f"{EQUITY_DISPUTE_PREFIX} the two files disagree"
+
+
+def disputed_engine(tmp_path: Path, state: RiskState) -> RiskEngine:
+    """An engine restored from ``state`` and halted on an equity dispute."""
+    state_dir = tmp_path / "state"
+    persist_risk_state(state_dir, state)
+    engine = RiskEngine(
+        risk_wiring.risk_limits(committed_limits(state_dir).limits),
+        state_path=state_dir / "risk.json",
+        clock=clock_at(FIRST_MINUTE_OF_NEXT_DAY),
+    )
+    assert engine.load_outcome is RiskStateLoad.LOADED
+    engine.halt(DISPUTE)
+    return engine
+
+
+def test_adopting_a_reconciled_equity_settles_the_named_halt(tmp_path):
+    engine = disputed_engine(tmp_path, healthy_end_of_day(**WITNESS_A))
+
+    engine.adopt_reconciled_equity(968_000.0, clearing=DISPUTE, note="operator: checked")
+
+    assert not engine.state.halted
+    assert engine.state.halt_reason == ""
+    assert engine.state.equity == pytest.approx(968_000.0)
+
+
+def test_adopting_does_not_roll_the_day(tmp_path):
+    """The AEG-1 discipline, applied to the repair itself.
+
+    The engine's clock is the first minute of the NEXT day, so `update_equity`
+    would roll. Adoption is a correction of a reading from the old day and may not
+    manufacture a new day's baseline out of an operator action -- which is the
+    same class of mistake as the defect this item exists to fix. The first real
+    mark of the new day still rolls it, and that is witness A's second half.
+    """
+    engine = disputed_engine(tmp_path, healthy_end_of_day(**WITNESS_A))
+
+    engine.adopt_reconciled_equity(968_000.0, clearing=DISPUTE, note="operator: checked")
+
+    assert engine.state.day == DAY
+    assert engine.state.day_start_equity == pytest.approx(WITNESS_A["day_start"])
+    assert engine.state.daily_pnl == pytest.approx(968_000.0 - WITNESS_A["day_start"])
+
+    engine.update_equity(967_000.0)
+    assert engine.state.day == NEXT_DAY
+    assert engine.state.day_start_equity == pytest.approx(967_000.0)
+
+
+def test_adopting_never_lowers_the_peak_and_may_raise_it(tmp_path):
+    engine = disputed_engine(tmp_path, healthy_end_of_day(**WITNESS_B))
+    # Below the peak but inside both limits, so this witnesses the peak rule and
+    # not a breach: at 1,020,000 against a peak of 1,060,000 the drawdown is
+    # 3.77%, under the campaign's 5%.
+    engine.adopt_reconciled_equity(1_020_000.0, clearing=DISPUTE, note="operator: lower")
+    assert not engine.state.halted, engine.state.halt_reason
+    assert engine.state.peak_equity == pytest.approx(WITNESS_B["peak"])
+
+    engine.halt(DISPUTE)
+    engine.adopt_reconciled_equity(1_100_000.0, clearing=DISPUTE, note="operator: higher")
+    assert engine.state.peak_equity == pytest.approx(1_100_000.0)
+
+
+def test_adopting_moves_no_unrelated_risk_control(tmp_path):
+    """Compared as a whole `RiskState`, so a field added later is covered too."""
+    state = healthy_end_of_day(**WITNESS_A)
+    state.consecutive_losses = 3
+    state.cooldown_until = 1234.5
+    state.funding_adverse_streak = 2
+    state.open_positions = {"BTC/USDT": 5.5}
+    state.reconciliation_disputed = {"BTC/USDT:USDT": "an earlier dispute"}
+    state.stale_feed_since = 99.0
+    engine = disputed_engine(tmp_path, state)
+    before = RiskState(**{**engine.state.__dict__})
+
+    engine.adopt_reconciled_equity(968_000.0, clearing=DISPUTE, note="operator: checked")
+
+    after = engine.state
+    moved = {
+        name
+        for name in RiskState.__dataclass_fields__
+        if getattr(before, name) != getattr(after, name)
+    }
+    assert moved == {"equity", "daily_pnl", "halted", "halt_reason"}, (
+        "adoption records an equity and settles one halt; anything else it moved "
+        "is a risk control it had no authority over"
+    )
+
+
+def test_adopting_an_equity_that_is_itself_a_breach_halts_on_the_breach(tmp_path):
+    """The settlement still happens; what remains is a genuine halt, named.
+
+    `halt` keeps the FIRST reason, so clearing the dispute before the guards run
+    is what stops a real breach being swallowed by the dispute it replaced.
+    """
+    engine = disputed_engine(tmp_path, healthy_end_of_day(**WITNESS_B))
+    breach = WITNESS_B["peak"] * (1.0 - MAX_DRAWDOWN_PCT) - 1.0
+
+    engine.adopt_reconciled_equity(breach, clearing=DISPUTE, note="operator: checked")
+
+    assert engine.state.halted
+    assert "max drawdown breached" in engine.state.halt_reason
+    assert not is_equity_reconciliation_halt(engine.state.halt_reason)
+    assert engine.state.equity == pytest.approx(breach)
+
+
+def test_adopting_refuses_a_halt_it_was_not_asked_to_settle(tmp_path):
+    """Checked in Aegis, not only in the runner that calls it."""
+    engine = disputed_engine(tmp_path, healthy_end_of_day(**WITNESS_A))
+    engine.resume()
+    engine.halt("liquidation_touch: a real one")
+    before = RiskState(**{**engine.state.__dict__})
+
+    with pytest.raises(RiskViolation, match="not halted on"):
+        engine.adopt_reconciled_equity(968_000.0, clearing=DISPUTE, note="operator: sneaky")
+
+    assert engine.state == before
+
+
+def test_adopting_refuses_an_unhalted_engine(tmp_path):
+    engine = disputed_engine(tmp_path, healthy_end_of_day(**WITNESS_A))
+    engine.resume()
+    before = RiskState(**{**engine.state.__dict__})
+
+    with pytest.raises(RiskViolation, match="not halted at all"):
+        engine.adopt_reconciled_equity(968_000.0, clearing=DISPUTE, note="operator: sneaky")
+
+    assert engine.state == before
+
+
+def test_adopting_requires_a_note(tmp_path):
+    engine = disputed_engine(tmp_path, healthy_end_of_day(**WITNESS_A))
+
+    with pytest.raises(RiskViolation, match="requires a stated reason"):
+        engine.adopt_reconciled_equity(968_000.0, clearing=DISPUTE, note="")
+
+    assert engine.state.halted
+
+
+def test_adopting_refuses_an_engine_that_failed_closed_on_its_own_file(tmp_path):
+    """There is no persisted equity to reconcile, and `_persist` would write nothing."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "risk.json").write_text("[]", encoding="utf-8")
+    engine = RiskEngine(state_path=state_dir / "risk.json", clock=clock_at(LAST_MINUTE_OF_DAY))
+    assert engine.load_outcome is RiskStateLoad.UNREADABLE
+
+    with pytest.raises(RiskViolation, match="failed closed"):
+        engine.adopt_reconciled_equity(
+            968_000.0, clearing=engine.state.halt_reason, note="operator: sneaky"
+        )
+
+
+def test_the_settled_state_survives_the_round_trip_to_disk(tmp_path):
+    """A settlement that lived only in memory would be undone by the next start."""
+    engine = disputed_engine(tmp_path, healthy_end_of_day(**WITNESS_A))
+    engine.adopt_reconciled_equity(968_000.0, clearing=DISPUTE, note="operator: checked")
+
+    reloaded = RiskEngine(
+        risk_wiring.risk_limits(committed_limits(tmp_path / "state").limits),
+        state_path=tmp_path / "state" / "risk.json",
+        clock=clock_at(FIRST_MINUTE_OF_NEXT_DAY),
+    )
+
+    assert reloaded.state == engine.state
+
+
+# ---------------------------------------------------------------------------
+# 11. M1 -- a ledger that cannot be EXAMINED is not a ledger that is absent
+# ---------------------------------------------------------------------------
+# `CarryLedger.open` decided "absent" with `Path.exists()`, which answers False
+# for a path it merely could not examine. R1-b reads that outcome to decide
+# whether a restart's persisted equity can be checked at all, and MISSING is the
+# one answer that lets the check pass with no accounting consulted -- so an
+# unexaminable ledger read as "worth the configured capital", a claim no file had
+# made. The read decides now, as `RiskEngine._load_state` already did.
+
+
+def blocked_ledger_path(tmp_path: Path) -> Path:
+    """A ledger path whose PARENT is a regular file.
+
+    POSIX raises ``NotADirectoryError`` for a path blocked by a regular file;
+    Windows collapses that onto ``FileNotFoundError``, which is what the ancestor
+    walk is for. Both must reach UNREADABLE, so this fixture exercises the same
+    boundary on either platform.
+    """
+    blocked = tmp_path / "state" / "blocked"
+    blocked.parent.mkdir(parents=True, exist_ok=True)
+    blocked.write_text("not a directory", encoding="utf-8")
+    return blocked
+
+
+def test_a_ledger_path_that_cannot_be_examined_is_unreadable_not_missing(tmp_path):
+    ledger = CarryLedger.open(
+        blocked_ledger_path(tmp_path) / "carry_ledger.json", capital=CAPITAL
+    )
+
+    assert ledger.outcome is LoadOutcome.UNREADABLE
+    assert ledger.disputed is not None
+
+
+def test_a_genuinely_absent_ledger_is_still_missing(tmp_path):
+    """The two-sided control: absence must keep meaning absence.
+
+    Including a directory nobody has created yet, which is what a first start
+    really looks like.
+    """
+    present = CarryLedger.open(tmp_path / "state" / "carry_ledger.json", capital=CAPITAL)
+    assert present.outcome is LoadOutcome.MISSING
+    assert present.state.last_equity is None
+
+    deeper = CarryLedger.open(
+        tmp_path / "never" / "made" / "carry_ledger.json", capital=CAPITAL
+    )
+    assert deeper.outcome is LoadOutcome.MISSING
+
+
+def test_an_unexaminable_ledger_reaches_reconciliation_as_no_answer(tmp_path):
+    """`ledger_equity` returns None rather than the configured capital."""
+    assert ledger_equity(blocked_ledger_path(tmp_path), capital=CAPITAL) is None
+
+
+def test_an_unexaminable_ledger_disputes_instead_of_reading_as_capital(tmp_path):
+    """The case that made it a safety boundary: equity that happens to equal capital.
+
+    A symlink loop, because it is the shape that isolates the defect: `Path.exists()`
+    follows symlinks and answers ``False`` for a loop, so the OLD loader read this
+    as "there is no ledger" and `ledger_equity` answered "worth the configured
+    capital" -- which this persisted state agrees with, so the restart passed
+    reconciliation against an accounting nothing had consulted, and the campaign
+    started. A file that merely fails to PARSE would not witness this: the old
+    loader caught that one and called it UNREADABLE too.
+
+    Skipped where the platform will not make a symlink; the blocked-parent tests
+    above cover the same boundary on both platforms.
+    """
+    state_dir = tmp_path / "state"
+    persist_risk_state(
+        state_dir,
+        healthy_end_of_day(
+            equity=float(CAPITAL), peak=float(CAPITAL), day_start=float(CAPITAL)
+        ),
+    )
+    loop = state_dir / "carry_ledger.json"
+    try:
+        loop.symlink_to(loop)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform dependent
+        pytest.skip(f"this platform will not create a symlink loop: {exc}")
+    assert not loop.exists(), (
+        "this fixture is only the `Path.exists()` trap while exists() answers False "
+        "for a path that is really there"
+    )
+
+    engine = engine_at(state_dir, stamp=LAST_MINUTE_OF_DAY)
+
+    assert engine.state.halted
+    assert engine.state.halt_reason.startswith(EQUITY_RECONCILIATION_PREFIX)
+    assert engine.state.equity == pytest.approx(
+        float(CAPITAL)
+    ), "the persisted state is preserved; the halt is what stops it being traded on"
