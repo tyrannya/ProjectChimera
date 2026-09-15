@@ -4,12 +4,20 @@
 **Status:** `RECORDER_CORE_BARRIER` — R2's recorder-generalisation work is held.
 **Base commit:** `13c34c4b89ff3f1a540d749ac41a3ef25aac04b3`.
 **Written:** 2026-09-14.
+**Revised:** 2026-09-15, after independent read-only review of PR #98. Prose
+only; every module claim below was independently re-verified against HEAD by the
+reviewer and none changed.
 
 This is an **operational coordination record**, not evidence and not governance.
 It exists because R1 and R2 are executed by separate sessions that cannot see
 each other's local state, and the adopted roadmap makes them share one recorder
-core. Coordination therefore has to live in the repository. This record is
-expected to be deleted or superseded once R1's recorder items are merged.
+core. Coordination therefore has to live in the repository.
+
+**This record is not to be deleted.** It is dated chronological evidence of what
+was verified, and when, and of the barrier that was honoured rather than raced.
+Once R1-g and R1-h merge, its status is **superseded by a later reviewed
+record** that states the new position and cites this one; the file itself stays
+in place so the chronology remains readable.
 
 ## Naming correction (read this first)
 
@@ -192,4 +200,25 @@ Independent of the R1 barrier, live collection additionally requires:
 - `exchangeInfo` and the OI REST endpoint reachable from that host — they are
   **451** from this authoring environment;
 - ≥ 30 consecutive days of real elapsed time, which cannot be simulated,
-  shortened, or substituted.
+  shortened, or substituted;
+- the governed inputs that `docs/r2_source_archive_facts.md` marks as requiring
+  resolution **before** live R2 begins — the gen4 coverage thresholds, the
+  definition of "core streams", the candidate-universe mechanical rule (volume
+  field, tie-break, named date) and the Tier B storage/replay budget — frozen,
+  because each decides eligibility, universe construction, or R2's own
+  kill/deferral rule and so cannot be selected after observing the 30-day run.
+
+## Standing recorded by this document
+
+- **R2 REMAINS OPEN.**
+- **R2 IS BLOCKED AT THE R1 RECORDER-CORE COORDINATION BARRIER.**
+- **R1-g and R1-h are the canonical adopted roadmap labels** for the shared
+  recorder-core work. "R1-f2" is not a roadmap label and is not repository truth.
+- **No live 30-day collection is authorised** by this document or by the pull
+  request carrying it.
+- **No second host is authorised or provisioned.**
+- **No R3 work has started.**
+- **No prospective boundary is created.** gen3's `prospective_from` stays `null`.
+- **No alpha claim is created.**
+- **No real-money authority is created.**
+- **PR #76 remains untouched.**
