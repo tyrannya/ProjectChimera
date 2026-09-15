@@ -30,17 +30,54 @@ remains `null`. No real-money authority is created.
 
 ## Method
 
-Every fact below was retrieved by this session from the **single allow-listed
-first-party archive host** the repository already governs:
+This document draws on **two distinct evidence classes from two distinct
+sources**, kept apart deliberately: one is reproducible by object retrieval and
+checksum verification, the other is a documentation claim, and they cannot be
+verified the same way.
+
+### 1. Archive measurements — `data.binance.vision`
+
+**Every archive measurement below** — every listing, every object probe, every
+row count and every parsed value — was retrieved by this session from the
+**single allow-listed first-party archive host** the repository already governs:
 
     https://data.binance.vision
 
-over HTTPS, with no credential and no signature — the same source-integrity
-rules `chimera/recorder/contracts/btcusdt-prospective-gen3.json`
+over HTTPS, **with no credential and no signature**, which is the same
+source-integrity rule `chimera/recorder/contracts/btcusdt-prospective-gen3.json`
 (`reconciliation_rule`) and `nn/p13_acquisition.py` (`ALLOWED_HOST`,
 `assert_allowed_url`, `parse_checksum_companion`) already impose. Where an
 object's content is quoted, its published `.CHECKSUM` companion was fetched and
 the digest verified against the bytes received.
+
+That no-credential statement is a fact about **this archive acquisition only**.
+It is not a claim that every input R2 will eventually need is unauthenticated —
+the leverage-bracket dependency recorded below is not.
+
+### 2. Documentation claims — Binance's public-data repository, commit-pinned
+
+What this document says about what Binance *documents* comes from Binance's own
+public-data repository, **not** from the archive host. That repository is served
+by `raw.githubusercontent.com`, a **different host under different governance**;
+nothing here claims the two are the same, and the archive listing/probe
+procedure above cannot reproduce a README finding.
+
+So that this evidence is immutable rather than pinned to a moving branch, the
+README is cited at an **exact commit**, never at `master`:
+
+| Field | Value |
+|---|---|
+| Repository | `binance/binance-public-data` (Binance-owned) |
+| Commit | `5c7f3197591c0d54d85dc43066226bc4c671d47a` |
+| Path | `README.md` |
+| Retrieved from | `https://raw.githubusercontent.com/binance/binance-public-data/5c7f3197591c0d54d85dc43066226bc4c671d47a/README.md` |
+| Size | 5144 bytes |
+| SHA-256 | `085ab91377aa9325d44f4c7ad27cce4ab381e158403e1d7df2bad39d1a66f7c6` |
+| Git blob id | `311354cd82a76bcaaec588e6818e6c12644abef0` |
+
+The commit was resolved with `git ls-remote https://github.com/binance/binance-public-data`,
+and the pinned copy was byte-compared against the `master` copy fetched the same
+day: identical. A future `master` may differ; this revision cannot.
 
 Listings were taken from the archive's own S3 listing endpoint:
 
@@ -87,10 +124,45 @@ The archive's whole namespace is `data/futures/{um,cm}/{daily,monthly}/…`,
 `data/spot/…` and `data/option/…`. **There is no `exchangeInfo`, metadata,
 symbol-reference or leverage-bracket family anywhere in it.** Tier A's "daily
 `exchangeInfo` snapshot" therefore has no archive path at all and is reachable
-only over REST — which is 451 from this environment. This is what blocks R2's
-candidate-universe admissibility rule here: listing age, contract type, trading
-status, tick/step/`minNotional` filters and leverage brackets all come from
-`exchangeInfo`, and none of them can be established from the archive.
+only over REST — which is 451 from this environment.
+
+This is what blocks R2's candidate-universe admissibility rule here, and the
+blocking inputs divide into **two different access classes that must not be
+conflated**:
+
+- **Public, unauthenticated market metadata — `GET /fapi/v1/exchangeInfo`.**
+  Listing/onboard date, contract type, trading status and the symbol filters
+  (tick size, step size and the `minNotional`-related filters) come from here.
+  No credential is required; the endpoint is simply unreachable from this
+  container.
+- **Authenticated account metadata — `GET /fapi/v1/leverageBracket`.**
+  Notional and leverage brackets are **NOT an `exchangeInfo` field.** They are a
+  separate endpoint that Binance classifies as **`USER_DATA`**, which is
+  **signed** and therefore requires an API key and secret.
+
+The adopted §18 universe procedure requires rejecting *leverage-bracket
+anomalies*. A prerequisite phrased as "`exchangeInfo` is reachable" is therefore
+**not sufficient** for that rule: it would let R2 begin with an incomplete
+universe check, or discover only at collection time that an authenticated
+credential and a second daily snapshot are required.
+
+**Verified first-party**, from Binance's own official connector
+`binance/binance-futures-connector-python` at commit
+`a6bfbbf10fe2c1b4eb76fc24ffb82eb94bf9df89`:
+
+| | `exchange_info()` | `leverage_brackets()` |
+|---|---|---|
+| Module | `binance/um_futures/market.py` | `binance/um_futures/account.py` |
+| Endpoint | `GET /fapi/v1/exchangeInfo` | `GET /fapi/v1/leverageBracket` |
+| Binance's own label | "Exchange Information" | "**Notional and Leverage Brackets (USER_DATA)**" |
+| Call | `self.query(url_path)` — unsigned | `self.sign_request("GET", url_path, params)` — **signed** |
+| Binance doc path | `…/usds-margined-futures/`**`market-data`**`/rest-api/Exchange-Information` | `…/usds-margined-futures/`**`account`**`/rest-api/Notional-and-Leverage-Brackets` |
+
+**No credential is invented, requested or provisioned by this document**, and it
+does **not** decide whether the eventual mechanical universe rule must use
+leverage brackets at all. It records the dependency, its endpoint class and its
+access cost, so governance can settle that question **before** live R2
+collection begins.
 
 Three absences are load-bearing and are stated as absences of a *listed prefix*,
 not as an inference from a single 404:
@@ -312,18 +384,26 @@ consumer that assumed otherwise, and each was confirmed by retrieving the files.
 2. **`metrics` rows are not chronologically ordered**, and early `metrics` files
    are exactly doubled — see above.
 3. **`bookDepth`'s band set changes within 2026-01-15** — see above.
-4. **Archive objects are mutable.** The first-party public-data README states,
-   verbatim: "Archived files may be updated at a later date as a result of
-   recently discovered issues." Reproducibility therefore requires pinning the
+4. **Archive objects are mutable.** The public-data README states, verbatim:
+   "Archived files may be updated at a later date as a result of recently
+   discovered issues." (A documentation claim, from the commit-pinned source
+   under *Method § 2* — not an archive measurement.) Reproducibility therefore
+   requires pinning the
    **`.CHECKSUM` digest**, not the date — which is what the gen3 contract's
    acquisition rules already require, and R2 must keep.
 
 ## First-party documentation coverage is a real gap
 
-Binance's own public-data README — the "Public data document" linked from the
-archive site, read at
-`https://raw.githubusercontent.com/binance/binance-public-data/master/README.md`
-— has a `### FUTURES` section containing exactly three subsections:
+This is a **documentation claim, not an archive measurement**. Its source is the
+commit-pinned README recorded under *Method § 2* — `binance/binance-public-data`
+at commit `5c7f3197591c0d54d85dc43066226bc4c671d47a`, SHA-256
+`085ab91377aa9325d44f4c7ad27cce4ab381e158403e1d7df2bad39d1a66f7c6` — served by
+`raw.githubusercontent.com`, which is **not** `data.binance.vision` and is not
+reproducible by the archive listing/probe procedure.
+
+At that pinned revision, Binance's own public-data README — the "Public data
+document" linked from the archive site — has a `### FUTURES` section containing
+exactly three subsections:
 **`AggTrades`, `Klines` and `Trades`**. `metrics`, `bookDepth`, `bookTicker`,
 `markPriceKlines`, `indexPriceKlines`, `premiumIndexKlines`, `fundingRate` and
 any liquidation family carry **no first-party availability, cadence or
@@ -399,7 +479,9 @@ and archive mutability.
   enumeration (empty listing) rather than single-404 inference as the method for
   all three load-bearing absences;
 - the absence of any `exchangeInfo`/metadata family **anywhere** under `data/`,
-  and its consequence for the candidate-universe admissibility rule;
+  and its consequence for the candidate-universe admissibility rule — including
+  that leverage brackets are not an `exchangeInfo` field at all, but a separate
+  **signed `USER_DATA`** endpoint;
 - the measured `bookDepth` structure — 12 bands including **±0.20**, ~2
   snapshots/minute, and the 10→12 band change *inside* `2026-01-15`;
 - the `metrics` row-order and early-file duplication facts, with the transition
@@ -429,7 +511,8 @@ a threshold or a universe selected on the result:
 |---|---|
 | **gen4 coverage thresholds** | An input to the R2 kill rule ("≥ 2 of the 30 days failing coverage thresholds for core streams"). Selecting the threshold after seeing the days' coverage is choosing a pass mark from the result. |
 | **The exact definition of "core streams"** | The same kill rule's stream set. Choosing which streams count after seeing which ones degraded is the same defect by another route. |
-| **The candidate-universe mechanical rule** — exact volume field (`quote_volume` vs base `volume`), the tie-break, and the named selection date | Decides *which ~20 symbols are recorded at all*. A symbol not captured cannot be added retroactively, so this is a hard precondition on starting collection, not a reporting detail. It is additionally gated on `exchangeInfo`, which has no archive path and is 451 from this environment. |
+| **The candidate-universe mechanical rule** — exact volume field (`quote_volume` vs base `volume`), the tie-break, and the named selection date | Decides *which ~20 symbols are recorded at all*. A symbol not captured cannot be added retroactively, so this is a hard precondition on starting collection, not a reporting detail. It is additionally gated on **public** `exchangeInfo`, which has no archive path and is 451 from this environment — and, if §18's leverage-bracket condition is retained, on the separate **signed** endpoint in the row below. |
+| **Whether the universe rule retains §18's leverage-bracket condition — and if so, how that data is authorised and obtained** | §18 rejects *leverage-bracket anomalies*, but brackets are **not** an `exchangeInfo` field: they come from `GET /fapi/v1/leverageBracket`, which Binance classifies as signed **`USER_DATA`**. Keeping the condition therefore introduces an **authenticated credential dependency** and a second daily snapshot. Whether to keep it is a governance decision, not R2's — but it must be settled *before* collection starts, because discovering the credential requirement mid-run leaves the universe check incomplete or forces a restart. Reaching `exchangeInfo` alone does not satisfy this. |
 | **The Tier B storage/replay budget** | The second half of the kill rule ("Tier B cost beyond budget → Tier B shrinks or is deferred"). An undefined budget makes that condition unevaluable, and a budget set after measuring the cost is the same post-hoc selection. It is also an owner spend decision, inseparable from authorising the second host. |
 
 ### Timing: what need not block acquisition
@@ -471,6 +554,17 @@ Items 1, 3 and 5 are the ones carrying the pre-live freeze requirement above.
 
 ## Reproducing this
 
-Every row above is reproducible with `curl` against the one allow-listed host,
-using the listing and probe commands given under **Method**. No credential is
-required and none was presented. No repository state was mutated to produce it.
+**The archive measurements** are reproducible with `curl` against the one
+allow-listed archive host, using the listing and probe commands given under
+**Method § 1**. For those, no credential is required and none was presented.
+
+**The documentation claims** are reproducible from the commit-pinned README
+recorded under **Method § 2** — a different host, and a source whose identity is
+fixed by commit SHA and content digest rather than by the `master` branch.
+
+Neither statement extends to the venue's authenticated endpoints: the
+`leverageBracket` dependency recorded above is signed `USER_DATA`, and **no
+credential was invented, requested, provisioned or used anywhere in producing
+this document**.
+
+No repository state was mutated to produce it.

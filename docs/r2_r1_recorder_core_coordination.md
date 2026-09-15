@@ -132,7 +132,7 @@ cadence change and R2's per-symbol fan-out would rewrite.
 | Multi-symbol/multi-stream recorder generalisation | `normalize.py`, `streams.py`, `service.py`, `incremental.py` | **RECORDER_CORE_OVERLAP** — held |
 | New Tier A/B parsers (aggTrade, forceOrder, depth, OI) | `events.py`, then wiring into `normalize.py`/`service.py` | **RECORDER_CORE_OVERLAP** once wired; the parsers alone are additive but are not useful unwired, and their payload semantics are unverifiable from this host (`fapi` 451) |
 | gen4 archive layouts / reconciliation for new streams | would duplicate `reconcile.py`/`coverage.py` | **Held for a different reason** — R5 owns generalising **PR #76's** implementation; building a second fetcher now would be the alternate implementation the coordination rule forbids |
-| Candidate-universe selection module | new module | **Blocked on governed inputs** — volume field, tie-break and named date undefined; admissibility needs `exchangeInfo`, which is 451 from this host |
+| Candidate-universe selection module | new module | **Blocked on governed inputs** — volume field, tie-break and named date undefined; admissibility needs public `exchangeInfo` (451 from this host) and, if §18's leverage-bracket condition is retained, the *separate signed* `USER_DATA` endpoint `GET /fapi/v1/leverageBracket` |
 | First-party source/archive fact verification | none (documentation) | **NON_OVERLAPPING** — done; see `docs/r2_source_archive_facts.md` |
 | This coordination record | none | **NON_OVERLAPPING** — done |
 
@@ -197,16 +197,28 @@ Independent of the R1 barrier, live collection additionally requires:
 - the `gen4-preflight` contract identity fixed, which requires the candidate
   universe, which requires the governed inputs listed in
   `docs/r2_source_archive_facts.md`;
-- `exchangeInfo` and the OI REST endpoint reachable from that host — they are
-  **451** from this authoring environment;
+- the **public, unauthenticated** venue endpoints reachable from that host —
+  `exchangeInfo` and the OI REST endpoint, both **451** from this authoring
+  environment;
+- a settled governance decision on **authenticated venue metadata**. §18's
+  universe procedure rejects leverage-bracket anomalies, and leverage brackets
+  are **not** an `exchangeInfo` field: they come from
+  `GET /fapi/v1/leverageBracket`, which Binance classifies as signed
+  **`USER_DATA`**. Reaching `exchangeInfo` therefore does **not** by itself
+  satisfy the universe rule's inputs. Whether the rule keeps that condition —
+  and if so how a credential is authorised, held and rotated — must be decided
+  before collection starts. No credential is provisioned or requested here. See
+  `docs/r2_source_archive_facts.md` for the first-party verification;
 - ≥ 30 consecutive days of real elapsed time, which cannot be simulated,
   shortened, or substituted;
 - the governed inputs that `docs/r2_source_archive_facts.md` marks as requiring
   resolution **before** live R2 begins — the gen4 coverage thresholds, the
   definition of "core streams", the candidate-universe mechanical rule (volume
-  field, tie-break, named date) and the Tier B storage/replay budget — frozen,
-  because each decides eligibility, universe construction, or R2's own
-  kill/deferral rule and so cannot be selected after observing the 30-day run.
+  field, tie-break, named date), **whether that rule retains §18's
+  leverage-bracket condition and how the signed `USER_DATA` data it needs is
+  authorised**, and the Tier B storage/replay budget — frozen, because each
+  decides eligibility, universe construction, or R2's own kill/deferral rule and
+  so cannot be selected after observing the 30-day run.
 
 ## Standing recorded by this document
 
