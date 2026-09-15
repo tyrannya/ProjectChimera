@@ -255,7 +255,8 @@ internal check and no other R2 stream offers it.
   requires that the live stream's identifier carries the same semantics and that
   capture continuity relates to it in the assumed way. `fapi.binance.com` is
   **451** from this environment, so the live payload semantics were **not**
-  independently verified here, and that relationship is asserted by nobody.
+  independently verified here, and no first-party source consulted for this
+  document establishes that relationship.
 - It does **not** prove `aggTrade` represents every venue event. The adopted
   corrected audit's standing caveat holds unchanged: "`aggTrade` excludes
   insurance-fund and ADL trades, so neither is a complete record". Contiguity is
