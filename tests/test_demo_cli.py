@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -721,3 +722,197 @@ def test_a_campaign_is_refused_on_a_genuinely_dirty_tree(tmp_path, checkout):
     assert harness.runner.software["dirty"] is True
     assert harness.runner.start() is RunnerState.HALT
     assert "source_identity" in (harness.runner.halt_reason or "")
+
+
+# ---------------------------------------------------------------------------
+# `resolve --equity`: R1-b's clearing path, driven through main()
+# ---------------------------------------------------------------------------
+# The parser is checked by `tests/test_demo_runbook.py` and the semantics by
+# `tests/test_r1b_persisted_equity.py`. What is checked HERE is the thing both of
+# those take on trust: that the operator can actually reach it. The dispute this
+# settles is re-raised at every construction, so a command that parses but does
+# not run would leave a campaign with no permitted way out.
+
+
+class _SimulatedKill(Exception):
+    """Stands in for a SIGKILL arriving at one exact statement."""
+
+
+def _diverged(tmp_path: Path):
+    """A real disagreement, made the way the runner really makes one.
+
+    The kill lands between `_save_ledger()` and `update_equity()` in `tick` --
+    R1-b's known window. Nothing is hand-edited.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    first = harness.first_minute_ms()
+    harness.run(479, start=first)
+
+    def killed(*args, **kwargs):
+        raise _SimulatedKill()
+
+    harness.runner.risk.update_equity = killed
+    with pytest.raises(_SimulatedKill):
+        harness.tick(first + 479 * 60_000)
+    return harness
+
+
+def test_resolve_equity_settles_the_dispute_and_the_campaign_runs_again(tmp_path, capsys):
+    """The whole operator recovery, through the CLI, as separate invocations."""
+    harness = _diverged(tmp_path)
+    config_path = written_config(tmp_path, harness)
+    argv = ["--config", str(config_path), "--root", str(harness.root), "--profile", "TEST"]
+
+    assert demo_run.main(argv + ["run"]) == demo_run.EXIT_HALTED
+    assert "equity_dispute" in json.loads(capsys.readouterr().out)["reason"]
+
+    assert (
+        demo_run.main(argv + ["resolve", "--equity", "--note", "ledger is right"])
+        == demo_run.EXIT_OK
+    )
+    settled = json.loads(capsys.readouterr().out)
+    assert settled["resolved"] == "equity"
+    assert settled["record"]
+
+    assert demo_run.main(argv + ["run"]) == demo_run.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["state"] != RunnerState.HALT.value
+
+
+def test_resolve_equity_refuses_rather_than_clearing_nothing(tmp_path, capsys):
+    """No dispute, so the command changes nothing and says so on stderr."""
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(3)
+    config_path = written_config(tmp_path, harness)
+    argv = ["--config", str(config_path), "--root", str(harness.root), "--profile", "TEST"]
+
+    assert demo_run.main(argv + ["resolve", "--equity", "--note", "nothing is wrong"]) == (
+        demo_run.EXIT_REFUSED
+    )
+    assert "no equity dispute to settle" in capsys.readouterr().err
+
+
+def test_resolve_names_which_dispute_it_is_clearing(tmp_path):
+    """One or the other, never both and never neither."""
+    parser = demo_run.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["resolve", "--note", "n"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["resolve", "--symbol", "BTC/USDT", "--equity", "--note", "n"])
+    assert parser.parse_args(["resolve", "--equity", "--note", "n"]).equity is True
+    assert (
+        parser.parse_args(["resolve", "--symbol", "BTC/USDT", "--note", "n"]).equity is False
+    )
+
+
+# ---------------------------------------------------------------------------
+# what a halt tells the operator to type
+# ---------------------------------------------------------------------------
+# The halt reason is where an operator meets the equity dispute: section 7 of the
+# runbook makes `risk.json`'s `halt_reason` the authoritative text, and `run`
+# prints the same string. It shipped advertising `demo_run resolve-equity
+# --note`, which no subcommand matches -- argparse exits 2 on "invalid choice".
+# Nothing caught it: `tests/test_demo_runbook.py` parses the commands in the
+# runbook and never the ones inside a Python string, and every assertion on this
+# reason elsewhere stops at its `equity_dispute:` prefix.
+#
+# The oracle is the real parser and never a second copy of the sentence. A test
+# asserting the message equals some expected text would agree with whatever the
+# message happened to say, which is the tautology `tests/test_demo_runbook.py`
+# refuses in its own module docstring.
+
+#: A command a message tells a human to type. Backticks are how this repository
+#: marks one, in prose and in these strings alike. Distinct from
+#: `_BACKTICKED_SPAN` above on purpose: that one harvests `status` FIELD names
+#: out of the runbook, and widening either to serve both would break the other.
+_ADVERTISED = re.compile(r"`demo_run ([^`]+)`")
+
+#: Where a message an operator reads can be raised: Aegis, the demo runtime that
+#: wires it, and the CLI that prints what they say. Bounded on purpose -- a scan
+#: of the whole tree would read hundreds of files to check a handful of strings.
+_MESSAGE_SOURCES = (
+    Path(__file__).resolve().parents[1] / "chimera",
+    Path(__file__).resolve().parents[1] / "chimera" / "demo",
+    Path(__file__).resolve().parents[1] / "tools",
+)
+
+#: Which of those files must carry an advertised command, written out here by
+#: hand. Equality, not containment, and for `tests/test_demo_runbook.py`'s
+#: reason: a set harvested from the sources would agree with whatever the
+#: sources happened to say, and an empty harvest would agree with silence. A new
+#: message in a new file is a deliberate edit here, by a reviewer.
+EXPECTED_ADVERTISERS = frozenset({"risk_wiring.py"})
+
+
+def advertised_commands(text: str) -> list[str]:
+    """Every `demo_run ...` span in ``text``, each fed to the real parser.
+
+    Returns what it found rather than asserting on the count, so each caller can
+    refuse its own empty scan. A checker that silently matched nothing would keep
+    passing for as long as the thing it checks stayed broken.
+
+    Parseable is what this can prove, and it is not the same as runnable:
+    `--config` and `--root` are optional to argparse and required by
+    `demo_run._load`, so a command that parses here can still exit on a missing
+    one. That gap is what the runbook pointer in the message is for.
+    """
+    parser = demo_run.build_parser()
+    found = _ADVERTISED.findall(text)
+    for command in found:
+        parser.parse_args(shlex.split(command))
+    return found
+
+
+def test_the_command_the_equity_dispute_advertises_is_one_the_parser_accepts(tmp_path, capsys):
+    """The string read at 03:00, against the parser it will be typed at.
+
+    Read out of `risk.json`, which is where the runbook sends an operator and
+    not merely where it is convenient to look: `run` prints the RUNNER's halt
+    reason, and `_halt` keeps the FIRST one, so any earlier refusal -- a dirty
+    working tree, a regressed ledger -- stands in front of this dispute there
+    while Aegis still holds it underneath. The authoritative text is the one
+    Aegis persisted, and that is the one an operator acts on.
+    """
+    harness = _diverged(tmp_path)
+    config_path = written_config(tmp_path, harness)
+    argv = ["--config", str(config_path), "--root", str(harness.root), "--profile", "TEST"]
+
+    assert demo_run.main(argv + ["run"]) == demo_run.EXIT_HALTED
+    capsys.readouterr()
+    persisted = json.loads((harness.state_dir / "risk.json").read_text(encoding="utf-8"))
+
+    assert persisted["halted"] is True
+    assert persisted["halt_reason"].startswith("equity_dispute:")
+    assert advertised_commands(persisted["halt_reason"]), (
+        "the dispute must tell the operator how to settle it: `resume` does not "
+        "clear it and hand-editing a state file is forbidden, so the command named "
+        "here is the only way out of this halt"
+    )
+
+
+def test_no_operator_message_advertises_a_command_the_parser_would_refuse():
+    """The whole class, not just the one string that was wrong.
+
+    A message is the only documentation an operator has in front of them at the
+    moment they need it, and it is checked by nothing else: the runbook's
+    commands are parsed by `tests/test_demo_runbook.py`, the alert annotations by
+    `promtool`, and a command quoted in a Python string by neither.
+    """
+    advertisers: set[str] = set()
+    for directory in _MESSAGE_SOURCES:
+        assert directory.is_dir(), f"{directory} is not where the messages live"
+        for source in sorted(directory.glob("*.py")):
+            if advertised_commands(source.read_text(encoding="utf-8")):
+                advertisers.add(source.name)
+
+    assert advertisers == set(EXPECTED_ADVERTISERS), (
+        "a file started or stopped telling an operator what to type, and the list "
+        "above is where a reviewer says so"
+    )
+
+
+def test_the_advertised_command_check_catches_the_string_that_shipped():
+    """Negative control: the parser must be the thing doing the work."""
+    with pytest.raises(SystemExit):
+        advertised_commands('`demo_run resolve-equity --note "n"`')
+
+    assert advertised_commands("an operator decides which is right") == []

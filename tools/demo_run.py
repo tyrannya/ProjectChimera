@@ -6,10 +6,17 @@ Exactly six subcommands, as the plan lists them:
     status
     flatten --note TEXT
     resume --note TEXT
-    resolve --symbol S --note TEXT
+    resolve (--symbol S | --equity) --note TEXT
     report --day D
 
 "Every operator command writes a decision-log record with `kind = OPERATOR`."
+
+`resolve` clears one dispute, and which one is named rather than guessed:
+``--symbol`` is a leg's reconciliation dispute, ``--equity`` the one a restart
+raises when the persisted risk state and the carry ledger state different
+equities (R1-b). One or the other, never both and never neither, so the command
+cannot be run in the hope that it clears whatever it finds. Six subcommands
+still, as section 8.3 lists them.
 
 ``--note`` is REQUIRED on `flatten`, `resume` and `resolve`, and a note that is
 empty or only whitespace is refused. That matches
@@ -98,8 +105,14 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="leave HALT")
     resume.add_argument("--note", required=True)
 
-    resolve = sub.add_parser("resolve", help="clear a reconciliation dispute")
-    resolve.add_argument("--symbol", required=True)
+    resolve = sub.add_parser("resolve", help="clear one dispute")
+    which = resolve.add_mutually_exclusive_group(required=True)
+    which.add_argument("--symbol", help="a leg whose reconciliation is disputed")
+    which.add_argument(
+        "--equity",
+        action="store_true",
+        help="the restart equity dispute between risk.json and carry_ledger.json",
+    )
     resolve.add_argument("--note", required=True)
 
     report = sub.add_parser("report", help="summarise one day's decision log")
@@ -268,6 +281,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "resolve":
         note = _require_note(args.note, "resolve")
+        if args.equity:
+            # Started first, unlike the `--symbol` arm below. `resolve_equity`
+            # reads Aegis, and Aegis does not exist until `start()` builds it --
+            # which is also where the restart reconciliation runs and raises the
+            # halt this settles, so there is nothing to settle before it. The
+            # `--symbol` arm is left exactly as it was: making THAT one reachable
+            # from a fresh process is canonical R1-i's item ("`resume` and
+            # `resolve` succeed from the CLI via `start()` with log-tail clock
+            # seeding"), and changing it here would be taking that decision.
+            #
+            # Deliberately without `allow_dirty`: a dirty tree makes `start()`
+            # refuse and halt, but `RiskEngine.halt` keeps the FIRST reason, so
+            # the dispute survives and can still be settled. An operator is never
+            # locked out of a recovery path by the state of the working tree.
+            try:
+                runner.start()
+                outcome = runner.resolve_equity(note)
+            except RunnerError as exc:
+                print(str(exc), file=sys.stderr)
+                return EXIT_REFUSED
+            print(
+                json.dumps(
+                    {
+                        "resolved": "equity",
+                        "state": runner.state.value,
+                        "record": outcome.record_hash,
+                    }
+                )
+            )
+            return EXIT_OK
         try:
             outcome = runner.resolve(args.symbol, note)
         except RunnerError as exc:

@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -60,6 +61,37 @@ class LoadOutcome(str, Enum):
     MISSING = "MISSING"
     LOADED = "LOADED"
     UNREADABLE = "UNREADABLE"
+
+
+def _an_ancestor_is_not_a_directory(path: Path) -> bool:
+    """Is ``path`` blocked by an ancestor that exists and is not a directory?
+
+    Answers the question the platform did not, for the case where a missing path
+    COMPONENT was reported as a plain "not found". An ancestor that simply does
+    not exist yet is not a blockage; an ancestor that exists and is not a
+    directory is a filesystem that has stopped making sense, and the ledger fails
+    closed onto UNREADABLE rather than claiming the campaign never traded.
+
+    Any error examining an ancestor is itself unexaminable, so it counts as
+    blocked: this never turns an unknown into a confident "no".
+
+    :meth:`chimera.risk.RiskEngine._an_ancestor_is_not_a_directory` answers the
+    same question for the risk state file. It is restated here rather than
+    imported because the import would make `chimera.carry.ledger` -- the
+    accounting -- depend on Aegis, and the repository has no module both may
+    depend on instead. The two are a dozen lines of pure predicate with no state
+    between them; a shared home for them is worth making the day a third caller
+    needs one.
+    """
+    for ancestor in path.parents:
+        try:
+            mode = ancestor.stat().st_mode
+        except FileNotFoundError:
+            continue  # not created yet; keep looking for one that is
+        except OSError:
+            return True  # cannot even examine it
+        return not stat.S_ISDIR(mode)
+    return False
 
 
 def _decimal(value: Any, where: str) -> Decimal:
@@ -334,17 +366,8 @@ class CarryLedger:
             )
 
         location = Path(path)
-        if not location.exists():
-            return cls(
-                path=location,
-                state=CarryLedgerState(capital=capital, free_cash=capital),
-                outcome=LoadOutcome.MISSING,
-            )
 
-        try:
-            data = json.loads(location.read_text(encoding="utf-8"))
-            state = CarryLedgerState.from_dict(data)
-        except (OSError, ValueError, ArithmeticError, LedgerError, KeyError, TypeError) as exc:
+        def unreadable(exc: object) -> "CarryLedger":
             logger.critical(
                 "Carry ledger at %s could not be read (%s). The position is DISPUTED and "
                 "the file is left untouched: it is the only record of what this position "
@@ -356,6 +379,43 @@ class CarryLedger:
             damaged = CarryLedgerState(capital=capital, free_cash=capital)
             damaged.disputed = f"ledger_unreadable: {exc}"
             return cls(path=location, state=damaged, outcome=LoadOutcome.UNREADABLE)
+
+        # The READ decides whether there is a file, rather than `Path.exists()`
+        # deciding first. `exists()` answers False for a path it merely could not
+        # EXAMINE -- a parent that is not a directory, a symlink loop, a mount
+        # that has gone away -- so a ledger on a degraded filesystem loaded as
+        # MISSING, which this class states as "this campaign has never traded"
+        # and hands out as `free_cash == capital`. `RiskEngine._load_state`
+        # refuses the same substitution for its own file and says why.
+        #
+        # It became a safety boundary rather than only a bad report with R1-b:
+        # `chimera.demo.risk_wiring.seed_or_reconcile_equity` reads this outcome
+        # to decide whether a restart's persisted equity can be CHECKED at all,
+        # and MISSING is the one answer that lets the check pass without any
+        # accounting having been consulted. Absent must therefore mean absent.
+        try:
+            text = location.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            # Windows reports a path blocked by a non-directory ancestor as a
+            # plain "not found", so the ancestor is asked before the absence is
+            # believed. An ancestor that has simply not been created yet is not a
+            # blockage: a ledger inside a state directory nothing has made yet is
+            # genuinely absent, on both platforms.
+            if _an_ancestor_is_not_a_directory(location):
+                return unreadable(exc)
+            return cls(
+                path=location,
+                state=CarryLedgerState(capital=capital, free_cash=capital),
+                outcome=LoadOutcome.MISSING,
+            )
+        except OSError as exc:
+            return unreadable(exc)
+
+        try:
+            data = json.loads(text)
+            state = CarryLedgerState.from_dict(data)
+        except (ValueError, ArithmeticError, LedgerError, KeyError, TypeError) as exc:
+            return unreadable(exc)
 
         if state.capital != capital:
             state.disputed = (

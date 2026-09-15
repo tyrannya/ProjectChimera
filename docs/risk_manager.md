@@ -353,6 +353,66 @@ recording again from an empty state. It is **not** a resume: the engine stays
 halted with the reason it failed closed on, so "I have preserved the evidence"
 and "I accept trading from an empty state" are never the same keystroke.
 
+### What the read found: `load_outcome`
+
+The table above is a statement about what happens to the *engine*. `RiskEngine`
+also reports what the read *found*, as `load_outcome`, because a caller
+sometimes has to tell "there was no file" from "the file said the account was
+flat" — and the only place that can tell them apart is the read itself.
+
+| `RiskStateLoad` | the file |
+| --- | --- |
+| `MISSING` | absent, or no `state_path` was given: nothing has ever been persisted |
+| `LOADED` | a `chimera.risk-state/1` document, restored field for field |
+| `LEGACY` | the pre-schema halt record: a file existed, and it claimed nothing about equity |
+| `UNREADABLE` | a file existed and could not be believed; the engine failed closed |
+
+It is fixed for the engine's life, decides nothing by itself, and is not moved
+by `adopt_after_unreadable` — that is an operator's decision to start recording
+again, not a second reading of a file which by then is no longer there.
+
+The two cheap substitutes for asking it are both wrong in the case that matters.
+`Path.exists()` answers `False` for a path it merely could not examine, which is
+the trap two paragraphs above. And an equity that happens to equal the
+configured capital is *also* what a restarted campaign looks like after it has
+given back exactly its gains, so recognising a first start by comparing those
+two numbers mistakes a restart for one. `chimera.demo.risk_wiring.seed_or_reconcile_equity`
+is the demo's use of it: capital seeds equity on a first start, and on a restart
+the persisted equity is reconciled against the carry ledger instead of being
+replaced.
+
+### Settling a reconciled equity: `adopt_reconciled_equity`
+
+The sibling of `adopt_after_unreadable`, for the other thing a restart can find
+it cannot settle by itself: a persisted equity that does not match what the
+campaign's accounting says the account holds. The engine halts on that
+disagreement rather than choosing between the two, and this is the way out that
+does not require anybody to edit a state file.
+
+`adopt_reconciled_equity(equity, clearing=…, note=…)` takes the halt reason it
+answers and **checks it** rather than trusting the caller, so it can settle the
+equity dispute a restart raised and nothing else — not a drawdown breach, not a
+liquidation touch, not a kill switch, not a legacy halt. Like its sibling it
+requires a written reason.
+
+It records the adopted `equity`, raises `peak_equity` if the reading is a new
+high — never lowers it — recomputes `daily_pnl`, and then re-evaluates the two
+account guards against the adopted number through the same code `update_equity`
+uses. It does **not** roll the UTC day: rolling the day is a statement about a
+mark arriving in a new day, and manufacturing a day baseline out of an operator
+action is the same class of mistake as AEG-1 itself. Nothing else moves at all.
+
+If the adopted equity is itself a breach the engine stays halted on **that**,
+named, rather than on the dispute — which is why the dispute is cleared *before*
+the guards run: `halt` keeps the first reason, so leaving it standing would have
+swallowed a real breach behind the dispute it replaced.
+
+`chimera.demo.runner.DemoRunner.resolve_equity`, reached from the operator CLI as
+`demo_run resolve --equity --note`, is the demo's use of it: it reads what the
+carry ledger accounts for through the same function the reconciliation compares
+against — so the number written into Aegis is by construction the number the next
+start will compare, and the settlement cannot re-raise itself.
+
 ## Runner and operator notes
 
 The demo runner feeds Aegis four facts it cannot observe for itself. All four

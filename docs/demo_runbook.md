@@ -323,6 +323,123 @@ cursor, and starting from an empty cursor would reprocess minutes that already
 have records — two records for one minute, in an append-only log that cannot
 withdraw either.
 
+### What a restart does to Aegis's equity
+
+**A restart no longer re-seeds equity from the configured capital.** It used to:
+`build_risk_engine` ended with an unconditional `update_equity(capital)` that ran
+*after* the persisted state had been restored, and `update_equity` is a guard,
+not a setter. Two things followed, and you would have met both.
+
+* A campaign that had genuinely earned a peak of `capital / (1 -
+  max_drawdown_pct)` or more — for `pvc1.json`, 1,052,632 against the demo's
+  1,000,000 — **halted on its own startup** with a drawdown it had never taken,
+  measured from a peak it really had against an equity it did not have.
+* A restart across UTC midnight opened the new day's loss budget at `capital`
+  rather than at what the account was worth when the day rolled, so an account
+  legitimately down a few percent over several days had its whole cumulative
+  fall re-measured as one day's loss and halted on the first ordinary minute.
+
+Capital now seeds equity **only on a genuine first start** — read off whether
+there was a `risk.json` to restore, not off whether equity happens to equal
+capital, which is also what a campaign that gave back its gains looks like. On a
+restart the persisted `equity`, `peak_equity`, `day_start_equity`, `daily_pnl`,
+counters, cooldowns and funding state are all left exactly as the previous
+process wrote them, and the UTC day rolls on the first real mark rather than on
+construction.
+
+### Two halt reasons you can now meet at startup
+
+On a restart the persisted equity is **reconciled** against `carry_ledger.json`,
+which is the campaign's accounting authority. They agree exactly in an ordinary
+run — the runner hands `update_equity` the `float()` of the very `Decimal` the
+ledger recorded — so a disagreement means something happened to one of the two
+files. Neither is overwritten to make them agree:
+
+| `halt_reason` begins | what it means |
+| --- | --- |
+| `equity_dispute:` | `risk.json` and `carry_ledger.json` state different equities. The reason names both numbers. |
+| `equity_reconciliation:` | `carry_ledger.json` could not be read at all, so the claim in `risk.json` cannot be checked. |
+
+**Where to read the reason.** `status` reports `risk_halted` and the ledger's
+`last_equity`, and both are useful here — but its `halt_reason` field is the
+*runner's* own, which is only set by a `start()` in the same process, so for a
+halt raised while the engine was being built it prints `null`. The authoritative
+text is the `halt_reason` inside `risk.json`. Read that, and compare `risk.json`'s
+`equity` against the ledger's `last_equity` before deciding which file is wrong.
+The usual causes are a state directory restored from a partial backup, a file
+copied between hosts, a `carry_ledger.json` that was truncated, or the crash
+window named below.
+
+### Clearing an equity dispute
+
+```
+python -m tools.demo_run --config conf/demo/pvc1.json --root data resolve \
+    --equity --note "the ledger is the campaign's accounting; checked both files"
+```
+
+This is the one clearing path for this dispute, and it needs to exist rather than
+deferring to `resume`: **`resume` does not settle it.** `resume` clears the halt
+flag and changes neither equity, so the next process reads the same disagreement
+and halts again before a tick can re-synchronise them — which is why an earlier
+revision of this section was wrong to say the halt merely inherits section 7's
+open `resume` blocker. It does not. It needs its own command, and this is it.
+
+What it does, and what it refuses:
+
+* it adopts what the **carry ledger** accounts for as Aegis's equity, because the
+  ledger is where the campaign's cash and marks live and Aegis's equity is a
+  reading the runner hands it. Both files are left as they are otherwise; neither
+  is rewritten to match the other;
+* it records an `OPERATOR` decision-log entry naming both numbers and your note;
+* it moves `equity`, `peak_equity` (upward only — an adopted reading never lowers
+  a high-water mark) and `daily_pnl`, and **nothing else**: not the UTC day, not
+  the day's starting equity, not the order window, the cooldown, the loss streak,
+  the funding streak or any reconciliation dispute;
+* it **refuses** when there is no equity dispute, when Aegis is halted on anything
+  else — a drawdown breach, a liquidation touch, a kill switch — and when the
+  ledger may not speak. So it is not a second `resume` and cannot be used as one;
+* if the adopted equity is itself a breach, Aegis stays halted on **that**, named.
+  The dispute is still settled; what is left is a genuine halt you resume in the
+  ordinary way;
+* running it twice is refused the second time and changes nothing.
+
+For `equity_reconciliation:` the ledger is what could not be read, so restore
+`carry_ledger.json` from a copy at least as recent as the log's last
+`ledger_effect` and `FUNDING` records **first**; the command refuses until the
+ledger speaks for the campaign again. **Do not hand-edit `risk.json` or
+`carry_ledger.json`** — section 16, and for the reason section 7 gives.
+
+### Where a disagreement can actually come from
+
+The runner has exactly one writer into Aegis's equity — `tick`'s
+`update_equity(float(mark.equity))` — and five places that mark the ledger and
+persist it, so a crash is not the only way the two can part. An earlier revision
+of this section said it was, and that was wrong. Against the current runner:
+
+* **the crash window.** `tick` persists the ledger immediately *before* it calls
+  `update_equity`, so a process killed between those two statements leaves the
+  risk state one mark behind the ledger. The disagreement is real, the halt is
+  correct, and the two equities differ by a single minute's mark. Closing the
+  window means changing the runner's persistence ordering and its crash
+  semantics, which is **R1-i's** item, not this one — but it is now clearable,
+  with the command above;
+* **funding** marks and saves, then either the same tick reaches that one writer
+  or the runner halts;
+* **a liquidation touch** marks and saves and then halts. `halt` keeps the *first*
+  reason, so the restart reports the touch rather than the equity; the
+  disagreement is underneath it and surfaces if the touch is ever resumed, where
+  the command above settles it;
+* **`flatten` used to be the fourth**, and it needed no crash at all: it marked
+  the ledger, persisted it, and told Aegis nothing, so every ordinary operator
+  flatten left the two files disagreeing and halted the campaign on its next
+  start. That is fixed — `flatten` now hands the flattened equity to the same
+  single writer, under the same condition as the record it writes — so a flatten
+  followed by a restart runs rather than disputing.
+
+A disagreement therefore means a crash in that one window, a state directory
+restored in pieces, a file copied between hosts, or a truncated ledger — and not
+the routine operation of the campaign.
+
 ## 5. Recovery verification: the `STARTUP` and `RECOVER` checks
 
 ```

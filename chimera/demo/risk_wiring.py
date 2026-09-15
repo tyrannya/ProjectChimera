@@ -33,8 +33,11 @@ once, and :func:`check_exhaustive` refuses to import if that stops being true.
 A limit added to either type is then a loud failure everywhere rather than a
 silent default in one runner.
 
-This module opens no socket, reads no clock and makes no decision.
-:func:`risk_limits` is a pure function of its argument.
+This module opens no socket and makes no market decision. :func:`risk_limits` is
+a pure function of its argument; :func:`build_risk_engine` is the one place that
+touches the campaign's state directory, and :func:`seed_or_reconcile_equity`
+below is the one place that decides what a starting engine believes its equity
+to be.
 """
 
 from __future__ import annotations
@@ -44,8 +47,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from chimera.carry.ledger import CarryLedger, LoadOutcome
 from chimera.demo.config import COUNT_LIMITS, DemoConfig, DemoLimits
-from chimera.risk import RiskEngine, RiskLimits
+from chimera.risk import RiskEngine, RiskLimits, RiskStateLoad
 
 
 class RiskWiringError(ValueError):
@@ -246,6 +250,211 @@ def _coerce(demo_field: str, value: float) -> int | float:
     return int(value) if demo_field in _COUNTS else float(value)
 
 
+#: What a restart's reconciliation halts on when the two files state different
+#: equities. A prefix, because the reason names both numbers after it.
+EQUITY_DISPUTE_PREFIX = "equity_dispute:"
+
+#: What it halts on when the ledger could not be read at all, so the persisted
+#: claim cannot be checked against anything.
+EQUITY_RECONCILIATION_PREFIX = "equity_reconciliation:"
+
+
+def is_equity_reconciliation_halt(reason: str) -> bool:
+    """Whether ``reason`` is one of the two halts THIS module raises on a restart.
+
+    The clearing path (``DemoRunner.resolve_equity``) asks this rather than
+    matching the strings itself, so the reason a restart raises and the reason an
+    operator may settle cannot drift apart: a rewording here would otherwise
+    leave the campaign holding a halt no command would admit to recognising.
+    """
+    return reason.startswith(EQUITY_DISPUTE_PREFIX) or reason.startswith(
+        EQUITY_RECONCILIATION_PREFIX
+    )
+
+
+def ledger_equity(state_dir: Path | str, *, capital: Decimal | float) -> Decimal | None:
+    """What the campaign's accounting says the account is worth, or ``None``.
+
+    The carry ledger is the demo's accounting authority and this reads it through
+    its own loader, exactly as :func:`chimera.demo.inspection.inspect_demo_state`
+    and :func:`chimera.carry.factory.build_hedged_position` do. No second
+    accounting authority is created here and none may be: Aegis is the central
+    risk authority, the ledger is where the cash and the marks live, and this
+    function only asks the second what it already recorded.
+
+    ``None`` means the ledger could not speak -- it was UNREADABLE -- and is a
+    different answer from "the ledger has never been marked", which is a loaded
+    or absent ledger whose ``last_equity`` is ``None`` and whose equity is
+    therefore the configured capital. :func:`chimera.demo.runner.DemoRunner._portfolio`
+    already reads it that way (``ledger.last_equity if ... is not None else
+    self.capital``) and this repeats that contract rather than inventing a
+    second one.
+
+    That split is only worth as much as the loader's ability to tell the two
+    apart, and this is the caller that made it safety-relevant. ``CarryLedger.open``
+    used to decide "absent" with ``Path.exists()``, which answers ``False`` for a
+    path it merely could not EXAMINE -- so a ledger on a degraded mount read as
+    MISSING, which reads here as "worth the configured capital", which is an
+    accounting claim nothing had made. It now lets the read decide, as
+    :meth:`chimera.risk.RiskEngine._load_state` does, and an unexaminable file
+    reaches this function as ``None`` rather than as a number.
+    """
+    root = Path(state_dir)
+    ledger = CarryLedger.open(root / "carry_ledger.json", capital=Decimal(capital))
+    if ledger.outcome is LoadOutcome.UNREADABLE:
+        return None
+    last = ledger.state.last_equity
+    return Decimal(capital) if last is None else last
+
+
+def seed_or_reconcile_equity(
+    engine: RiskEngine, *, capital: Decimal | float, state_dir: Path | str
+) -> None:
+    """Seed equity on a first start; on a restart, reconcile instead of re-seeding.
+
+    ``build_risk_engine`` used to end with an unconditional
+    ``engine.update_equity(float(capital))``, which ran *after* the constructor
+    had already restored the persisted state. That one line is AEG-1. It did not
+    merely record a number: ``update_equity`` is a guard, and feeding it the
+    configured capital on every start made a restart lie to both account guards
+    and to the evidence at once.
+
+    * **The drawdown guard.** ``peak_equity`` survives a restart on purpose --
+      that is what `tests/test_risk_state_persistence.py` calls "the peak equity
+      survives a restart between the peak and the breach" -- while ``equity`` was
+      being put back to ``capital``. A campaign that had genuinely earned a peak
+      of ``capital / (1 - max_drawdown_pct)`` or better therefore halted on its
+      own startup, with a drawdown it had never taken, measured from a peak it
+      really had against an equity it did not have.
+    * **The daily-loss guard.** ``update_equity`` rolls the day when the UTC date
+      has changed and sets ``day_start_equity`` to the equity it was handed. A
+      restart across a UTC midnight thus opened the new day's loss budget at
+      ``capital`` rather than at what the account was actually worth. An account
+      legitimately down a few percent over several days then had its whole
+      cumulative fall re-measured as one day's loss, and halted on the first
+      ordinary minute of the new day.
+    * **The reported state.** ``equity``, ``peak_equity``, ``day_start_equity``
+      and ``daily_pnl`` are all hashed into ``risk.state_hash``, so a restart
+      moved the hash for a reason that was not a decision. Two runs over the same
+      recorded minutes stopped being comparable across a restart.
+
+    So capital seeds equity **only on a genuine first start**, and "genuine" is
+    read off :attr:`chimera.risk.RiskEngine.load_outcome` -- the read itself --
+    rather than inferred from an equity that happens to equal ``capital``, which
+    is also what a restarted campaign looks like after giving back exactly its
+    gains.
+
+    The four outcomes, and why each gets what it gets:
+
+    ``MISSING``
+        No file: nothing has ever been persisted, so there is nothing to
+        preserve and ``capital`` is the only claim available. Seed.
+
+        Whether a missing ``risk.json`` is itself suspicious -- because the
+        decision log already holds records for this campaign -- is **canonical
+        R1-c's** question and is deliberately not answered here. R1-c compares
+        the loaded snapshot with the log's last ``risk.state_hash``/HALT record
+        and writes a ``RECOVERY`` record; this function reads no log and writes
+        no record, so it neither implements nor forecloses that.
+    ``LEGACY``
+        The pre-schema document carried ``halted`` and nothing else. It makes no
+        claim about equity, so there is again nothing to preserve, and seeding is
+        exactly what this build did before. Its halt, if it had one, is already
+        restored and is untouched by the seed.
+    ``UNREADABLE``
+        The engine has failed closed onto a deliberately empty state, is halted,
+        and will not write that state over the file it could not read. Seeding
+        would put a fabricated equity into the one state whose whole meaning is
+        *the absence of a claim*. Do neither: no seed, and no reconciliation
+        against an account state that does not exist.
+    ``LOADED``
+        A restart carrying real persisted history. Do not touch the equity;
+        reconcile it instead.
+
+    **Reconciliation.** The comparison is exact and invents no tolerance,
+    because it is made in the domain the value actually travelled through. The
+    runner's only equity writer is
+    ``self.risk.update_equity(float(mark.equity))``, and ``mark.equity`` is the
+    same ``Decimal`` that ``CarryLedger.mark`` stored as ``last_equity`` one
+    statement earlier. The ledger round-trips its decimals through ``str``, so
+    ``float(ledger_equity)`` is bit-for-bit the number the engine was handed. A
+    tolerance here would not absorb rounding -- there is none to absorb -- it
+    would only decide how large a real disagreement may be before anybody is
+    told about it.
+
+    A disagreement is a **dispute**: the engine halts, naming both numbers, and
+    neither side is overwritten to make them agree. The persisted risk state
+    keeps every field it loaded (``halt`` writes the halt beside them, it does
+    not replace them) and the ledger file is not written at all. An operator
+    resolves it; this function never does.
+
+    An UNREADABLE ledger is the same dispute for a different reason: the
+    accounting truth is unavailable, so the reconciliation cannot be performed.
+    Skipping it in that case would make the guard removable by exactly the
+    failure it guards against. `DemoRunner.self_check` already refuses to start
+    on that ledger, so this adds no new refusal to the runner -- it makes
+    ``build_risk_engine`` itself honest for the callers that build an engine
+    without a runner.
+
+    Idempotent across repeated restarts: ``halt`` returns early when the engine
+    is already halted, so a second restart against the same disagreement writes
+    nothing and leaves ``risk.state_hash`` where the first one left it.
+
+    WHERE A DISAGREEMENT CAN COME FROM. The runner has exactly one writer into
+    Aegis's equity -- ``DemoRunner.tick``'s ``update_equity(float(mark.equity))``
+    -- and five places that mark the ledger and persist it. A crash is therefore
+    not the only way the two can part, and an earlier revision of this docstring
+    said it was. Enumerated against the current runner:
+
+    * ``tick``'s own mark is followed by that one writer, so an uninterrupted
+      minute leaves the two equal. A process killed BETWEEN the ledger write and
+      ``update_equity`` leaves the risk state one mark behind -- a real
+      disagreement, reported here. Closing that window means changing the
+      runner's persistence ordering and its crash semantics, which is canonical
+      **R1-i**, not this item; R1-b does not reorder the runner's writes.
+    * ``_funding``'s mark either falls through to that same writer later in the
+      tick, or the tick halts.
+    * both marks on the liquidation-touch path are followed by a halt, and
+      ``halt`` keeps the FIRST reason, so the restart reports the touch rather
+      than the equity. The disagreement is still on disk underneath it and
+      surfaces if the touch is ever resumed.
+    * ``DemoRunner.flatten`` marked, persisted, and told Aegis nothing -- so an
+      ordinary operator flatten, with no crash anywhere, left the two files
+      stating different equities and the campaign halting on its next start. That
+      was a real defect and it is fixed in the runner rather than tolerated here:
+      ``flatten`` now hands the flattened equity to the same single writer, under
+      the same ledger-may-speak condition as the record it writes.
+
+    So a disagreement reaching this function now means a crash in that one
+    window, a state directory restored in pieces, a file copied between hosts, or
+    a truncated ledger -- and not the routine operation of the campaign.
+    """
+    outcome = engine.load_outcome
+    if outcome is RiskStateLoad.UNREADABLE:
+        return
+    if outcome in (RiskStateLoad.MISSING, RiskStateLoad.LEGACY):
+        engine.update_equity(float(capital))
+        return
+
+    accounted = ledger_equity(state_dir, capital=capital)
+    if accounted is None:
+        engine.halt(
+            f"{EQUITY_RECONCILIATION_PREFIX} the persisted risk state was restored and "
+            "the carry ledger could not be read, so the equity it claims cannot be "
+            "checked against the campaign's accounting"
+        )
+        return
+    if float(accounted) != engine.state.equity:
+        engine.halt(
+            f"{EQUITY_DISPUTE_PREFIX} the persisted risk state says equity is "
+            f"{engine.state.equity!r} and the carry ledger accounts for {accounted}. "
+            "Neither is overwritten; an operator decides which is right, and "
+            '`demo_run resolve --equity --note "..."` is how they say so '
+            "(docs/demo_runbook.md, section 4, for the full invocation: the "
+            "subcommand named here still needs --config and --root)"
+        )
+
+
 def build_risk_engine(
     config: DemoConfig,
     *,
@@ -259,6 +468,9 @@ def build_risk_engine(
     setting, which is where the runner keeps everything else. Both entry points
     call this, so the engine a test drives is built exactly as the engine an
     operator runs.
+
+    ``capital`` is what a *first* start is worth and nothing else;
+    :func:`seed_or_reconcile_equity` holds the line between that and a restart.
     """
     root = Path(state_dir if state_dir is not None else config.runner_setting("state_dir"))
 
@@ -272,7 +484,7 @@ def build_risk_engine(
         kill_switch_path=root / "KILL_SWITCH",
         **kwargs,
     )
-    engine.update_equity(float(capital))
+    seed_or_reconcile_equity(engine, capital=capital, state_dir=root)
     return engine
 
 
