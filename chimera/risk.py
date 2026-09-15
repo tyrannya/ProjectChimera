@@ -56,6 +56,7 @@ import stat
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -92,6 +93,37 @@ _ORDER_WINDOW_S = 60.0
 #: much of the test suite. Evidence must be a function of committed inputs; a
 #: guard whose reach depends on the current directory is not a guard anyway.
 DEFAULT_KILL_SWITCH_PATH = Path("user_data/KILL_SWITCH")
+
+
+class RiskStateLoad(str, Enum):
+    """How :meth:`RiskEngine._load_state` found the state file. Never inferred later.
+
+    The answer :class:`chimera.carry.ledger.LoadOutcome` and
+    :class:`chimera.futures.store.FuturesStore` already give about their own
+    files, for the same reason: "there was no file" and "the file said the
+    account was flat" are different facts, and the only place that can tell them
+    apart is the read itself. One value more than theirs, because this file has
+    a legacy shape theirs do not. A caller that re-derives the answer afterwards --
+    from ``Path.exists()``, or from an equity that happens to equal the
+    configured capital -- is guessing, and both guesses are wrong in exactly the
+    case that matters.
+
+    ``LEGACY`` is its own answer rather than a kind of ``LOADED`` because the
+    pre-schema document carried a halt and nothing else: a file existed, and it
+    made **no claim about equity at all**. Folding it into either neighbour
+    would put a claim into one of them that the bytes on disk never made.
+    """
+
+    #: No file. This engine has never persisted anything: a genuine first start.
+    MISSING = "MISSING"
+    #: A :data:`RISK_STATE_SCHEMA` document, restored field for field.
+    LOADED = "LOADED"
+    #: The pre-schema halt record. It carries ``halted``/``halt_reason`` and no
+    #: account state, so nothing about equity, peak or the day was restored.
+    LEGACY = "LEGACY"
+    #: A file existed and could not be believed. The engine failed closed; see
+    #: :meth:`RiskEngine._fail_closed`.
+    UNREADABLE = "UNREADABLE"
 
 
 class RiskViolation(Exception):
@@ -328,11 +360,38 @@ class RiskEngine:
         #: Set when the state file existed and could not be believed. While it is
         #: set nothing may overwrite that file; see :meth:`_persist`.
         self._state_unreadable = False
+        #: What the read below found. ``MISSING`` until it says otherwise, which
+        #: is also the right answer for an engine given no ``state_path`` at all:
+        #: such an engine has no file to have been restored from.
+        self._load_outcome = RiskStateLoad.MISSING
         self._load_state()
         # Before anything can be approved, for an engine that was given a switch.
         # A kill switch consulted only when the caller remembers to consult it is
         # exactly the kind of guard this module's header refuses to rely on.
         self.check_kill_switch()
+
+    @property
+    def load_outcome(self) -> RiskStateLoad:
+        """What the constructor's read found on disk. Fixed for this engine's life.
+
+        It answers one question and no others: *was there a persisted state, and
+        did it carry an account?* A caller deciding whether this process is a
+        genuine first start has to ask the read, because every cheaper test is
+        wrong in the case that matters -- ``Path.exists()`` answers ``False`` for
+        a path it merely could not examine (see :meth:`_load_state`), and an
+        equity that happens to equal the configured capital is what a restarted
+        campaign looks like when it has given back exactly its gains.
+
+        What a caller then *does* with the answer is the caller's policy, not
+        this engine's; see :func:`chimera.demo.risk_wiring.seed_or_reconcile_equity`
+        for the demo's. This property deliberately makes no decision, so a later
+        change to that policy does not have to change the read.
+
+        It is not affected by :meth:`adopt_after_unreadable`: that is an
+        operator's decision to start recording again, not a second reading of a
+        file that is by then no longer there.
+        """
+        return self._load_outcome
 
     # ------------------------------------------------------------------
     # kill switch
@@ -600,6 +659,7 @@ class RiskEngine:
                     "halt record"
                 )
                 return
+            self._load_outcome = RiskStateLoad.LEGACY
             if raw.get("halted"):
                 self.state.halted = True
                 self.state.halt_reason = str(raw.get("halt_reason", "persisted halt"))
@@ -618,6 +678,7 @@ class RiskEngine:
         except (KeyError, TypeError, ValueError) as exc:
             self._fail_closed(f"unreadable persisted risk state: {exc}")
             return
+        self._load_outcome = RiskStateLoad.LOADED
         if self.state.halted:
             logger.critical(
                 "Starting in HALTED state from %s: %s",
@@ -640,6 +701,7 @@ class RiskEngine:
         """
         self.state = RiskState(halted=True, halt_reason=reason)
         self._state_unreadable = True
+        self._load_outcome = RiskStateLoad.UNREADABLE
         logger.critical("Starting in HALTED state: %s", reason)
 
     def adopt_after_unreadable(self, note: str) -> Path | None:
