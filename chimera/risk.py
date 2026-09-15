@@ -317,6 +317,65 @@ class RiskState:
         )
 
 
+def state_snapshot(state: RiskState) -> dict[str, Any]:
+    """The semantic state, for hashing into a decision log.
+
+    A free function rather than only a method, because the question "what is the
+    identity of the state on disk?" has to be answerable about a state **as
+    loaded**, before any caller has decided what to do with it.
+    :func:`chimera.demo.risk_continuity.risk_state_hash` asks it of the read-only
+    inspection snapshot, and asking the live engine instead would compare the
+    file against an identity that the very startup doing the comparing had
+    already moved.
+
+    Identical inputs must give identical bytes, so this carries the fields a
+    decision depends on and nothing that merely describes *this* process: no
+    write time, no state-file path, no host, no PID. ``updated_at`` therefore
+    stays in the file and out of here -- it changes on every write, including
+    writes that changed no decision, and a hash that moved for that reason would
+    report two identical states as different.
+
+    ``schema`` *is* included: it names the contract the other fields are to be
+    read under, so two states that agree field-for-field under different
+    contracts should not hash alike.
+
+    The derived drawdown is excluded for the same reason it is not persisted: it
+    is a function of ``peak_equity`` and ``equity``, both of which are here, so
+    carrying it would add a second reading of one fact rather than any
+    information.
+
+    The order window is reported as stored. :meth:`RiskEngine._prune_order_times`
+    runs at every mutation and before every write, which keeps this a pure
+    function of the state rather than of the clock at the moment somebody asked.
+    """
+    return {
+        "schema": RISK_STATE_SCHEMA,
+        "equity": float(state.equity),
+        "peak_equity": float(state.peak_equity),
+        "day_start_equity": float(state.day_start_equity),
+        "day": str(state.day),
+        "daily_pnl": float(state.daily_pnl),
+        "open_positions": {
+            key: float(state.open_positions[key]) for key in sorted(state.open_positions)
+        },
+        "order_times": [float(t) for t in state.order_times],
+        "consecutive_losses": int(state.consecutive_losses),
+        "cooldown_until": float(state.cooldown_until),
+        "halted": bool(state.halted),
+        "halt_reason": str(state.halt_reason),
+        "kill_switch": bool(state.kill_switch),
+        "stale_feed_since": (
+            None if state.stale_feed_since is None else float(state.stale_feed_since)
+        ),
+        "reconciliation_disputed": {
+            key: str(state.reconciliation_disputed[key])
+            for key in sorted(state.reconciliation_disputed)
+        },
+        "funding_adverse_streak": int(state.funding_adverse_streak),
+        "funding_halt": bool(state.funding_halt),
+    }
+
+
 def _position_sign(position_side: "PositionSide | str | None") -> int | None:
     """+1 for a long, -1 for a short, ``None`` when the side is neither.
 
@@ -838,55 +897,14 @@ class RiskEngine:
         ]
 
     def snapshot(self) -> dict[str, Any]:
-        """The semantic state, for hashing into a decision log.
+        """This engine's semantic state, for hashing into a decision log.
 
-        Identical inputs must give identical bytes, so this carries the fields a
-        decision depends on and nothing that merely describes *this* process: no
-        write time, no state-file path, no host, no PID. ``updated_at``
-        therefore stays in the file and out of here — it changes on every write,
-        including writes that changed no decision, and a hash that moved for
-        that reason would report two identical states as different.
-
-        ``schema`` *is* included: it names the contract the other fields are to
-        be read under, so two states that agree field-for-field under different
-        contracts should not hash alike.
-
-        The derived drawdown is excluded for the same reason it is not
-        persisted: it is a function of ``peak_equity`` and ``equity``, both of
-        which are here, so carrying it would add a second reading of one fact
-        rather than any information.
-
-        The order window is reported as stored. It is pruned at every mutation
-        and before every write, which keeps this a pure function of the state
-        rather than of the clock at the moment somebody asked.
+        The body is :func:`state_snapshot`, which the read-only inspection path
+        calls on a state it has loaded and not started. Keeping one
+        implementation is what makes "the hash in the log" and "the hash of the
+        file" the same question rather than two that happen to agree today.
         """
-        state = self.state
-        return {
-            "schema": RISK_STATE_SCHEMA,
-            "equity": float(state.equity),
-            "peak_equity": float(state.peak_equity),
-            "day_start_equity": float(state.day_start_equity),
-            "day": str(state.day),
-            "daily_pnl": float(state.daily_pnl),
-            "open_positions": {
-                key: float(state.open_positions[key]) for key in sorted(state.open_positions)
-            },
-            "order_times": [float(t) for t in state.order_times],
-            "consecutive_losses": int(state.consecutive_losses),
-            "cooldown_until": float(state.cooldown_until),
-            "halted": bool(state.halted),
-            "halt_reason": str(state.halt_reason),
-            "kill_switch": bool(state.kill_switch),
-            "stale_feed_since": (
-                None if state.stale_feed_since is None else float(state.stale_feed_since)
-            ),
-            "reconciliation_disputed": {
-                key: str(state.reconciliation_disputed[key])
-                for key in sorted(state.reconciliation_disputed)
-            },
-            "funding_adverse_streak": int(state.funding_adverse_streak),
-            "funding_halt": bool(state.funding_halt),
-        }
+        return state_snapshot(self.state)
 
     # ------------------------------------------------------------------
     # account state

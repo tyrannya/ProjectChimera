@@ -25,7 +25,7 @@ from chimera.carry.ledger import CarryLedger
 from chimera.demo.config import DemoConfig
 from chimera.demo.risk_wiring import risk_limits
 from chimera.futures.store import FuturesStore
-from chimera.risk import RiskEngine, RiskState
+from chimera.risk import RiskEngine, RiskState, RiskStateLoad
 
 if TYPE_CHECKING:  # pragma: no cover - imports used only by the active snapshot
     from chimera.carry.hedge import HedgedPosition
@@ -44,6 +44,15 @@ class DemoInspection:
     """The persisted fields ``status`` and pre-start recovery checks may read."""
 
     risk_state: RiskState
+    #: How ``risk.json`` was FOUND, not what it said. R1-c's continuity check
+    #: needs the read itself: ``Path.exists()`` answers ``False`` for a path it
+    #: merely could not examine, and an equity that happens to equal the
+    #: configured capital is what a restarted campaign looks like after giving
+    #: back exactly its gains. Carried here because the verdict has to be taken
+    #: from the state AS LOADED -- before ``build_risk_engine`` seeds a first
+    #: start or R1-b's reconciliation halts on a disagreement, either of which
+    #: would move the identity the log is about to be compared against.
+    risk_outcome: RiskStateLoad
     hedge_state: HedgeState
     spot_quantity: Decimal
     perp_quantity: Decimal
@@ -68,6 +77,7 @@ class DemoInspection:
         perp = position.leg("perp").quantity
         return cls(
             risk_state=risk.state,
+            risk_outcome=risk.load_outcome,
             hedge_state=position.state,
             spot_quantity=spot,
             perp_quantity=perp,
@@ -106,6 +116,7 @@ def inspect_demo_state(
     ledger = CarryLedger.open(root / "carry_ledger.json", capital=Decimal(capital))
     return DemoInspection(
         risk_state=risk.state,
+        risk_outcome=risk.load_outcome,
         hedge_state=HedgeState.FLAT,
         spot_quantity=spot_store.state.position(SPOT_SYMBOL).quantity,
         perp_quantity=perp_store.state.position(PERP_SYMBOL).quantity,

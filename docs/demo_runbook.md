@@ -347,7 +347,7 @@ counters, cooldowns and funding state are all left exactly as the previous
 process wrote them, and the UTC day rolls on the first real mark rather than on
 construction.
 
-### Two halt reasons you can now meet at startup
+### Two halt reasons the equity reconciliation can raise
 
 On a restart the persisted equity is **reconciled** against `carry_ledger.json`,
 which is the campaign's accounting authority. They agree exactly in an ordinary
@@ -439,6 +439,83 @@ of this section said it was, and that was wrong. Against the current runner:
 A disagreement therefore means a crash in that one window, a state directory
 restored in pieces, a file copied between hosts, or a truncated ledger — and not
 the routine operation of the campaign.
+
+### What a restart checks about `risk.json` itself
+
+The section above is about the *number* in `risk.json`. This one is about the
+file. **A missing `risk.json` used to be read as a first start**, because that is
+what an absent state file honestly means on a deployment that has never run —
+and the runner had no way of telling that deployment apart from a campaign whose
+file had been deleted. So removing one file cleared a persisted halt, reset the
+peak equity, the day's starting equity, the cooldown, the order-rate window, the
+funding streak and every open reconciliation dispute, re-seeded equity from the
+configured capital, and wrote nothing anywhere saying that it had happened.
+
+A restart now compares the risk state against the decision log beside it before
+anything is seeded or repaired, and a campaign that does not continue its own log
+refuses to start. The comparison is the log's newest **`risk.state_hash`** — the
+same hash the log already records on every `DECISION`, `FUNDING`,
+`RECONCILIATION` and `LIQUIDATION_TOUCH` — and its newest **`HALT`** record. Both
+are read by kind, not by position: `STARTUP`, `SHUTDOWN`, `INCOMPLETE_STATE`,
+`SKIPPED_STALE` and `RECOVERY` cannot move the risk state, so the check reads
+straight past them.
+
+`status` reports the verdict without starting anything, which is the command to
+run on a campaign that will not start:
+
+```
+python -m tools.demo_run --config conf/demo/pvc1.json --root data status
+```
+
+Read `risk_continuity.outcome`:
+
+| `outcome` | what it means |
+| --- | --- |
+| `FIRST_START` | the log holds no record, so there is nothing to continue. A pristine deployment. |
+| `CONTINUOUS` | the state continues the log. Normal. |
+| `STATE_AHEAD_OF_LOG` | the state holds an identity no record quotes: the process died between persisting Aegis and committing the record that quotes it. Recovered from, not refused — a `RECOVERY` record with cause `LOG_BEHIND_STATE` is written and the campaign carries on, exactly as it does for a store or a ledger that is ahead. |
+| `RISK_STATE_MISSING` | there is no `risk.json` and the log holds records. **Refused.** |
+| `RISK_STATE_UNREADABLE` | `risk.json` exists and could not be read or believed. **Refused.** The file is left exactly as it was found; nothing is written over it. |
+| `RISK_STATE_WITHOUT_ACCOUNT` | `risk.json` is the pre-schema halt record, which carries no equity, peak, day, streak or dispute. **Refused.** |
+| `HALT_NOT_HELD` | the log's newest `HALT` is followed by no `RESUME` and no `resolve-equity`, and the state on disk is not halted. **Refused.** |
+| `STATE_HASH_REGRESSED` | the state's identity is one the log records at an *earlier* record and not at its newest. The campaign has already moved past this state, so the file was rolled back or restored from an older copy. **Refused.** |
+
+Every refusal halts with a reason beginning `risk_continuity:` and writes one
+`RECOVERY` record with cause `RISK_STATE_DISCONTINUITY`, naming the identity it
+found and the record it compared against. **`resolve --equity` refuses while one
+stands**, and says so: a rolled-back `risk.json` usually disagrees with the
+ledger too, so the equity dispute is what Aegis ends up holding — and settling it
+would clear the halt on the strength of an answer to a different question, and
+leave an `OPERATOR` record where the comparison used to be. One record per
+discontinuity, not one per restart attempt. Read it with the day report (section 5); the reason itself
+is also in `risk.json`'s `halt_reason` once the refusal has persisted.
+
+**The recovery is to restore the file, not to clear the flag.** Take
+`risk.json` from a copy at least as recent as the log's last `risk.state_hash`
+record — the same kind of copy section 6 needs for `carry_ledger.json`, and with
+the same catch: a daily backup that predates this morning's settlement is not a
+usable restore point — and start again. **Do not hand-edit `risk.json`,** and in
+particular do not clear `halted` by hand: section 16, and for the reason section
+7 gives.
+
+**After a `RISK_STATE_MISSING` refusal there is a `risk.json` again, and it is not
+your campaign's.** A start has to build Aegis before it can halt it, and building
+it seeds a first start's equity and writes it down — so the refusal lands on a
+file that already exists, holding the configured capital and the halt. Treat it as
+a placeholder: the durable evidence that the file was missing is the `RECOVERY`
+record, and the backup goes straight over the placeholder. The second and every
+later start reports the same refusal from that file rather than a new one, and
+writes no second `RECOVERY` record.
+
+> **There is no CLI command that clears a `risk_continuity:` halt, and that is
+> the same open blocker section 7 records.** `resume` is what would clear it, and
+> `resume` refuses because the CLI's resume path never calls `start()` and so
+> never sees the halt that is on disk. Nothing here makes that worse: before
+> this check the same campaign started READY on a risk state nobody could
+> account for, which is not a recovery. Closing it is canonical **R1-i**
+> (`resume` and `resolve` reachable from the CLI via `start()` with log-tail
+> clock seeding), and until then a discontinuity is a stop-and-restore, not a
+> stop-and-resume.
 
 ## 5. Recovery verification: the `STARTUP` and `RECOVER` checks
 
