@@ -353,6 +353,34 @@ recording again from an empty state. It is **not** a resume: the engine stays
 halted with the reason it failed closed on, so "I have preserved the evidence"
 and "I accept trading from an empty state" are never the same keystroke.
 
+### What the read found: `load_outcome`
+
+The table above is a statement about what happens to the *engine*. `RiskEngine`
+also reports what the read *found*, as `load_outcome`, because a caller
+sometimes has to tell "there was no file" from "the file said the account was
+flat" — and the only place that can tell them apart is the read itself.
+
+| `RiskStateLoad` | the file |
+| --- | --- |
+| `MISSING` | absent, or no `state_path` was given: nothing has ever been persisted |
+| `LOADED` | a `chimera.risk-state/1` document, restored field for field |
+| `LEGACY` | the pre-schema halt record: a file existed, and it claimed nothing about equity |
+| `UNREADABLE` | a file existed and could not be believed; the engine failed closed |
+
+It is fixed for the engine's life, decides nothing by itself, and is not moved
+by `adopt_after_unreadable` — that is an operator's decision to start recording
+again, not a second reading of a file which by then is no longer there.
+
+The two cheap substitutes for asking it are both wrong in the case that matters.
+`Path.exists()` answers `False` for a path it merely could not examine, which is
+the trap two paragraphs above. And an equity that happens to equal the
+configured capital is *also* what a restarted campaign looks like after it has
+given back exactly its gains, so recognising a first start by comparing those
+two numbers mistakes a restart for one. `chimera.demo.risk_wiring.seed_or_reconcile_equity`
+is the demo's use of it: capital seeds equity on a first start, and on a restart
+the persisted equity is reconciled against the carry ledger instead of being
+replaced.
+
 ## Runner and operator notes
 
 The demo runner feeds Aegis four facts it cannot observe for itself. All four

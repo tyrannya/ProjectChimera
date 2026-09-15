@@ -323,6 +323,61 @@ cursor, and starting from an empty cursor would reprocess minutes that already
 have records — two records for one minute, in an append-only log that cannot
 withdraw either.
 
+### What a restart does to Aegis's equity
+
+**A restart no longer re-seeds equity from the configured capital.** It used to:
+`build_risk_engine` ended with an unconditional `update_equity(capital)` that ran
+*after* the persisted state had been restored, and `update_equity` is a guard,
+not a setter. Two things followed, and you would have met both.
+
+* A campaign that had genuinely earned a peak of `capital / (1 -
+  max_drawdown_pct)` or more — for `pvc1.json`, 1,052,632 against the demo's
+  1,000,000 — **halted on its own startup** with a drawdown it had never taken,
+  measured from a peak it really had against an equity it did not have.
+* A restart across UTC midnight opened the new day's loss budget at `capital`
+  rather than at what the account was worth when the day rolled, so an account
+  legitimately down a few percent over several days had its whole cumulative
+  fall re-measured as one day's loss and halted on the first ordinary minute.
+
+Capital now seeds equity **only on a genuine first start** — read off whether
+there was a `risk.json` to restore, not off whether equity happens to equal
+capital, which is also what a campaign that gave back its gains looks like. On a
+restart the persisted `equity`, `peak_equity`, `day_start_equity`, `daily_pnl`,
+counters, cooldowns and funding state are all left exactly as the previous
+process wrote them, and the UTC day rolls on the first real mark rather than on
+construction.
+
+### Two halt reasons you can now meet at startup
+
+On a restart the persisted equity is **reconciled** against `carry_ledger.json`,
+which is the campaign's accounting authority. They agree exactly in an ordinary
+run — the runner hands `update_equity` the `float()` of the very `Decimal` the
+ledger recorded — so a disagreement means something happened to one of the two
+files. Neither is overwritten to make them agree:
+
+| `halt_reason` begins | what it means |
+| --- | --- |
+| `equity_dispute:` | `risk.json` and `carry_ledger.json` state different equities. The reason names both numbers. |
+| `equity_reconciliation:` | `carry_ledger.json` could not be read at all, so the claim in `risk.json` cannot be checked. |
+
+Read them with `status`, which needs no `start()`, and compare `risk.json`'s
+`equity` against the ledger's `last_equity` by hand before you decide which file
+is wrong. The usual causes are a state directory restored from a partial backup,
+a file copied between hosts, or a `carry_ledger.json` that was truncated.
+
+**The clearing path is the one section 7 already records as an open blocker**, and
+this halt inherits it rather than adding a new one: `resume` from the CLI does
+not reach a runner that is halted on disk. **Do not hand-edit `risk.json` or
+`carry_ledger.json`** — section 16, and for the reason section 7 gives.
+
+**One benign case will produce `equity_dispute`, and it is known.** `DemoRunner.tick`
+persists the ledger immediately *before* it calls `update_equity`, so a process
+killed between those two statements leaves the risk state one mark behind the
+ledger. The disagreement is real and the halt is correct as far as this check can
+tell, but the cause is the crash rather than the files: the two equities will
+differ by a single minute's mark. Closing that window means changing the runner's
+persistence ordering and its crash semantics, which is R1-i's item, not this one.
+
 ## 5. Recovery verification: the `STARTUP` and `RECOVER` checks
 
 ```
