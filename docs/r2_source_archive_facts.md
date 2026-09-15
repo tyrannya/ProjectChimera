@@ -30,12 +30,32 @@ remains `null`. No real-money authority is created.
 
 ## Method
 
-This document draws on **three distinct evidence classes from three distinct
-sources**, kept apart deliberately because they cannot be verified the same way:
-archive **objects** retrieved and checksum-verified from the governed host; a
-**documentation** claim read from a commit-pinned repository; and archive
-**namespace enumeration** taken from a listing origin that is *not* the governed
-host and whose admissibility is unresolved.
+This document draws on several distinct evidence classes from distinct sources,
+kept apart deliberately because they cannot be verified the same way and **do
+not carry equal governance standing**. Each has its own numbered subsection
+below, and every claim this document makes about Binance's **archive, published
+documentation or API** belongs to exactly one of them:
+
+| Class | Source | Standing |
+|---|---|---|
+| **§ 1 — archive objects** | `data.binance.vision`, the allow-listed host | Governed; every quoted object `.CHECKSUM`-verified |
+| **§ 2 — documentation claims** | the `binance/binance-public-data` README, commit-pinned | A different host under different governance; evidence of what Binance *documents*, not of what the archive contains |
+| **§ 3 — namespace enumeration** | an S3 listing origin that is **not** the allow-listed host | **Weakest.** The repository's governed rule refuses it by name; admissibility **unresolved** |
+| **§ 4 — API access classification** | `binance/binance-futures-connector-python`, commit-pinned | Binance-authored source; establishes endpoint *access class* only — no endpoint was called |
+
+**No fixed number of classes is asserted here.** A count has already gone stale
+twice in this document's history — first at two when there were three, then at
+three when there were four — so the subsections themselves are the enumeration:
+an external source not covered by one of them is not evidence for anything
+asserted here.
+
+Two kinds of statement deliberately sit **outside** this scheme, because they
+are not claims about Binance at all. Claims about **this repository** — the
+governed acquisition rule, the recorder's event fields, the adopted roadmap —
+are verifiable by reading the repository at the base commit recorded above.
+Claims about **what this authoring container can reach** are facts about this
+host and are recorded separately under *Environment constraint* below; they are
+explicitly not evidence about the venue.
 
 ### 1. Archive object measurements — `data.binance.vision`
 
@@ -89,9 +109,10 @@ day: identical. A future `master` may differ; this revision cannot.
 
 ### 3. Namespace / listing evidence — an S3 origin that is NOT the allow-listed host
 
-**This is a third provenance class, and it is weaker than the other two. It is
-recorded here rather than folded into §1, because folding it in would make §1
-untrue.**
+**This is the weakest of the provenance classes — weaker than the archive
+objects of § 1, the commit-pinned documentation of § 2 and the commit-pinned
+connector source of § 4. It is recorded here rather than folded into §1, because
+folding it in would make §1 untrue.**
 
 Object presence and object content (§1) were obtained from the allow-listed host:
 
@@ -160,6 +181,37 @@ contract yet names an allowed listing source at all. This document does not
 invent a retroactive authorisation. It is carried as a **pre-live prerequisite**
 in the timing table below.
 
+### 4. API access classification — Binance's own connector, commit-pinned
+
+One further class, and it is load-bearing. What this document says about **which
+venue endpoint supplies leverage brackets, and what access class that endpoint
+carries** comes from Binance's own official Python connector — not from the
+archive, not from the public-data README, and not from the listing origin. It
+drives the credential prerequisite carried as a governed pre-live input below,
+so it is pinned and reproducible on the same terms as § 2:
+
+| Field | Value |
+|---|---|
+| Repository | `binance/binance-futures-connector-python` (Binance-owned) |
+| Commit | `a6bfbbf10fe2c1b4eb76fc24ffb82eb94bf9df89` |
+| `binance/um_futures/market.py` | 20 935 B, SHA-256 `9e55db014233d92bad66a90ec36212f1fada7f1f93a092ec5d6bc9298988659f` |
+| `binance/um_futures/account.py` | 39 751 B, SHA-256 `a2b143a57a68584fdb73facac49136617907f09382e1a59f8f88c92f62d824d2` |
+
+At that commit, `exchange_info()` is defined at `market.py:35` and returns
+`self.query(url_path)` — unsigned; `leverage_brackets()` is defined at
+`account.py:744`, is labelled by Binance *"Notional and Leverage Brackets
+(**USER_DATA**)"*, and returns `self.sign_request("GET", url_path, params)` —
+signed. The full side-by-side comparison is in *Archive families that exist*
+below.
+
+**What this class does and does not carry.** It is Binance-authored source, so
+it is good evidence of **endpoint identity and access class**. It is *not* an
+archive measurement, *not* a live probe — `fapi.binance.com` is **451** from
+this environment, so no endpoint was called — and *not* a statement about
+response content. Naming this provenance class creates **no authorisation** to
+call an authenticated endpoint and **no credential was invented, requested,
+provisioned or used**.
+
 ### Environment constraint that is a fact about this host, not about Binance
 
 From the container this session runs in:
@@ -218,9 +270,9 @@ anomalies*. A prerequisite phrased as "`exchangeInfo` is reachable" is therefore
 universe check, or discover only at collection time that an authenticated
 credential and a second daily snapshot are required.
 
-**Verified first-party**, from Binance's own official connector
-`binance/binance-futures-connector-python` at commit
-`a6bfbbf10fe2c1b4eb76fc24ffb82eb94bf9df89`:
+**Verified first-party** — this is the *Method § 4* provenance class — from
+Binance's own official connector `binance/binance-futures-connector-python` at
+commit `a6bfbbf10fe2c1b4eb76fc24ffb82eb94bf9df89`:
 
 | | `exchange_info()` | `leverage_brackets()` |
 |---|---|---|
@@ -516,7 +568,7 @@ already present (200)** for `klines`, `aggTrades` and `metrics`, while
 of D+1. This is an observation from a sampled publication on one date, not a
 contractual guarantee: the first-party README carries **no publication-latency
 commitment** for any futures family (see the documentation-coverage section
-below), so T+1 must be treated as current observed behaviour that may change
+above), so T+1 must be treated as current observed behaviour that may change
 without notice, and a recorder must not depend on it without its own check.
 
 On that observed behaviour, publication is *earlier* than the gen3 contract's
@@ -642,16 +694,33 @@ starts.
    only lowercase `"engineering"`/`"prospective"` in the heartbeat; the manifest
    field and verifier check are R1-o, which is unbuilt.
 
-Item 6 additionally means R2's stated acceptance criterion depends on an R1
-deliverable, although R1 and R2 are scheduled in parallel.
+The `evidence_class` input additionally means R2's stated acceptance criterion
+depends on an R1 deliverable, although R1 and R2 are scheduled in parallel.
 
-Items 1, 3 and 5 are the ones carrying the pre-live freeze requirement above.
+**This list is not the pre-live blocker set and must not be read as one.** The
+authoritative set is the freeze table above, which carries **eight rows — the
+seven governed inputs plus the open S3 provenance question** — and includes
+requirements this list does not itemise separately: the exact definition of
+**"core streams"** (noted here only inside the coverage-threshold item),
+**whether §18's leverage-bracket condition is retained** and how the signed
+`USER_DATA` access it needs is authorised, the **`gen4-preflight`
+contract-schema interpretation**, and the **S3 listing-origin** question.
+
+Of the inputs numbered above, those the freeze table requires to be frozen
+**before live acquisition begins** are the **core-stream coverage thresholds**,
+the **reference size / trade-through measurement method**, the **universe rule's
+operative details**, and the **Tier B storage/replay budget**. Only the
+**daily-return definition** and **`evidence_class = DIAGNOSTIC`** may be settled
+after collection starts, and only on the terms stated under *"what need not
+block acquisition"* above. Where this paragraph and the freeze table differ,
+**the table governs**: no index into this list is authority for what must be
+frozen.
 
 ## Reproducing this
 
 **There is no single-host reproduction path for this document, and none is
-offered.** The three evidence classes reproduce differently, and one of them
-cannot be reproduced on the governed host at all.
+offered.** Each evidence class reproduces differently, and one of them cannot be
+reproduced on the governed host at all.
 
 **1. Archive object measurements** — reproducible with `curl` against the one
 allow-listed archive host, using the **object-probe** command given under
@@ -671,12 +740,20 @@ against the allow-listed host, and no such path is claimed here. That origin is
 a distinct provenance class whose **governance admissibility remains
 unresolved**; it is carried as a pre-live prerequisite above.
 
+**4. API access classification** — reproducible from the commit-pinned connector
+recorded under **Method § 4**: fetch `binance/um_futures/market.py` and
+`binance/um_futures/account.py` at commit
+`a6bfbbf10fe2c1b4eb76fc24ffb82eb94bf9df89`, verify the two SHA-256 digests
+recorded there, and read the two function definitions. That reproduces the
+**classification**; it does not reproduce a live response, and reproducing one
+would require an authenticated call this document neither makes nor authorises.
+
 The governed-host absence probes in § 3 **corroborate** certain listing-derived
 claims but do **not** reproduce the enumeration: a 404 shows one object absent,
 while an empty listing shows an entire family absent. They are weaker evidence
 of a different shape, not a substitute.
 
-Neither statement extends to the venue's authenticated endpoints: the
+No statement in this section extends to the venue's authenticated endpoints: the
 `leverageBracket` dependency recorded above is signed `USER_DATA`, and **no
 credential was invented, requested, provisioned or used anywhere in producing
 this document**.
