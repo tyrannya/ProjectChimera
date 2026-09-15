@@ -569,6 +569,33 @@ def test_a_checkout_git_cannot_name_a_revision_for_is_dirty(tmp_path):
     assert demo_run._software(root)["revision"] == ""
 
 
+def test_an_identity_whose_dirty_is_unanswered_is_refused(monkeypatch):
+    """The `dirty is not None` conjunct, which no real-checkout witness reaches.
+
+    `source_identity` answers `dirty: None` when `git status` could not be run
+    while `ls-files` and `rev-parse` both succeeded -- a complete-looking
+    identity whose one load-bearing field is the unanswered one. `bool(None)`
+    is False, so without that conjunct this returns `dirty: False` and a
+    campaign starts on a tree nobody asked git about.
+
+    Stubbed rather than built from git, because that combination cannot be
+    produced by a real checkout on demand. It is safe to stub here only
+    because the real-checkout witnesses above already pin the call signature
+    and the by-key reads; this test pins neither and is not a substitute.
+    """
+    import nn.source_identity
+
+    monkeypatch.setattr(
+        nn.source_identity,
+        "source_identity",
+        lambda root: {"revision": "a" * 40, "source_digest": "b" * 64, "dirty": None},
+    )
+    block = demo_run._software()
+    assert block["dirty"] is True
+    assert block["revision"] == ""
+    assert block["source_digest"] == ""
+
+
 def test_this_checkout_identifies_itself_with_no_argument():
     """The call-signature witness: the default root is a real checkout.
 

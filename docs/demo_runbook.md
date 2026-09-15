@@ -64,8 +64,18 @@ profile, every `CAMPAIGN` stopped at `SELF_CHECK`.
 identification git only half-answered (a tree it can list but has no commit to
 name) still fails closed rather than reporting a clean tree it cannot name. So a
 genuinely clean checkout passes `SELF_CHECK` and a genuinely dirty one is still
-refused — which is what the refusal always meant. **Read a `dirty` halt at face
-value now: the working tree really is dirty.** Commit or stash, and run again.
+refused — which is what the refusal always meant.
+
+**Read the `revision` before reaching for `git stash`.** `dirty: true` is still
+also the FAIL-CLOSED answer when the identity could not be established at all —
+the tree is not a git checkout, git is unavailable, a `.py` file under a source
+root is hidden by `.gitignore`, or git named no revision for it — and the broad
+`except` discards the specific reason, so the halt text reads the same either
+way. The block tells the two apart: a genuinely dirty tree carries a real
+40-hex `revision` and `source_digest`, and every fail-closed case carries
+**empty** ones. A real revision means commit or stash and run again; an empty
+one means the runner could not identify its own source, and committing changes
+nothing.
 
 This repaired the identity block only. The other reasons a `CAMPAIGN` cannot yet
 be operated end to end are unchanged, and the first of them is that no
