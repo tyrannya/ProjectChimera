@@ -4,6 +4,11 @@
 **evidence_class:** `DIAGNOSTIC`.
 **Retrieved:** 2026-09-14 (UTC).
 **Base commit:** `13c34c4b89ff3f1a540d749ac41a3ef25aac04b3` (R0 adoption merge, PR #96).
+**Revised:** 2026-09-15, after independent read-only review of PR #98 returned
+REQUEST CHANGES. The corrections are **prose only** — provenance, scope, novelty
+and timing. The reviewer independently re-fetched and re-parsed the first-party
+objects and reproduced every measurement below exactly; **no measured value was
+changed**, and no remeasurement was performed to support the rewrite.
 
 ## What this document is, and is not
 
@@ -94,6 +99,12 @@ not as an inference from a single 404:
   `data/futures/um/daily/` or `data/futures/um/monthly/`.** A listing of
   `data/futures/um/daily/liquidationSnapshot/BTCUSDT/` returns
   `<IsTruncated>false</IsTruncated>` with **zero** `<Key>` entries.
+  The adopted corrected audit already records "there is **no
+  `liquidationSnapshot`** under `um/daily`", so the daily absence is a
+  reproduction, not a discovery. What R2 adds here is narrow and methodological:
+  the **monthly** path is checked too, and the absence is established by
+  *directory enumeration* — an empty listing — rather than by inferring absence
+  from a single 404 on a guessed key.
 - **No `bookTicker/` under `data/spot/daily/` or `data/spot/monthly/`.**
 - **No `exchangeInfo`/metadata family anywhere under `data/`.**
 
@@ -108,7 +119,7 @@ event set that a live-capture coverage ratio divides by, in the sense
 | `um` 1m klines | `futures/um/daily/klines/{SYM}/1m/` | 1 minute | `2026-09-13` (200) | **Yes** — complete minute enumeration |
 | `um` markPrice@1s | `futures/um/daily/markPriceKlines/{SYM}/1m/` | 1 **minute** | `2026-09-13` (200) | **Per-minute only** — see cadence mismatch below |
 | `um` bookTicker | `futures/um/{daily,monthly}/bookTicker/` | per update | **daily `2024-03-30`; monthly `2024-04`** | **No** — discontinued |
-| `um` aggTrade | `futures/um/daily/aggTrades/{SYM}/` | per trade | `2026-09-13` (200) | **Yes, and self-provable** — `agg_trade_id` is contiguous |
+| `um` aggTrade | `futures/um/daily/aggTrades/{SYM}/` | per trade | `2026-09-13` (200) | **Yes**; and `agg_trade_id` is contiguous in every archive sample tested, which makes internal gaps detectable — see the scope limits below |
 | `um` funding | `futures/um/monthly/fundingRate/{SYM}/` **monthly only** | per settlement | **`2026-08`** | Yes, at month-scale latency |
 | open interest (REST) | `futures/um/daily/metrics/{SYM}/` | **5 minutes** | `2026-09-13` (200) | **Not equivalent** — see below |
 | forceOrder | **none** | — | — | **No archive at all** |
@@ -117,7 +128,7 @@ event set that a live-capture coverage ratio divides by, in the sense
 | `spot` kline_1m (Lane B) | `spot/daily/klines/{SYM}/1m/` | 1 minute | `2026-09-13` (200) | **Yes** |
 | `spot` bookTicker (Lane B) | **none** | — | — | **No archive at all** |
 
-### bookTicker is discontinued — confirmed, with the exact boundary
+### bookTicker is discontinued — independently reproduced, nothing new found
 
 Probed directly:
 
@@ -130,14 +141,22 @@ futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2025-01-15.zip -> 404
 futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2026-09-10.zip -> 404
 ```
 
-The audit's claim that the futures bookTicker **daily** archive ended
-`2024-03-30` is **confirmed**. One refinement the audit prose does not carry:
-the **monthly** series has one further object, `BTCUSDT-bookTicker-2024-04.zip`
+The **monthly** series has one further object, `BTCUSDT-bookTicker-2024-04.zip`
 (200), and that is its last — `2026-06`, `2026-07`, `2026-08` all return 404,
-and the monthly key listing ends at `2024-04`. Neither series reaches a 2026
-prospective period, so the operative conclusion is unchanged and the gen3
-contract's statement — that no contemporary first-party archive publishes a
-minute denominator for `um.bookTicker` — holds on current evidence.
+and the monthly key listing ends at `2024-04`.
+
+**Both halves of this were already recorded by the adopted corrected audit, and
+R2 discovered neither.** `docs/governance/r0_adoption_2026-09-14/ProjectChimera_full_audit_and_master_roadmap_2026-09-14_corrected.md`
+states, in bold: "**`bookTicker` daily objects end 2024-03-30 and monthly
+2024-04** for BTCUSDT/ETHUSDT/SOLUSDT". What this section contributes is
+**independent first-party reproduction** of that fact on 2026-09-14 — the daily
+boundary probed either side, and the monthly tail confirmed by key listing
+rather than by a single probe — not a refinement, and not a new object.
+
+Neither series reaches a 2026 prospective period, so the operative conclusion is
+unchanged and the gen3 contract's statement — that no contemporary first-party
+archive publishes a minute denominator for `um.bookTicker` — holds on current
+evidence.
 
 ### metrics is 5-minute cadence — confirmed
 
@@ -208,7 +227,7 @@ recorder's own self-attested health metrics (sequence-number continuity in the
 diff-depth stream being the strongest available internal check), not from
 reconciliation against a published truth.
 
-### aggTrade is the one stream whose completeness is self-provable
+### aggTrade carries a contiguous identifier, and what that does and does not prove
 
 `futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-09-12.zip`, checksum
 verified (`c259f9306f0a5d30f965971234b7ba766db35f45f4a6f06dee9d8171c9253cd7`),
@@ -219,13 +238,33 @@ Parsed: `n = 296171`, `min = 3447734194`, `max = 3448030364`, `span = 296171`,
 duplicates `0`, sorted ascending — so the `agg_trade_id` sequence is **perfectly
 contiguous**.
 
-This matters more than it first appears. Every other stream's coverage has to be
-established by comparing the recorder's capture against an externally published
-set. For `aggTrade`, completeness is checkable **by identifier arithmetic on the
-capture alone**: a gap in the recorder's own `agg_trade_id` chain is proof of
-loss without reference to any archive. That makes `aggTrade` the strongest
-verification surface R2 can offer, and it is worth R4's attention when
-verification classes are frozen.
+The independent reviewer of this PR reproduced the same property on three
+further symbol-days — BTCUSDT `2026-09-11` (n = span = 1 722 572), ETHUSDT
+`2026-09-12` (426 423) and SOLUSDT `2026-09-12` (186 131) — each contiguous,
+zero duplicates, sorted. So the property is not a single-file accident.
+
+**What this supports, stated exactly.** Within an observed `agg_trade_id`
+sequence, a gap is detectable by identifier arithmetic on that sequence alone,
+without comparison against a published denominator. That is a genuinely useful
+internal check and no other R2 stream offers it.
+
+**What it does not establish**, and must not be read as:
+
+- It does **not** prove a live recorder capture is complete. The measurement is
+  a property of *archive objects*. Carrying it to a live capture additionally
+  requires that the live stream's identifier carries the same semantics and that
+  capture continuity relates to it in the assumed way. `fapi.binance.com` is
+  **451** from this environment, so the live payload semantics were **not**
+  independently verified here, and that relationship is asserted by nobody.
+- It does **not** prove `aggTrade` represents every venue event. The adopted
+  corrected audit's standing caveat holds unchanged: "`aggTrade` excludes
+  insurance-fund and ADL trades, so neither is a complete record". Contiguity is
+  completeness *of the published aggregate-trade series*, not of trading
+  activity.
+
+So this is a candidate verification *method* worth R4's attention when
+verification classes are frozen — not a self-certifying completeness guarantee,
+and not a basis for a stronger class than the live-semantics evidence supports.
 
 The `trades` stream does **not** share this property. On the same day,
 `BTCUSDT-trades-2026-09-12.zip` (checksum verified,
@@ -290,10 +329,14 @@ any liquidation family carry **no first-party availability, cadence or
 continuity commitment** there.
 
 This is not a reason to avoid those streams — R2 measures what is actually
-published. It is a reason to record that **six of the streams R2 depends on are
-empirically observed rather than contractually documented**, which is exactly
-the freedom under which `bookTicker` and the USD-M liquidation archive were
-withdrawn without notice. R4 should weigh that when it assigns verification
+published. It is a reason to record that **six of the streams R2 itself depends
+on are empirically observed rather than contractually documented**, which is
+exactly the freedom under which `bookTicker` and the USD-M liquidation archive
+were withdrawn without notice. The six, enumerated so the count is recoverable:
+**`markPriceKlines`, `bookTicker`, `metrics` (OI), `bookDepth` (Tier B),
+`fundingRate`, and any liquidation family**. (`indexPriceKlines` and
+`premiumIndexKlines` are also undocumented but are not R2 streams, so they are
+outside this count.) R4 should weigh that when it assigns verification
 classes, and no R2 measurement should be read as a guarantee of future
 publication.
 
@@ -316,29 +359,87 @@ already present (200)** for `klines`, `aggTrades` and `metrics`, while
 `Last-Modified` header on `BTCUSDT-1m-2026-09-13.zip` is
 `Mon, 14 Sep 2026 09:05:01 GMT`.
 
-Daily publication is therefore **T+1**, landing in the morning UTC of D+1 —
-*earlier* than the gen3 contract's "once per UTC day, for day D-2"
-reconciliation cadence, which consequently carries roughly a day of margin
-rather than running at the edge. `fundingRate` is the exception and is
-month-scale, as above.
+**Observed** daily publication is therefore **T+1**, landing in the morning UTC
+of D+1. This is an observation from a sampled publication on one date, not a
+contractual guarantee: the first-party README carries **no publication-latency
+commitment** for any futures family (see the documentation-coverage section
+below), so T+1 must be treated as current observed behaviour that may change
+without notice, and a recorder must not depend on it without its own check.
+
+On that observed behaviour, publication is *earlier* than the gen3 contract's
+"once per UTC day, for day D-2" reconciliation cadence, so the cadence carries
+margin rather than running at the edge. The size of that margin depends on the
+hour the reconciliation job runs — roughly 15 h if it runs at 00:00 UTC on day
+D, longer if it runs later in the day — and is not a fixed day.
+
+`fundingRate` is the exception and is month-scale, as above.
 
 ## Contradictions and refinements against the prior audit
 
 | Audit claim | Status on current first-party evidence |
 |---|---|
-| futures bookTicker daily archive ended 2024-03-30 | **Confirmed.** Refinement: one further *monthly* object exists (`2024-04`); it is the last. |
+| "**`bookTicker` daily objects end 2024-03-30 and monthly 2024-04**" | **Confirmed, both halves.** R2 adds nothing here: the monthly tail was already the audit's finding. R2's contribution is independent first-party reproduction — the daily boundary probed either side, the monthly tail read off the key listing. |
 | `metrics` at 5-minute cadence | **Confirmed** (288 rows/day, verified checksum). |
-| `bookDepth` is a sampled band file only | **Confirmed** (24 band rows per minute sample). |
-| `forceOrder` is `DESCRIPTIVE_ONLY` | **Consistent, and materially stronger than stated.** The correct record is **ABSENT**, not "ended": no `liquidationSnapshot/` or `forceOrder/` prefix exists under `futures/um/daily/` or `futures/um/monthly/` at all. An ended stream leaves usable history; this one leaves none at any date. |
+| `bookDepth` is a sampled band file (~30 s cadence, ±1–5% bands), not L2 | **Confirmed**, with the structure stated precisely: **12 rows per snapshot** (bands ±0.20, 1, 2, 3, 4, 5) at **~2 snapshots per minute** (2880 snapshots/day, ~30 s jittered), i.e. 24 rows per minute across two distinct snapshots — never 24 rows in one. R2 adds the ±0.20 band and the mid-file 10→12 band change on `2026-01-15`. |
+| `forceOrder` is `DESCRIPTIVE_ONLY`; "there is **no `liquidationSnapshot`** under `um/daily`" | **Confirmed.** The daily absence is the audit's own finding, reproduced. R2 adds only that the **monthly** path is equally empty, and that both were established by directory enumeration rather than by a single 404. The record for the archive family is therefore **ABSENT** at any date, not "ended" — an ended stream leaves usable history; this one leaves none. |
 
-No contradiction of the audit's archive facts was found. What this session adds
-is: the monthly-bookTicker tail; the complete *absence* (not discontinuation) of
-a USD-M liquidation archive family; the T+1 publication latency; `aggTrade`'s
-self-provable completeness; and the four parser hazards above.
+No contradiction of the audit's archive facts was found.
+
+**What this session independently reproduced** (already recorded by the adopted
+corrected audit, and *not* discovered here): the bookTicker daily end
+`2024-03-30` **and** its monthly tail `2024-04`; the absence of any
+`liquidationSnapshot` under `um/daily`; `metrics` at 5-minute cadence;
+`bookDepth` as a sampled band file at ~30 s cadence; `fundingRate` monthly-only;
+and archive mutability.
+
+**What this session actually adds**, stated without inflation:
+
+- the **monthly**-path check for the liquidation family, and directory
+  enumeration (empty listing) rather than single-404 inference as the method for
+  all three load-bearing absences;
+- the absence of any `exchangeInfo`/metadata family **anywhere** under `data/`,
+  and its consequence for the candidate-universe admissibility rule;
+- the measured `bookDepth` structure — 12 bands including **±0.20**, ~2
+  snapshots/minute, and the 10→12 band change *inside* `2026-01-15`;
+- the `metrics` row-order and early-file duplication facts, with the transition
+  bracketed between `2021-05-20` and `2021-05-25`;
+- the `aggTrade` identifier contiguity **and its scope limits**, together with
+  the contrasting `trades` gaps that show the check must not be transplanted;
+- the observed T+1 publication latency, as an observation and not a guarantee;
+- the four parser hazards above;
+- and, throughout, per-object `.CHECKSUM` verification so each number is
+  reproducible rather than taken on trust.
 
 ## Governed inputs this document does NOT supply
 
-These remain open and are escalated rather than invented here:
+These remain open and are escalated rather than invented here. **None of their
+values is chosen in this document**, and none may be chosen by an authoring
+session; they are governance inputs.
+
+### Timing: what must be frozen BEFORE live R2 begins
+
+The following **MUST be resolved and frozen before the 30-consecutive-day live
+R2 preflight begins**, because each one either decides which data is eligible,
+decides how the universe is constructed, or is an input to R2's own
+kill/deferral rule — and a value chosen after observing the 30-day run would be
+a threshold or a universe selected on the result:
+
+| Input | Why it cannot wait |
+|---|---|
+| **gen4 coverage thresholds** | An input to the R2 kill rule ("≥ 2 of the 30 days failing coverage thresholds for core streams"). Selecting the threshold after seeing the days' coverage is choosing a pass mark from the result. |
+| **The exact definition of "core streams"** | The same kill rule's stream set. Choosing which streams count after seeing which ones degraded is the same defect by another route. |
+| **The candidate-universe mechanical rule** — exact volume field (`quote_volume` vs base `volume`), the tie-break, and the named selection date | Decides *which ~20 symbols are recorded at all*. A symbol not captured cannot be added retroactively, so this is a hard precondition on starting collection, not a reporting detail. It is additionally gated on `exchangeInfo`, which has no archive path and is 451 from this environment. |
+| **The Tier B storage/replay budget** | The second half of the kill rule ("Tier B cost beyond budget → Tier B shrinks or is deferred"). An undefined budget makes that condition unevaluable, and a budget set after measuring the cost is the same post-hoc selection. It is also an owner spend decision, inseparable from authorising the second host. |
+
+### Timing: what need not block acquisition
+
+| Input | Standing |
+|---|---|
+| **Trade-through reference-size semantics** | Collection itself does **not** depend on a single fixed size: trade-through is computable after the fact from captured `aggTrade`, `bookTicker` and depth data. A later R2 diagnostic may therefore report the cost envelope **as a function of size over a declared size grid**, which breaks the R2↔R3 circularity without anyone inventing a trading size. **No R3 trading size is selected here**, and the selection of the single deciding size remains R3's. |
+| **The daily-return definition** | Must be **frozen before the correlation / effective-N diagnostic is computed**, because effective-N feeds R3's power calculation — but it does not block raw data acquisition. |
+| **`evidence_class = DIAGNOSTIC` as a machine-checkable value** | Required **before final R2 report acceptance**, not before collection, for as long as R1-o remains the owning implementation. |
+
+### The inputs themselves
 
 1. **Core-stream coverage thresholds for gen4.** gen3's contract fixes
    `published_coverage >= 0.995`, `wallclock_coverage < 0.990 → RECORDER_OUTAGE`,
@@ -364,6 +465,8 @@ These remain open and are escalated rather than invented here:
 
 Item 6 additionally means R2's stated acceptance criterion depends on an R1
 deliverable, although R1 and R2 are scheduled in parallel.
+
+Items 1, 3 and 5 are the ones carrying the pre-live freeze requirement above.
 
 ## Reproducing this
 
