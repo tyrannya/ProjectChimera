@@ -449,7 +449,9 @@ def seed_or_reconcile_equity(
             f"{EQUITY_DISPUTE_PREFIX} the persisted risk state says equity is "
             f"{engine.state.equity!r} and the carry ledger accounts for {accounted}. "
             "Neither is overwritten; an operator decides which is right, and "
-            "`demo_run resolve-equity --note` is how they say so"
+            '`demo_run resolve --equity --note "..."` is how they say so '
+            "(docs/demo_runbook.md, section 4, for the full invocation: the "
+            "subcommand named here still needs --config and --root)"
         )
 
 
