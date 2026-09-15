@@ -336,6 +336,18 @@ def _status(runner: DemoRunner) -> dict[str, Any]:
         "last_minute_processed": runner.cursor.last_minute_processed,
         "last_record_hash": runner.last_record_hash,
         "risk_halted": inspection.risk_state.halted,
+        # R1-c. Decided at construction from the read-only snapshot, so it is
+        # available here for the same reason `ledger_may_speak` is: `status`
+        # never calls `start()`, and a campaign that cannot start is exactly the
+        # one an operator runs this command on. `outcome` is the verdict,
+        # `reason` is the halt text a start would raise, and both come from the
+        # files as found rather than from anything this process has written.
+        "risk_continuity": {
+            "outcome": runner.risk_continuity.outcome.value,
+            "risk_state_load": runner.risk_continuity.load.value,
+            "disputed": runner.risk_continuity.disputed,
+            "reason": runner.risk_continuity.reason or None,
+        },
         # The one read-only inspection command must not report a ledger the guard
         # has refused as if it were the campaign's. `_ledger_regression` is
         # decided in `__init__`, so it is available here without `start()` --
