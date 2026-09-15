@@ -721,3 +721,83 @@ def test_a_campaign_is_refused_on_a_genuinely_dirty_tree(tmp_path, checkout):
     assert harness.runner.software["dirty"] is True
     assert harness.runner.start() is RunnerState.HALT
     assert "source_identity" in (harness.runner.halt_reason or "")
+
+
+# ---------------------------------------------------------------------------
+# `resolve --equity`: R1-b's clearing path, driven through main()
+# ---------------------------------------------------------------------------
+# The parser is checked by `tests/test_demo_runbook.py` and the semantics by
+# `tests/test_r1b_persisted_equity.py`. What is checked HERE is the thing both of
+# those take on trust: that the operator can actually reach it. The dispute this
+# settles is re-raised at every construction, so a command that parses but does
+# not run would leave a campaign with no permitted way out.
+
+
+class _SimulatedKill(Exception):
+    """Stands in for a SIGKILL arriving at one exact statement."""
+
+
+def _diverged(tmp_path: Path):
+    """A real disagreement, made the way the runner really makes one.
+
+    The kill lands between `_save_ledger()` and `update_equity()` in `tick` --
+    R1-b's known window. Nothing is hand-edited.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    first = harness.first_minute_ms()
+    harness.run(479, start=first)
+
+    def killed(*args, **kwargs):
+        raise _SimulatedKill()
+
+    harness.runner.risk.update_equity = killed
+    with pytest.raises(_SimulatedKill):
+        harness.tick(first + 479 * 60_000)
+    return harness
+
+
+def test_resolve_equity_settles_the_dispute_and_the_campaign_runs_again(tmp_path, capsys):
+    """The whole operator recovery, through the CLI, as separate invocations."""
+    harness = _diverged(tmp_path)
+    config_path = written_config(tmp_path, harness)
+    argv = ["--config", str(config_path), "--root", str(harness.root), "--profile", "TEST"]
+
+    assert demo_run.main(argv + ["run"]) == demo_run.EXIT_HALTED
+    assert "equity_dispute" in json.loads(capsys.readouterr().out)["reason"]
+
+    assert (
+        demo_run.main(argv + ["resolve", "--equity", "--note", "ledger is right"])
+        == demo_run.EXIT_OK
+    )
+    settled = json.loads(capsys.readouterr().out)
+    assert settled["resolved"] == "equity"
+    assert settled["record"]
+
+    assert demo_run.main(argv + ["run"]) == demo_run.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["state"] != RunnerState.HALT.value
+
+
+def test_resolve_equity_refuses_rather_than_clearing_nothing(tmp_path, capsys):
+    """No dispute, so the command changes nothing and says so on stderr."""
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(3)
+    config_path = written_config(tmp_path, harness)
+    argv = ["--config", str(config_path), "--root", str(harness.root), "--profile", "TEST"]
+
+    assert demo_run.main(argv + ["resolve", "--equity", "--note", "nothing is wrong"]) == (
+        demo_run.EXIT_REFUSED
+    )
+    assert "no equity dispute to settle" in capsys.readouterr().err
+
+
+def test_resolve_names_which_dispute_it_is_clearing(tmp_path):
+    """One or the other, never both and never neither."""
+    parser = demo_run.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["resolve", "--note", "n"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["resolve", "--symbol", "BTC/USDT", "--equity", "--note", "n"])
+    assert parser.parse_args(["resolve", "--equity", "--note", "n"]).equity is True
+    assert (
+        parser.parse_args(["resolve", "--symbol", "BTC/USDT", "--note", "n"]).equity is False
+    )
