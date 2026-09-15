@@ -161,27 +161,56 @@ def _load(args: argparse.Namespace) -> DemoRunner:
     )
 
 
-def _software() -> dict[str, Any]:
-    """The revision block section 9.1 stamps into every record."""
+#: The checkout whose source `_software` identifies. `tools/` sits directly
+#: under the repository root, so the root is this file's grandparent -- the same
+#: derivation `nn/p2b.py` uses for the same call.
+CHECKOUT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _software(root: Path | None = None) -> dict[str, Any]:
+    """The revision block section 9.1 stamps into every record.
+
+    ``root`` is the checkout to identify and defaults to this one. It is a
+    parameter because the only honest test of the CAMPAIGN self-check is
+    against a *real* checkout that is genuinely clean and then genuinely dirty,
+    and a test cannot dirty the checkout it is itself running from.
+
+    The block is built from fail-closed values that a COMPLETE identification
+    replaces, and never the other way round. `source_identity` REQUIRES its
+    ``root`` and returns a MAPPING: calling it bare raised `TypeError` on every
+    run, and reading the mapping with `getattr` then yielded ""/""/False -- so
+    once the first half was fixed alone, a genuinely dirty tree would have
+    reported itself CLEAN and a campaign would have run on source nobody could
+    reconstruct. Both halves are load-bearing, which is why the keys below are
+    read by key and why an incomplete identity does not reach the caller.
+    """
+    revision = ""
+    digest = ""
+    dirty = True
     try:
         from nn.source_identity import source_identity
 
-        identity = source_identity()
-        return {
-            "revision": getattr(identity, "revision", ""),
-            "source_digest": getattr(identity, "source_digest", ""),
-            "dirty": bool(getattr(identity, "dirty", False)),
-            "python": sys.version.split()[0],
-        }
+        identity = source_identity(CHECKOUT_ROOT if root is None else Path(root))
+        found_revision = identity.get("revision")
+        found_digest = identity.get("source_digest")
+        found_dirty = identity.get("dirty")
+        # `revision` and `dirty` are `None` when git could not be asked, and
+        # `bool(None)` is False: falling through on a partial answer would claim
+        # a clean tree on the strength of a question nobody answered.
+        if found_revision and found_digest and found_dirty is not None:
+            revision = str(found_revision)
+            digest = str(found_digest)
+            dirty = bool(found_dirty)
     except Exception:
         # A runner that cannot establish its own revision says so rather than
         # claiming one; SELF_CHECK then refuses a campaign on the dirty flag.
-        return {
-            "revision": "",
-            "source_digest": "",
-            "dirty": True,
-            "python": sys.version.split()[0],
-        }
+        pass
+    return {
+        "revision": revision,
+        "source_digest": digest,
+        "dirty": dirty,
+        "python": sys.version.split()[0],
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:

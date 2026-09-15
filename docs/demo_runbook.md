@@ -49,17 +49,38 @@ is preregistered and both the hash and the parameters are committed; until then
 they are exercised against a `TEST` or `SOAK` configuration the operator writes
 and does not commit.
 
-**0.2 A `CAMPAIGN` run stops at `SELF_CHECK` on this build.**
-`tools/demo_run.py::_software()` cannot establish the source identity — it calls
-`nn.source_identity.source_identity()` with no argument where the function
-requires a root, and then reads attributes off what is in fact a dict — so both
-failures fall into its `except Exception` and the block it returns carries
-`"dirty": true`. `DemoRunner.self_check` refuses a run with `dirty` unless
-`--allow-dirty`, and `--allow-dirty` is refused on a `CAMPAIGN` profile. The
-refusal is right; the reason it fires is a defect. Repairing it belongs to the
-change that owns the runner, not to this document, which records it so an
-operator is not left guessing at a halt whose cause is a bug in the identity
-block rather than a dirty working tree.
+**0.2 The source-identity halt is REPAIRED (R1-a). A `dirty` halt now means a
+dirty tree.**
+Until R1-a, `tools/demo_run.py::_software()` could not establish the source
+identity — it called `nn.source_identity.source_identity()` with no argument
+where the function requires a root, and then read attributes off what is in fact
+a dict — so both failures fell into its `except Exception` and the block it
+returned carried `"dirty": true`. **Every** run declared a dirty tree, however
+clean the checkout, and since `DemoRunner.self_check` refuses a run with `dirty`
+unless `--allow-dirty`, and `--allow-dirty` is itself refused on a `CAMPAIGN`
+profile, every `CAMPAIGN` stopped at `SELF_CHECK`.
+
+`_software` now passes the checkout root and reads the mapping by key, and an
+identification git only half-answered (a tree it can list but has no commit to
+name) still fails closed rather than reporting a clean tree it cannot name. So a
+genuinely clean checkout passes `SELF_CHECK` and a genuinely dirty one is still
+refused — which is what the refusal always meant.
+
+**Read the `revision` before reaching for `git stash`.** `dirty: true` is still
+also the FAIL-CLOSED answer when the identity could not be established at all —
+the tree is not a git checkout, git is unavailable, a `.py` file under a source
+root is hidden by `.gitignore`, or git named no revision for it — and the broad
+`except` discards the specific reason, so the halt text reads the same either
+way. The block tells the two apart: a genuinely dirty tree carries a real
+40-hex `revision` and `source_digest`, and every fail-closed case carries
+**empty** ones. A real revision means commit or stash and run again; an empty
+one means the runner could not identify its own source, and committing changes
+nothing.
+
+This repaired the identity block only. The other reasons a `CAMPAIGN` cannot yet
+be operated end to end are unchanged, and the first of them is that no
+`CAMPAIGN` configuration can build a runner at all — see the fourth entry in
+section 1.
 
 **0.3 `tools.demo_run run` is one bounded catch-up pass, not a daemon.** It
 processes at most `max_catchup_minutes` minutes — 3 by default — closes the log
@@ -99,19 +120,30 @@ runner has the state machine for one; the CLI does not run it. That is a runner
 gap, recorded here rather than hidden behind a restart policy that makes a
 bounded pass look like a service.
 
-A fourth, about which profile can reach any of this. `tools/demo_run.py::_software`
-calls `nn.source_identity.source_identity()` with no argument, and that function
-requires a `root`. The `TypeError` is caught by the surrounding
-`except Exception`, which reports `dirty: True` — so **every** run declares a
-dirty tree, however clean the checkout is. `SELF_CHECK` then refuses a `CAMPAIGN`
-profile, and `--allow-dirty` is itself refused for `CAMPAIGN`, so on that profile
-the runner reaches `HALT` and no `DECISION`, `FUNDING`, `RECONCILIATION`,
-`LIQUIDATION_TOUCH`, `SKIPPED_STALE` or `INCOMPLETE_STATE` record is ever
-written. A `CAMPAIGN` that has only ever run as one holds `STARTUP` and `HALT`
-and nothing else on this build — `OPERATOR` included. The CLI's `flatten` does
-call `start(allow_dirty=True)` itself, which appends a `STARTUP` and a `HALT` of
-its own, but it then refuses instead of acting: no `CAMPAIGN` start reaches the
-tick loop, because `SELF_CHECK` halts before `RECOVER`, so
+A fourth, about which profile can reach any of this. **This entry was written
+when `_software` declared every tree dirty; R1-a repaired that (section 0.2), and
+the paragraphs below have not been re-derived for the runtime that repair
+exposes.** Read them as the record of a build whose `CAMPAIGN` halted at
+`SELF_CHECK`, and re-check anything you are about to rely on.
+
+What holds today is the conclusion, not the cause. A `CAMPAIGN` still reaches no
+`DECISION`, `FUNDING`, `RECONCILIATION`, `LIQUIDATION_TOUCH`, `SKIPPED_STALE` or
+`INCOMPLETE_STATE` record — but it now stops **before a runner is built at all**,
+not at `SELF_CHECK`: `chimera/demo/config.py` refuses a `CAMPAIGN` carrying
+`rules` while `protocol_hash` is null, and `CarryRule` has no defaults, so
+`tools.demo_run` raises *"R1_carry needs min_basis, …"* out of `_load`. The
+committed `conf/demo/pvc1.json` is refused for exactly that reason. Repairing it
+means freezing the S2 protocol, which is a later phase's, so it is not repaired
+here. The account that follows — of what a `CAMPAIGN` log holds, and of what
+`flatten` does on that profile — describes the `SELF_CHECK` halt and no longer
+describes how a `CAMPAIGN` fails.
+
+The account, as it stood: a `CAMPAIGN` that has only ever run as one holds
+`STARTUP` and `HALT` and nothing else on this build — `OPERATOR` included. The
+CLI's `flatten` does call `start(allow_dirty=True)` itself, which appends a
+`STARTUP` and a `HALT` of its own, but it then refuses instead of acting: no
+`CAMPAIGN` start reaches the tick loop, because `SELF_CHECK` halts before
+`RECOVER`, so
 `cursor.last_minute_processed` is still null and `flatten` stops on *"nothing has
 been processed yet, so there is nothing to flatten"* — before
 `_require_recordable`, before either leg moves, and before the `OPERATOR` append.
@@ -122,9 +154,10 @@ directory some `SOAK` or `TEST` run already advanced hands `flatten` a minute an
 this stops holding. Do not do that for a second reason: the two runs would share
 one decision log under two `config_hash` values.) `resume` refuses on this
 profile too (section 7), and `resolve` cannot run from the CLI at all (a fifth,
-below). Reaching any other kind needs a `SOAK` or `TEST` profile, and
-there a `run` with `--allow-dirty` first, because `self_check` refuses a dirty
-tree on **every** profile and this bug makes every tree read as dirty. That is a
+below). Reaching any other kind needs a `SOAK` or `TEST` profile. That no longer
+requires `--allow-dirty` on a clean checkout: `self_check` still refuses a dirty
+tree on **every** profile, but since R1-a a clean tree reads as clean, so reserve
+the flag for a tree you know is dirty and mean to run anyway. That is a
 necessary condition and not a promise that each remaining kind is then reachable:
 `RESUME` stays out of reach on those profiles as well, because the CLI arrives at
 `resume` without `start()` and the runner is therefore never in `HALT` (section
@@ -482,10 +515,12 @@ sentence and not the current verdict, so **the command to trust here is
 the ledger as loaded, it needs no `start()`, and after a correct restore it says
 `ledger_may_speak: true, ledger_complaint: null` while `run` is still repeating
 the old halt text. On a `CAMPAIGN` profile the verdict never reaches `run`'s
-output at all, because `self_check` returns the `source_identity` failure of
-section 0.2 before it ever reaches the ledger — so `status` is the only command
-you can ask for it. (A muted `flatten` prints the complaint on stderr too, but
-that is a side effect of an action, not somewhere you can go and look.)
+output at all — before R1-a because `self_check` returned the `source_identity`
+failure of section 0.2 first, and now because no `CAMPAIGN` configuration builds
+a runner (section 1, fourth entry). So `status` is the only command you can ask
+for it, and on a `CAMPAIGN` not even that. (A muted `flatten` prints the
+complaint on stderr too, but that is a side effect of an action, not somewhere
+you can go and look.)
 
 **What `status` cannot tell you.** It reports plenty besides the ledger verdict —
 `risk_halted`, `halt_reason`, `hedge_state`, `disputed`, the cursor and the
@@ -499,9 +534,12 @@ raised. `risk_halted` is your one true signal there, and it does read true.
 So a clean ledger verdict means the ledger may speak, not that the campaign is
 well; read `risk_halted` beside it, and treat `disputed` as unanswered rather
 than answered "no". On a `CAMPAIGN` profile `reconstruct` is not reached on any
-CLI path today, so that dispute shows up nowhere at all — but that follows from
-the `source_identity` defect of section 0.2 halting first, so if that defect is
-ever repaired this paragraph must be re-checked rather than trusted.
+CLI path today, so that dispute shows up nowhere at all. This paragraph asked to
+be re-checked if the `source_identity` defect of section 0.2 were ever repaired:
+R1-a repaired it, and the conclusion survives for a different reason — no
+`CAMPAIGN` configuration builds a runner yet (section 1, fourth entry), so no
+CLI path on that profile reaches `reconstruct` either. Re-check it again when
+that is repaired.
 
 One more halt reason section 6 will show you that nobody asked for: on a
 `CAMPAIGN` profile the CLI's `flatten` calls `start(allow_dirty=True)` on your

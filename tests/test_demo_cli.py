@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from chimera.demo.config import config_hash
 from chimera.demo.runner import RunnerState
+from nn.source_identity import SOURCE_ROOTS
 from tests.demo_harness import CARRY_PARAMS, DAY, build, campaign_config
 from tools import demo_run
 
@@ -464,3 +467,257 @@ def test_the_config_hash_does_move_with_a_rule_parameter(tmp_path):
         tmp_path / "s", rules={"R1_carry": {**CARRY_PARAMS, "min_basis": "999"}}
     )
     assert config_hash(a) != config_hash(b)
+
+
+# --- R1-a: the software block, against a real checkout -----------------------
+#
+# `_software` called `source_identity()` with no argument -- it REQUIRES a root
+# -- so every call raised `TypeError`, fell into the fail-closed branch, and
+# reported `dirty: True`. No CAMPAIGN could start. The second half is why this
+# section exists at all: the identity is a MAPPING and was read with `getattr`,
+# so repairing only the call signature would have yielded `revision: ""` and
+# `dirty: False` and let a campaign run on a tree nobody could reconstruct.
+#
+# The witnesses below run against REAL git checkouts built in a temporary
+# directory, not against a stubbed identity: a test that stubs `source_identity`
+# passes happily while the real call signature is still wrong, which is exactly
+# how this survived.
+#: A git object id, as `git rev-parse HEAD` prints it: 40 lowercase hex under
+#: the SHA-1 object format and 64 under SHA-256. Git supports both through
+#: `git init --object-format`, and `source_identity` passes `rev-parse HEAD`
+#: through verbatim without assuming a length, so a witness that required
+#: SHA-1 would fail on a SHA-256 checkout the runner had in fact identified
+#: correctly. Both lengths exactly -- not "hex of any length", which would
+#: accept a truncated or abbreviated id that names no object.
+GIT_OBJECT_ID = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+#: `source_digest` is NOT a git object id: it is `hashlib.sha256` over the
+#: source material, computed by `nn.source_identity` itself, so it is 64 hex
+#: whatever object format the checkout uses. It stays pinned to exactly that.
+HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
+@pytest.fixture
+def checkout(tmp_path: Path) -> Path:
+    """A real git checkout shaped from `SOURCE_ROOTS`, not a stub.
+
+    Built here rather than imported from `tests/test_source_identity.py`, whose
+    module imports pull the whole ML stack in behind `nn.p2b_compare`; this
+    module is the demo CLI's and needs none of it. The roots come from
+    `nn.source_identity` so the fixture follows what the digest actually covers.
+    """
+    return build_checkout(tmp_path / "checkout")
+
+
+def build_checkout(root: Path, *, object_format: str | None = None) -> Path:
+    """Build the fixture's checkout, optionally under a named object format.
+
+    ``object_format`` is the one knob, and it exists because the revision the
+    runner records is whatever `git rev-parse HEAD` prints, which is 40 hex
+    under SHA-1 and 64 under SHA-256.
+    """
+    for name in SOURCE_ROOTS:
+        (root / name).mkdir(parents=True)
+        (root / name / "__init__.py").write_text(f'"""{name}"""\n', encoding="utf-8")
+    (root / "nn" / "engine.py").write_text("VALUE = 1\n", encoding="utf-8")
+    init = ["git", "init", "-q"]
+    if object_format is not None:
+        init += ["--object-format", object_format]
+    subprocess.run(init + [str(root)], check=True, capture_output=True)
+    run = ["git", "-C", str(root)]
+    for args in (
+        ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "test"],
+        ["add", "-A"],
+        ["commit", "-qm", "initial"],
+    ):
+        subprocess.run(run + args, check=True, capture_output=True)
+    return root
+
+
+def test_a_genuinely_clean_checkout_is_identified_and_reported_clean(checkout):
+    """The positive half: a real clean checkout names itself and is not dirty."""
+    block = demo_run._software(checkout)
+    assert block["dirty"] is False
+    assert GIT_OBJECT_ID.match(block["revision"]), block["revision"]
+    assert HEX64.match(block["source_digest"]), block["source_digest"]
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_a_checkout_is_identified_under_either_git_object_format(
+    tmp_path: Path, object_format: str
+):
+    """The revision is whatever git prints, and git prints two lengths.
+
+    Requiring SHA-1 failed a SHA-256 checkout that `_software` had identified
+    perfectly well -- the assertion was pinning git's object format rather than
+    anything the runner does. Both formats are real: `git init --object-format`
+    supports each, and a host may default to either.
+    """
+    root = build_checkout(tmp_path / object_format, object_format=object_format)
+    block = demo_run._software(root)
+
+    assert block["dirty"] is False
+    assert GIT_OBJECT_ID.match(block["revision"]), block["revision"]
+    # The digest is the repository's own sha256 over the source, not a git
+    # object id, so it is 64 hex under both formats.
+    assert HEX64.match(block["source_digest"]), block["source_digest"]
+
+    expected = 40 if object_format == "sha1" else 64
+    assert len(block["revision"]) == expected, block["revision"]
+
+    # And the negative half still holds under this format.
+    (root / "nn" / "engine.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert demo_run._software(root)["dirty"] is True
+
+
+@pytest.mark.parametrize(
+    "revision",
+    [
+        "",
+        "a" * 39,
+        "a" * 41,
+        "a" * 63,
+        "a" * 65,
+        "A" * 40,
+        "g" * 40,
+        "a" * 39 + "z",
+        "HEAD",
+        "sha256:" + "a" * 40,
+        " " + "a" * 40,
+    ],
+)
+def test_a_malformed_revision_is_not_a_git_object_id(revision: str):
+    """The widening admits two lengths, not arbitrary hex.
+
+    The fix for the SHA-256 case must not become "any hex string": an
+    abbreviated or truncated id names no object, and neither does an uppercase
+    or prefixed one. This is the control that keeps the matcher honest.
+    """
+    assert GIT_OBJECT_ID.match(revision) is None, revision
+
+
+def test_a_genuinely_dirty_checkout_is_reported_dirty(checkout):
+    """The negative half, and the `getattr` witness.
+
+    `getattr(mapping, "dirty", False)` is False for every mapping, so this is
+    the assertion that fails if the identity is ever read as an attribute again.
+    """
+    clean = demo_run._software(checkout)
+    assert clean["dirty"] is False
+
+    (checkout / "nn" / "engine.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    dirty = demo_run._software(checkout)
+    assert dirty["dirty"] is True
+    # Still identified: a dirty tree names the revision it departed from.
+    assert GIT_OBJECT_ID.match(dirty["revision"])
+
+
+def test_an_untracked_python_file_under_a_source_root_is_dirty(checkout):
+    """Modification is not the only way to become unreconstructible."""
+    (checkout / "nn" / "smuggled.py").write_text("VALUE = 3\n", encoding="utf-8")
+    assert demo_run._software(checkout)["dirty"] is True
+
+
+def test_a_tree_that_is_not_a_checkout_fails_closed(tmp_path):
+    """The fail-closed branch, still reached, and still dirty rather than clean."""
+    block = demo_run._software(tmp_path)
+    assert block == {
+        "revision": "",
+        "source_digest": "",
+        "dirty": True,
+        "python": sys.version.split()[0],
+    }
+
+
+def test_a_checkout_git_cannot_name_a_revision_for_is_dirty(tmp_path):
+    """An identity git only half-answered is refused, not averaged out.
+
+    `source_identity` reports `revision: None` with `dirty: False` for a tree
+    git can list but has no commit to name -- `bool(None)` is False, so a block
+    built field by field would claim a CLEAN tree while naming no source at all,
+    and the campaign whose records exist to say what produced them would start.
+    """
+    root = tmp_path / "uncommitted"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    assert demo_run._software(root)["dirty"] is True
+    assert demo_run._software(root)["revision"] == ""
+
+
+def test_an_identity_whose_dirty_is_unanswered_is_refused(monkeypatch):
+    """The `dirty is not None` conjunct, which no real-checkout witness reaches.
+
+    `source_identity` answers `dirty: None` when `git status` could not be run
+    while `ls-files` and `rev-parse` both succeeded -- a complete-looking
+    identity whose one load-bearing field is the unanswered one. `bool(None)`
+    is False, so without that conjunct this returns `dirty: False` and a
+    campaign starts on a tree nobody asked git about.
+
+    Stubbed rather than built from git, because that combination cannot be
+    produced by a real checkout on demand. It is safe to stub here only
+    because the real-checkout witnesses above already pin the call signature
+    and the by-key reads; this test pins neither and is not a substitute.
+    """
+    import nn.source_identity
+
+    monkeypatch.setattr(
+        nn.source_identity,
+        "source_identity",
+        lambda root: {"revision": "a" * 40, "source_digest": "b" * 64, "dirty": None},
+    )
+    block = demo_run._software()
+    assert block["dirty"] is True
+    assert block["revision"] == ""
+    assert block["source_digest"] == ""
+
+
+def test_this_checkout_identifies_itself_with_no_argument():
+    """The call-signature witness: the default root is a real checkout.
+
+    `source_identity()` without its `root` raises `TypeError`, which the
+    fail-closed branch swallows into an empty revision. Asserting a real
+    revision here is what makes that regression visible instead of silent.
+    """
+    block = demo_run._software()
+    assert GIT_OBJECT_ID.match(block["revision"]), block["revision"]
+    assert HEX64.match(block["source_digest"]), block["source_digest"]
+
+
+def _campaign_runner(tmp_path, checkout):
+    """A runner on the CAMPAIGN profile whose software block is a real identity.
+
+    The profile is forced the way `test_allow_dirty_is_refused_for_a_campaign_profile`
+    already forces it: the committed CAMPAIGN configuration cannot build a runner
+    while `protocol_hash` is null (`chimera/demo/config.py` refuses a CAMPAIGN
+    carrying `rules` until the protocol that froze them is named), and that is a
+    separate R1 item.
+    """
+    harness = build(tmp_path, start=False)
+    config = harness.runner.config
+    object.__setattr__(config, "profile", type(config.profile).CAMPAIGN)
+    harness.runner.software = demo_run._software(checkout)
+    return harness
+
+
+def test_a_campaign_passes_self_check_on_a_genuinely_clean_tree(tmp_path, checkout):
+    """The behaviour R1-a restores: a clean campaign starts."""
+    harness = _campaign_runner(tmp_path, checkout)
+    assert harness.runner.software["dirty"] is False
+    assert harness.runner.start() is RunnerState.READY
+    assert harness.runner.halt_reason is None
+
+
+def test_a_campaign_is_refused_on_a_genuinely_dirty_tree(tmp_path, checkout):
+    """The behaviour R1-a must not lose: a dirty campaign is refused.
+
+    Driven by real `git status` rather than by setting the flag by hand, so it
+    fails if the identity is ever read as an attribute or built from a root the
+    runner does not actually run from.
+    """
+    (checkout / "chimera" / "__init__.py").write_text("# edited\n", encoding="utf-8")
+    harness = _campaign_runner(tmp_path, checkout)
+    assert harness.runner.software["dirty"] is True
+    assert harness.runner.start() is RunnerState.HALT
+    assert "source_identity" in (harness.runner.halt_reason or "")
