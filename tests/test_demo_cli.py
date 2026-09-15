@@ -482,7 +482,18 @@ def test_the_config_hash_does_move_with_a_rule_parameter(tmp_path):
 # directory, not against a stubbed identity: a test that stubs `source_identity`
 # passes happily while the real call signature is still wrong, which is exactly
 # how this survived.
-HEX40 = re.compile(r"\A[0-9a-f]{40}\Z")
+#: A git object id, as `git rev-parse HEAD` prints it: 40 lowercase hex under
+#: the SHA-1 object format and 64 under SHA-256. Git supports both through
+#: `git init --object-format`, and `source_identity` passes `rev-parse HEAD`
+#: through verbatim without assuming a length, so a witness that required
+#: SHA-1 would fail on a SHA-256 checkout the runner had in fact identified
+#: correctly. Both lengths exactly -- not "hex of any length", which would
+#: accept a truncated or abbreviated id that names no object.
+GIT_OBJECT_ID = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+#: `source_digest` is NOT a git object id: it is `hashlib.sha256` over the
+#: source material, computed by `nn.source_identity` itself, so it is 64 hex
+#: whatever object format the checkout uses. It stays pinned to exactly that.
 HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
@@ -495,13 +506,25 @@ def checkout(tmp_path: Path) -> Path:
     module is the demo CLI's and needs none of it. The roots come from
     `nn.source_identity` so the fixture follows what the digest actually covers.
     """
-    root = tmp_path / "checkout"
+    return build_checkout(tmp_path / "checkout")
+
+
+def build_checkout(root: Path, *, object_format: str | None = None) -> Path:
+    """Build the fixture's checkout, optionally under a named object format.
+
+    ``object_format`` is the one knob, and it exists because the revision the
+    runner records is whatever `git rev-parse HEAD` prints, which is 40 hex
+    under SHA-1 and 64 under SHA-256.
+    """
     for name in SOURCE_ROOTS:
         (root / name).mkdir(parents=True)
         (root / name / "__init__.py").write_text(f'"""{name}"""\n', encoding="utf-8")
     (root / "nn" / "engine.py").write_text("VALUE = 1\n", encoding="utf-8")
+    init = ["git", "init", "-q"]
+    if object_format is not None:
+        init += ["--object-format", object_format]
+    subprocess.run(init + [str(root)], check=True, capture_output=True)
     run = ["git", "-C", str(root)]
-    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
     for args in (
         ["config", "user.email", "test@example.invalid"],
         ["config", "user.name", "test"],
@@ -516,8 +539,62 @@ def test_a_genuinely_clean_checkout_is_identified_and_reported_clean(checkout):
     """The positive half: a real clean checkout names itself and is not dirty."""
     block = demo_run._software(checkout)
     assert block["dirty"] is False
-    assert HEX40.match(block["revision"]), block["revision"]
+    assert GIT_OBJECT_ID.match(block["revision"]), block["revision"]
     assert HEX64.match(block["source_digest"]), block["source_digest"]
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_a_checkout_is_identified_under_either_git_object_format(
+    tmp_path: Path, object_format: str
+):
+    """The revision is whatever git prints, and git prints two lengths.
+
+    Requiring SHA-1 failed a SHA-256 checkout that `_software` had identified
+    perfectly well -- the assertion was pinning git's object format rather than
+    anything the runner does. Both formats are real: `git init --object-format`
+    supports each, and a host may default to either.
+    """
+    root = build_checkout(tmp_path / object_format, object_format=object_format)
+    block = demo_run._software(root)
+
+    assert block["dirty"] is False
+    assert GIT_OBJECT_ID.match(block["revision"]), block["revision"]
+    # The digest is the repository's own sha256 over the source, not a git
+    # object id, so it is 64 hex under both formats.
+    assert HEX64.match(block["source_digest"]), block["source_digest"]
+
+    expected = 40 if object_format == "sha1" else 64
+    assert len(block["revision"]) == expected, block["revision"]
+
+    # And the negative half still holds under this format.
+    (root / "nn" / "engine.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert demo_run._software(root)["dirty"] is True
+
+
+@pytest.mark.parametrize(
+    "revision",
+    [
+        "",
+        "a" * 39,
+        "a" * 41,
+        "a" * 63,
+        "a" * 65,
+        "A" * 40,
+        "g" * 40,
+        "a" * 39 + "z",
+        "HEAD",
+        "sha256:" + "a" * 40,
+        " " + "a" * 40,
+    ],
+)
+def test_a_malformed_revision_is_not_a_git_object_id(revision: str):
+    """The widening admits two lengths, not arbitrary hex.
+
+    The fix for the SHA-256 case must not become "any hex string": an
+    abbreviated or truncated id names no object, and neither does an uppercase
+    or prefixed one. This is the control that keeps the matcher honest.
+    """
+    assert GIT_OBJECT_ID.match(revision) is None, revision
 
 
 def test_a_genuinely_dirty_checkout_is_reported_dirty(checkout):
@@ -534,7 +611,7 @@ def test_a_genuinely_dirty_checkout_is_reported_dirty(checkout):
     dirty = demo_run._software(checkout)
     assert dirty["dirty"] is True
     # Still identified: a dirty tree names the revision it departed from.
-    assert HEX40.match(dirty["revision"])
+    assert GIT_OBJECT_ID.match(dirty["revision"])
 
 
 def test_an_untracked_python_file_under_a_source_root_is_dirty(checkout):
@@ -604,7 +681,7 @@ def test_this_checkout_identifies_itself_with_no_argument():
     revision here is what makes that regression visible instead of silent.
     """
     block = demo_run._software()
-    assert HEX40.match(block["revision"]), block["revision"]
+    assert GIT_OBJECT_ID.match(block["revision"]), block["revision"]
     assert HEX64.match(block["source_digest"]), block["source_digest"]
 
 
