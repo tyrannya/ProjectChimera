@@ -79,14 +79,78 @@ The commit was resolved with `git ls-remote https://github.com/binance/binance-p
 and the pinned copy was byte-compared against the `master` copy fetched the same
 day: identical. A future `master` may differ; this revision cannot.
 
-Listings were taken from the archive's own S3 listing endpoint:
+### 3. Namespace / listing evidence — an S3 origin that is NOT the allow-listed host
+
+**This is a third provenance class, and it is weaker than the other two. It is
+recorded here rather than folded into §1, because folding it in would make §1
+untrue.**
+
+Object presence and object content (§1) were obtained from the allow-listed host:
+
+```
+curl -o /dev/null -w "%{http_code}" "https://data.binance.vision/<KEY>"
+```
+
+But *enumeration* of what exists under a prefix — which archive families are
+published, and which are absent — was taken from the bucket's S3 listing origin:
 
 ```
 curl "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision?delimiter=/&prefix=<PREFIX>"
 ```
 
-Object presence was probed with `curl -o /dev/null -w "%{http_code}"` against
-`https://data.binance.vision/<KEY>`.
+**That hostname is not `data.binance.vision`, and this repository's governed
+acquisition rule refuses it by name.** `nn/p13_acquisition.py::assert_allowed_url`
+rejects any hostname other than `data.binance.vision`, with the message: *"No
+alternate venue, no REST endpoint, no mirror and **no S3 origin** may stand in
+for it without an explicit amendment."* `tests/test_p13_acquisition.py` pins that
+behaviour with this exact URL shape among its refused cases. So the listings
+were **not** produced under the P13 procedure, and this document does not claim
+they were.
+
+**The allow-listed host cannot substitute.** `https://data.binance.vision/?prefix=…`
+returns the site's HTML browser page, not an S3 `ListBucketResult`; it yields
+zero `CommonPrefixes`. There is no equivalent listing endpoint on the governed
+hostname, so the enumeration cannot simply be redone there.
+
+**Which claims depend on the S3 origin.** Everything that asserts what the
+archive namespace *contains or lacks by enumeration*: the archive-family lists
+for `futures/um/{daily,monthly}` and `spot/{daily,monthly}`; the "zero keys"
+result for `liquidationSnapshot`; the absence of a `bookTicker` family under
+spot; the absence of any `exchangeInfo`/metadata family anywhere under `data/`;
+and the "last published key" statements for monthly `bookTicker` (`2024-04`) and
+monthly `fundingRate` (`2026-08`).
+
+**What does not depend on it.** Every measurement in §1 — every status probe,
+every downloaded object, every `.CHECKSUM` verification, every parsed row count
+and value — came from the allow-listed host and stands on its own.
+
+**Corroboration from the allow-listed host.** The three load-bearing absences
+were re-probed directly on `data.binance.vision`, with a positive control on the
+same host and path shape to show the probe is meaningful:
+
+| Probe (on `data.binance.vision`) | Result |
+|---|---|
+| `futures/um/daily/liquidationSnapshot/BTCUSDT/BTCUSDT-liquidationSnapshot-2023-01-01.zip` | 404 |
+| `futures/um/daily/liquidationSnapshot/BTCUSDT/BTCUSDT-liquidationSnapshot-2024-06-01.zip` | 404 |
+| `futures/um/monthly/liquidationSnapshot/BTCUSDT/BTCUSDT-liquidationSnapshot-2023-01.zip` | 404 |
+| `spot/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2026-09-13.zip` | 404 |
+| `spot/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-01-15.zip` | 404 |
+| `futures/um/daily/exchangeInfo/BTCUSDT/BTCUSDT-exchangeInfo-2026-09-13.zip` | 404 |
+| **control** `futures/um/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2026-09-13.zip` | **200** |
+
+This corroboration is **weaker than enumeration**: a 404 shows one object is
+absent, while an empty listing shows a whole family is. The absences are
+therefore supported on the governed host by probe, and supported *more strongly*
+only by the ungoverned S3 origin. The two are not interchangeable and this
+document does not treat them as such.
+
+**Open governance question — recorded, not resolved here.** Whether the S3
+listing origin may count as governed evidence for this repository is a
+**source-governance decision that has not been made**. `nn/p13_acquisition.py`
+is P13's frozen rule and does not by itself bind R2's own acquisition, but no R2
+contract yet names an allowed listing source at all. This document does not
+invent a retroactive authorisation. It is carried as a **pre-live prerequisite**
+in the timing table below.
 
 ### Environment constraint that is a fact about this host, not about Binance
 
@@ -514,12 +578,35 @@ a threshold or a universe selected on the result:
 | **The candidate-universe mechanical rule** — exact volume field (`quote_volume` vs base `volume`), the tie-break, and the named selection date | Decides *which ~20 symbols are recorded at all*. A symbol not captured cannot be added retroactively, so this is a hard precondition on starting collection, not a reporting detail. It is additionally gated on **public** `exchangeInfo`, which has no archive path and is 451 from this environment — and, if §18's leverage-bracket condition is retained, on the separate **signed** endpoint in the row below. |
 | **Whether the universe rule retains §18's leverage-bracket condition — and if so, how that data is authorised and obtained** | §18 rejects *leverage-bracket anomalies*, but brackets are **not** an `exchangeInfo` field: they come from `GET /fapi/v1/leverageBracket`, which Binance classifies as signed **`USER_DATA`**. Keeping the condition therefore introduces an **authenticated credential dependency** and a second daily snapshot. Whether to keep it is a governance decision, not R2's — but it must be settled *before* collection starts, because discovering the credential requirement mid-run leaves the universe check incomplete or forces a restart. Reaching `exchangeInfo` alone does not satisfy this. |
 | **The Tier B storage/replay budget** | The second half of the kill rule ("Tier B cost beyond budget → Tier B shrinks or is deferred"). An undefined budget makes that condition unevaluable, and a budget set after measuring the cost is the same post-hoc selection. It is also an owner spend decision, inseparable from authorising the second host. |
+| **The reference-size / trade-through measurement method** | **Withdrawn from "need not block acquisition" — this was wrong.** The adopted capture gives depth (Tier B) to **BTCUSDT and ETHUSDT only**; the other ~18 Tier A symbols get `bookTicker`, which carries only best bid/ask and their sizes (`chimera/recorder/events.py`: `BookTickerEvent` has exactly `bid`, `bid_qty`, `ask`, `ask_qty`), plus `aggTrade`, which is executed prints and not resting depth. **For any size exceeding the displayed top level there is no captured data from which a hypothetical sweep can be reconstructed for those symbols**, so a post-hoc size grid is *not* generically computable and the 30-day run could complete without the data R2's cost envelope and R3's slippage envelope require. The method must therefore be frozen **before** collection and must be identifiable from the data actually captured **for every candidate symbol**. |
+| **The gen4-preflight contract-schema interpretation** | The roadmap specifies the R2 contract as `gen4-preflight` with **`prospective_from` absent by schema**, but `chimera/recorder/contract.py` lists `prospective_from` in `REQUIRED_FIELDS` and the parser refuses any file missing a required field. **R2 cannot instantiate the specified contract under today's schema.** Whether "absent" means the key is omitted or is present-and-`null` is not resolved by any governance record located, and is not decided here. |
+| **Whether the S3 listing origin is governed evidence** | The archive-family and absence claims rest partly on an S3 listing origin that is not the allow-listed hostname (see *Method § 3*). Whether that source is admissible — or whether an equivalent must be found, or an amendment recorded — is an open source-governance decision. It is listed here because the candidate-universe and stream-inventory work depends on knowing what the archive publishes. |
+
+#### The reference-size problem has exactly two architectural resolutions
+
+Recorded so the choice is visible. **Neither is elected here**, and electing one
+is a governance decision, not R2's:
+
+- **A — capture sufficient depth for every candidate symbol.** This makes a
+  post-hoc size grid genuinely computable, at the cost of widening Tier B from
+  two symbols to ~20. Tier B exists precisely to *measure* whether depth is
+  practical, and its storage cost is itself an unresolved governed input, so
+  this cannot be adopted silently.
+- **B — freeze a reference-size method measurable from Tier A alone.** For
+  example a method grounded in *actually observed* sweeps — sequences of
+  `aggTrade` prints that cross the prevailing `bookTicker` touch — rather than a
+  hypothetical order walking an order book that was never recorded. This keeps
+  Tier B at two symbols but constrains what "trade-through" can mean.
+
+**This document does not widen Tier B, and does not select the R3 deciding trade
+size.** It records that the two options exist, that they have different capture
+consequences, and that one of them must be settled before the 30-day clock
+starts.
 
 ### Timing: what need not block acquisition
 
 | Input | Standing |
 |---|---|
-| **Trade-through reference-size semantics** | Collection itself does **not** depend on a single fixed size: trade-through is computable after the fact from captured `aggTrade`, `bookTicker` and depth data. A later R2 diagnostic may therefore report the cost envelope **as a function of size over a declared size grid**, which breaks the R2↔R3 circularity without anyone inventing a trading size. **No R3 trading size is selected here**, and the selection of the single deciding size remains R3's. |
 | **The daily-return definition** | Must be **frozen before the correlation / effective-N diagnostic is computed**, because effective-N feeds R3's power calculation — but it does not block raw data acquisition. |
 | **`evidence_class = DIAGNOSTIC` as a machine-checkable value** | Required **before final R2 report acceptance**, not before collection, for as long as R1-o remains the owning implementation. |
 

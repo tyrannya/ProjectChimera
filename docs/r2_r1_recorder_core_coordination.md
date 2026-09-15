@@ -83,7 +83,19 @@ in four concrete ways:
 - `chimera/recorder/contract.py` places **no limit on the number of markets**.
   Validation only requires each stream's `market.` prefix to name a declared
   market (`contract.py:564-580`). A gen4 contract may declare twenty markets
-  with twenty symbols today. *The contract schema is not the blocker.*
+  with twenty symbols today, so **multi-symbol support is not what the schema
+  blocks**.
+
+  **But the schema IS a blocker for the `gen4-preflight` contract, for a
+  different reason.** An earlier revision of this record said "the contract
+  schema is not the blocker"; that was too broad and is withdrawn. The adopted
+  roadmap specifies the R2 contract as `gen4-preflight` with **`prospective_from`
+  absent by schema**, while `contract.py` lists `prospective_from` in
+  `REQUIRED_FIELDS` and the parser refuses any file missing a required field
+  (`missing = [name for name in REQUIRED_FIELDS if name not in payload]` → raise).
+  **R2 cannot instantiate the specified contract under today's schema.** This is
+  recorded as a pre-live blocker below; it is not resolved here, and
+  `contract.py` is not modified by this documentation PR.
 - `chimera/recorder/sink.py` is already **(stream)-keyed**: raw paths are
   `raw/<stream_id>/<day>/events.ndjson`, and `RawSink` is constructed per
   stream. Raw storage needs no generalisation.
@@ -130,6 +142,7 @@ cadence change and R2's per-symbol fan-out would rewrite.
 | R2 work | Files | Class |
 |---|---|---|
 | Multi-symbol/multi-stream recorder generalisation | `normalize.py`, `streams.py`, `service.py`, `incremental.py` | **RECORDER_CORE_OVERLAP** — held |
+| `gen4-preflight` contract schema/parser work (`prospective_from` absent by schema) | `chimera/recorder/contract.py` | **NOT owned by anyone yet** — separate reviewed engineering work, not part of this documentation PR and not part of the R1 barrier. Must exist before R2 can instantiate its contract. |
 | New Tier A/B parsers (aggTrade, forceOrder, depth, OI) | `events.py`, then wiring into `normalize.py`/`service.py` | **RECORDER_CORE_OVERLAP** once wired; the parsers alone are additive but are not useful unwired, and their payload semantics are unverifiable from this host (`fapi` 451) |
 | gen4 archive layouts / reconciliation for new streams | would duplicate `reconcile.py`/`coverage.py` | **Held for a different reason** — R5 owns generalising **PR #76's** implementation; building a second fetcher now would be the alternate implementation the coordination rule forbids |
 | Candidate-universe selection module | new module | **Blocked on governed inputs** — volume field, tie-break and named date undefined; admissibility needs public `exchangeInfo` (451 from this host) and, if §18's leverage-bracket condition is retained, the *separate signed* `USER_DATA` endpoint `GET /fapi/v1/leverageBracket` |
@@ -212,13 +225,26 @@ Independent of the R1 barrier, live collection additionally requires:
 - ≥ 30 consecutive days of real elapsed time, which cannot be simulated,
   shortened, or substituted;
 - the governed inputs that `docs/r2_source_archive_facts.md` marks as requiring
-  resolution **before** live R2 begins — the gen4 coverage thresholds, the
-  definition of "core streams", the candidate-universe mechanical rule (volume
-  field, tie-break, named date), **whether that rule retains §18's
-  leverage-bracket condition and how the signed `USER_DATA` data it needs is
-  authorised**, and the Tier B storage/replay budget — frozen, because each
-  decides eligibility, universe construction, or R2's own kill/deferral rule and
-  so cannot be selected after observing the 30-day run.
+  resolution **before** live R2 begins, frozen, because each decides
+  eligibility, universe construction, what is captured at all, or R2's own
+  kill/deferral rule — and so cannot be selected after observing the 30-day run:
+  1. the gen4 coverage thresholds;
+  2. the exact definition of "core streams";
+  3. the candidate-universe mechanical rule (volume field, tie-break, named date);
+  4. whether that rule retains §18's leverage-bracket condition and how the
+     signed `USER_DATA` data it needs is authorised;
+  5. the Tier B storage/replay budget;
+  6. **the reference-size / trade-through measurement method**, which must be
+     identifiable from the data actually captured for *every* candidate symbol —
+     the ~18 Tier A symbols outside BTCUSDT/ETHUSDT have no depth stream, so a
+     hypothetical size grid is not reconstructable for them;
+  7. **the `gen4-preflight` contract-schema interpretation** — `prospective_from`
+     is required by today's parser but "absent by schema" per the roadmap;
+- a **source-governance decision on the S3 listing origin**, which the archive
+  namespace and absence claims partly rest on and which the repository's
+  governed acquisition rule refuses by name (see *Method § 3* of the facts
+  record). Recorded separately because it is a provenance question rather than a
+  campaign parameter.
 
 ## Standing recorded by this document
 
