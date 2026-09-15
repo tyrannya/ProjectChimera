@@ -1051,9 +1051,13 @@ def test_resolve_equity_refuses_a_ledger_that_may_not_speak(tmp_path):
     assert halted.runner.start() is RunnerState.HALT
     assert halted.runner.risk.state.halt_reason.startswith(EQUITY_RECONCILIATION_PREFIX)
 
-    with pytest.raises(RunnerError, match="cannot settle the equity dispute"):
+    with pytest.raises(RunnerError, match="cannot settle the equity dispute") as refusal:
         halted.runner.resolve_equity("operator: clear it anyway")
 
+    assert "UNREADABLE" in str(refusal.value), (
+        "the two ways a ledger may not speak take different repairs, and this "
+        "refusal shares its opening words with the log-regression one below"
+    )
     assert halted.runner.risk.state.halted
     assert halted.runner.risk.state.halt_reason.startswith(
         EQUITY_RECONCILIATION_PREFIX
@@ -1121,6 +1125,149 @@ def test_resolve_equity_writes_an_operator_record_naming_both_numbers(tmp_path):
     assert block["settled"].startswith(EQUITY_DISPUTE_PREFIX)
     assert block["risk_equity_before"] == repr(persisted)
     assert block["adopted_equity"] == str(accounted)
+
+
+# --- the other half of "may not speak": valid, and behind the log ----------
+# `_ledger_may_speak` is false for EITHER a ledger that could not be read OR one
+# holding less than the decision log has already committed. The test above is
+# the first case. This is the second, and they are not interchangeable.
+#
+# An unreadable ledger reaches `resolve_equity` as `ledger_equity() is None`, so
+# the `accounted is None` refusal two statements further down would have caught
+# it even with the guard deleted. A ledger restored from an older copy loads
+# `LOADED` and answers with a real number -- a STALE one -- and nothing but the
+# guard stands between that number and the central risk authority. This is the
+# case where the guard is the only thing doing any work, and the suite had it
+# nowhere: `tests/test_demo_runner.py` proves such a ledger never speaks again,
+# but nothing asked what it does to `risk.json`.
+
+
+def _regressed_campaign(tmp_path: Path):
+    """A VALID ledger holding less than the log, made the way an operator makes one.
+
+    The restore a runbook reader really performs: a copy taken before the
+    position was closed, written back over the current file. It parses, it loads
+    `LOADED`, and its cumulative `slippage` is behind the log's last
+    `ledger_effect` block -- which is `ledger_behind_log`, not corruption.
+
+    `risk.json` is not touched by hand here either. `flatten` hands the flattened
+    equity to Aegis -- this branch's own fix for the crash-free divergence -- so
+    the persisted risk equity is the post-flatten one while the restored ledger
+    still states the pre-flatten one, and the restart's reconciliation has a
+    genuine disagreement to find rather than a manufactured one.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    harness.run(MINUTES_BEFORE_FLATTEN)
+    ledger_path = harness.runner.position.ledger.path
+    stale = ledger_path.read_bytes()
+    stale_slippage = harness.runner.position.ledger.state.slippage
+
+    # Trade on, so the log commits more than the copy holds.
+    harness.runner.flatten("operator closed the position")
+    harness.runner.shutdown("stop")
+    committed = [r for r in harness.records() if "ledger_effect" in r][-1]["ledger_effect"]
+    assert Decimal(committed["slippage"]) > stale_slippage, (
+        "the fixture must really leave the log ahead of the copy, or there is no "
+        "regression here for the guard to refuse"
+    )
+
+    ledger_path.write_bytes(stale)
+    return harness.runner.config, ledger_path
+
+
+def _halted_on_a_regressed_ledger(tmp_path: Path, config):
+    """The restart, with every precondition the refusal below depends on asserted.
+
+    Four separate facts, and a test that assumed any of them would pass for the
+    wrong reason: the ledger is VALID, it is behind the log, Aegis is holding the
+    dispute `resolve_equity` answers, and the ledger may not speak. In particular
+    the runner's own halt is `ledger_behind_log` while AEGIS's is
+    `equity_dispute:` -- `_halt` keeps the first reason and Aegis was halted
+    first, inside `build_risk_engine` -- and it is Aegis's that the command reads.
+    """
+    resumed = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert resumed.runner.start() is RunnerState.HALT
+
+    assert (
+        resumed.runner.position.ledger.outcome is LoadOutcome.LOADED
+    ), "the point of this case is a ledger that is perfectly readable"
+    assert "ledger_behind_log" in (resumed.runner.halt_reason or "")
+    assert resumed.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX), (
+        "the stale ledger states a real equity, so the reconciliation finds a "
+        "disagreement rather than an unreadable file"
+    )
+    assert resumed.runner._ledger_may_speak() is False
+    assert resumed.runner.position.ledger.state.last_equity is not None, (
+        "a never-marked ledger would dispute too -- `ledger_equity` answers with "
+        "the configured capital -- and this case has to be the stale MARK"
+    )
+    return resumed
+
+
+def test_resolve_equity_refuses_a_valid_ledger_that_regressed_against_the_log(tmp_path):
+    """It adopts the accounting, so it may not run on accounting that went backwards.
+
+    Settling here would write the pre-flatten equity into Aegis and clear the
+    halt, leaving the campaign READY against a ledger the log has already
+    overtaken -- and the next `ledger_effect` would quote it, which is how the
+    log's cumulative series goes backwards for good. The refusal must therefore
+    change nothing at all, and `risk.json` is compared BYTE for byte: `_persist`
+    re-stamps `updated_at` on every write, so an unchanged file is proof that the
+    engine was not touched rather than proof that it was put back.
+    """
+    config, ledger_path = _regressed_campaign(tmp_path)
+    resumed = _halted_on_a_regressed_ledger(tmp_path, config)
+    risk_path = resumed.state_dir / "risk.json"
+    before = risk_path.read_bytes()
+    ledger_before = ledger_path.read_bytes()
+
+    with pytest.raises(RunnerError, match="cannot settle the equity dispute") as refusal:
+        resumed.runner.resolve_equity("operator: settle it from the copy I restored")
+
+    assert "ledger_behind_log" in str(refusal.value), (
+        "the operator has to be told WHICH way the ledger is wrong: restoring a "
+        "newer copy is the fix, and it is a different fix from a corrupt file"
+    )
+    assert risk_path.read_bytes() == before, "the refusal wrote to the risk state"
+    assert ledger_path.read_bytes() == ledger_before, "the refusal wrote to the ledger"
+    assert resumed.runner.risk.state.halted
+    assert resumed.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
+
+
+def test_without_that_guard_the_settlement_adopts_the_stale_accounting(monkeypatch, tmp_path):
+    """The mutation, so the refusal above is not passing for some other reason.
+
+    Deleting the `_ledger_may_speak` check in `resolve_equity` is survivable
+    against every other test of that guard, because all of them reach it through
+    an UNREADABLE ledger and are caught by the `accounted is None` refusal below
+    it. Here `ledger_equity` answers with a number, so the guard is load-bearing
+    and nothing else is: with it gone the command succeeds, writes the stale
+    equity into Aegis, and releases the campaign.
+
+    The mutant is installed on the INSTANCE. `_ledger_may_speak` also mutes
+    `_save_ledger`, `_ledger_effect` and `resume`, so patching the class would
+    disable four guards to witness one. `resolve_equity` calls none of those --
+    it appends a record and saves the runner state -- so the only harm this
+    mutant can do is the harm being witnessed: `risk.json` and one OPERATOR
+    record. The ledger file is not written on this path at all.
+    """
+    config, _ = _regressed_campaign(tmp_path)
+    resumed = _halted_on_a_regressed_ledger(tmp_path, config)
+    stale_equity = resumed.runner.position.ledger.state.last_equity
+    assert stale_equity is not None
+    assert float(stale_equity) != resumed.runner.risk.state.equity
+
+    monkeypatch.setattr(resumed.runner, "_ledger_may_speak", lambda: True)
+    resumed.runner.resolve_equity("operator: the guard is gone")
+
+    assert resumed.runner.risk.state.equity == pytest.approx(float(stale_equity)), (
+        "with the guard removed the campaign's central risk authority is holding "
+        "a number the decision log has already overtaken"
+    )
+    assert not resumed.runner.risk.state.halted, (
+        "and the halt that was protecting it is cleared, so the mutant really is "
+        "the harm and not merely a different refusal"
+    )
 
 
 # ---------------------------------------------------------------------------
