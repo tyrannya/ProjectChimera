@@ -31,23 +31,27 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import chimera.demo.risk_continuity as risk_continuity
-from chimera.demo.decision_log import RecordKind
+from chimera.carry.hedge import HedgeState
+from chimera.demo.decision_log import EVIDENCE_KINDS, RecordKind
 from chimera.demo.risk_continuity import (
     RISK_CONTINUITY_PREFIX,
+    RISK_HASH_EXCLUDED,
     ContinuityOutcome,
     RiskContinuity,
     continuity_already_recorded,
     evaluate_risk_continuity,
+    halt_free_state_hash,
     is_risk_continuity_halt,
     risk_state_hash,
 )
-from chimera.demo.risk_wiring import EQUITY_DISPUTE_PREFIX
+from chimera.demo.risk_wiring import EQUITY_DISPUTE_PREFIX, ledger_equity
 from chimera.demo.runner import RecoveryCause, RunnerState, _risk_hash
 from chimera.risk import RiskEngine, RiskLimits, RiskState, RiskStateLoad
 from tests.demo_harness import CAPITAL, DAY, NEXT_DAY, build
@@ -102,6 +106,12 @@ def loaded_state(state_dir: Path) -> tuple[RiskStateLoad, RiskState]:
     """Read ``risk.json`` exactly as the runner's read-only inspection does."""
     engine = RiskEngine(RiskLimits(), state_path=Path(state_dir) / "risk.json")
     return engine.load_outcome, engine.state
+
+
+def _evidence_count(state_dir: Path) -> int:
+    """How many records section 9.4 scores. A refused startup must add none."""
+    scored = {kind.value for kind in EVIDENCE_KINDS}
+    return sum(1 for record in records(state_dir) if record.get("kind") in scored)
 
 
 def verdict_for(state_dir: Path) -> RiskContinuity:
@@ -441,11 +451,19 @@ def test_a_restart_after_a_halt_is_not_a_dispute(tmp_path):
     hash-bearing record -- the HALT record itself carries no hash. Comparing
     against "the log's last record that has one" would therefore dispute every
     healthy restart after a halt, which is most restarts an operator ever makes.
+
+    What makes it pass is NOT that the scan gives up at the HALT. That is the
+    defect the independent review measured, and it let an older halted state
+    through a newer HALT history for the same reason. The scan walks past the
+    hashless HALT to the DECISION behind it, and what matches that DECISION is
+    the state's identity with the halt set aside -- `RiskEngine.halt` sets
+    `halted` and `halt_reason` and nothing else, so that identity is exactly the
+    one this campaign last recorded.
     """
     harness = _halted_campaign(tmp_path)
     config, state_dir = harness.runner.config, harness.state_dir
 
-    _, witness = newest_hash_witness(state_dir)
+    seq, witness = newest_hash_witness(state_dir)
     load, state = loaded_state(state_dir)
     assert (
         risk_state_hash(state) != witness
@@ -454,9 +472,21 @@ def test_a_restart_after_a_halt_is_not_a_dispute(tmp_path):
     resumed = build(tmp_path, days=(DAY,), config=config, start=False)
     verdict = resumed.runner.risk_continuity
     assert verdict.outcome is ContinuityOutcome.CONTINUOUS
+    # The witness is the hash-bearing record BEHIND the halt, not the halt.
     assert verdict.hash_witness is not None
-    assert verdict.hash_witness.kind == RecordKind.HALT.value
+    assert verdict.hash_witness.kind == RecordKind.DECISION.value
+    assert verdict.hash_witness.seq == seq
+    # And it is the halt-normalised identity that matches it, which is the whole
+    # of why this restart is not a dispute.
+    assert verdict.unhalted_state_hash == witness
+    assert verdict.observed_state_hash != witness
+    assert verdict.halt_witness is not None
+    assert verdict.halt_witness.kind == RecordKind.HALT.value
     assert continuity_records(state_dir) == []
+
+    assert resumed.runner.start() is RunnerState.HALT
+    assert resumed.runner.halt_reason == state.halt_reason
+    assert continuity_records(state_dir) == [], "a held halt is not a discontinuity"
 
 
 def test_a_risk_state_that_lost_its_halt_is_refused(tmp_path):
@@ -511,25 +541,41 @@ def test_a_resumed_campaign_is_not_asked_to_hold_the_halt_it_cleared(tmp_path):
     assert resumed.runner.start() is not RunnerState.HALT
 
 
-def test_an_operator_flatten_leaves_nothing_for_the_hash_to_be_compared_with(tmp_path):
-    """The opaque witness, stated as a test rather than left as an assumption.
+def test_an_operator_flatten_moves_the_state_to_one_no_witness_records(tmp_path):
+    """The residual after an OPERATOR command, stated exactly rather than widely.
 
-    An OPERATOR record moves the risk state and carries no hash, so after one
-    there is nothing in the log for the loaded state to be compared against and
-    R1-c asserts only that a state EXISTS. The residual is deliberate and is
-    recorded here so that closing it -- by making those records carry a
-    `risk.state_hash` -- is a visible change rather than a silent one.
+    `flatten` hands the flattened equity to `update_equity` and writes an
+    OPERATOR record that carries no hash, so the state it leaves is one no
+    witness records and R1-c cannot say the file IS that state. What it can still
+    say -- and what the independent review found it was not saying -- is that the
+    file is not a state the campaign has already moved PAST: the scan walks past
+    the OPERATOR record to the DECISION behind it, and
+    `test_a_risk_state_restored_from_an_older_copy_survives_an_operator_tail`
+    is the other side of this one.
+
+    The residual is that an identity no witness records is accepted, which is the
+    same direction the crash window is recovered in. Closing it means making
+    OPERATOR records carry a `risk.state_hash`, which is a change to what the
+    runner WRITES rather than to what it checks.
     """
     harness = _halted_campaign(tmp_path)
     harness.runner.flatten("operator: reduce to flat during the incident")
-    config = harness.runner.config
+    config, state_dir = harness.runner.config, harness.state_dir
 
     resumed = build(tmp_path, days=(DAY,), config=config, start=False)
     verdict = resumed.runner.risk_continuity
     assert verdict.outcome is ContinuityOutcome.CONTINUOUS
+    # The witness is a real one now, and the flatten really did move the state
+    # off it -- so this is the "no witness records it" case and not a match.
     assert verdict.hash_witness is not None
-    assert verdict.hash_witness.kind == RecordKind.OPERATOR.value
-    assert verdict.hash_witness.state_hash == ""
+    assert verdict.hash_witness.state_hash == newest_hash_witness(state_dir)[1]
+    assert verdict.observed_state_hash != verdict.hash_witness.state_hash
+    assert verdict.unhalted_state_hash != verdict.hash_witness.state_hash
+    assert verdict.matched_witness is None
+    # And it is NOT reported as the crash window, because a record in the tail
+    # says the state was moved rather than lost.
+    assert verdict.outcome is not ContinuityOutcome.STATE_AHEAD_OF_LOG
+    assert continuity_records(state_dir) == []
 
 
 def test_a_risk_state_restored_from_an_older_copy_is_refused(tmp_path):
@@ -848,3 +894,845 @@ def test_status_reports_the_verdict_without_starting_the_campaign(tmp_path):
     assert reported["disputed"] is True
     assert reported["reason"].startswith(RISK_CONTINUITY_PREFIX)
     assert resumed.runner.state is RunnerState.STARTUP, "status must not have started it"
+
+
+# ---------------------------------------------------------------------------
+# 11. the documented recovery, end to end. The independent review's blocker 1A:
+#     R1-c's own refusal HALT read back as campaign evidence condemned the very
+#     backup the runbook tells an operator to restore, and each retry appended
+#     another RECOVERY record and replaced the correct file with another halted
+#     placeholder. No previous revision of this PR contained this test.
+# ---------------------------------------------------------------------------
+def backup_of(state_dir: Path, where: Path) -> bytes:
+    """The bytes the campaign itself last wrote to `risk.json`, kept aside.
+
+    Copying is the one thing here no production path does; every byte in the
+    copy was written by one. The bytes are returned as well as stored so a test
+    can assert that what it restored is what the campaign wrote.
+    """
+    payload = (Path(state_dir) / "risk.json").read_bytes()
+    where.write_bytes(payload)
+    return payload
+
+
+def test_restoring_the_byte_perfect_backup_after_a_refusal_starts_the_campaign(tmp_path):
+    """Refuse -> restore -> start, with no hand-editing anywhere in it.
+
+    This is the whole of section 4's recovery and it used to be unreachable. The
+    refusal halts, `_halt` writes a HALT record, and reading that record back as
+    ordinary campaign history made the log's newest halt witness a HALT that
+    nothing cleared -- so the restored state, which is legitimately NOT halted,
+    was refused as HALT_NOT_HELD. Each retry appended another RECOVERY and left
+    another halted placeholder in place of the correct file, and the only escape
+    was the hand-editing the runbook forbids.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+
+    _, witness = newest_hash_witness(state_dir)
+    load, state = loaded_state(state_dir)
+    assert load is RiskStateLoad.LOADED
+    assert risk_state_hash(state) == witness, (
+        "the backup must be the state the log's newest witness records, which is "
+        "what section 4 means by a copy at least as recent as that record"
+    )
+
+    (state_dir / "risk.json").unlink()
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+    assert is_risk_continuity_halt(refused.runner.halt_reason or "")
+    assert len(continuity_records(state_dir)) == 1
+    # The refusal really did leave a placeholder behind, so restoring really is
+    # replacing something rather than putting a file back where one already was.
+    assert (state_dir / "risk.json").read_bytes() != saved
+
+    (state_dir / "risk.json").write_bytes(saved)
+    restored = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert restored.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert restored.runner.start() is RunnerState.READY, restored.runner.halt_reason
+
+    # The correct backup is not condemned, not overwritten and not counted again.
+    assert (state_dir / "risk.json").read_bytes() == saved
+    assert len(continuity_records(state_dir)) == 1
+
+    minute = restored.runner.cursor.next_minute_ms()
+    assert minute is not None
+    restored.tick(minute)
+    assert restored.runner.state is not RunnerState.HALT, restored.runner.halt_reason
+
+
+def test_repeated_restore_attempts_do_not_grow_one_discontinuity_into_many(tmp_path):
+    """One physical event, however many times an operator or a supervisor tries.
+
+    Two sequences, because they failed differently. Repeated REFUSED starts --
+    a systemd restart loop against an unrestored file -- must write one record;
+    and repeated RESTORE attempts must not each append another and replace the
+    file again.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    (state_dir / "risk.json").unlink()
+
+    for _ in range(4):
+        attempt = build(tmp_path, days=(DAY,), config=config, start=False)
+        assert attempt.runner.start() is RunnerState.HALT
+        assert is_risk_continuity_halt(attempt.runner.halt_reason or "")
+    assert len(continuity_records(state_dir)) == 1
+
+    for _ in range(3):
+        (state_dir / "risk.json").write_bytes(saved)
+        attempt = build(tmp_path, days=(DAY,), config=config, start=False)
+        assert attempt.runner.start() is RunnerState.READY, attempt.runner.halt_reason
+        assert (state_dir / "risk.json").read_bytes() == saved
+    assert len(continuity_records(state_dir)) == 1
+
+
+def test_a_second_genuinely_new_discontinuity_gets_its_own_record(tmp_path):
+    """The other side of the dedup: one event per event, not one event ever.
+
+    The first is settled the way one is settled -- the right file is back and the
+    campaign decides another minute, which is the hash-bearing record that says
+    so -- and only then is a second discontinuity created.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+
+    (state_dir / "risk.json").unlink()
+    first = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert first.runner.start() is RunnerState.HALT
+    assert len(continuity_records(state_dir)) == 1
+
+    (state_dir / "risk.json").write_bytes(saved)
+    settled = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert settled.runner.start() is RunnerState.READY
+    minute = settled.runner.cursor.next_minute_ms()
+    assert minute is not None
+    settled.tick(minute)
+    settled.runner.shutdown("clean stop after the restore")
+
+    (state_dir / "risk.json").unlink()
+    second = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert second.runner.start() is RunnerState.HALT
+    written = continuity_records(state_dir)
+    assert len(written) == 2
+    assert (
+        written[0]["recovery"]["risk_continuity"]["fingerprint_hash"]
+        != written[1]["recovery"]["risk_continuity"]["fingerprint_hash"]
+    ), "two different events must not share one fingerprint"
+
+
+# ---------------------------------------------------------------------------
+# 12. the review's blocker 1B: the continuity dispute must outlive the process
+#     that detected it, even when R1-b's halt reason won first-reason-wins and
+#     the continuity reason never reached `risk.json` at all.
+# ---------------------------------------------------------------------------
+def test_the_continuity_dispute_survives_a_restart_it_never_reached_risk_json_in(
+    tmp_path,
+):
+    """Process #1 refuses; process #2 must refuse too, and for the same event.
+
+    The overlap is natural rather than arranged: an older `risk.json` restored
+    beside a ledger the campaign has since marked. `seed_or_reconcile_equity`
+    halts Aegis on `equity_dispute:` while the engine is still being built, and
+    `RiskEngine.halt` keeps the FIRST reason -- so the continuity refusal is in
+    the runner and in the log and NOT in the file. The independent review
+    measured the dispute evaporating on the next start, `resolve --equity`
+    succeeding on a rolled-back state, and the campaign reaching READY on a risk
+    state whose `day_start_equity` was a whole day stale.
+    """
+    from chimera.demo.runner import RunnerError
+
+    harness, earlier = across_the_boundary(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    current = backup_of(state_dir, tmp_path / "risk.json.current")
+
+    shutil.copyfile(earlier, state_dir / "risk.json")
+    stale = (state_dir / "risk.json").read_bytes()
+    assert stale != current, "the restored copy must really be an older one"
+    _, stale_state = loaded_state(state_dir)
+    accounted = ledger_equity(state_dir, capital=CAPITAL)
+    assert accounted is not None and float(accounted) != stale_state.equity, (
+        "the ledger must be genuinely newer than the restored risk state, or the "
+        "R1-b overlap this test is about does not exist"
+    )
+
+    first = build(tmp_path, days=(DAY, NEXT_DAY), config=config, start=False)
+    assert first.runner.risk_continuity.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
+    assert first.runner.start() is RunnerState.HALT
+    assert is_risk_continuity_halt(first.runner.halt_reason or "")
+    assert first.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX), (
+        "first-reason-wins must really have put the OTHER reason in risk.json, or "
+        "this test proves nothing about durability"
+    )
+    with pytest.raises(RunnerError, match="does not continue the decision log"):
+        first.runner.resolve_equity("the ledger is the campaign's accounting")
+
+    # A fresh process, reading only what is on disk.
+    second = build(tmp_path, days=(DAY, NEXT_DAY), config=config, start=False)
+    assert second.runner is not first.runner
+    verdict = second.runner.risk_continuity
+    assert verdict.outcome is ContinuityOutcome.ALREADY_DISPUTED
+    assert verdict.disputed
+    assert not is_risk_continuity_halt(second.runner.inspection.risk_state.halt_reason), (
+        "the file still does not carry the continuity reason, so the log is what "
+        "kept the dispute"
+    )
+    assert second.runner.start() is RunnerState.HALT
+    with pytest.raises(RunnerError, match="does not continue the decision log"):
+        second.runner.resolve_equity("the ledger is the campaign's accounting")
+    assert len(continuity_records(state_dir)) == 1
+
+    # A third, because a supervisor restarts more than once.
+    third = build(tmp_path, days=(DAY, NEXT_DAY), config=config, start=False)
+    assert third.runner.risk_continuity.disputed
+    assert third.runner.start() is RunnerState.HALT
+    assert len(continuity_records(state_dir)) == 1
+
+    # And the supported way out still works: put the right file back.
+    (state_dir / "risk.json").write_bytes(current)
+    healed = build(tmp_path, days=(DAY, NEXT_DAY), config=config, start=False)
+    assert healed.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert healed.runner.start() is RunnerState.READY, healed.runner.halt_reason
+
+
+def test_resume_cannot_settle_a_continuity_refusal_either(tmp_path):
+    """The other command that could clear the halt by answering nothing.
+
+    `resume` clears Aegis's halt and writes a RESUME record, after which the
+    campaign may tick -- and a tick's DECISION record is the one thing that
+    settles an open continuity dispute. So a refusal an operator could resume out
+    of is one they could erase by pressing on, which is the shape `resolve
+    --equity` is already refused for.
+    """
+    from chimera.demo.runner import RunnerError
+
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    (state_dir / "risk.json").unlink()
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+    with pytest.raises(RunnerError, match="does not continue the decision log"):
+        refused.runner.resume("operator: I looked at it")
+    assert refused.runner.state is RunnerState.HALT
+    assert refused.runner.risk.state.halted
+
+
+def test_flatten_still_reduces_exposure_during_a_continuity_dispute(tmp_path):
+    """And must not clear it. Reducing while the risk state is disputed is the point.
+
+    R1-b's boundary, restated as a control here because the two guards above sit
+    next to it: `flatten` is the one operator action a refused campaign still
+    needs, and the OPERATOR record it writes carries no `risk.state_hash`, so it
+    cannot settle the dispute the way a decided minute does.
+    """
+    harness = campaign(tmp_path, minutes=12)
+    assert (
+        harness.runner.position.state is not HedgeState.FLAT
+    ), "the fixture must hold something for a flatten to reduce"
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    (state_dir / "risk.json").unlink()
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+    refused.runner.flatten("operator: reduce to flat while the risk state is disputed")
+    assert refused.runner.position.state is HedgeState.FLAT
+
+    after = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert after.runner.risk_continuity.disputed, "a flatten may not clear the dispute"
+    assert after.runner.start() is RunnerState.HALT
+    assert len(continuity_records(state_dir)) == 1
+
+
+# ---------------------------------------------------------------------------
+# 13. the review's blocker 2: a hashless record may not switch the comparison
+#     off. Two-sided for each of the three tails.
+# ---------------------------------------------------------------------------
+def _stale_beside(tmp_path: Path):
+    """A campaign past a day boundary, and the `risk.json` it held before it."""
+    harness, earlier = across_the_boundary(tmp_path)
+    return harness, earlier
+
+
+def _restore_and_read(state_dir: Path, earlier: Path) -> RiskContinuity:
+    current = risk_state_hash(loaded_state(state_dir)[1])
+    shutil.copyfile(earlier, Path(state_dir) / "risk.json")
+    stale = risk_state_hash(loaded_state(state_dir)[1])
+    assert stale != current, "the restored copy must really be an older state"
+    return verdict_for(state_dir)
+
+
+def test_a_risk_state_restored_from_an_older_copy_survives_a_resume_tail(tmp_path):
+    """Blocker 2A. A RESUME record carries no hash and must not end the scan."""
+    harness, earlier = _stale_beside(tmp_path)
+    state_dir = harness.state_dir
+    harness.runner._halt("a deliberate halt, so RESUME has something to clear")
+    harness.runner.resume("operator: checked, resuming")
+    assert records(state_dir)[-1]["kind"] == RecordKind.RESUME.value
+
+    verdict = _restore_and_read(state_dir, earlier)
+    assert verdict.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
+    assert verdict.disputed
+    assert verdict.hash_witness is not None
+    assert verdict.hash_witness.state_hash, "the scan must have walked past the RESUME"
+    assert verdict.matched_witness is not None
+
+
+def test_a_healthy_restart_after_a_resume_is_not_a_dispute(tmp_path):
+    """The other side. `resume` is an ordinary operator action and must stay one."""
+    harness = campaign(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    harness.runner._halt("a deliberate halt, so RESUME has something to clear")
+    harness.runner.resume("operator: checked, resuming")
+    assert not harness.runner.risk.state.halted
+
+    resumed = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert resumed.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert resumed.runner.start() is RunnerState.READY, resumed.runner.halt_reason
+    assert continuity_records(state_dir) == []
+
+
+def test_a_risk_state_restored_from_an_older_copy_survives_an_operator_tail(tmp_path):
+    """Blocker 2B. An OPERATOR/flatten record carries no hash either."""
+    harness, earlier = _stale_beside(tmp_path)
+    state_dir = harness.state_dir
+    harness.runner.flatten("operator: reduce to flat")
+    assert records(state_dir)[-1]["kind"] == RecordKind.OPERATOR.value
+
+    verdict = _restore_and_read(state_dir, earlier)
+    assert verdict.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
+    assert verdict.disputed
+    assert verdict.hash_witness is not None
+    assert verdict.hash_witness.state_hash, "the scan must have walked past the OPERATOR"
+
+
+def test_an_older_halted_state_does_not_pass_a_newer_halt_for_being_halted_too(tmp_path):
+    """Blocker 2C and 2D. Two halted states are not one halted state.
+
+    Both files say `halted`, so the halt witness is satisfied by either and only
+    the identity can tell them apart -- and a halted state's own identity is in
+    no record, because a HALT carries no hash. What the log DOES record is the
+    identity the state had before the halt was written into it, which is where
+    the two differ: the older one's is a DECISION the campaign has already moved
+    past.
+    """
+    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    first = harness.first_minute_ms() + BOUNDARY_START * 60_000
+    harness.run(MINUTES_BEFORE_THE_BOUNDARY, start=first)
+    harness.runner._halt("the first halt")
+    state_dir = harness.state_dir
+    earlier = tmp_path / "risk.json.first-halt"
+    older = backup_of(state_dir, earlier)
+
+    harness.runner.resume("operator: resuming from the first halt")
+    harness.run(MINUTES_AFTER_THE_BOUNDARY, start=first + MINUTES_BEFORE_THE_BOUNDARY * 60_000)
+    harness.runner._halt("the second halt")
+
+    _, current_state = loaded_state(state_dir)
+    (state_dir / "risk.json").write_bytes(older)
+    _, older_state = loaded_state(state_dir)
+    assert current_state.halted and older_state.halted, (
+        "both states must be halted, or `halted == True` is not what is being " "tested"
+    )
+    assert risk_state_hash(current_state) != risk_state_hash(older_state)
+    assert older_state.day_start_equity != current_state.day_start_equity, (
+        "the two must differ in a field that governs a limit, not only in the " "halt reason"
+    )
+
+    verdict = verdict_for(state_dir)
+    assert verdict.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
+    assert verdict.disputed
+    assert verdict.unhalted_state_hash, "the halt-normalised identity is what found it"
+    assert verdict.matched_witness is not None
+    assert verdict.hash_witness is not None
+    assert verdict.matched_witness.seq < verdict.hash_witness.seq
+
+
+def test_a_flatten_after_a_halt_does_not_excuse_a_state_that_lost_it(tmp_path):
+    """`flatten` moves the risk state and clears no halt, and both matter here.
+
+    The OPERATOR record is the newest halt-relevant record in the log, so a scan
+    that treated every OPERATOR command as halt-clearing -- or that added
+    `flatten` to the ones that are -- would stop asking whether the loaded state
+    still holds the halt. Nothing else would catch it: the flatten moved the
+    equity to a state no witness records, so the identity comparison has nothing
+    to say and only the halt witness does.
+    """
+    harness = _halted_campaign(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    harness.runner.flatten("operator: reduce to flat during the incident")
+    assert records(state_dir)[-1]["kind"] == RecordKind.OPERATOR.value
+
+    load, state = loaded_state(state_dir)
+    assert state.halted, "the fixture must still be halted before it is edited"
+    document = state.to_dict(updated_at="2026-09-19T00:00:00+00:00")
+    document["halted"] = False
+    document["halt_reason"] = ""
+    (state_dir / "risk.json").write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    verdict = verdict_for(state_dir)
+    assert verdict.outcome is ContinuityOutcome.HALT_NOT_HELD
+    assert verdict.disputed
+    assert verdict.halt_witness is not None
+    assert verdict.halt_witness.kind == RecordKind.HALT.value
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+    assert is_risk_continuity_halt(refused.runner.halt_reason or "")
+
+
+def test_this_modules_own_refusal_halt_is_not_read_back_as_campaign_history(tmp_path):
+    """The mechanism behind blocker 1A, isolated from the recovery it broke.
+
+    A refusal writes a HALT record like any other halt. Read back as campaign
+    evidence it says "this campaign is halted and nothing cleared it", which is
+    a statement about R1-c and not about the campaign -- and it is the statement
+    that condemned every correct restore.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    (state_dir / "risk.json").unlink()
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+    halts = [
+        record for record in records(state_dir) if record["kind"] == RecordKind.HALT.value
+    ]
+    assert halts, "the refusal must really have written a HALT record"
+    assert is_risk_continuity_halt(halts[-1]["veto_or_rejection"]["detail"])
+
+    (state_dir / "risk.json").write_bytes(saved)
+    verdict = verdict_for(state_dir)
+    assert (
+        verdict.halt_witness is None
+    ), "the only HALT in this log is R1-c's own, and it is not campaign history"
+    assert verdict.outcome is ContinuityOutcome.CONTINUOUS
+
+
+# ---------------------------------------------------------------------------
+# 14. the review's blocker 3: a startup gate that stops the process before
+#     RECOVER must not take the finding with it.
+# ---------------------------------------------------------------------------
+def test_a_startup_that_halts_before_recover_still_records_the_missing_state(tmp_path):
+    """`build_risk_engine` writes a default `risk.json` before anything refuses it.
+
+    So a SELF_CHECK refusal between the two -- a dirty working tree, section
+    8.1's source-identity row -- used to end the process with a fabricated
+    placeholder on disk and nothing anywhere saying the risk state had been
+    absent. The next start found a file, compared it against a log whose newest
+    record carried no hash, and reached CONTINUOUS on a state the campaign never
+    held, with equity re-seeded to the configured capital: AEG-4 again, one
+    startup failure further along.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    evidence_before = _evidence_count(state_dir)
+    (state_dir / "risk.json").unlink()
+
+    dirty = build(tmp_path, days=(DAY,), config=config, start=False)
+    dirty.runner.software["dirty"] = True
+    assert dirty.runner.risk_continuity.outcome is ContinuityOutcome.RISK_STATE_MISSING
+    assert dirty.runner.start() is RunnerState.HALT
+    assert dirty.runner.halt_reason is not None
+    assert dirty.runner.halt_reason.startswith(
+        "source_identity"
+    ), "the fixture must really stop at the EARLIER gate, or it proves nothing"
+
+    # The placeholder really was written, and it really does not carry the
+    # continuity reason -- so nothing in `risk.json` remembers the finding.
+    assert (state_dir / "risk.json").is_file()
+    _, placeholder = loaded_state(state_dir)
+    assert not is_risk_continuity_halt(placeholder.halt_reason)
+    assert placeholder.equity == pytest.approx(float(CAPITAL))
+
+    # The log does. One record, naming what was found.
+    written = continuity_records(state_dir)
+    assert len(written) == 1
+    block = written[0]["recovery"]["risk_continuity"]
+    assert block["outcome"] == ContinuityOutcome.RISK_STATE_MISSING.value
+    assert block["risk_state_load"] == RiskStateLoad.MISSING.value
+    assert (
+        _evidence_count(state_dir) == evidence_before
+    ), "a refused startup decides nothing, so it adds no evidence record"
+
+    # And the next process, with a clean tree, is still refused.
+    after = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert after.runner.risk_continuity.outcome is ContinuityOutcome.ALREADY_DISPUTED
+    assert after.runner.risk_continuity.disputed
+    assert after.runner.start() is RunnerState.HALT
+    assert len(continuity_records(state_dir)) == 1
+
+    # The supported recovery still ends it.
+    (state_dir / "risk.json").write_bytes(saved)
+    healed = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert healed.runner.start() is RunnerState.READY, healed.runner.halt_reason
+
+
+def test_the_placeholder_a_refused_startup_leaves_cannot_pass_as_history(tmp_path):
+    """The harm the record prevents, reproduced against the same files.
+
+    Without the durable record the placeholder is indistinguishable from a state
+    the campaign held: it loads LOADED, it is halted on a reason that is not a
+    continuity halt, and its identity is one no witness records -- which is the
+    crash window's shape. This asserts the placeholder is really all of those
+    things, so the refusal above is doing the work rather than some accident of
+    the fixture.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    (state_dir / "risk.json").unlink()
+
+    dirty = build(tmp_path, days=(DAY,), config=config, start=False)
+    dirty.runner.software["dirty"] = True
+    dirty.runner.start()
+
+    load, placeholder = loaded_state(state_dir)
+    _, witness = newest_hash_witness(state_dir)
+    assert load is RiskStateLoad.LOADED
+    assert placeholder.halted and not is_risk_continuity_halt(placeholder.halt_reason)
+    assert risk_state_hash(placeholder) != witness
+    assert risk_state_hash(replace(placeholder, halted=False, halt_reason="")) != witness
+
+    verdict = verdict_for(state_dir)
+    assert verdict.outcome is ContinuityOutcome.ALREADY_DISPUTED
+    assert verdict.disputed
+
+
+# ---------------------------------------------------------------------------
+# 15. the reporting defect: a log nobody can read is not a first start
+# ---------------------------------------------------------------------------
+def test_a_log_whose_committed_lines_cannot_be_read_is_not_a_first_start(tmp_path):
+    """`read_records` stops at the first line it cannot read, and did so silently.
+
+    A corrupt first line therefore produced no records at all, which read as "no
+    history", which read as FIRST_START -- and `demo_run status` told an operator
+    that a campaign whose history is unreadable has none. It does not create a
+    READY bypass, because the log verification refuses the campaign anyway, but
+    the answer was affirmatively wrong.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    state_dir = harness.state_dir
+    (state_dir / "risk.json").unlink()
+
+    day_file = sorted((state_dir / "decision_log").glob("*.ndjson"))[0]
+    lines = day_file.read_text(encoding="utf-8").splitlines()
+    assert len(lines) > 1
+    lines[0] = "{ this line is not a record"
+    day_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    verdict = verdict_for(state_dir)
+    assert verdict.outcome is ContinuityOutcome.HISTORY_UNVERIFIABLE
+    assert verdict.outcome is not ContinuityOutcome.FIRST_START
+    assert verdict.disputed
+    assert not verdict.has_history
+
+
+def test_a_torn_tail_on_a_genuine_first_start_is_still_a_first_start(tmp_path):
+    """The other side, and the one that must not be broken to get the first.
+
+    A line the writer never finished has no trailing newline. That is section
+    9.3's TORN_TAIL, `recover_tail` removes it, and a first start interrupted
+    part-way through its own STARTUP record leaves exactly one. Refusing it would
+    mean a campaign could be bricked by being killed at the worst moment of its
+    first minute.
+    """
+    state_dir = tmp_path / "state"
+    (state_dir / "decision_log").mkdir(parents=True)
+    (state_dir / "decision_log" / f"{DAY}.ndjson").write_bytes(
+        b'{"seq": 1, "kind": "STARTUP", "minute": "2026-09-19T00:00'
+    )
+
+    verdict = verdict_for(state_dir)
+    assert verdict.outcome is ContinuityOutcome.FIRST_START
+    assert not verdict.disputed
+    assert not verdict.has_history
+
+
+# ---------------------------------------------------------------------------
+# 16. the identity itself: what is inside it, and what is deliberately not
+# ---------------------------------------------------------------------------
+#: Every `RiskState` field that governs a permission or an account guard. Listed
+#: with a value that differs from the fixture's, so each can be moved one at a
+#: time and the hash asked whether it noticed. Widening `RISK_HASH_EXCLUDED` is
+#: how a stale state stops being distinguishable from a current one, and a
+#: comparison that cannot see a field is a comparison a rolled-back file passes.
+_FIELDS_INSIDE_THE_IDENTITY = {
+    "equity": 999_000.0,
+    "peak_equity": 1_001_000.0,
+    "day_start_equity": 998_000.0,
+    "daily_pnl": -1_234.0,
+    "open_positions": {"BTC/USDT": 1.5},
+    "consecutive_losses": 3,
+    "halted": True,
+    "halt_reason": "a reason",
+    "kill_switch": True,
+    "stale_feed_since": 1_700_000_000.0,
+    "reconciliation_disputed": {"BTC/USDT": "venue says otherwise"},
+    "funding_adverse_streak": 4,
+    "funding_halt": True,
+}
+
+#: And the three that are wall clock or host date rather than decision
+#: semantics. Moving one must NOT move the identity, or section 10's replay
+#: comparison would fail for a reason that is not a decision.
+_FIELDS_OUTSIDE_THE_IDENTITY = {
+    "order_times": [1_700_000_000.0],
+    "cooldown_until": 1_700_000_060.0,
+    "day": "2026-09-20",
+}
+
+
+@pytest.mark.parametrize("field_name,value", sorted(_FIELDS_INSIDE_THE_IDENTITY.items()))
+def test_a_field_that_governs_permission_moves_the_identity(field_name, value):
+    base = RiskState(equity=1_000_000.0, peak_equity=1_000_000.0)
+    moved = replace(base, **{field_name: value})
+    assert getattr(moved, field_name) != getattr(base, field_name), "the fixture is vacuous"
+    assert risk_state_hash(moved) != risk_state_hash(base)
+
+
+@pytest.mark.parametrize("field_name,value", sorted(_FIELDS_OUTSIDE_THE_IDENTITY.items()))
+def test_a_wall_clock_field_does_not_move_the_identity(field_name, value):
+    base = RiskState(equity=1_000_000.0, peak_equity=1_000_000.0)
+    moved = replace(base, **{field_name: value})
+    assert getattr(moved, field_name) != getattr(base, field_name), "the fixture is vacuous"
+    assert risk_state_hash(moved) == risk_state_hash(base)
+
+
+def test_the_identity_accounts_for_every_field_of_the_persisted_state():
+    """No field may be silently neither inside nor outside. A named accounting.
+
+    `RISK_HASH_EXCLUDED` is three names; the rest of `RiskState` is inside. A
+    field added later that neither list mentions would be hashed or not by
+    accident, and the two parametrised tests above would not notice because they
+    only test the names they already know.
+    """
+    from dataclasses import fields as dataclass_fields
+
+    accounted = set(_FIELDS_INSIDE_THE_IDENTITY) | set(_FIELDS_OUTSIDE_THE_IDENTITY)
+    assert {f.name for f in dataclass_fields(RiskState)} == accounted
+    assert set(_FIELDS_OUTSIDE_THE_IDENTITY) == set(RISK_HASH_EXCLUDED)
+
+
+def test_the_continuity_block_carries_both_identities_and_no_verification_claim():
+    """What the RECOVERY record must say, and the two things it must not say."""
+    witness = risk_continuity.Witness(
+        seq=7, kind=RecordKind.DECISION.value, state_hash="sha256:" + "a" * 64
+    )
+    verdict = RiskContinuity(
+        outcome=ContinuityOutcome.STATE_HASH_REGRESSED,
+        reason=f"{RISK_CONTINUITY_PREFIX} rolled back",
+        load=RiskStateLoad.LOADED,
+        observed_state_hash="sha256:" + "b" * 64,
+        unhalted_state_hash="sha256:" + "c" * 64,
+        hash_witness=witness,
+        has_history=True,
+    )
+    block = verdict.block()
+    assert block["observed_state_hash"] == "sha256:" + "b" * 64
+    assert block["unhalted_state_hash"] == "sha256:" + "c" * 64
+    assert block["witness_state_hash"] == "sha256:" + "a" * 64
+    assert block["fingerprint_hash"] == verdict.fingerprint
+    assert "records_verified" not in block
+
+    # A hash that does not exist is OMITTED, never written as null: the log's
+    # validator holds every `*_hash` field to `sha256:<hex>`.
+    bare = RiskContinuity(
+        outcome=ContinuityOutcome.RISK_STATE_MISSING,
+        reason="r",
+        load=RiskStateLoad.MISSING,
+        has_history=True,
+    ).block()
+    assert "observed_state_hash" not in bare
+    assert "unhalted_state_hash" not in bare
+    assert "witness_state_hash" not in bare
+
+
+def test_the_fingerprint_distinguishes_materially_different_discontinuities():
+    """Two discontinuities that differ in evidence must not share one record."""
+    base = RiskContinuity(
+        outcome=ContinuityOutcome.STATE_HASH_REGRESSED,
+        reason="r",
+        load=RiskStateLoad.LOADED,
+        observed_state_hash="sha256:" + "b" * 64,
+        unhalted_state_hash="sha256:" + "c" * 64,
+        hash_witness=risk_continuity.Witness(
+            seq=7, kind=RecordKind.DECISION.value, state_hash="sha256:" + "a" * 64
+        ),
+        has_history=True,
+    )
+    assert base.fingerprint == replace(base, reason="worded differently").fingerprint
+    for changed in (
+        replace(base, outcome=ContinuityOutcome.HALT_NOT_HELD),
+        replace(base, load=RiskStateLoad.LEGACY),
+        replace(base, observed_state_hash="sha256:" + "d" * 64),
+        replace(base, unhalted_state_hash="sha256:" + "e" * 64),
+        replace(
+            base,
+            hash_witness=risk_continuity.Witness(
+                seq=8, kind=RecordKind.DECISION.value, state_hash="sha256:" + "a" * 64
+            ),
+        ),
+        replace(
+            base,
+            matched_witness=risk_continuity.Witness(seq=3, kind=RecordKind.DECISION.value),
+        ),
+    ):
+        assert changed.fingerprint != base.fingerprint
+
+
+def test_the_recovery_record_excludes_no_minute_and_verifies_no_chain(tmp_path):
+    """Section 9.3's two fields, and why a refusal answers them differently.
+
+    A crash leaves a minute part-decided and section 9.3 excludes it. A
+    continuity refusal decides nothing at all -- it halts before RECOVER
+    finishes -- so there is no minute to exclude, and excluding one would drop
+    real evidence. `records_verified` is absent rather than zero because this
+    check verifies no chain, and a zero would assert that one had been counted.
+    """
+    harness = _halted_campaign(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    (state_dir / "risk.json").unlink()
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    refused.runner.start()
+
+    recovery = continuity_records(state_dir)[0]["recovery"]
+    assert recovery["evidence_excluded_minute"] is None
+    assert recovery["truncated_bytes"] == 0
+    assert recovery["minute_finished"] is True
+    assert "records_verified" not in recovery
+    from tools.replay_parity import EXCLUDING_RECOVERY_CAUSES
+
+    assert RecoveryCause.RISK_STATE_DISCONTINUITY.value not in EXCLUDING_RECOVERY_CAUSES
+
+
+def test_a_campaign_that_decided_nothing_cannot_pass_its_placeholder_off_as_history(
+    tmp_path,
+):
+    """The refusal is recognised by the file it left, not by a hash in the log.
+
+    A campaign that halted before it decided its first minute has records and no
+    `risk.state_hash` anywhere, so there is no identity for a later state to be
+    pinned against — and a rule that asked for one would either brick this
+    campaign or let its placeholder through. It let the placeholder through: the
+    dirty-tree refusal seeded a default `risk.json`, halted it on
+    `source_identity`, and the next start called it `CONTINUOUS` while the
+    campaign's own halt was gone.
+
+    What the RECOVERY record carries instead is the identity of the state the
+    refusing process was holding — the file it was about to leave behind — taken
+    with any halt set aside, because which halt wins is exactly what is not
+    stable here.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    config, state_dir = harness.runner.config, harness.state_dir
+    harness.runner._halt("a campaign halt nothing decided around")
+    harness.runner.shutdown("clean stop")
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+
+    assert not any(
+        (record.get("risk") or {}).get("state_hash") for record in records(state_dir)
+    ), "the fixture must hold no risk.state_hash at all, or it tests the wrong thing"
+    assert records(state_dir), "and it must still hold history"
+    _, before = loaded_state(state_dir)
+    assert before.halted and before.halt_reason == "a campaign halt nothing decided around"
+
+    (state_dir / "risk.json").unlink()
+    dirty = build(tmp_path, days=(DAY,), config=config, start=False)
+    dirty.runner.software["dirty"] = True
+    assert dirty.runner.start() is RunnerState.HALT
+    assert (dirty.runner.halt_reason or "").startswith("source_identity")
+
+    _, placeholder = loaded_state(state_dir)
+    assert placeholder.halted and not is_risk_continuity_halt(placeholder.halt_reason), (
+        "the placeholder must be halted on the OTHER gate's reason, which is what "
+        "makes both the halt witness and the halt reason useless here"
+    )
+    assert placeholder.halt_reason != before.halt_reason
+
+    after = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert after.runner.risk_continuity.outcome is ContinuityOutcome.ALREADY_DISPUTED
+    assert after.runner.start() is RunnerState.HALT
+    assert is_risk_continuity_halt(after.runner.halt_reason or "")
+    assert len(continuity_records(state_dir)) == 1
+
+    # And the campaign is not bricked: the backup settles it, and the halt it
+    # really held comes back with it.
+    (state_dir / "risk.json").write_bytes(saved)
+    healed = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert healed.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert healed.runner.start() is RunnerState.HALT
+    assert healed.runner.halt_reason == "a campaign halt nothing decided around"
+    assert len(continuity_records(state_dir)) == 1
+
+
+def test_a_refusal_that_leaves_no_file_behind_still_writes_only_one_record(tmp_path):
+    """The dedup case the log's own answer cannot see, on its natural path.
+
+    An UNREADABLE `risk.json` is preserved rather than replaced —
+    `RiskEngine._persist` writes nothing at all while the load was unreadable —
+    so a refusal on one leaves no state for the next start to recognise. The
+    verdict is therefore re-derived from scratch on every start, and only the
+    fingerprint can tell a second detection of one event from a second event.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    damaged = b'{"schema": "chimera.risk-state/1", "equity": '
+    (state_dir / "risk.json").write_bytes(damaged)
+
+    for _ in range(3):
+        attempt = build(tmp_path, days=(DAY,), config=config, start=False)
+        verdict = attempt.runner.risk_continuity
+        assert verdict.outcome is ContinuityOutcome.RISK_STATE_UNREADABLE
+        assert verdict.load is RiskStateLoad.UNREADABLE
+        assert attempt.runner.start() is RunnerState.HALT
+        assert is_risk_continuity_halt(attempt.runner.halt_reason or "")
+        # The suspect bytes are preserved, which is why there is nothing to
+        # recognise on the next start.
+        assert (state_dir / "risk.json").read_bytes() == damaged
+
+    assert len(continuity_records(state_dir)) == 1
+
+
+def test_the_recorded_seeded_identity_is_the_file_the_refusal_left_behind(tmp_path):
+    """The field the dispute is settled against, asserted against the real file.
+
+    Not a claim about the implementation: the record says what identity the
+    refusing process was holding, and the file on disk really has that identity
+    once the halt that gate wrote into it is set aside.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    (state_dir / "risk.json").unlink()
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+
+    block = continuity_records(state_dir)[0]["recovery"]["risk_continuity"]
+    seeded = block["seeded_state_hash"]
+    load, left_behind = loaded_state(state_dir)
+    assert load is RiskStateLoad.LOADED
+    assert left_behind.halted, "the refusal halts the file it leaves"
+    assert halt_free_state_hash(left_behind) == seeded
+    assert risk_state_hash(left_behind) != seeded, (
+        "and the halt really is what the two differ by, so resting on the raw "
+        "identity would not survive a different gate halting it first"
+    )
