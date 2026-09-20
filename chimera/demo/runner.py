@@ -65,6 +65,7 @@ from chimera.demo.risk_continuity import (
     RiskContinuity,
     continuity_already_recorded,
     evaluate_risk_continuity,
+    halt_free_state_hash,
     risk_state_hash,
 )
 from chimera.demo.risk_wiring import is_equity_reconciliation_halt, ledger_equity
@@ -549,6 +550,20 @@ class DemoRunner:
             },
         )
 
+        # R1-c: the finding becomes DURABLE here, immediately after the first
+        # record this process could write and before any later gate can stop it.
+        # The refusal itself still happens in RECOVER, below, so this changes
+        # nothing about which halt reason wins -- what it changes is what
+        # survives a halt that wins instead. `build_risk_engine` above has already written a
+        # default `risk.json` over a missing one, and a SELF_CHECK refusal
+        # between the two used to end the process with that placeholder on disk
+        # and nothing anywhere saying the risk state had been absent: the next
+        # start then found a file, compared it against a log whose newest witness
+        # was hashless, and reached CONTINUOUS on a state the campaign never had.
+        # One record, written at the earliest point the log is open, closes that.
+        if self._risk_continuity.disputed:
+            self._record_risk_continuity()
+
         self._enter(RunnerState.SELF_CHECK)
         problem = self.self_check(allow_dirty=allow_dirty)
         if problem is not None:
@@ -564,7 +579,16 @@ class DemoRunner:
             # execution state made while its risk state is in dispute. The
             # RECOVERY record and this refusal are the whole of what a
             # discontinuity produces; nothing here repairs anything.
-            return self._refuse_risk_continuity()
+            #
+            # The record was written before SELF_CHECK, not here, so that a
+            # refusal there could not end the process with the finding lost.
+            # `_halt` then writes its own HALT record and, through
+            # `RiskEngine.halt`, puts the reason in `risk.json` -- except on an
+            # UNREADABLE load, where `_persist` writes nothing and the suspect
+            # file stays as it was found, and except where R1-b's reconciliation
+            # halted the engine first and `RiskEngine.halt` kept that reason.
+            # Neither exception loses the finding; the log holds it.
+            return self._halt(self._risk_continuity.reason)
         outcome = self.position.reconstruct()
         if outcome.state is HedgeState.DISPUTED:
             return self._halt(f"dispute: {outcome.detail}")
@@ -1034,27 +1058,25 @@ class DemoRunner:
         self.save_state()
         logger.warning("Runner RECOVERED: %s: %s", triage.cause.value, triage.reason)
 
-    def _refuse_risk_continuity(self) -> RunnerState:
-        """R1-c: write the discontinuity down once, then halt on it.
+    def _record_risk_continuity(self) -> None:
+        """R1-c: write the discontinuity down, at most once per discontinuity.
 
-        The record comes first and the halt second, which is the order section
-        9.3 already uses: the halt is what stops the campaign, and the RECOVERY
-        record is what an audit reads to find out why. `_halt` then writes its
-        own HALT record and, through `RiskEngine.halt`, puts the reason in
-        `risk.json` -- except on an UNREADABLE load, where `_persist` writes
-        nothing at all and the suspect file stays exactly as it was found.
-
-        Nothing is repaired. A continuity dispute is not a crash the runner
-        recovers from; it is a statement that the two files disagree about what
-        Aegis was enforcing, and the only honest thing a process can do with
-        that is stop and leave both of them alone.
+        Two guards, each covering the other's gap. `already_recorded` is the
+        log's own answer -- it holds a continuity RECOVERY that the file on disk
+        has not settled -- and is what makes a supervisor's restart loop stop
+        counting restart attempts as recoveries. `continuity_already_recorded`
+        compares fingerprints, and catches the case the first cannot see: a
+        refusal that leaves NO file for the next start to recognise. A `risk.json`
+        that is still missing, or still unreadable, gives the next start no
+        identity at all, so the same fresh verdict is re-derived from scratch and
+        only the fingerprint can tell a second detection from a second event.
         """
         verdict = self._risk_continuity
-        if not verdict.already_recorded and not continuity_already_recorded(
-            self.state_dir, verdict.fingerprint
-        ):
-            self._write_risk_continuity_recovery(verdict)
-        return self._halt(verdict.reason)
+        if verdict.already_recorded:
+            return
+        if continuity_already_recorded(self.state_dir, verdict.fingerprint):
+            return
+        self._write_risk_continuity_recovery(verdict)
 
     def _write_risk_continuity_recovery(self, verdict: RiskContinuity) -> None:
         """R1-c's RECOVERY record: what was found, and what it was compared with.
@@ -1080,6 +1102,15 @@ class DemoRunner:
         ``records_verified`` is absent rather than zero. The crash causes report
         what `verify_log` counted; this check verifies no chain, and writing 0
         would assert that a verification had run and found nothing.
+
+        And one field the crash causes have no use for. ``seeded_state_hash`` is
+        the identity of the risk state THIS process is holding, which is the file
+        it is about to leave on disk: `start()` has to build Aegis before it can
+        halt it, so on a missing `risk.json` that file is a placeholder holding
+        the configured capital. Recording it is what lets a later start tell "the
+        file is still the one the refusal left" from "a file has been restored",
+        without depending on which halt reason ended up in it -- see
+        `RiskContinuity.block` and `ContinuityOutcome.ALREADY_DISPUTED`.
         """
         minute_ns = self._minute_ns()
         self._append(
@@ -1096,7 +1127,9 @@ class DemoRunner:
                     "truncated_bytes": 0,
                     "evidence_excluded_minute": None,
                     "minute_finished": True,
-                    "risk_continuity": verdict.block(),
+                    "risk_continuity": verdict.block(
+                        seeded_state_hash=halt_free_state_hash(self.risk.state)
+                    ),
                 },
                 "veto_or_rejection": {
                     "stage": "recovery",
@@ -1135,7 +1168,7 @@ class DemoRunner:
         for the one answer that belongs in this crash window. The direction is
         the whole of why it belongs here rather than in a refusal -- a risk state
         the log records at an EARLIER witness has gone backwards and is refused
-        by `_refuse_risk_continuity`, while a risk state no witness records is
+        by `start`'s RECOVER stage, while a risk state no witness records is
         `tick` persisting Aegis and dying before it could commit the DECISION
         that quotes it. That is section 9.3's crash, it is the same direction the
         legs and the ledger are recovered in, and failing closed on it would turn
@@ -2266,6 +2299,21 @@ class DemoRunner:
                 "muted moves the legs and writes no ledger, so a copy restored afterwards "
                 "disagrees with the stores and `reconstruct` disputes ledger_store_mismatch, "
                 "which no command clears."
+            )
+        # R1-c, and the same rule one paragraph up: a halt whose cause is still
+        # true is not resumable. Resuming here would clear Aegis's halt and write
+        # a RESUME record, and the campaign could then tick -- whose DECISION
+        # record would settle the continuity dispute by the only mechanism that
+        # is allowed to settle one. Restoring the file is what ends this halt;
+        # `flatten` remains available meanwhile, because reducing exposure while
+        # the risk state is in dispute is what HALT is for.
+        if self._risk_continuity.disputed:
+            raise RunnerError(
+                "cannot resume while the persisted risk state does not continue the "
+                f"decision log: {self._risk_continuity.reason} Restore risk.json from a "
+                "copy at least as recent as the log's last risk.state_hash record and "
+                "start again; resuming cannot make the file continue a log it does not "
+                "(docs/demo_runbook.md, section 4)."
             )
         self.risk.resume()
         record_hash = self._append(
