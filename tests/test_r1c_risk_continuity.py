@@ -1736,3 +1736,48 @@ def test_the_recorded_seeded_identity_is_the_file_the_refusal_left_behind(tmp_pa
         "and the halt really is what the two differ by, so resting on the raw "
         "identity would not survive a different gate halting it first"
     )
+
+
+def test_restoring_the_halt_an_operator_edited_out_settles_the_refusal(tmp_path):
+    """The other collision between a restored file and the one the refusal left.
+
+    An operator who clears `halted` by hand leaves a state whose halt-free
+    identity is, by construction, identical to the correct file's — clearing the
+    halt is exactly what setting the halt aside does. So the refusal records an
+    identity that the right file also has, and "a different file is there" cannot
+    tell them apart.
+
+    What can is which halt: the correct file carries the reason a `HALT` record
+    written BEFORE the refusal reports, and no process after the refusal could
+    have put that reason into it. Without that the runbook's "restore the file,
+    do not clear the flag" would end in a campaign that could not be restored
+    either.
+    """
+    harness = _halted_campaign(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+
+    load, correct = loaded_state(state_dir)
+    document = correct.to_dict(updated_at="2026-09-19T00:00:00+00:00")
+    document["halted"] = False
+    document["halt_reason"] = ""
+    (state_dir / "risk.json").write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    _, edited = loaded_state(state_dir)
+    assert halt_free_state_hash(edited) == halt_free_state_hash(correct), (
+        "the two must really collide once the halt is set aside, or this test is "
+        "about nothing"
+    )
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.risk_continuity.outcome is ContinuityOutcome.HALT_NOT_HELD
+    assert refused.runner.start() is RunnerState.HALT
+    assert len(continuity_records(state_dir)) == 1
+
+    (state_dir / "risk.json").write_bytes(saved)
+    healed = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert healed.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert healed.runner.start() is RunnerState.HALT
+    assert healed.runner.halt_reason == correct.halt_reason
+    assert len(continuity_records(state_dir)) == 1
