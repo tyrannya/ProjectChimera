@@ -3522,3 +3522,44 @@ def test_a_halt_no_record_mentions_does_not_settle_a_refusal(tmp_path):
         assert verdict.outcome is ContinuityOutcome.NOT_SETTLED
         assert witness in verdict.reason
     _settles_and_runs(tmp_path, harness, (DAY,), saved, refusal)
+
+
+def test_a_crash_inside_a_settling_start_fails_closed_and_the_backup_still_settles(
+    tmp_path,
+):
+    """A settling start may write, and a crash before its settlement commits.
+
+    The verdict is taken from the file as found, and a settling verdict builds
+    Aegis with persistence on: a kill switch present at that start halts it and
+    writes the halt before the log is even open. A process killed between that
+    write and the settlement record leaves the refusal open over a file no
+    record quotes. That is NOT_SETTLED -- the strict direction, and nothing is
+    lost -- and restoring the same backup again settles it.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    refusal = _refuse_by_loss(tmp_path, harness, (DAY,))
+
+    (state_dir / "KILL_SWITCH").write_text("engaged", encoding="utf-8")
+    (state_dir / "risk.json").write_bytes(saved)
+    settling = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert settling.runner.risk_continuity.settles_seq == refusal
+
+    def killed(verdict):
+        raise _Crash("between the startup halt's persist and the settlement record")
+
+    settling.runner._write_risk_continuity_recovery = killed
+    with pytest.raises(_Crash):
+        settling.runner.start()
+    _stop(settling)
+    moved = _risk_json(harness)
+    assert moved != saved, "the settling engine wrote its kill-switch halt"
+    assert _decoded(moved).halted and _decoded(moved).kill_switch
+    assert settlement_records(state_dir) == []
+    (state_dir / "KILL_SWITCH").unlink()
+
+    verdict = _refused_and_untouched(tmp_path, harness, (DAY,), moved)
+    assert verdict.outcome is ContinuityOutcome.NOT_SETTLED
+    _settles_and_runs(tmp_path, harness, (DAY,), saved, refusal)
