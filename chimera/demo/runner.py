@@ -341,6 +341,7 @@ class DemoRunner:
             self.state_dir,
             load=self._inspection.risk_outcome,
             state=self._inspection.risk_state,
+            capital=self.capital,
         )
         self._log: DecisionLog | None = None
         self._config_hash = _config_hash(config)
@@ -573,7 +574,7 @@ class DemoRunner:
         # in RECOVER, below.
         #
         # A verdict that settles an open refusal is written down here too. That
-        # record is what ends the stretch of refused processes `_scan` skips, so
+        # record is what ends the stretch of refused processes `_campaign_history` skips, so
         # what THIS process halts on from now on is campaign history again, and
         # a later loss of the file is a new event with a record of its own.
         if self._risk_continuity.disputed:
@@ -1094,10 +1095,13 @@ class DemoRunner:
 
         A REFUSAL is written when a disputed verdict is first reached, and says
         what was found and what it was compared with. A SETTLEMENT is written
-        when a later start finds a file that positively continues the log while
-        a refusal is still open (`RiskContinuity.settles_seq`); it closes the
-        stretch of refused processes that `risk_continuity._scan` skips. Both are
-        the same record shape, told apart by the block's ``outcome``.
+        when a later start PROVES the file continues the log while a refusal is
+        still open (`RiskContinuity.settles_seq`), and says which proof: the
+        file's identity is exactly the one the newest witness records, or -- on
+        a log that has never recorded one -- exactly the first-start seed. It
+        closes the stretch of refused processes that
+        `risk_continuity._campaign_history` skips. Both are the same record
+        shape, told apart by the block's ``outcome``.
 
         Two fields differ from the crash causes' records, for both:
 
@@ -1118,12 +1122,18 @@ class DemoRunner:
             label = RecoveryCause.RISK_STATE_DISCONTINUITY.value.lower()
         else:
             witness = verdict.hash_witness
+            proof = (
+                "which is exactly the first-start seed: the log has never recorded a "
+                "risk.state_hash, so that is the only state this campaign has held"
+                if witness is None
+                else f"which is exactly the risk.state_hash the log's newest witness, the "
+                f"{witness.describe()}, records, and no record after it moved the state "
+                "without one"
+            )
             detail = (
-                f"{RISK_CONTINUITY_PREFIX} settled: the risk state on disk continues the "
-                f"decision log again, which settles the refusal at RECOVERY record seq "
-                f"{settles}. It hashes to {verdict.observed_state_hash}, and the log's "
-                "newest risk.state_hash is "
-                f"{'(none)' if witness is None else witness.state_hash}"
+                f"{RISK_CONTINUITY_PREFIX} settled: the risk state on disk hashes to "
+                f"{verdict.observed_state_hash}, {proof}. That settles the refusal at "
+                f"RECOVERY record seq {settles}"
             )
             label = "risk_state_continuity_settled"
         minute_ns = self._minute_ns()
@@ -2127,6 +2137,31 @@ class DemoRunner:
             return None
         return self._ledger_effect(equity)
 
+    def _risk_block(self) -> dict[str, Any]:
+        """The ``risk`` block a HALT, RESUME or OPERATOR record carries, or none.
+
+        R1-c, and a narrow slice of canonical R1-j pulled forward to make it
+        exact. These three kinds move the risk state -- a halt, the fields
+        `resume` clears, a `flatten`'s exposures and equity, a dispute
+        `resolve` clears, the equity `resolve-equity` adopts -- and used to
+        record nothing about where they left it. So a `risk.json` restored after
+        one could not be told apart from a stale or fabricated one: the review
+        measured both admitted as continuous (`chimera.demo.risk_continuity`
+        states why no rule over those records could have been exact). Now each
+        carries ``risk.state_hash`` exactly as a DECISION does: the same
+        function of the same fields, taken after the transition, of an engine
+        whose every mutation has already persisted -- so it is the identity of
+        the file on disk.
+
+        Empty while the risk state is in dispute. That process's engine persists
+        nothing, so a hash of it would describe a state no file holds -- and it
+        would become the log's newest witness and end the refusal on the
+        strength of it, which is also why `tick` refuses outright.
+        """
+        if self._risk_continuity.disputed:
+            return {}
+        return {"risk": {"state_hash": _risk_hash(self.risk), "decisions": []}}
+
     def _halt(
         self, reason: str, *, ledger_effect: Mapping[str, str] | None = None
     ) -> RunnerState:
@@ -2179,6 +2214,10 @@ class DemoRunner:
                         "label": "halt",
                         "detail": reason,
                     },
+                    # What Aegis holds now, which is NOT always `reason`: `halt`
+                    # keeps the first reason, and the kill switch moves its
+                    # mirror beside it. See `_risk_block`.
+                    **self._risk_block(),
                     # What was held when the campaign stopped. Without it a halt
                     # that FOLLOWS a reduction -- section 6.7's liquidation
                     # flatten is the one that must -- leaves the log saying the
@@ -2263,6 +2302,7 @@ class DemoRunner:
             int(minute) * _MS_TO_NS,
             {
                 "operator": {"command": "flatten", "note": note},
+                **self._risk_block(),
                 "position_after": self._position_block(),
                 # Omitted, not zeroed, when the ledger is UNREADABLE. The
                 # flatten still happens -- reducing exposure is what the command
@@ -2333,16 +2373,19 @@ class DemoRunner:
         if self._risk_continuity.disputed:
             raise RunnerError(
                 "cannot resume while the persisted risk state does not continue the "
-                f"decision log: {self._risk_continuity.reason} Restore risk.json from a "
-                "copy at least as recent as the log's last risk.state_hash record and "
-                "start again; resuming cannot make the file continue a log it does not "
+                f"decision log: {self._risk_continuity.reason} Restore the copy of "
+                "risk.json that the log's newest risk.state_hash describes and start "
+                "again; resuming cannot make the file continue a log it does not "
                 "(docs/demo_runbook.md, section 4)."
             )
         self.risk.resume()
         record_hash = self._append(
             RecordKind.RESUME,
             self._minute_ns(),
-            {"operator": {"command": "resume", "note": note, "cleared": self.halt_reason}},
+            {
+                "operator": {"command": "resume", "note": note, "cleared": self.halt_reason},
+                **self._risk_block(),
+            },
         )
         self.halt_reason = None
         self._enter(RunnerState.RECOVER)
@@ -2459,6 +2502,7 @@ class DemoRunner:
                     "adopted_side": adopted.side.value,
                     "adopted_qty": str(adopted.quantity),
                 },
+                **self._risk_block(),
                 "position_after": self._position_block(),
             },
         )
@@ -2588,6 +2632,7 @@ class DemoRunner:
                     "adopted_equity": str(accounted),
                     "halted_after": self.risk.state.halt_reason,
                 },
+                **self._risk_block(),
                 "position_after": self._position_block(),
             },
         )
