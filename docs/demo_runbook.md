@@ -619,6 +619,11 @@ comes back with it is the campaign's own halt, not a placeholder's.
 * The tick that writes `INCOMPLETE_STATE` can move the stale-feed mark first,
   and that record carries no hash; a file saved in that state is one no record
   quotes, and after a refusal it does not settle.
+* A settling start may write `risk.json` before its settlement record is in
+  the log — a kill switch present at that start halts Aegis and persists the
+  halt first. If the process dies in between, the refusal is still open and the
+  file on disk is one no record quotes: `NOT_SETTLED`. Restore the same backup
+  again and start; nothing was lost.
 * A campaign that has never decided a minute has only ever held the first-start
   seed, so its genuine `risk.json` and a default one have the same identity, and
   either settles. What protects it is that nothing in the runner writes one.
