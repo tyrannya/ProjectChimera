@@ -474,14 +474,14 @@ of them was a defect first:
   so a healthy restart after a halt matches the newest record, and an older
   halted state matches an earlier one and is refused. Two states that are both
   halted are not one state.
-* **Nothing a refused startup wrote counts as history.** A refusal halts, and
-  halting writes a `HALT` record; a startup that stops for its own reason —
-  a dirty working tree, say — writes one too. Read back as campaign evidence,
-  those records said "this campaign is halted and nothing cleared it" about a
-  file the operator was about to replace, and condemned the correct backup when
-  they restored it. Every record from the newest `RISK_STATE_DISCONTINUITY`
-  onward, up to the next decided minute, is a process starting and stopping, and
-  witnesses nothing.
+* **Nothing a refused process wrote counts as history.** A refusal is written
+  down as a `RECOVERY` record with cause `RISK_STATE_DISCONTINUITY`, and every
+  record after it — the refusal's own `HALT`, a `flatten` you ran meanwhile, a
+  kill switch that halted a later attempt, further refusals as other files were
+  tried — up to the **settlement** record that closes it (below) was written by a
+  process that wrote nothing to `risk.json`. None of it describes the file, and
+  none of it is read. Before the refusal and after the settlement, the log is
+  read as usual.
 
 `status` reports the verdict without starting anything, which is the command to
 run on a campaign that will not start:
@@ -494,79 +494,128 @@ Read `risk_continuity.outcome`:
 
 | `outcome` | what it means |
 | --- | --- |
-| `FIRST_START` | the log holds no record, so there is nothing to continue. A pristine deployment. |
-| `CONTINUOUS` | nothing refuses this state. Either it is the one the log's newest record pins, or no record pins it and a `HALT`, `RESUME` or `OPERATOR` record since then legitimately moved it. Normal. |
-| `STATE_AHEAD_OF_LOG` | the state holds an identity no record quotes and no record since the newest one moved it: the process died between persisting Aegis and committing the record that quotes it. Recovered from, not refused — a `RECOVERY` record with cause `LOG_BEHIND_STATE` is written and the campaign carries on, exactly as it does for a store or a ledger that is ahead. |
-| `RISK_STATE_MISSING` | there is no `risk.json` and the log holds records. **Refused.** |
+| `FIRST_START` | the log holds no record, so there is nothing to continue. A pristine deployment. `risk.json` is seeded and written as it always was. |
+| `CONTINUOUS` | nothing refuses this state. Either it is the one the log's newest record pins (as it stands, or with a halt set aside), or no record pins it and a `HALT`, `RESUME` or `OPERATOR` record the campaign itself wrote since then moved it. Normal. If a refusal was open, this start **settles** it and writes the settlement record. |
+| `STATE_AHEAD_OF_LOG` | the state holds an identity no record quotes and nothing since the newest record moved it: the process died between persisting Aegis and committing the record that quotes it. Recovered from, not refused — a `RECOVERY` record with cause `LOG_BEHIND_STATE` is written and the campaign carries on, exactly as it does for a store or a ledger that is ahead. **Never reported while a refusal is open**; that is `NOT_SETTLED`. |
+| `RISK_STATE_MISSING` | there is no `risk.json` and the log holds records. **Refused.** Nothing is written in its place. |
 | `RISK_STATE_UNREADABLE` | `risk.json` exists and could not be read or believed. **Refused.** The file is left exactly as it was found; nothing is written over it. |
 | `RISK_STATE_WITHOUT_ACCOUNT` | `risk.json` is the pre-schema halt record, which carries no equity, peak, day, streak or dispute. **Refused.** |
 | `HALT_NOT_HELD` | the log's newest `HALT` is followed by no `RESUME` and no `resolve-equity`, and the state on disk is not halted. **Refused.** |
-| `STATE_HASH_REGRESSED` | the state's identity — as it stands, or with a halt set aside — is one the log records at an *earlier* record and not at its newest. The campaign has already moved past this state, so the file was rolled back or restored from an older copy. **Refused.** |
-| `ALREADY_DISPUTED` | a previous start already refused, wrote its `RECOVERY` record, and nothing has settled it since. **Refused**, on the reason it was first refused for, and without writing a second record. |
-| `HISTORY_UNVERIFIABLE` | the log holds committed lines that no record could be read from, so whether this campaign has durable history cannot be established. **Refused**, rather than reported as `FIRST_START`. The log verification in section 5 is what diagnoses it; nothing here repairs or removes anything. |
+| `STATE_HASH_REGRESSED` | the state's identity — as it stands, or with a halt set aside — is one the log records at an *earlier* record and not at its newest. The campaign has already moved past this state, so the file was rolled back or restored from an older copy. **Refused**, whether or not a refusal is already open. |
+| `NOT_SETTLED` | a refusal is open, and the file on disk holds an identity no record quotes. Outside a refusal that would be the crash window; after one it is a file no process of this campaign wrote, and a changed file is not a restored one. **Refused.** The reason names the record the file has to match. |
+| `HISTORY_UNVERIFIABLE` | the log holds committed lines that no record could be read from, so whether this campaign has durable history cannot be established. **Refused**, rather than reported as `FIRST_START`, and `risk.json` is not written. The log verification in section 5 is what diagnoses it; nothing here repairs or removes anything. |
 
-Every refusal halts with a reason beginning `risk_continuity:` and writes one
-`RECOVERY` record with cause `RISK_STATE_DISCONTINUITY`, naming the identity it
-found and the record it compared against.
+Every refusal halts with a reason beginning `risk_continuity:`.
 
-**One record per discontinuity, not one per restart attempt**, and that holds
-across a supervisor restarting in a loop: the second and every later start reads
-its own refusal back out of the log and refuses on the same reason without
-appending anything. A genuinely different discontinuity, after the first one has
-been settled, does get its own record.
+**A refused process writes nothing to `risk.json` — not one byte, from before
+Aegis is built to the moment the process exits.** It still builds Aegis, from the
+file (or, when the file is missing, from the same first-start seed a pristine
+deployment gets) and halts it, and Aegis enforces that halt in memory exactly as
+it would anywhere else; but the engine is built not to persist. So a missing
+`risk.json` stays missing, and a stale one keeps its bytes, across the refusal,
+across every restart after it, across a `flatten`, across a kill switch, and
+across a crash at any point in the startup. The file itself is the evidence, and
+the next process reaches the same verdict from it on its own — the `RECOVERY`
+record reports the finding, it is not what keeps it. Two things follow for what
+you read while the refusal stands:
 
-**Neither `resolve --equity` nor `resume` will clear it, and both say so.** A
-rolled-back `risk.json` usually disagrees with the ledger too, so the equity
-dispute is what Aegis ends up holding — settling it would clear the halt on the
-strength of an answer to a different question. `resume` would clear the halt and
-let the campaign decide another minute, and a decided minute is the one thing
-that settles a continuity dispute. `flatten` is **not** refused: reducing
-exposure while the risk state is in dispute is what `HALT` is for, and the
-`OPERATOR` record it writes settles nothing.
+* `status`'s `risk_halted` describes the file as it was found — `false` for a
+  missing one — and not a refused process's halt, and `status` starts nothing,
+  so its `halt_reason` is empty. `risk_continuity` is the field to read.
+* The Aegis series a refused process publishes — halted, drawdown, funding
+  streak — describe the in-memory engine it halted. Halted is 1, as it should
+  be; on a missing file the drawdown and the streak are the first-start seed's,
+  not the campaign's.
 
-The refusal survives an ordinary restart even though it may never appear in
-`risk.json` at all. Aegis keeps the **first** halt reason it is given, and on a
-rolled-back file the equity reconciliation usually gets there first while the
-engine is still being built — so `risk.json` says `equity_dispute:` and the
-continuity refusal lives only in the log. Both are read on the next start, and
-either is enough.
+**One refusal record per event, not one per restart.** The file does not change
+and nothing the refused processes wrote is read, so every restart takes the same
+verdict with the same fingerprint and appends nothing. A different file tried in
+the meantime — an older backup, say — is a different verdict and gets its own
+record. When a start finds a file that settles the refusal it writes a
+**settlement** record (`RECOVERY`, cause `RISK_STATE_DISCONTINUITY`, outcome
+`CONTINUOUS`, `settles_seq` naming the refusal), and that is where one event ends:
+the settled process's own halts are ordinary history again, and losing the file
+a second time — even before a single minute has been decided — is a second event
+with a second record.
 
-**The recovery is to restore the file, not to clear the flag.** Take
-`risk.json` from a copy at least as recent as the log's last `risk.state_hash`
-record — the same kind of copy section 6 needs for `carry_ledger.json`, and with
-the same catch: a daily backup that predates this morning's settlement is not a
-usable restore point — and start again. The restored file is accepted, is not
-overwritten, and the campaign runs. **Do not hand-edit `risk.json`,** and in
-particular do not clear `halted` by hand: section 16, and for the reason section
-7 gives. No documented recovery here requires one.
+**While the refusal stands, these are refused, and each says why:** `resolve
+--equity`, `resume`, `resolve --symbol`, and deciding a minute. A rolled-back
+`risk.json` usually disagrees with the ledger too, so the equity dispute is what
+Aegis ends up holding in memory — settling it would clear the halt on the
+strength of an answer to a different question. `resolve --symbol` would clear a
+reconciliation dispute in the store and save it, while the `risk.json` you are
+about to restore still holds it. Every one of these refusals is taken before
+anything is touched.
 
-**After a refusal there is a `risk.json` again, and it is not your campaign's.**
-A start has to build Aegis before it can halt it, and building it over a missing
-file seeds a first start's equity and writes it down — so the refusal lands on a
-file that already exists, holding the configured capital and a halt. Treat it as
-a placeholder, and put the backup straight over it.
+**`flatten` is permitted and settles nothing.** Reducing exposure while the risk
+state is in dispute is what `HALT` is for: the legs are reduced and the stores
+and the ledger are written as on any flatten. Aegis records the flattened equity
+and exposures in memory only, so `risk.json` is exactly the file it was, and the
+refusal stands. Expect an equity dispute once the right `risk.json` is back — the
+ledger holds the flatten and the restored file does not — and clear it the way
+the next paragraph says.
 
-It cannot be mistaken for the historical state. The `RECOVERY` record is written
-**before** the self-check, so a refusal for some other reason cannot end the
-process with the placeholder on disk and nothing saying where it came from; and
-the record carries the identity of the file the refusal was about to leave
-behind, taken with any halt set aside. A later start that still finds that file
-refuses again whatever has since been halted into it — the continuity reason, a
-`source_identity` refusal, an equity dispute, it makes no difference. The record
-stops standing in the way the moment a different file is there, which is exactly
-what restoring the backup does, and it needs no `risk.state_hash` in the log to
-notice: a campaign that halted before it decided its first minute recovers the
-same way.
+**The kill switch keeps its effect and settles nothing.** A switch present at a
+refused start halts that process's Aegis as it always would; the mirror is not
+written to the file. Removing the switch changes nothing either: the next start
+reads the same file and refuses again. After a restore, a switch that is still
+present halts and is persisted exactly as before.
+
+**The recovery is to restore the file, not to clear the flag.** Put back the copy
+the campaign last wrote and start again. What settles a refusal is a file the log
+**positively** vouches for, never merely a file that is different:
+
+* the state the log's newest `risk.state_hash` records — or that state with a halt
+  written into it, where the log's own `HALT` says the campaign was halted; or
+* where a `HALT`, `RESUME` or `OPERATOR` record the campaign itself wrote
+  **before** the refusal follows that newest record, a state no record quotes —
+  those records carry no hash, so this is as far as the log can check it; or
+* on a campaign that has never recorded a `risk.state_hash` at all, a state that
+  holds whatever halt the log says the campaign held.
+
+An older copy is `STATE_HASH_REGRESSED`, and a file no record quotes is
+`NOT_SETTLED`. That includes a backup taken in the crash window itself — Aegis
+persisted, the record never committed: outside a refusal it would be recovered
+from, but after one it is not evidence of anything. Restore the copy the log's
+newest `risk.state_hash` describes instead; the equity dispute that may follow is
+cleared as in "Clearing an equity dispute" above. The settled start writes
+its settlement record, and if R1-b's equity reconciliation then halts it — after
+a `flatten` during the dispute, it will — `resolve --equity` is available again
+and the campaign runs.
+
+**Do not hand-edit `risk.json`,** and in particular do not clear `halted` by
+hand: section 16, and for the reason section 7 gives. That produces
+`HALT_NOT_HELD`, and no documented recovery here requires one.
+
+**A forged decision log beside a missing `risk.json`.** The log verification
+refuses the forged log before anything is written — including anything to
+`risk.json`, which stays absent. Repairing the log from a verified copy (section
+5) does not repair the risk state: the next start finds history and no
+`risk.json`, and refuses `RISK_STATE_MISSING` until the right file is back. What
+comes back with it is the campaign's own halt, not a placeholder's.
+
+**The limits, stated rather than implied.**
+
+* Outside a refusal, a `risk.json` edited to a state no record quotes is
+  indistinguishable from the crash window and is recovered from as one — exactly
+  as an edited store or ledger is.
+* After a refusal, a campaign with a `HALT`, `RESUME` or `OPERATOR` record
+  after its newest `risk.state_hash` and before the refusal cannot tell its
+  correct backup from any other state no record quotes, and accepts either — the
+  same ambiguity it has with no refusal at all. Giving those records
+  a `risk.state_hash` is a change to what the runner writes and to replay parity,
+  and is canonical **R1-j**'s.
+* A campaign that has never decided a minute has only ever held the first-start
+  seed, so its genuine `risk.json` and a default one have the same identity; only
+  a halt the log records tells them apart. What protects it is that nothing in
+  the runner writes one.
 
 > **There is still no CLI command that clears a `risk_continuity:` halt, and
-> that is the same open blocker section 7 records.** `resume` would be the one,
-> and the CLI's resume path never calls `start()`, so it does not reach the halt
-> that is on disk — and the runner would refuse it anyway while the
-> discontinuity stands. Making `resume` and `resolve --symbol` reachable from a
-> fresh process is canonical **R1-i** (`start()` with log-tail clock seeding),
-> and until then a discontinuity is a stop-and-restore, not a stop-and-resume.
-> That is a supported recovery, not a dead end: restoring the backup is tested
-> end to end.
+> none is needed: the halt is not in `risk.json` and is re-derived by every start
+> from the file.** Restoring the file is the recovery, and it is tested end to
+> end through the CLI. Making `resume` and `resolve --symbol` reachable from a
+> fresh process in general is canonical **R1-i** (`start()` with log-tail clock
+> seeding), and is the same open blocker section 7 records.
 
 
 ## 5. Recovery verification: the `STARTUP` and `RECOVER` checks
