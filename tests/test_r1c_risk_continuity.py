@@ -3490,3 +3490,35 @@ def test_a_disputed_process_writes_no_risk_identity_and_a_settled_one_does(tmp_p
     assert halt["kind"] == RecordKind.HALT.value
     assert not is_risk_continuity_halt(halt["veto_or_rejection"]["detail"])
     assert halt["risk"]["state_hash"] == risk_state_hash(loaded_state(state_dir)[1])
+
+
+def test_a_halt_no_record_mentions_does_not_settle_a_refusal(tmp_path):
+    """The halt normalisation this remediation removed, refused on its own ground.
+
+    The newest witness is an unhalted DECISION and nothing after it halted the
+    campaign. A file holding exactly that witness's account with a halt written
+    into it used to settle a refusal once the halt was set aside. It is more
+    conservative than the witness, but no record says the campaign held it, and
+    a halt reason nobody recorded decides which command clears it. Both shapes
+    -- an operator's halt, and the kill switch's with its mirror -- are
+    NOT_SETTLED; the witness's own file settles.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    state_dir = harness.state_dir
+    _, witness = newest_hash_witness(state_dir)
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    _, state = loaded_state(state_dir)
+    assert not state.halted and risk_state_hash(state) == witness
+    halted_by_hand = [
+        replace(state, halted=True, halt_reason="an operator halt nobody recorded"),
+        replace(state, halted=True, halt_reason="kill_switch", kill_switch=True),
+    ]
+    assert all(_quoted_nowhere(state_dir, risk_state_hash(s)) for s in halted_by_hand)
+    refusal = _refuse_by_loss(tmp_path, harness, (DAY,))
+
+    for halted in halted_by_hand:
+        verdict = _refused_and_untouched(tmp_path, harness, (DAY,), _encoded(halted))
+        assert verdict.outcome is ContinuityOutcome.NOT_SETTLED
+        assert witness in verdict.reason
+    _settles_and_runs(tmp_path, harness, (DAY,), saved, refusal)
