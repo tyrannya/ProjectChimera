@@ -17,11 +17,13 @@ guard that fails closed on the ordinary crash window would break the runner's
 recovery rather than tighten it.
 
 **Fixtures come from production writers.** The campaigns are driven through
-`DemoRunner.tick`, `_halt`, `flatten`, `resume` and `shutdown`, and the states are
-whatever those leave on disk. Two tests deliberately damage a file -- one replaces
-`risk.json` with a directory and one restores an EARLIER copy of it -- and each
-says so where it does it: neither state is reachable by writing a file, which is
-the whole point of refusing them.
+`DemoRunner.tick`, `_halt`, `flatten`, `resume`, `shutdown` and, where an
+operator's path is the point, the real `tools/demo_run.main`; the states are
+whatever those leave on disk. What the tests then do TO those files -- delete
+`risk.json`, restore an EARLIER copy of it, forge or tear a log line, kill a
+startup at one statement -- is the damage under test, and each says so where it
+does it: none of those states is reachable by the runner writing a file, which
+is the whole point of refusing them.
 
 Nothing here is scientific evidence. The prices come from `chimera.demo.fixtures`
 and every quantity below is the test author's own arithmetic.
@@ -32,6 +34,7 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +84,7 @@ def records(state_dir: Path) -> list[dict[str, Any]]:
 
 
 def continuity_records(state_dir: Path) -> list[dict[str, Any]]:
-    """The RECOVERY records R1-c wrote, and only those."""
+    """The RECOVERY records R1-c wrote -- refusals AND settlements -- and only those."""
     return [
         record
         for record in records(state_dir)
@@ -89,6 +92,39 @@ def continuity_records(state_dir: Path) -> list[dict[str, Any]]:
         and (record.get("recovery") or {}).get("cause")
         == RecoveryCause.RISK_STATE_DISCONTINUITY.value
     ]
+
+
+def refusal_records(state_dir: Path) -> list[dict[str, Any]]:
+    """The continuity RECOVERY records that OPENED a refusal."""
+    return [
+        record
+        for record in continuity_records(state_dir)
+        if record["recovery"]["risk_continuity"]["outcome"]
+        != ContinuityOutcome.CONTINUOUS.value
+    ]
+
+
+def settlement_records(state_dir: Path) -> list[dict[str, Any]]:
+    """The continuity RECOVERY records that SETTLED one."""
+    return [
+        record
+        for record in continuity_records(state_dir)
+        if record["recovery"]["risk_continuity"]["outcome"]
+        == ContinuityOutcome.CONTINUOUS.value
+    ]
+
+
+def decisions_after(state_dir: Path, seq: int) -> list[dict[str, Any]]:
+    """Every record carrying a `risk.state_hash` written after ``seq``."""
+    return [
+        record
+        for record in records(state_dir)
+        if int(record["seq"]) > seq and (record.get("risk") or {}).get("state_hash")
+    ]
+
+
+def last_seq(state_dir: Path) -> int:
+    return max(int(record["seq"]) for record in records(state_dir))
 
 
 def newest_hash_witness(state_dir: Path) -> tuple[int, str]:
@@ -192,6 +228,11 @@ def test_a_pristine_first_start_is_not_a_continuity_dispute(tmp_path):
     assert harness.runner.start() is RunnerState.READY
     assert not harness.runner.risk.state.halted
     assert continuity_records(harness.state_dir) == []
+    # And it seeds and persists exactly as it always did: holding a DISPUTED
+    # file as evidence must not become holding every file.
+    load, seeded = loaded_state(harness.state_dir)
+    assert load is RiskStateLoad.LOADED
+    assert seeded.equity == pytest.approx(float(CAPITAL))
 
 
 def test_a_first_start_that_wrote_its_risk_state_and_nothing_else_still_starts(tmp_path):
@@ -710,19 +751,17 @@ def test_the_refusal_writes_one_recovery_record_naming_what_it_compared(tmp_path
     assert "records_verified" not in recovery
 
 
-def test_the_file_a_refused_start_leaves_behind_is_a_halted_placeholder(tmp_path):
-    """A disclosed consequence, pinned so that it is a decision and not a surprise.
+def test_a_refused_start_leaves_the_missing_risk_state_missing(tmp_path):
+    """The evidence is the absence, and a refusal writes nothing in its place.
 
     `start()` has to BUILD Aegis before it can halt it, and `build_risk_engine`
-    seeds a first start's equity and persists it -- so by the time a MISSING
-    verdict can be acted on, a `risk.json` exists again. What it holds is the
-    configured capital and the refusal, which is a placeholder and not the
-    campaign's risk state; the durable evidence that the file was missing is the
-    RECOVERY record above. An operator restores their backup over this file
-    (docs/demo_runbook.md, section 4).
-
-    Suppressing the write means changing `seed_or_reconcile_equity`, which is
-    R1-b's merged code, and R1-c does not touch it.
+    seeds a first start's equity. On a dispute that engine is built with
+    ``persist=False``: the seed, the constructor's kill-switch check and the
+    refusal's own halt all happen in memory, and none of them reaches the file.
+    An earlier revision let them through and left a placeholder holding the
+    configured capital where the absence had been -- which a crash, a failed
+    append or a forged log could then leave standing with nothing saying what it
+    was (the independent review's second blocking finding).
     """
     harness = _halted_campaign(tmp_path)
     config, state_dir = harness.runner.config, harness.state_dir
@@ -730,22 +769,23 @@ def test_the_file_a_refused_start_leaves_behind_is_a_halted_placeholder(tmp_path
 
     resumed = build(tmp_path, days=(DAY,), config=config, start=False)
     assert resumed.runner.start() is RunnerState.HALT
+    # Halted where it matters -- in the engine the runner enforces with.
+    assert resumed.runner.risk.state.halted
+    assert is_risk_continuity_halt(resumed.runner.risk.state.halt_reason)
 
-    persisted = json.loads((state_dir / "risk.json").read_text(encoding="utf-8"))
-    assert persisted["halted"] is True
-    assert is_risk_continuity_halt(persisted["halt_reason"])
-    assert persisted["equity"] == pytest.approx(float(CAPITAL))
+    assert not (state_dir / "risk.json").exists()
+    assert not (state_dir / "risk.json.tmp").exists()
 
 
 def test_a_second_start_does_not_write_a_second_recovery_record(tmp_path):
     """Requirement F again. One event, one record, however often it is restarted.
 
     A refused campaign is restarted -- by an operator, by a supervisor, by a
-    systemd restart loop -- and the discontinuity is still there each time. The
-    verdict also changes shape between the two starts, which is the subtler half:
-    the first refusal seeds and persists a `risk.json`, so a second start no
-    longer finds one MISSING. It finds one halted on the refusal, and reports
-    that same refusal rather than a differently-named one.
+    systemd restart loop -- and the discontinuity is still there each time. It is
+    there UNCHANGED: the first refusal wrote nothing to the file, and everything
+    it wrote to the log is skipped as the work of a refused process, so the
+    second start takes the same verdict with the same fingerprint and the dedup
+    has nothing to reconcile.
     """
     harness = _halted_campaign(tmp_path)
     config, state_dir = harness.runner.config, harness.state_dir
@@ -753,14 +793,15 @@ def test_a_second_start_does_not_write_a_second_recovery_record(tmp_path):
 
     first = build(tmp_path, days=(DAY,), config=config, start=False)
     assert first.runner.start() is RunnerState.HALT
-    first_reason = first.runner.risk.state.halt_reason
+    first_verdict = first.runner.risk_continuity
 
     second = build(tmp_path, days=(DAY,), config=config, start=False)
     verdict = second.runner.risk_continuity
-    assert verdict.outcome is ContinuityOutcome.ALREADY_DISPUTED
-    assert verdict.reason == first_reason
+    assert verdict.outcome is ContinuityOutcome.RISK_STATE_MISSING
+    assert verdict.fingerprint == first_verdict.fingerprint
+    assert verdict.reason == first_verdict.reason
     assert second.runner.start() is RunnerState.HALT
-    assert second.runner.halt_reason == first_reason
+    assert second.runner.halt_reason == first_verdict.reason
 
     assert len(continuity_records(state_dir)) == 1
 
@@ -943,19 +984,24 @@ def test_restoring_the_byte_perfect_backup_after_a_refusal_starts_the_campaign(t
     refused = build(tmp_path, days=(DAY,), config=config, start=False)
     assert refused.runner.start() is RunnerState.HALT
     assert is_risk_continuity_halt(refused.runner.halt_reason or "")
-    assert len(continuity_records(state_dir)) == 1
-    # The refusal really did leave a placeholder behind, so restoring really is
-    # replacing something rather than putting a file back where one already was.
-    assert (state_dir / "risk.json").read_bytes() != saved
+    assert len(refusal_records(state_dir)) == 1
+    refusal_seq = int(refusal_records(state_dir)[0]["seq"])
+    # The refusal left the absence exactly as it found it.
+    assert not (state_dir / "risk.json").exists()
 
     (state_dir / "risk.json").write_bytes(saved)
     restored = build(tmp_path, days=(DAY,), config=config, start=False)
     assert restored.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert restored.runner.risk_continuity.settles_seq == refusal_seq
     assert restored.runner.start() is RunnerState.READY, restored.runner.halt_reason
 
-    # The correct backup is not condemned, not overwritten and not counted again.
+    # The correct backup is not condemned, not overwritten and not refused
+    # again; the restore is written down once, as the settlement it is.
     assert (state_dir / "risk.json").read_bytes() == saved
-    assert len(continuity_records(state_dir)) == 1
+    assert len(refusal_records(state_dir)) == 1
+    settled = settlement_records(state_dir)
+    assert len(settled) == 1
+    assert settled[0]["recovery"]["risk_continuity"]["settles_seq"] == refusal_seq
 
     minute = restored.runner.cursor.next_minute_ms()
     assert minute is not None
@@ -988,7 +1034,10 @@ def test_repeated_restore_attempts_do_not_grow_one_discontinuity_into_many(tmp_p
         attempt = build(tmp_path, days=(DAY,), config=config, start=False)
         assert attempt.runner.start() is RunnerState.READY, attempt.runner.halt_reason
         assert (state_dir / "risk.json").read_bytes() == saved
-    assert len(continuity_records(state_dir)) == 1
+    # One refusal and the one settlement that closed it; the later starts found
+    # nothing open and wrote nothing.
+    assert len(refusal_records(state_dir)) == 1
+    assert len(settlement_records(state_dir)) == 1
 
 
 def test_a_second_genuinely_new_discontinuity_gets_its_own_record(tmp_path):
@@ -1019,8 +1068,9 @@ def test_a_second_genuinely_new_discontinuity_gets_its_own_record(tmp_path):
     (state_dir / "risk.json").unlink()
     second = build(tmp_path, days=(DAY,), config=config, start=False)
     assert second.runner.start() is RunnerState.HALT
-    written = continuity_records(state_dir)
+    written = refusal_records(state_dir)
     assert len(written) == 2
+    assert len(settlement_records(state_dir)) == 1
     assert (
         written[0]["recovery"]["risk_continuity"]["fingerprint_hash"]
         != written[1]["recovery"]["risk_continuity"]["fingerprint_hash"]
@@ -1041,10 +1091,14 @@ def test_the_continuity_dispute_survives_a_restart_it_never_reached_risk_json_in
     beside a ledger the campaign has since marked. `seed_or_reconcile_equity`
     halts Aegis on `equity_dispute:` while the engine is still being built, and
     `RiskEngine.halt` keeps the FIRST reason -- so the continuity refusal is in
-    the runner and in the log and NOT in the file. The independent review
+    the runner and in the log and NOT in Aegis's reason. The independent review
     measured the dispute evaporating on the next start, `resolve --equity`
     succeeding on a rolled-back state, and the campaign reaching READY on a risk
     state whose `day_start_equity` was a whole day stale.
+
+    What carries the dispute across the restart now is the file itself: neither
+    halt reached it, so process #2 reads the same stale bytes and reaches the
+    same verdict on its own.
     """
     from chimera.demo.runner import RunnerError
 
@@ -1067,22 +1121,24 @@ def test_the_continuity_dispute_survives_a_restart_it_never_reached_risk_json_in
     assert first.runner.start() is RunnerState.HALT
     assert is_risk_continuity_halt(first.runner.halt_reason or "")
     assert first.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX), (
-        "first-reason-wins must really have put the OTHER reason in risk.json, or "
-        "this test proves nothing about durability"
+        "first-reason-wins must really have put the OTHER reason in Aegis, or this "
+        "test proves nothing about durability"
     )
     with pytest.raises(RunnerError, match="does not continue the decision log"):
         first.runner.resolve_equity("the ledger is the campaign's accounting")
+    assert (
+        state_dir / "risk.json"
+    ).read_bytes() == stale, (
+        "neither halt may reach the file: it is the evidence the next start reads"
+    )
 
     # A fresh process, reading only what is on disk.
     second = build(tmp_path, days=(DAY, NEXT_DAY), config=config, start=False)
     assert second.runner is not first.runner
     verdict = second.runner.risk_continuity
-    assert verdict.outcome is ContinuityOutcome.ALREADY_DISPUTED
+    assert verdict.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
     assert verdict.disputed
-    assert not is_risk_continuity_halt(second.runner.inspection.risk_state.halt_reason), (
-        "the file still does not carry the continuity reason, so the log is what "
-        "kept the dispute"
-    )
+    assert verdict.fingerprint == first.runner.risk_continuity.fingerprint
     assert second.runner.start() is RunnerState.HALT
     with pytest.raises(RunnerError, match="does not continue the decision log"):
         second.runner.resolve_equity("the ledger is the campaign's accounting")
@@ -1094,11 +1150,14 @@ def test_the_continuity_dispute_survives_a_restart_it_never_reached_risk_json_in
     assert third.runner.start() is RunnerState.HALT
     assert len(continuity_records(state_dir)) == 1
 
+    assert (state_dir / "risk.json").read_bytes() == stale
+
     # And the supported way out still works: put the right file back.
     (state_dir / "risk.json").write_bytes(current)
     healed = build(tmp_path, days=(DAY, NEXT_DAY), config=config, start=False)
     assert healed.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
     assert healed.runner.start() is RunnerState.READY, healed.runner.halt_reason
+    assert len(settlement_records(state_dir)) == 1
 
 
 def test_resume_cannot_settle_a_continuity_refusal_either(tmp_path):
@@ -1145,6 +1204,9 @@ def test_flatten_still_reduces_exposure_during_a_continuity_dispute(tmp_path):
     assert refused.runner.start() is RunnerState.HALT
     refused.runner.flatten("operator: reduce to flat while the risk state is disputed")
     assert refused.runner.position.state is HedgeState.FLAT
+    assert not (
+        state_dir / "risk.json"
+    ).exists(), "the flatten moved Aegis's equity and exposures, in memory only"
 
     after = build(tmp_path, days=(DAY,), config=config, start=False)
     assert after.runner.risk_continuity.disputed, "a flatten may not clear the dispute"
@@ -1326,15 +1388,15 @@ def test_this_modules_own_refusal_halt_is_not_read_back_as_campaign_history(tmp_
 #     RECOVER must not take the finding with it.
 # ---------------------------------------------------------------------------
 def test_a_startup_that_halts_before_recover_still_records_the_missing_state(tmp_path):
-    """`build_risk_engine` writes a default `risk.json` before anything refuses it.
+    """A SELF_CHECK gate that stops the process first must not take the finding.
 
-    So a SELF_CHECK refusal between the two -- a dirty working tree, section
-    8.1's source-identity row -- used to end the process with a fabricated
-    placeholder on disk and nothing anywhere saying the risk state had been
-    absent. The next start found a file, compared it against a log whose newest
-    record carried no hash, and reached CONTINUOUS on a state the campaign never
-    held, with equity re-seeded to the configured capital: AEG-4 again, one
-    startup failure further along.
+    A dirty working tree -- section 8.1's source-identity row -- halts the
+    process at SELF_CHECK, before RECOVER can refuse on continuity. That used to
+    end the process with `build_risk_engine`'s freshly seeded placeholder on disk
+    and the gate's own reason halted into it; the next start found a file, and
+    the absence it replaced was known only to the log. Now the engine that gate
+    halts is one that writes nothing, so the absence is still the absence and
+    the next process finds it for itself.
     """
     harness = campaign(tmp_path)
     harness.runner.shutdown("clean stop")
@@ -1351,15 +1413,9 @@ def test_a_startup_that_halts_before_recover_still_records_the_missing_state(tmp
     assert dirty.runner.halt_reason.startswith(
         "source_identity"
     ), "the fixture must really stop at the EARLIER gate, or it proves nothing"
+    assert not (state_dir / "risk.json").exists(), "no placeholder, whichever gate won"
 
-    # The placeholder really was written, and it really does not carry the
-    # continuity reason -- so nothing in `risk.json` remembers the finding.
-    assert (state_dir / "risk.json").is_file()
-    _, placeholder = loaded_state(state_dir)
-    assert not is_risk_continuity_halt(placeholder.halt_reason)
-    assert placeholder.equity == pytest.approx(float(CAPITAL))
-
-    # The log does. One record, naming what was found.
+    # The log says what was found, too: one record, written before SELF_CHECK.
     written = continuity_records(state_dir)
     assert len(written) == 1
     block = written[0]["recovery"]["risk_continuity"]
@@ -1369,10 +1425,10 @@ def test_a_startup_that_halts_before_recover_still_records_the_missing_state(tmp
         _evidence_count(state_dir) == evidence_before
     ), "a refused startup decides nothing, so it adds no evidence record"
 
-    # And the next process, with a clean tree, is still refused.
+    # And the next process, with a clean tree, is still refused, for the same
+    # event and without a second record.
     after = build(tmp_path, days=(DAY,), config=config, start=False)
-    assert after.runner.risk_continuity.outcome is ContinuityOutcome.ALREADY_DISPUTED
-    assert after.runner.risk_continuity.disputed
+    assert after.runner.risk_continuity.outcome is ContinuityOutcome.RISK_STATE_MISSING
     assert after.runner.start() is RunnerState.HALT
     assert len(continuity_records(state_dir)) == 1
 
@@ -1380,37 +1436,6 @@ def test_a_startup_that_halts_before_recover_still_records_the_missing_state(tmp
     (state_dir / "risk.json").write_bytes(saved)
     healed = build(tmp_path, days=(DAY,), config=config, start=False)
     assert healed.runner.start() is RunnerState.READY, healed.runner.halt_reason
-
-
-def test_the_placeholder_a_refused_startup_leaves_cannot_pass_as_history(tmp_path):
-    """The harm the record prevents, reproduced against the same files.
-
-    Without the durable record the placeholder is indistinguishable from a state
-    the campaign held: it loads LOADED, it is halted on a reason that is not a
-    continuity halt, and its identity is one no witness records -- which is the
-    crash window's shape. This asserts the placeholder is really all of those
-    things, so the refusal above is doing the work rather than some accident of
-    the fixture.
-    """
-    harness = campaign(tmp_path)
-    harness.runner.shutdown("clean stop")
-    config, state_dir = harness.runner.config, harness.state_dir
-    (state_dir / "risk.json").unlink()
-
-    dirty = build(tmp_path, days=(DAY,), config=config, start=False)
-    dirty.runner.software["dirty"] = True
-    dirty.runner.start()
-
-    load, placeholder = loaded_state(state_dir)
-    _, witness = newest_hash_witness(state_dir)
-    assert load is RiskStateLoad.LOADED
-    assert placeholder.halted and not is_risk_continuity_halt(placeholder.halt_reason)
-    assert risk_state_hash(placeholder) != witness
-    assert risk_state_hash(replace(placeholder, halted=False, halt_reason="")) != witness
-
-    verdict = verdict_for(state_dir)
-    assert verdict.outcome is ContinuityOutcome.ALREADY_DISPUTED
-    assert verdict.disputed
 
 
 # ---------------------------------------------------------------------------
@@ -1625,21 +1650,18 @@ def test_the_recovery_record_excludes_no_minute_and_verifies_no_chain(tmp_path):
 def test_a_campaign_that_decided_nothing_cannot_pass_its_placeholder_off_as_history(
     tmp_path,
 ):
-    """The refusal is recognised by the file it left, not by a hash in the log.
+    """A campaign with no `risk.state_hash` anywhere, halted before its first minute.
 
-    A campaign that halted before it decided its first minute has records and no
-    `risk.state_hash` anywhere, so there is no identity for a later state to be
-    pinned against — and a rule that asked for one would either brick this
-    campaign or let its placeholder through. It let the placeholder through: the
-    dirty-tree refusal seeded a default `risk.json`, halted it on
-    `source_identity`, and the next start called it `CONTINUOUS` while the
-    campaign's own halt was gone.
-
-    What the RECOVERY record carries instead is the identity of the state the
-    refusing process was holding — the file it was about to leave behind — taken
-    with any halt set aside, because which halt wins is exactly what is not
-    stable here.
+    There is no identity in the log for a later state to be pinned against, so
+    what a restore is checked against is the halt the log records -- and what the
+    placeholder used to be was a default seed halted on a DIFFERENT gate's reason
+    (the dirty-tree refusal), which passed that check and the old one's
+    placeholder recognition alike, depending on which halt won. No placeholder
+    is written now; and the production writer's default state, put there by
+    hand, is refused for not holding the campaign's halt.
     """
+    from chimera.demo.risk_wiring import build_risk_engine
+
     harness = build(tmp_path, days=(DAY,))
     config, state_dir = harness.runner.config, harness.state_dir
     harness.runner._halt("a campaign halt nothing decided around")
@@ -1658,19 +1680,23 @@ def test_a_campaign_that_decided_nothing_cannot_pass_its_placeholder_off_as_hist
     dirty.runner.software["dirty"] = True
     assert dirty.runner.start() is RunnerState.HALT
     assert (dirty.runner.halt_reason or "").startswith("source_identity")
-
-    _, placeholder = loaded_state(state_dir)
-    assert placeholder.halted and not is_risk_continuity_halt(placeholder.halt_reason), (
-        "the placeholder must be halted on the OTHER gate's reason, which is what "
-        "makes both the halt witness and the halt reason useless here"
-    )
-    assert placeholder.halt_reason != before.halt_reason
+    assert not (state_dir / "risk.json").exists(), "no placeholder, whichever gate won"
 
     after = build(tmp_path, days=(DAY,), config=config, start=False)
-    assert after.runner.risk_continuity.outcome is ContinuityOutcome.ALREADY_DISPUTED
+    assert after.runner.risk_continuity.outcome is ContinuityOutcome.RISK_STATE_MISSING
     assert after.runner.start() is RunnerState.HALT
     assert is_risk_continuity_halt(after.runner.halt_reason or "")
-    assert len(continuity_records(state_dir)) == 1
+    assert len(refusal_records(state_dir)) == 1
+
+    # The default state, from the production writer, standing in for the file.
+    # Not the campaign's: it holds none of the campaign's halt.
+    build_risk_engine(config, capital=CAPITAL, state_dir=state_dir)
+    _, default = loaded_state(state_dir)
+    assert not default.halted and default.equity == pytest.approx(float(CAPITAL))
+    fabricated = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert fabricated.runner.risk_continuity.outcome is ContinuityOutcome.HALT_NOT_HELD
+    assert fabricated.runner.start() is RunnerState.HALT
+    assert len(settlement_records(state_dir)) == 0
 
     # And the campaign is not bricked: the backup settles it, and the halt it
     # really held comes back with it.
@@ -1679,7 +1705,7 @@ def test_a_campaign_that_decided_nothing_cannot_pass_its_placeholder_off_as_hist
     assert healed.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
     assert healed.runner.start() is RunnerState.HALT
     assert healed.runner.halt_reason == "a campaign halt nothing decided around"
-    assert len(continuity_records(state_dir)) == 1
+    assert len(settlement_records(state_dir)) == 1
 
 
 def test_a_refusal_that_leaves_no_file_behind_still_writes_only_one_record(tmp_path):
@@ -1711,47 +1737,17 @@ def test_a_refusal_that_leaves_no_file_behind_still_writes_only_one_record(tmp_p
     assert len(continuity_records(state_dir)) == 1
 
 
-def test_the_recorded_seeded_identity_is_the_file_the_refusal_left_behind(tmp_path):
-    """The field the dispute is settled against, asserted against the real file.
-
-    Not a claim about the implementation: the record says what identity the
-    refusing process was holding, and the file on disk really has that identity
-    once the halt that gate wrote into it is set aside.
-    """
-    harness = campaign(tmp_path)
-    harness.runner.shutdown("clean stop")
-    config, state_dir = harness.runner.config, harness.state_dir
-    (state_dir / "risk.json").unlink()
-
-    refused = build(tmp_path, days=(DAY,), config=config, start=False)
-    assert refused.runner.start() is RunnerState.HALT
-
-    block = continuity_records(state_dir)[0]["recovery"]["risk_continuity"]
-    seeded = block["seeded_state_hash"]
-    load, left_behind = loaded_state(state_dir)
-    assert load is RiskStateLoad.LOADED
-    assert left_behind.halted, "the refusal halts the file it leaves"
-    assert halt_free_state_hash(left_behind) == seeded
-    assert risk_state_hash(left_behind) != seeded, (
-        "and the halt really is what the two differ by, so resting on the raw "
-        "identity would not survive a different gate halting it first"
-    )
-
-
 def test_restoring_the_halt_an_operator_edited_out_settles_the_refusal(tmp_path):
-    """The other collision between a restored file and the one the refusal left.
+    """An edited-out halt is refused, and restoring the halt settles the refusal.
 
     An operator who clears `halted` by hand leaves a state whose halt-free
-    identity is, by construction, identical to the correct file's — clearing the
-    halt is exactly what setting the halt aside does. So the refusal records an
-    identity that the right file also has, and "a different file is there" cannot
-    tell them apart.
-
-    What can is which halt: the correct file carries the reason a `HALT` record
-    written BEFORE the refusal reports, and no process after the refusal could
-    have put that reason into it. Without that the runbook's "restore the file,
-    do not clear the flag" would end in a campaign that could not be restored
-    either.
+    identity is, by construction, identical to the correct file's -- clearing the
+    halt is exactly what setting the halt aside does. An earlier revision
+    recognised "the file the refusal left" by that identity, so the two collided
+    and the correct restore needed a special case of its own. Nothing collides
+    now: the refusal writes nothing, and the restored file settles it by being
+    what the log says -- the newest witness's identity once its halt is set
+    aside, and halted, as the campaign's own HALT record says it must be.
     """
     harness = _halted_campaign(tmp_path)
     config, state_dir = harness.runner.config, harness.state_dir
@@ -1774,10 +1770,964 @@ def test_restoring_the_halt_an_operator_edited_out_settles_the_refusal(tmp_path)
     assert refused.runner.risk_continuity.outcome is ContinuityOutcome.HALT_NOT_HELD
     assert refused.runner.start() is RunnerState.HALT
     assert len(continuity_records(state_dir)) == 1
+    assert (state_dir / "risk.json").read_bytes() != saved, "the edit is still there"
 
     (state_dir / "risk.json").write_bytes(saved)
     healed = build(tmp_path, days=(DAY,), config=config, start=False)
     assert healed.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
     assert healed.runner.start() is RunnerState.HALT
     assert healed.runner.halt_reason == correct.halt_reason
-    assert len(continuity_records(state_dir)) == 1
+    assert len(refusal_records(state_dir)) == 1
+    assert len(settlement_records(state_dir)) == 1
+
+
+# ---------------------------------------------------------------------------
+# 17. the second independent review. A disputed file is EVIDENCE: nothing a
+#     disputed process does may write it, and a refusal is settled only by a
+#     file the log positively vouches for -- never by a file that changed.
+# ---------------------------------------------------------------------------
+_CLEAN_SOFTWARE = {
+    "revision": "synthetic",
+    "source_digest": "synthetic",
+    "dirty": False,
+    "python": "3.11",
+}
+
+
+def _cli(harness, tmp_path: Path, monkeypatch, capsys):
+    """`tools/demo_run.main` on this campaign's files: one fresh process per call.
+
+    Every call parses the config and constructs a new `DemoRunner` from what is
+    on disk, exactly as an operator's invocation does. `_software` is pinned to a
+    clean identity because what is under test is continuity and not the checkout
+    this suite happens to run from: a dirty development tree would halt `run` at
+    SELF_CHECK before any of this is reached (R1-a's gate, tested on its own in
+    `tests/test_demo_cli.py`). Returns ``call(*argv) -> (exit_code, stdout,
+    stderr)`` and the module, for its exit codes.
+    """
+    from tests.demo_harness import CARRY_PARAMS
+    from tools import demo_run
+
+    payload = json.loads(
+        (Path(__file__).parents[1] / "conf/demo/pvc1.json").read_text("utf-8")
+    )
+    payload.update(
+        {
+            "profile": harness.runner.config.profile.value,
+            "runner": {"state_dir": str(harness.state_dir)},
+            "rules": {"R1_carry": dict(CARRY_PARAMS)},
+        }
+    )
+    config_path = tmp_path / "cli_config.json"
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(demo_run, "_software", lambda root=None: dict(_CLEAN_SOFTWARE))
+    argv = ["--config", str(config_path), "--root", str(harness.root), "--profile", "TEST"]
+
+    def call(*command: str) -> tuple[int, str, str]:
+        capsys.readouterr()
+        code = demo_run.main(argv + list(command))
+        out, err = capsys.readouterr()
+        return code, out, err
+
+    return call, demo_run
+
+
+def _status(call) -> dict[str, Any]:
+    code, out, _ = call("status")
+    assert code == 0
+    return json.loads(out)
+
+
+def _held(state_dir: Path) -> Decimal:
+    """What both legs hold, as their stores record it on disk.
+
+    Read from the files and not from `position.state`: a refused start stops
+    before `reconstruct()`, so a refused process's in-memory hedge state is
+    whatever it was constructed as, and only the stores say what is held.
+    """
+    total = Decimal("0")
+    for name in ("spot_store.json", "perp_store.json"):
+        positions = json.loads((state_dir / name).read_text("utf-8")).get("positions") or {}
+        total += sum(
+            (abs(Decimal(str(held.get("quantity", "0")))) for held in positions.values()),
+            Decimal("0"),
+        )
+    return total
+
+
+def test_a_cli_flatten_during_a_continuity_dispute_settles_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """Mandatory test A, and the review's CRITICAL finding, through the real CLI.
+
+    Measured at eedcef74: `flatten` is permitted during a dispute and it moved
+    Aegis -- `update_equity`, and the executors' exposures -- so the halt-free
+    identity of `risk.json` stopped matching the one the refusal had recorded,
+    the dispute was read as settled, `status` said STATE_AHEAD_OF_LOG,
+    `resolve --equity` succeeded, and `run` decided three minutes on the
+    rolled-back state. Now the refused process writes no risk state at all, so
+    the file after the flatten is byte-for-byte the file before it.
+    """
+    harness, earlier = across_the_boundary(tmp_path)
+    state_dir = harness.state_dir
+    current = backup_of(state_dir, tmp_path / "risk.json.current")
+    _, newest = newest_hash_witness(state_dir)
+    assert (
+        harness.runner.position.state is not HedgeState.FLAT
+    ), "the campaign must hold a position, or a flatten reduces nothing"
+    if harness.runner._log is not None:
+        harness.runner._log.close()
+
+    shutil.copyfile(earlier, state_dir / "risk.json")
+    stale = (state_dir / "risk.json").read_bytes()
+    _, stale_state = loaded_state(state_dir)
+    assert risk_state_hash(stale_state) != newest, "the restored copy must be older"
+    accounted = ledger_equity(state_dir, capital=CAPITAL)
+    assert (
+        accounted is not None and float(accounted) != stale_state.equity
+    ), "the ledger must be genuinely newer, or the R1-b overlap does not exist"
+    call, demo_run = _cli(harness, tmp_path, monkeypatch, capsys)
+    before_refusal = last_seq(state_dir)
+
+    code, out, _ = call("run")
+    assert code == demo_run.EXIT_HALTED
+    assert is_risk_continuity_halt(json.loads(out)["reason"])
+    assert len(refusal_records(state_dir)) == 1
+    code, _, err = call("resolve", "--equity", "--note", "the ledger is right")
+    assert code == demo_run.EXIT_REFUSED and "does not continue" in err
+
+    assert _held(state_dir) > 0, "the campaign must hold something to flatten"
+    code, out, _ = call("flatten", "--note", "reduce while the risk state is disputed")
+    assert code == demo_run.EXIT_OK and json.loads(out)["flattened"] is True
+    assert _held(state_dir) == 0, "the flatten reduced exposure, during the dispute"
+    assert (
+        state_dir / "risk.json"
+    ).read_bytes() == stale, "a disputed process writes no risk state, whatever it moved"
+
+    status = _status(call)["risk_continuity"]
+    assert status["disputed"] is True
+    assert status["outcome"] == ContinuityOutcome.STATE_HASH_REGRESSED.value
+    code, _, err = call("resolve", "--equity", "--note", "the ledger is right")
+    assert code == demo_run.EXIT_REFUSED and "does not continue" in err
+    code, _, _ = call("resume", "--note", "operator: I looked at it")
+    assert code == demo_run.EXIT_REFUSED
+    code, out, _ = call("run")
+    assert code == demo_run.EXIT_HALTED
+    assert is_risk_continuity_halt(json.loads(out)["reason"])
+    assert decisions_after(state_dir, before_refusal) == [], "no minute was decided"
+    assert len(refusal_records(state_dir)) == 1, "one event, however many processes"
+
+    # The supported way out: the copy the campaign last wrote.
+    (state_dir / "risk.json").write_bytes(current)
+    status = _status(call)["risk_continuity"]
+    assert status["disputed"] is False
+    assert status["outcome"] == ContinuityOutcome.CONTINUOUS.value
+    code, out, _ = call("run")
+    # The flatten moved the ledger and not Aegis's persisted equity, so R1-b now
+    # sees a real disagreement -- persisted this time, by a settled process.
+    assert code == demo_run.EXIT_HALTED
+    _, halted = loaded_state(state_dir)
+    assert halted.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
+    assert len(settlement_records(state_dir)) == 1
+    code, out, _ = call("resolve", "--equity", "--note", "the ledger is the accounting")
+    assert code == demo_run.EXIT_OK and json.loads(out)["state"] == "READY"
+    code, _, _ = call("run")
+    assert code == demo_run.EXIT_OK
+    assert decisions_after(state_dir, before_refusal), "the campaign decides again"
+
+
+def test_a_kill_switch_during_a_continuity_dispute_halts_and_settles_nothing(tmp_path):
+    """Mandatory test B. The switch keeps its safety effect and gains no other.
+
+    Measured at eedcef74: the engine's constructor persisted the switch's mirror
+    into the disputed file, removing the switch persisted it back, and the moved
+    identity read as a restore -- STATE_AHEAD_OF_LOG, not disputed. Now the
+    mirror and the halt are held in memory, where they still stop everything.
+    """
+    from chimera.demo.runner import RunnerError
+
+    harness, earlier = across_the_boundary(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    current = backup_of(state_dir, tmp_path / "risk.json.current")
+    shutil.copyfile(earlier, state_dir / "risk.json")
+    stale = (state_dir / "risk.json").read_bytes()
+    days = (DAY, NEXT_DAY)
+
+    first = build(tmp_path, days=days, config=config, start=False)
+    assert first.runner.start() is RunnerState.HALT
+    fingerprint = first.runner.risk_continuity.fingerprint
+
+    (state_dir / "KILL_SWITCH").write_text("engaged", encoding="utf-8")
+    switched = build(tmp_path, days=days, config=config, start=False)
+    assert switched.runner.start() is RunnerState.HALT
+    # The safety effect, in the engine the runner enforces with.
+    assert switched.runner.risk.state.kill_switch is True
+    assert switched.runner.risk.halted
+    with pytest.raises(RunnerError):
+        switched.runner.resume("operator: the switch is on and I want to trade")
+    assert (state_dir / "risk.json").read_bytes() == stale
+
+    (state_dir / "KILL_SWITCH").unlink()
+    cleared = build(tmp_path, days=days, config=config, start=False)
+    verdict = cleared.runner.risk_continuity
+    assert verdict.disputed
+    assert verdict.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
+    assert verdict.fingerprint == fingerprint
+    assert cleared.runner.start() is RunnerState.HALT
+    assert (state_dir / "risk.json").read_bytes() == stale
+    assert len(refusal_records(state_dir)) == 1
+
+    # And after a real restore the switch halts and persists exactly as before.
+    (state_dir / "KILL_SWITCH").write_text("engaged", encoding="utf-8")
+    (state_dir / "risk.json").write_bytes(current)
+    restored = build(tmp_path, days=days, config=config, start=False)
+    assert restored.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert restored.runner.start() is RunnerState.HALT
+    assert restored.runner.halt_reason == "kill_switch"
+    _, persisted = loaded_state(state_dir)
+    assert persisted.halted and persisted.kill_switch
+
+
+def _a_stale_copy_carrying_a_reconciliation_dispute(tmp_path: Path):
+    """A campaign whose OLDER `risk.json` held a reconciliation dispute it later cleared.
+
+    The dispute is put into the store and into Aegis exactly as `_reconcile`
+    does on a mismatch, and the next DECISION witnesses it. The copy is taken
+    there; the campaign then resolves it and decides past it.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    first = harness.first_minute_ms()
+    harness.run(5, start=first)
+    symbol = harness.runner.position.config.perp_symbol
+    harness.runner.position.perp.store.state.disputed[symbol] = "reconciliation_mismatch"
+    harness.risk.note_reconciliation(symbol, "reconciliation_mismatch")
+    harness.tick(first + 5 * 60_000)
+    earlier = tmp_path / "risk.json.with-the-dispute"
+    shutil.copyfile(harness.state_dir / "risk.json", earlier)
+    harness.runner.resolve(symbol, "cleared in the campaign itself")
+    harness.run(3, start=first + 6 * 60_000)
+    harness.runner.shutdown("clean stop")
+    return harness, earlier, symbol
+
+
+def test_resolve_symbol_refuses_during_a_continuity_dispute_and_moves_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """Mandatory test C. The reconciliation path may not move a disputed state.
+
+    `resolve --symbol` clears Aegis's copy of a dispute through
+    `note_reconciliation`, which persists. It is refused before anything is
+    touched -- Aegis would clear only in memory here, but the store's copy would
+    be cleared and SAVED, and restoring the right `risk.json` afterwards would
+    bring back a dispute no store still records.
+    """
+    from chimera.demo.runner import RunnerError
+
+    harness, earlier, symbol = _a_stale_copy_carrying_a_reconciliation_dispute(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    shutil.copyfile(earlier, state_dir / "risk.json")
+    stale = (state_dir / "risk.json").read_bytes()
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.risk_continuity.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
+    assert refused.runner.start() is RunnerState.HALT
+    assert refused.runner.risk.state.reconciliation_disputed.get(
+        symbol
+    ), "the stale state must really carry the dispute the command would clear"
+    refused.runner.position.perp.store.state.disputed[symbol] = "reconciliation_mismatch"
+    store_before = (state_dir / "perp_store.json").read_bytes()
+    count_before = len(records(state_dir))
+
+    with pytest.raises(RunnerError, match="does not continue the decision log"):
+        refused.runner.resolve(symbol, "operator: checked the venue")
+
+    assert refused.runner.risk.state.reconciliation_disputed.get(symbol)
+    assert refused.runner.position.perp.store.state.disputed.get(symbol)
+    assert (state_dir / "perp_store.json").read_bytes() == store_before
+    assert (state_dir / "risk.json").read_bytes() == stale
+    assert len(records(state_dir)) == count_before, "no OPERATOR record either"
+    if refused.runner._log is not None:
+        refused.runner._log.close()
+
+    after = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert after.runner.risk_continuity.disputed
+
+    # And from the CLI, a fresh process that never starts: refused on the same
+    # ground, before the clock or a store is consulted.
+    call, demo_run = _cli(harness, tmp_path, monkeypatch, capsys)
+    code, _, err = call("resolve", "--symbol", symbol, "--note", "operator: checked")
+    assert code == demo_run.EXIT_REFUSED
+    assert "does not continue the decision log" in err
+    assert (state_dir / "risk.json").read_bytes() == stale
+
+
+def test_a_forged_log_beside_a_missing_risk_state_fabricates_nothing(tmp_path):
+    """Mandatory test D, and the forged-log double fault the review measured.
+
+    Measured at eedcef74: the forged log was refused before STARTUP, but by then
+    `build_risk_engine` had seeded a placeholder and the log refusal's halt was
+    persisted into it -- so when the log was later restored from a verified copy,
+    the placeholder read as CONTINUOUS, `resume` reached READY, and the campaign's
+    own historical halt was simply gone. Now nothing is written: the forged log
+    still refuses, and when it is repaired the absence is still there to refuse.
+    """
+    from chimera.demo.runner import RunnerError
+
+    harness = campaign(tmp_path)
+    harness.runner._halt("a real historical risk halt")
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    if harness.runner._log is not None:
+        harness.runner._log.close()
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    log_dir = state_dir / "decision_log"
+    verified = tmp_path / "decision_log.verified"
+    shutil.copytree(log_dir, verified)
+    before_loss = last_seq(state_dir)
+    (state_dir / "risk.json").unlink()
+
+    day_file = sorted(log_dir.glob("*.ndjson"))[0]
+    lines = day_file.read_bytes().split(b"\n")
+    forged = json.loads(lines[2])
+    forged["runner_now_ns"] = int(forged["runner_now_ns"]) + 1
+    lines[2] = json.dumps(forged, sort_keys=True, separators=(",", ":")).encode()
+    day_file.write_bytes(b"\n".join(lines))
+    forged_bytes = day_file.read_bytes()
+
+    first = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert first.runner.risk_continuity.outcome is ContinuityOutcome.RISK_STATE_MISSING
+    assert first.runner.start() is RunnerState.HALT
+    assert (first.runner.halt_reason or "").startswith("log_forged")
+    assert not (state_dir / "risk.json").exists(), "no placeholder behind a forged log"
+    assert day_file.read_bytes() == forged_bytes, "and nothing appended to it"
+    if first.runner._log is not None:
+        first.runner._log.close()
+
+    shutil.rmtree(log_dir)
+    shutil.copytree(verified, log_dir)
+    repaired = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert repaired.runner.risk_continuity.outcome is ContinuityOutcome.RISK_STATE_MISSING
+    assert repaired.runner.start() is RunnerState.HALT
+    assert is_risk_continuity_halt(repaired.runner.halt_reason or "")
+    with pytest.raises(RunnerError):
+        repaired.runner.resume("operator: the log is repaired")
+    with pytest.raises(RunnerError):
+        repaired.tick(repaired.runner.cursor.next_minute_ms())
+    assert decisions_after(state_dir, before_loss) == []
+    assert not (state_dir / "risk.json").exists()
+
+    (state_dir / "risk.json").write_bytes(saved)
+    restored = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert restored.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert restored.runner.start() is RunnerState.HALT
+    assert (
+        restored.runner.halt_reason == "a real historical risk halt"
+    ), "the campaign's own halt is what comes back, not a placeholder's"
+    restored.runner.resume("operator: the historical halt's cause is gone")
+    restored.tick(restored.runner.cursor.next_minute_ms())
+    assert decisions_after(state_dir, before_loss)
+
+
+def test_an_unverifiable_log_beside_a_missing_risk_state_fabricates_nothing(tmp_path):
+    """The same root on the HISTORY_UNVERIFIABLE path: the absence is kept."""
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    if harness.runner._log is not None:
+        harness.runner._log.close()
+    (state_dir / "risk.json").unlink()
+    day_file = sorted((state_dir / "decision_log").glob("*.ndjson"))[0]
+    lines = day_file.read_bytes().split(b"\n")
+    lines[0] = b"{ this line is not a record"
+    day_file.write_bytes(b"\n".join(lines))
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.risk_continuity.outcome is ContinuityOutcome.HISTORY_UNVERIFIABLE
+    assert refused.runner.start() is RunnerState.HALT
+    assert not (state_dir / "risk.json").exists()
+
+
+class _Crash(Exception):
+    """Stands in for a SIGKILL, a full disk or a refused append at one statement."""
+
+
+def _tear_last_line(state_dir: Path, runner) -> None:
+    """Leave the record just appended half-written, as a crash mid-write would."""
+    if runner._log is not None:
+        runner._log.close()
+    day_file = sorted((state_dir / "decision_log").glob("*.ndjson"))[-1]
+    payload = day_file.read_bytes()
+    assert payload.endswith(b"\n")
+    last = payload[:-1].rsplit(b"\n", 1)[-1]
+    day_file.write_bytes(payload[: len(payload) - 1 - len(last) // 2])
+
+
+def _arm(failpoint: str, runner, state_dir: Path, monkeypatch) -> None:
+    """Make ``runner.start()`` die at exactly one point of the startup sequence."""
+    import chimera.demo.risk_wiring as risk_wiring
+
+    real_append = runner._append
+
+    def die(*args, **kwargs):
+        raise _Crash(failpoint)
+
+    if failpoint == "before_construction":
+        monkeypatch.setattr(runner, "_risk_factory", die)
+    elif failpoint == "during_construction":
+        real_seed = risk_wiring.seed_or_reconcile_equity
+
+        def seeded_then_die(engine, **kwargs):
+            real_seed(engine, **kwargs)
+            raise _Crash(failpoint)
+
+        monkeypatch.setattr(risk_wiring, "seed_or_reconcile_equity", seeded_then_die)
+    elif failpoint == "before_triage":
+        monkeypatch.setattr(runner, "_triage_log", die)
+    elif failpoint == "during_triage":
+        monkeypatch.setattr(runner, "_state_ahead_of_log", die)
+    elif failpoint in ("before_startup_append", "during_startup_append"):
+        torn = failpoint == "during_startup_append"
+
+        def startup(kind, *args, **kwargs):
+            if kind is RecordKind.STARTUP:
+                if torn:
+                    real_append(kind, *args, **kwargs)
+                    _tear_last_line(state_dir, runner)
+                raise _Crash(failpoint)
+            return real_append(kind, *args, **kwargs)
+
+        monkeypatch.setattr(runner, "_append", startup)
+    elif failpoint == "before_continuity_record":
+        monkeypatch.setattr(runner, "_record_risk_continuity", die)
+    elif failpoint == "during_continuity_record":
+
+        def recovery(kind, *args, **kwargs):
+            if kind is RecordKind.RECOVERY:
+                real_append(kind, *args, **kwargs)
+                _tear_last_line(state_dir, runner)
+                raise _Crash(failpoint)
+            return real_append(kind, *args, **kwargs)
+
+        monkeypatch.setattr(runner, "_append", recovery)
+    elif failpoint == "before_refusal_halt":
+        monkeypatch.setattr(runner, "_halt", die)
+    else:  # pragma: no cover - a typo in the parameter list
+        raise AssertionError(failpoint)
+
+
+#: The prompt's nine points, in the order `start()` reaches them.
+_FAILPOINTS = (
+    "before_construction",
+    "during_construction",
+    "before_triage",
+    "during_triage",
+    "before_startup_append",
+    "during_startup_append",
+    "before_continuity_record",
+    "during_continuity_record",
+    "before_refusal_halt",
+)
+
+
+@pytest.mark.parametrize("damage", ["missing", "stale"])
+@pytest.mark.parametrize("failpoint", _FAILPOINTS)
+def test_a_crash_anywhere_in_a_refused_startup_leaves_the_evidence_intact(
+    tmp_path, monkeypatch, failpoint, damage
+):
+    """Mandatory test E: the startup crash matrix.
+
+    Measured at eedcef74: a missing `risk.json` was replaced by a seeded
+    placeholder inside `build_risk_engine`, and a process that died in triage,
+    in the STARTUP append or in the continuity RECOVERY append left that
+    placeholder and no record. The next start read it as STATE_AHEAD_OF_LOG,
+    wrote a false LOG_BEHIND_STATE recovery, and reached READY and a DECISION
+    after `resume`.
+
+    At every point below the file is exactly as it was found -- absent, or the
+    same stale bytes -- so the next process reaches the same verdict from the
+    evidence itself, whether or not the log managed to say so first.
+    """
+    from chimera.demo.runner import RunnerError
+
+    if damage == "missing":
+        harness = campaign(tmp_path)
+        harness.runner.shutdown("clean stop")
+        config, state_dir = harness.runner.config, harness.state_dir
+        saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+        (state_dir / "risk.json").unlink()
+        days: tuple[str, ...] = (DAY,)
+        expected = ContinuityOutcome.RISK_STATE_MISSING
+    else:
+        harness, earlier = across_the_boundary(tmp_path)
+        config, state_dir = harness.runner.config, harness.state_dir
+        saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+        shutil.copyfile(earlier, state_dir / "risk.json")
+        days = (DAY, NEXT_DAY)
+        expected = ContinuityOutcome.STATE_HASH_REGRESSED
+    if harness.runner._log is not None:
+        harness.runner._log.close()
+    found = (state_dir / "risk.json").read_bytes() if damage == "stale" else None
+    before_loss = last_seq(state_dir)
+
+    def intact() -> bool:
+        if damage == "missing":
+            return not (state_dir / "risk.json").exists()
+        return (state_dir / "risk.json").read_bytes() == found
+
+    victim = build(tmp_path, days=days, config=config, start=False)
+    assert victim.runner.risk_continuity.outcome is expected
+    _arm(failpoint, victim.runner, state_dir, monkeypatch)
+    with pytest.raises(_Crash):
+        victim.runner.start()
+    monkeypatch.undo()
+    if victim.runner._log is not None:
+        victim.runner._log.close()
+    assert intact(), f"{failpoint}: the evidence was overwritten"
+    assert not (state_dir / "risk.json.tmp").exists()
+
+    after = build(tmp_path, days=days, config=config, start=False)
+    assert after.runner.risk_continuity.outcome is expected
+    assert after.runner.start() is RunnerState.HALT
+    assert is_risk_continuity_halt(after.runner.halt_reason or "")
+    with pytest.raises(RunnerError):
+        after.runner.resume("operator: pressing on")
+    assert intact()
+    assert decisions_after(state_dir, before_loss) == []
+    assert len(refusal_records(state_dir)) == 1
+    # No false crash recovery for the risk state: the legs and the ledger agree
+    # with the log, and the risk state is refused rather than recovered from.
+    assert not [
+        record
+        for record in records(state_dir)
+        if int(record["seq"]) > before_loss
+        and (record.get("recovery") or {}).get("cause") == RecoveryCause.LOG_BEHIND_STATE.value
+    ]
+    if after.runner._log is not None:
+        after.runner._log.close()
+
+    (state_dir / "risk.json").write_bytes(saved)
+    healed = build(tmp_path, days=days, config=config, start=False)
+    assert healed.runner.start() is RunnerState.READY, healed.runner.halt_reason
+
+
+def test_a_campaign_that_never_decided_recovers_from_its_real_state(tmp_path):
+    """Mandatory test F, the unhalted side, and the review's never-decided edge.
+
+    Measured at eedcef74: a campaign with records and no `risk.state_hash`, never
+    halted, lost its file, and restoring the REAL file left it ALREADY_DISPUTED
+    for ever -- the real state and the placeholder the refusal had seeded were
+    one identity. Nothing is seeded now, so there is nothing to collide with.
+
+    The limit, stated as an assertion rather than hidden: the genuine state of
+    a campaign that never decided anything IS the default first-start seed, so
+    the production writer's default state has its identity. No identity check
+    can refuse one and accept the other; what protects the campaign is that no
+    process writes one (the halted side, where they do differ, is
+    `test_a_campaign_that_decided_nothing_cannot_pass_its_placeholder_off_as_history`).
+    """
+    from chimera.demo.risk_wiring import build_risk_engine
+
+    harness = build(tmp_path, days=(DAY,))
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    assert records(state_dir), "the campaign has history"
+    assert not any(
+        (record.get("risk") or {}).get("state_hash") for record in records(state_dir)
+    ), "and has never recorded a risk identity"
+    _, genuine = loaded_state(state_dir)
+    assert not genuine.halted
+
+    (state_dir / "risk.json").unlink()
+    for _ in range(2):
+        refused = build(tmp_path, days=(DAY,), config=config, start=False)
+        assert refused.runner.risk_continuity.outcome is ContinuityOutcome.RISK_STATE_MISSING
+        assert refused.runner.start() is RunnerState.HALT
+        assert not (state_dir / "risk.json").exists(), "the system fabricates nothing"
+    assert len(refusal_records(state_dir)) == 1
+
+    (state_dir / "risk.json").write_bytes(saved)
+    restored = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert restored.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert restored.runner.start() is RunnerState.READY, restored.runner.halt_reason
+    restored.tick(restored.runner.cursor.next_minute_ms())
+    assert restored.runner.state is not RunnerState.HALT
+    assert len(settlement_records(state_dir)) == 1
+
+    default = build_risk_engine(config, capital=CAPITAL, state_dir=tmp_path / "elsewhere")
+    assert risk_state_hash(default.state) == risk_state_hash(genuine)
+
+
+def test_after_a_refusal_only_the_state_the_log_vouches_for_settles_it(tmp_path):
+    """Mandatory test G: the stale copy is refused and the current one accepted.
+
+    Both are restored AFTER a refusal, into a stretch the log holds open -- the
+    case "a different file means a restore" got wrong: the stale copy differs
+    from what the refusal found, and is still older than the log.
+    """
+    harness, earlier = across_the_boundary(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    current = backup_of(state_dir, tmp_path / "risk.json.current")
+    stale = earlier.read_bytes()
+    _, newest = newest_hash_witness(state_dir)
+    days = (DAY, NEXT_DAY)
+    (state_dir / "risk.json").unlink()
+
+    refused = build(tmp_path, days=days, config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+
+    (state_dir / "risk.json").write_bytes(stale)
+    _, stale_state = loaded_state(state_dir)
+    stale_attempt = build(tmp_path, days=days, config=config, start=False)
+    verdict = stale_attempt.runner.risk_continuity
+    assert verdict.outcome is ContinuityOutcome.STATE_HASH_REGRESSED
+    assert verdict.settles_seq is None
+    assert stale_attempt.runner.start() is RunnerState.HALT
+    assert (state_dir / "risk.json").read_bytes() == stale
+
+    (state_dir / "risk.json").write_bytes(current)
+    _, current_state = loaded_state(state_dir)
+    assert risk_state_hash(stale_state) != risk_state_hash(current_state), "non-vacuous"
+    assert risk_state_hash(current_state) == newest
+    current_attempt = build(tmp_path, days=days, config=config, start=False)
+    assert current_attempt.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert current_attempt.runner.start() is RunnerState.READY
+    assert len(refusal_records(state_dir)) == 2, "missing, then the stale attempt"
+    assert len(settlement_records(state_dir)) == 1
+
+
+def test_a_natural_r1b_overlap_survives_a_flatten_and_restarts(tmp_path):
+    """Mandatory test H: the review's Blocker 1B, end to end with a flatten in it.
+
+    An older `risk.json` beside a ledger the campaign has since marked: R1-b's
+    equity dispute owns Aegis's halt reason, R1-c owns the runner's. Across
+    restarts and a flatten nothing settles the continuity dispute and nothing
+    resolves the equity one; the actual file settles the first, and R1-b's own
+    path then settles the second.
+    """
+    from chimera.demo.runner import RunnerError
+
+    harness = build(tmp_path, days=(DAY,))
+    first = harness.first_minute_ms()
+    harness.run(MINUTE_BEFORE_A_SETTLEMENT, start=first)
+    earlier = tmp_path / "risk.json.before-the-settlement"
+    shutil.copyfile(harness.state_dir / "risk.json", earlier)
+    harness.run(2, start=first + MINUTE_BEFORE_A_SETTLEMENT * 60_000)
+    harness.runner.shutdown("clean stop after the settlement")
+    config, state_dir = harness.runner.config, harness.state_dir
+    current = backup_of(state_dir, tmp_path / "risk.json.current")
+    before_loss = last_seq(state_dir)
+
+    shutil.copyfile(earlier, state_dir / "risk.json")
+    stale = (state_dir / "risk.json").read_bytes()
+    _, stale_state = loaded_state(state_dir)
+    accounted = ledger_equity(state_dir, capital=CAPITAL)
+    assert accounted is not None and float(accounted) != stale_state.equity
+
+    def refused_process():
+        process = build(tmp_path, days=(DAY,), config=config, start=False)
+        assert process.runner.risk_continuity.outcome is (
+            ContinuityOutcome.STATE_HASH_REGRESSED
+        )
+        assert process.runner.start() is RunnerState.HALT
+        assert process.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
+        with pytest.raises(RunnerError, match="does not continue the decision log"):
+            process.runner.resolve_equity("the ledger is right")
+        with pytest.raises(RunnerError, match="does not continue the decision log"):
+            process.runner.resume("operator: pressing on")
+        with pytest.raises(RunnerError, match="does not continue the decision log"):
+            process.tick(process.runner.cursor.next_minute_ms())
+        assert (state_dir / "risk.json").read_bytes() == stale
+        return process
+
+    refused_process()
+    flattening = refused_process()
+    assert _held(state_dir) > 0, "the campaign must hold something to flatten"
+    flattening.runner.flatten("operator: reduce while both disputes stand")
+    assert _held(state_dir) == 0, "the flatten reduced exposure, during the dispute"
+    assert (state_dir / "risk.json").read_bytes() == stale
+    refused_process()
+    assert decisions_after(state_dir, before_loss) == []
+    assert len(refusal_records(state_dir)) == 1
+
+    (state_dir / "risk.json").write_bytes(current)
+    settled = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert settled.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert settled.runner.start() is RunnerState.HALT
+    assert settled.runner.risk.state.halt_reason.startswith(
+        EQUITY_DISPUTE_PREFIX
+    ), "the flatten moved the ledger, so a real R1-b dispute is what remains"
+    settled.runner.resolve_equity("the ledger is the campaign's accounting")
+    assert settled.runner.state is RunnerState.READY
+    settled.tick(settled.runner.cursor.next_minute_ms())
+    assert settled.runner.state is not RunnerState.HALT, settled.runner.halt_reason
+    assert decisions_after(state_dir, before_loss)
+
+
+def _crash_ahead_campaign(tmp_path: Path):
+    """The crash window, and the copy the log's newest witness describes.
+
+    Returns ``(harness, witnessed, ahead)``: the bytes the campaign held at its
+    newest DECISION, and the bytes a tick persisted before it died without
+    committing the DECISION that would have quoted them.
+    """
+    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    first = harness.first_minute_ms() + BOUNDARY_START * 60_000
+    harness.run(MINUTES_BEFORE_THE_BOUNDARY, start=first)
+    witnessed = (harness.state_dir / "risk.json").read_bytes()
+    real_append = harness.runner._append
+
+    def killed(kind, *args, **kwargs):
+        if kind is RecordKind.DECISION:
+            raise _Crash("between the persist and the DECISION")
+        return real_append(kind, *args, **kwargs)
+
+    harness.runner._append = killed
+    with pytest.raises(_Crash):
+        harness.tick(first + MINUTES_BEFORE_THE_BOUNDARY * 60_000)
+    if harness.runner._log is not None:
+        harness.runner._log.close()
+    ahead = (harness.state_dir / "risk.json").read_bytes()
+    return harness, witnessed, ahead
+
+
+def test_an_identity_no_record_quotes_does_not_settle_a_refusal(tmp_path):
+    """Outside a refusal it is the crash window; inside one it proves nothing.
+
+    Both sides use the same bytes: the state a tick persisted before it died.
+    With no refusal open that state recovers as section 9.3's crash. After a
+    refusal no process of this campaign could have written a new file -- a
+    disputed process writes none -- so a file no record quotes is NOT_SETTLED,
+    and the copy the newest witness describes is what settles it.
+    """
+    harness, witnessed, ahead = _crash_ahead_campaign(tmp_path)
+    config, state_dir = harness.runner.config, harness.state_dir
+    days = (DAY, NEXT_DAY)
+    _, newest = newest_hash_witness(state_dir)
+    assert witnessed != ahead
+
+    assert verdict_for(state_dir).outcome is ContinuityOutcome.STATE_AHEAD_OF_LOG
+
+    (state_dir / "risk.json").unlink()
+    refused = build(tmp_path, days=days, config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+    refusal_seq = int(refusal_records(state_dir)[0]["seq"])
+    # A flatten inside the refusal writes an OPERATOR record -- a kind that CAN
+    # move the risk state without a hash. It is the refused process's, so it
+    # admits nothing; if it were read as campaign history it would excuse the
+    # unquoted file below exactly as a pre-refusal flatten does.
+    assert _held(state_dir) > 0, "the campaign must hold something to flatten"
+    refused.runner.flatten("operator: reduce while the risk state is disputed")
+    assert _held(state_dir) == 0
+    assert not (state_dir / "risk.json").exists()
+
+    (state_dir / "risk.json").write_bytes(ahead)
+    unsettled = build(tmp_path, days=days, config=config, start=False)
+    verdict = unsettled.runner.risk_continuity
+    assert verdict.outcome is ContinuityOutcome.NOT_SETTLED
+    assert verdict.disputed and not verdict.ahead_of_log
+    assert str(refusal_seq) in verdict.reason and newest in verdict.reason
+    assert unsettled.runner.start() is RunnerState.HALT
+    assert (state_dir / "risk.json").read_bytes() == ahead
+
+    (state_dir / "risk.json").write_bytes(witnessed)
+    _, witnessed_state = loaded_state(state_dir)
+    assert risk_state_hash(witnessed_state) == newest
+    settled = build(tmp_path, days=days, config=config, start=False)
+    assert settled.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert settled.runner.risk_continuity.settles_seq == refusal_seq
+    if settled.runner.start() is RunnerState.HALT:
+        # The legs and the ledger are still ahead of the log, so R1-b may see
+        # the witnessed equity disagree with the ledger; its own path clears it.
+        assert settled.runner.risk.state.halt_reason.startswith(EQUITY_DISPUTE_PREFIX)
+        settled.runner.resolve_equity("the ledger is the campaign's accounting")
+    assert settled.runner.state is RunnerState.READY, settled.runner.halt_reason
+
+
+def test_a_hashless_move_before_the_refusal_still_admits_its_own_state(tmp_path):
+    """The other side of NOT_SETTLED: the campaign's OWN history can move the state.
+
+    A `flatten` before the loss writes an OPERATOR record with no hash, so the
+    correct backup holds an identity no record quotes. That record is the
+    campaign's, written before any refusal, and it is what admits the backup --
+    exactly as it does with no refusal at all. A flatten run DURING the dispute
+    admits nothing, because its record is the refused process's and is skipped.
+    """
+    harness = campaign(tmp_path, minutes=12)
+    harness.runner.flatten("operator: reduce to flat before maintenance")
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    _, newest = newest_hash_witness(state_dir)
+    assert risk_state_hash(loaded_state(state_dir)[1]) != newest, "the flatten moved it"
+    (state_dir / "risk.json").unlink()
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+
+    (state_dir / "risk.json").write_bytes(saved)
+    restored = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert restored.runner.risk_continuity.outcome is ContinuityOutcome.CONTINUOUS
+    assert restored.runner.start() is not RunnerState.HALT, restored.runner.halt_reason
+
+
+def test_what_a_settled_process_halts_on_is_campaign_history_again(tmp_path):
+    """The settlement record ends the skipped stretch, and not a DECISION.
+
+    The settled process can halt before it decides anything -- here on the kill
+    switch, and the halt is persisted, because this process may write. Rolling
+    `risk.json` back to the restored, unhalted copy must then be HALT_NOT_HELD,
+    as it would be on any campaign. At eedcef74 the stretch ran until the next
+    hash-bearing record, so that HALT was skipped and the rollback passed.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+    (state_dir / "risk.json").unlink()
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+
+    (state_dir / "KILL_SWITCH").write_text("engaged", encoding="utf-8")
+    (state_dir / "risk.json").write_bytes(saved)
+    settled = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert settled.runner.start() is RunnerState.HALT
+    assert settled.runner.halt_reason == "kill_switch"
+    assert loaded_state(state_dir)[1].halted, "a settled process persists its halt"
+    assert len(settlement_records(state_dir)) == 1
+
+    (state_dir / "KILL_SWITCH").unlink()
+    (state_dir / "risk.json").write_bytes(saved)
+    rolled_back = build(tmp_path, days=(DAY,), config=config, start=False)
+    verdict = rolled_back.runner.risk_continuity
+    assert verdict.outcome is ContinuityOutcome.HALT_NOT_HELD
+    assert verdict.halt_witness is not None
+    assert verdict.halt_witness.kind == RecordKind.HALT.value
+
+
+def test_a_second_loss_after_a_restore_that_decided_nothing_is_its_own_event(tmp_path):
+    """The review's RECOVERY dedup edge: two losses, one READY between, no minute.
+
+    At eedcef74 the two refusals had the same fingerprint and nothing between
+    them that the dedup could see, so the second loss was never written down.
+    The settlement record between them is what the dedup sees now: one event is
+    the stretch from a refusal to its settlement.
+    """
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    saved = backup_of(state_dir, tmp_path / "risk.json.backup")
+
+    (state_dir / "risk.json").unlink()
+    first = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert first.runner.start() is RunnerState.HALT
+    (state_dir / "risk.json").write_bytes(saved)
+    restored = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert restored.runner.start() is RunnerState.READY
+    restored.runner.shutdown("stopped again before deciding anything")
+    decided_before = _evidence_count(state_dir)
+
+    (state_dir / "risk.json").unlink()
+    for _ in range(2):
+        second = build(tmp_path, days=(DAY,), config=config, start=False)
+        assert second.runner.start() is RunnerState.HALT
+    assert _evidence_count(state_dir) == decided_before, "no minute was decided"
+    refusals = refusal_records(state_dir)
+    assert len(refusals) == 2, "two losses, two records, and no more for restarts"
+    settlements = settlement_records(state_dir)
+    assert len(settlements) == 1
+    assert int(refusals[0]["seq"]) < int(settlements[0]["seq"]) < int(refusals[1]["seq"])
+
+
+def test_a_disputed_runner_decides_no_minute_even_when_asked_directly(tmp_path):
+    """`tick` is the one method that writes a `risk.state_hash`, so it refuses.
+
+    `catch_up` and `run_minutes` already stop at HALT; this is the method they
+    call. A DECISION from a disputed process would quote an engine that
+    persisted nothing, become the log's newest witness, and end the refusal on
+    a state no file holds.
+    """
+    from chimera.demo.runner import RunnerError
+
+    harness = campaign(tmp_path)
+    harness.runner.shutdown("clean stop")
+    config, state_dir = harness.runner.config, harness.state_dir
+    (state_dir / "risk.json").unlink()
+    before = last_seq(state_dir)
+
+    refused = build(tmp_path, days=(DAY,), config=config, start=False)
+    assert refused.runner.start() is RunnerState.HALT
+    with pytest.raises(RunnerError, match="cannot decide a minute"):
+        refused.tick(refused.runner.cursor.next_minute_ms())
+    assert refused.runner.catch_up() == []
+    assert decisions_after(state_dir, before) == []
+
+
+def test_an_engine_held_as_evidence_writes_nothing_through_any_mutation(tmp_path):
+    """The persistence boundary itself, two-sided, across every writer.
+
+    `RiskEngine._persist` is the one path to the file, so holding it holds every
+    mutation -- listed here so a writer added later that bypassed it would have
+    to be added to this list to pass.
+    """
+    from datetime import datetime, timezone
+
+    from chimera.risk import RiskViolation
+
+    path = tmp_path / "risk.json"
+    switch = tmp_path / "KILL_SWITCH"
+
+    def clock() -> float:
+        return 1_758_240_000.0  # 2025-09-19, fixed: the point is the file
+
+    def exercise(engine: RiskEngine) -> None:
+        engine.update_equity(990_000.0, now=datetime(2026, 9, 19, tzinfo=timezone.utc))
+        engine.record_order()
+        engine.set_position_exposure("BTC/USDT", 1_000.0)
+        engine.close_position("BTC/USDT")
+        engine.note_reconciliation("BTC/USDT", "venue disagreed")
+        engine.note_reconciliation("BTC/USDT", None)
+        engine.record_trade_result(-10.0)
+        engine.halt("an operator halt")
+        engine.resume()
+        switch.write_text("engaged", encoding="utf-8")
+        engine.check_kill_switch()
+        switch.unlink()
+        engine.check_kill_switch()
+
+    # Held: an existing file keeps its bytes, and a missing one stays missing.
+    seed = RiskEngine(RiskLimits(), state_path=path, clock=clock)
+    seed.update_equity(1_000_000.0)
+    found = path.read_bytes()
+    held = RiskEngine(
+        RiskLimits(), state_path=path, clock=clock, kill_switch_path=switch, persist=False
+    )
+    exercise(held)
+    assert path.read_bytes() == found
+    assert (
+        held.state.equity != RiskEngine(RiskLimits(), state_path=path).state.equity
+    ), "the held engine really did move, in memory"
+    absent = tmp_path / "absent.json"
+    exercise(
+        RiskEngine(
+            RiskLimits(),
+            state_path=absent,
+            clock=clock,
+            kill_switch_path=switch,
+            persist=False,
+        )
+    )
+    assert not absent.exists()
+
+    # And an unreadable file is not moved aside by an engine holding it.
+    (tmp_path / "damaged.json").write_bytes(b"{ not a state")
+    damaged = RiskEngine(
+        RiskLimits(), state_path=tmp_path / "damaged.json", clock=clock, persist=False
+    )
+    with pytest.raises(RiskViolation, match="evidence"):
+        damaged.adopt_after_unreadable("operator: start again")
+    assert (tmp_path / "damaged.json").read_bytes() == b"{ not a state"
+
+    # The other side: the same mutations on an ordinary engine do write.
+    exercise(RiskEngine(RiskLimits(), state_path=path, clock=clock, kill_switch_path=switch))
+    assert path.read_bytes() != found
