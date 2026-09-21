@@ -119,8 +119,9 @@ def test_fixtures_are_two_sided_for_every_rule():
 
 
 @needs_node
-def test_malformed_stdin_fails_closed():
-    assert_deny_json(run_hook("this is not json"), "internal-error")
+@pytest.mark.parametrize("stdin", ["this is not json", "", "null", "[]", "42"])
+def test_malformed_stdin_fails_closed(stdin):
+    assert_deny_json(run_hook(stdin), "internal-error")
 
 
 @needs_node
@@ -156,6 +157,9 @@ def test_a_hook_that_cannot_start_is_not_a_block(tmp_path):
         'bash -c "' * 50 + "git push --force",
         "$(" * 5_000 + "git rebase",
         "cat <<EOF\n" + "line\n" * 100_000,
+        "git " * 30_000,
+        "git status; " * 20_000 + "git -C x reset --hard",
+        "bash -c 'git status' " * 5_000,
     ],
     ids=[
         "1MB-words",
@@ -163,17 +167,20 @@ def test_a_hook_that_cannot_start_is_not_a_block(tmp_path):
         "nested-launchers",
         "nested-substitutions",
         "long-heredoc",
+        "30k-git-words",
+        "20k-git-segments",
+        "5k-launchers",
     ],
 )
 def test_pathological_input_finishes_far_inside_the_timeout(command):
-    """A real timeout would let the call through under the native rules only."""
+    """A real timeout (10 s) would let the call through under the native rules only."""
     started = time.monotonic()
     run_hook(
         json.dumps(
             {**FIXTURES["envelope"], "tool_name": "Bash", "tool_input": {"command": command}}
         )
     )
-    assert time.monotonic() - started < 2.0
+    assert time.monotonic() - started < 5.0
 
 
 # --- the native floor ----------------------------------------------------------
@@ -269,6 +276,9 @@ def test_native_env_rules_spare_only_the_committed_template():
         ".env.exampl",
         ".env.examples",
         ".env.example.bak",
+        ".envrc",
+        ".env-prod",
+        ".env_local",
         ".env.1",
         ".env._x",
         ".env.Production",

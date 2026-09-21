@@ -44,21 +44,22 @@ mode. They keep working if Node is missing, if the hook crashes, and if it
 times out. Deny rules apply to any subcommand of a compound command, including
 `&&`, `;`, `|`, subshells and `$( )`.
 
-What they cover, by canonical form only:
+What they cover, by canonical form only. Git accepts any unique abbreviation of a long option (`git reset --h` *is* `--hard`), so the long-option literals are cut to the shortest prefix that is still only the dangerous option:
 
 - **Git, Bash and PowerShell:**
-  - `git commit *--amend*`, `git rebase` / `git rebase *`, `git pull *--rebase*`, `git pull -r *`;
-  - `git push *--force*` (this also covers `--force-with-lease` and `--force-if-includes`), `git push -f *`, `git push * +*`, `git push *--mirror*`, `git push *--delete*`, `git push -d *`, `git push *--prune*`;
-  - `git reset *--hard*`, `git clean -*f*`, `git clean *--force*`;
-  - `git branch -D *`, `git branch -f *`, `git branch *--force*`, `git checkout -B *`, `git switch -C *`, `git switch *--force-create*`;
-  - `git worktree remove *--force*`, `git worktree remove -f *`, `git tag -f *`, `git tag *--force*`;
+  - `git commit *--am*`, `git rebase` / `git rebase *`, `git pull *--reb*`, `git pull -r *`;
+  - `git push *--forc*` (this also covers `--force-with-lease` and `--force-if-includes`), `git push -f *`, `git push * +*`, `git push *--m*` (mirror), `git push *--de*`, `git push -d *`, `git push *--pru*`;
+  - `git reset *--h*`, `git clean -*f*`, `git clean *--f*`;
+  - `git branch -D *`, `git branch -f *`, `git branch *--forc*`, `git checkout -B *`, `git switch -C *`, `git switch *--force-*`;
+  - `git worktree remove *--f*`, `git worktree remove -f *`, `git tag -f *`, `git tag *--forc*`;
   - `git update-ref *`, `git replace *`, `git reflog expire|delete *`, `git filter-branch|filter-repo *`;
-  - `printenv`, `gh auth token*`.
+  - `printenv`, `gh auth token*`, `gh auth status *-t*`, `git credential*`, `gh repo delete*`.
 - **Secrets, via `Read(...)` and `Edit(...)`.** `Edit` governs Write, Edit and NotebookEdit, and a `Read` deny also blocks Edit and Write. Read and Edit rules also apply to `cat`/`head`/`tail`/`sed` and to shell redirect targets.
-  - `//**/.env`, and every `.env.*` except `.env.example` (see below);
+  - `//**/.env`, `//**/.envrc`, `//**/.env[-_]*`, and every `.env.*` except `.env.example` (see below);
   - `//**/*.pem`, `//**/*.key`;
   - `~/.ssh/**`, `~/.aws/**`;
-  - `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`.
+  - `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`;
+  - `~/.claude/.credentials.json`, `~/.config/gh/hosts.yml`.
 - **Git metadata:** `Edit(//**/.git)` and `Edit(//**/.git/**)`. No file tool and no shell redirect may write into a git directory, including a linked worktree's `.git` pointer file. Reads of `.git` stay allowed.
 
 **Keeping `.env.example` readable.** The committed template has to stay readable, and the rule syntax has no negation: a live probe showed that `[!e]` and `[^e]` are read as *sets containing* `e`. Instead, `.env.*` is covered by a chain of positive ranges that exclude the letters of `example` one position at a time: `.env.[a-df-z…]*`, `.env.e`, `.env.e[a-wyz…]*`, … `.env.example?*`.
@@ -77,7 +78,9 @@ PowerShell rules are case-insensitive. So the case-sensitive short flags (`branc
 The native tier is also coarser than the hook in a few places:
 - `git replace -l` is denied;
 - `git clean -fdn` is denied (a dry run);
-- a `git pull --rebase=false` is denied.
+- `git pull --rebase=false` is denied;
+- `git reset --help` is denied;
+- `gh auth status` with a `-t`-containing hostname is denied.
 
 These are rare, and the owner can run them by hand.
 
@@ -98,16 +101,18 @@ built-in tools whose input can carry a shell command or a file path.
   - segments split on `; & | && || ( )`, newlines, `$( )` and backticks, including inside double quotes;
   - `2>&1` is treated as a redirect, not a separator;
   - line continuations are joined;
-  - heredocs and PowerShell here-strings are treated as data, so a commit message may *mention* `git push --force`.
+  - heredocs and PowerShell here-strings are treated as data, so a commit message may *mention* `git push --force`. The exception is a heredoc fed to a launcher on its own line (`bash <<EOF`, `cat <<EOF | bash`), which is analysed as commands.
 - File fields: `file_path`, `notebook_path`, `path`, `glob`.
 
 **What it adds over the native tier.**
 - Git is recognised at any word position:
-  - with `sudo`/`env`/`&` prefixes;
+  - with `sudo`/`env`/`watch`/`&` prefixes;
   - through `C:\Program Files\Git\cmd\git.exe`, `GIT.EXE`, or `git-rebase`;
+  - with bash `$'…'`/`$"…"` quoting;
   - with global options skipped (`-C`, `-c`, `--git-dir`, `--work-tree`, `--no-pager`…);
-  - with long-option abbreviations (`--amen`, `--forc`);
+  - with every long-option abbreviation down to `--` plus one letter (`--h`, `--am`, `--forc`); `switch --force-create` is the one exception, because `--force` alone is a different option;
   - with case-sensitive short clusters, so `-D` is denied and `-d` allowed.
+- A segment with more than 64 `git` words is refused (`internal-error`) rather than inspected. Checking each occurrence against its tail is quadratic, and a hook that times out lets the call through.
 - Launchers (`bash`, `sh`, `pwsh`, `powershell`, `cmd`, `wsl`, `eval`, `iex`, `Start-Process`, …) make it dissolve the quoting and re-inspect, up to 4 levels. `-EncodedCommand` is denied outright because it cannot be inspected.
 - It adds the rules the native syntax cannot express.
 
@@ -126,13 +131,14 @@ Rules, by id (every deny message carries the id):
 | `git-tag-force` | `tag -f/--force` | `tag v1`, `tag -l` |
 | `git-ref-rewrite` | `update-ref`; `replace` unless listing; `symbolic-ref` writes; `reflog expire/delete` | `show-ref`, `rev-parse`, `symbolic-ref --short HEAD`, `reflog`, `replace -l` |
 | `git-history-rewrite` | `filter-branch`, `filter-repo` | — |
+| `git-remote-ref-rewrite` | `gh api` PATCH/PUT/DELETE on `…/git/refs/…`; GraphQL `deleteRef`/`updateRef`; `gh repo delete` | `gh api` reads, `gh api -X PATCH …/pulls/N` |
 | `git-inline-alias` | `-c alias.*=…` | other `-c` options |
-| `git-metadata-write` | Write/Edit/NotebookEdit into any `.git`; shell redirects into `.git`; `cp/mv/rm/tee/Set-Content/Remove-Item/…` or `sed -i` naming a `.git` path | Read/Grep/`cat`/`ls`/`Get-Content` of `.git`; `.gitignore`, `.github/` |
+| `git-metadata-write` | Write/Edit/NotebookEdit into any `.git`; shell redirects into `.git`; `cp/mv/rm/tee/Set-Content/Remove-Item/…`, `sed -i` or a PowerShell `[IO.File]::Write…/Delete…/Move…` naming a `.git` path | Read/Grep/`cat`/`ls`/`Get-Content`/`[IO.File]::ReadAllText` of `.git`; `.gitignore`, `.github/` |
 | `encoded-command` | `powershell`/`pwsh -EncodedCommand` (any prefix, `-ec`) | `-Command`, `-ea` |
-| `secret-path` | `.env*` except `.env.example`; `*.pem`, `*.key`, `id_{rsa,dsa,ecdsa,ed25519}*`; any `.ssh` or `.aws` directory; `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `.git-credentials`. Matching is case-insensitive, also in `--env-file=.env`, `host:.ssh/…`, `.env::$DATA`, `.env.` | `.env.example`, `test_keys.py` |
-| `env-dump` | `printenv`; bare `env`, `set`, `export [-p]`; the PowerShell `env:` drive; `GetEnvironmentVariables()`; `/proc/*/environ` | `echo $env:PATH`, `set -euo pipefail`, `env X=1 cmd` |
-| `secret-token` | `gh auth token` | other `gh` commands |
-| `internal-error` | stdin that is not JSON, a command over 2 MB, any exception inside the hook | — |
+| `secret-path` | every `.env*` name except `.env.example` (`.envrc`, `.env-prod`, …); `*.pem`, `*.key`, `id_{rsa,dsa,ecdsa,ed25519}*`; any `.ssh` or `.aws` directory; `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `.git-credentials`, `.credentials.json`; GitHub CLI `hosts.yml`. Matching is case-insensitive, also in `--env-file=.env`, `host:.ssh/…`, `.env::$DATA`, `.env.` | `.env.example`, `test_keys.py`, prose words with no path separator (`"id_rsa rotation runbook"`) |
+| `env-dump` | `printenv` in command position; bare `env`, `set`, `export [-p]`, `declare`/`typeset` with only flags, `compgen -e/-v`; listing the PowerShell `env:` drive; `GetEnvironmentVariables()`; `/proc/*/environ` | `echo printenv`, `grep printenv`, `"env: …"` commit scopes, `Get-Item Env:PATH`, `echo $env:PATH`, `set -euo pipefail`, `env X=1 cmd` |
+| `secret-token` | `gh auth token`; `gh auth status -t/--show-token`; `git credential …`, `git credential-*` | `gh auth status`, `git config --get credential.helper` |
+| `internal-error` | stdin that is not a JSON object; a command over 2 MB; more than 64 `git` words in one segment; any exception inside the hook | — |
 
 **Output contract.**
 - On a block: deny JSON on stdout (`hookSpecificOutput.permissionDecision: "deny"`), the same reason on stderr, and exit code **2**. Claude Code blocks on exit 2 even if it ignores the JSON.
@@ -148,12 +154,12 @@ Rules, by id (every deny message carries the id):
 |---|---|---|
 | Node not installed, script missing, or the hook fails to start | Claude Code treats the non-2 exit as a **non-blocking** hook error, and the call proceeds | the native tier only (§2.1) |
 | hook exceeds its 10 s timeout | the call **proceeds** | the native tier only |
-| hook running; stdin malformed, command > 2 MB, internal exception | **blocked** (`internal-error`, exit 2) | both |
+| hook running; stdin not a JSON object, command > 2 MB, > 64 `git` words in a segment, internal exception | **blocked** (`internal-error`, exit 2) | both |
 | owner runs a command outside Claude's tool calls | not inspected | nothing: it is the owner's action |
 
 So the hook fails closed *inside a run*, but the layer as a whole does not. The canonical destructive forms and the secret files stay denied without the hook. The alternate forms of §2.2 do not. Tests characterise this:
 - `test_a_hook_that_cannot_start_is_not_a_block`;
-- `test_pathological_input_finishes_far_inside_the_timeout`, which checks that each case finishes in under 2 s against the 10 s budget;
+- `test_pathological_input_finishes_far_inside_the_timeout`, which checks that each case finishes in under 5 s against the 10 s budget: 1 MB of words, 30k `git` words, 20k git segments, 5k launchers, deep nesting, long heredocs;
 - `test_native_floor_covers_canonical_forms` and `test_native_floor_leaves_ordinary_work_alone`.
 
 ## 3. Why the layer is built this way
@@ -190,6 +196,26 @@ The probes ran against a throwaway repository with a local bare remote, and agai
   - `git push origin :probe-side` → `[git-push-delete]`;
   - PowerShell `git branch -D` → `[git-branch-force]`;
   - `git -C <repo> status` was allowed.
+- **Round 2, after the adversarial review (§4.1):**
+  - `git reset --h HEAD` was confirmed to be a real hard reset in the scratch repository. It had passed both tiers.
+  - The shortened native literals were then probed with spellings that the hook deliberately allows, so only the native tier could deny them: `git reset --h__probe__`, `git commit --am__probe__` and `git credential__probe__` were each denied with the native permission message.
+
+### 4.1 Adversarial review round
+
+A read-only reviewer ran about 59 payloads through the hook. It ran on the same serving model in a fresh context, with the scientific and safety boundaries restated to it. It was the author's own subagent, so this is **not** independent acceptance. Each of its findings was reproduced before it was acted on:
+
+| finding | disposition |
+|---|---|
+| `git reset --h` is a real hard reset and passed both tiers | fixed: abbreviation floor lowered to `--` plus one letter; native literals shortened; fixtures added |
+| ~90 KB of repeated `git` words made the hook run > 10 s, i.e. fail open on timeout | fixed: refuse a segment with more than 64 `git` words; timing tests at 30k words / 20k segments / 5k launchers |
+| `sudo git-rebase`, `env … git-push --force`, `watch git-clean` | fixed: `git-<sub>` is recognised at any position |
+| `gh auth status -t/--show-token` | fixed, in both tiers |
+| `.envrc`, `.env-prod` were allowed | fixed, in both tiers |
+| false positives: `"env: …"` commit scopes, `echo printenv`, `grep printenv`, prose like `"id_rsa rotation runbook"` or `".npmrc: pin"` | fixed: env-drive listing only; `printenv` only in command position; prose words without a path separator are not paths |
+| a JSON array on stdin was allowed | fixed: anything that is not a JSON object fails closed |
+| (hit live by the author) a command running `bash <validator>.sh` together with a heredoc commit message that mentioned `git-rebase` was denied: a launcher *anywhere* made every heredoc body count as commands | fixed: only a heredoc fed to a launcher on its own line is analysed; two-sided fixture added (`cat <<EOF \| bash` is still denied) |
+
+The author's own review added: bash `$'…'` quoting; `[IO.File]::` writes into `.git`; `git credential`; the GitHub CLI `hosts.yml` and Claude `.credentials.json`; `declare -p` / `compgen -e`; and `gh api` ref PATCH/DELETE / GraphQL ref mutations / `gh repo delete`, which are published-history rewrites that never call `git push`.
 
 ## 5. Threat model and residual limits
 
@@ -198,21 +224,26 @@ sandbox against a determined adversary. Known gaps:
 
 - **Hook blind spots:**
   - variable indirection (`f=.e; cat ${f}nv`);
+  - brace expansion (`git {push,--force}`);
   - globs (`cat *`) and recursive `grep -r` reading a `.env`;
   - interpreters and script files (`python -c`, `.sh`/`.ps1`);
   - pre-existing git aliases or config (`pull.rebase=true`);
   - strings piped into `xargs`;
   - `cd .git && rm refs/…`;
   - `git fetch +src:dst` into local branches;
+  - `printenv` behind a wrapper that takes an argument (`timeout 5 printenv`);
   - 8.3 short names and symlinks;
   - a heredoc whose delimiter is chosen to swallow later lines.
+- **Not covered by design:** printing a single variable (`echo $VAR`, `Get-Item Env:X`) and `git stash drop`/`clear`. The stash stack is shared across worktrees, so treat `stash drop`/`clear` with care.
 - `reset --soft` and `reset --mixed` can rewind *unpublished* local history. Published history is still protected, because pushing the result would need a force push.
 - **Hook false positives:**
-  - quoted prose that contains a path-like secret (`"see ~/.ssh/config"`);
+  - quoted prose that contains a path with a separator and a secret name (`"see ~/.ssh/config"`);
   - `grep "\.env"`;
   - `echo git rebase`;
-  - text in a command that also contains a launcher;
+  - a word exactly equal to `git-rebase` (e.g. a branch of that name);
+  - quoted text (not a heredoc) in a command that also contains a launcher;
   - copying *out of* `.git` with `cp`.
+- **Tamper resistance is governance, not mechanism.** The rule file forbids weakening `.claude/` in an unrelated task. Nothing mechanically stops an edit to the hook or `settings.json`, and those edits show up in review.
 - Commands the owner runs themselves are never inspected, by design.
 
 ## 6. Invoking the skills
