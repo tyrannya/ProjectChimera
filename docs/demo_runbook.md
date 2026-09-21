@@ -454,26 +454,31 @@ configured capital, and wrote nothing anywhere saying that it had happened.
 A restart now compares the risk state against the decision log beside it before
 anything is seeded or repaired, and a campaign that does not continue its own log
 refuses to start. What it compares against is the log's newest
-**`risk.state_hash`** — the same hash the log already records on every `DECISION`,
-`FUNDING`, `RECONCILIATION` and `LIQUIDATION_TOUCH` — and, in the records newer
-than that one, the newest **`HALT`**.
+**`risk.state_hash`** — the hash every record that moves the risk state carries:
+`DECISION`, `FUNDING`, `RECONCILIATION`, `LIQUIDATION_TOUCH`, and, since the third
+remediation of this check, `HALT`, `RESUME` and every `OPERATOR` command. It is
+the identity of the risk state *after* that record, so the right `risk.json` is
+exactly the state the newest one names.
 
 Three things about that comparison decide whether it is worth anything, and each
 of them was a defect first:
 
-* **A record that carries no hash does not end the search.** `HALT`, `RESUME`,
-  `OPERATOR`, `STARTUP`, `SHUTDOWN`, `INCOMPLETE_STATE`, `SKIPPED_STALE` and
-  `RECOVERY` carry none, and the check reads straight past all of them to the
-  newest record that does. A check that gave up at the first one let a
-  `risk.json` restored from earlier in the day pass behind a `flatten`, behind a
-  `resume`, and behind a second `HALT`.
-* **A halt is set aside before the identities are compared.** `halted` and
-  `halt_reason` are inside the hash and a `HALT` record carries no hash, so a
-  halted state matches no record as it stands. What the log does record is the
-  identity the state had *before* Aegis was halted, and that is what is compared —
-  so a healthy restart after a halt matches the newest record, and an older
-  halted state matches an earlier one and is refused. Two states that are both
-  halted are not one state.
+* **Every record that moves the risk state says where it left it.** `HALT`,
+  `RESUME` and `OPERATOR` used to carry no hash, and a `risk.json` nobody quoted
+  was accepted merely because one of them stood after the newest record that
+  did. The independent review measured what that let through after a refusal:
+  a copy older than a `flatten`, the halted file of an *earlier* kill-switch
+  halt, a first-start file with a kill-switch halt written into it, and a halted
+  copy missing the reconciliation dispute the campaign was halted on — each one
+  settled, resumed and traded. Nothing in those records could have told the
+  right file from those: `resume` and `resolve --symbol` erase what they clear,
+  `flatten` moves the equity by amounts the log held only as a hash, and a
+  `HALT`'s text does not say which reason Aegis kept (Aegis keeps the first — an
+  R1-b equity dispute survives under a `HALT` that names the dirty-tree gate).
+  Now each one quotes the state it left.
+* **A record that carries no hash does not end the search.** `STARTUP`,
+  `SHUTDOWN`, `INCOMPLETE_STATE`, `SKIPPED_STALE` and `RECOVERY` carry none, and
+  the check reads straight past them to the newest record that does.
 * **Nothing a refused process wrote counts as history.** A refusal is written
   down as a `RECOVERY` record with cause `RISK_STATE_DISCONTINUITY`, and every
   record after it — the refusal's own `HALT`, a `flatten` you ran meanwhile, a
@@ -495,14 +500,14 @@ Read `risk_continuity.outcome`:
 | `outcome` | what it means |
 | --- | --- |
 | `FIRST_START` | the log holds no record, so there is nothing to continue. A pristine deployment. `risk.json` is seeded and written as it always was. |
-| `CONTINUOUS` | nothing refuses this state. Either it is the one the log's newest record pins (as it stands, or with a halt set aside), or no record pins it and a `HALT`, `RESUME` or `OPERATOR` record the campaign itself wrote since then moved it. Normal. If a refusal was open, this start **settles** it and writes the settlement record. |
-| `STATE_AHEAD_OF_LOG` | the state holds an identity no record quotes and nothing since the newest record moved it: the process died between persisting Aegis and committing the record that quotes it. Recovered from, not refused — a `RECOVERY` record with cause `LOG_BEHIND_STATE` is written and the campaign carries on, exactly as it does for a store or a ledger that is ahead. **Never reported while a refusal is open**; that is `NOT_SETTLED`. |
+| `CONTINUOUS` | nothing refuses this state: it is exactly the one the log's newest `risk.state_hash` names, or the log has never recorded one. Normal. If a refusal was open, this start **settles** it and writes the settlement record — and only exact proof gets here then (below). |
+| `STATE_AHEAD_OF_LOG` | the state holds an identity no record quotes: the process died between persisting Aegis and committing the record that quotes it. Recovered from, not refused — a `RECOVERY` record with cause `LOG_BEHIND_STATE` is written and the campaign carries on, exactly as it does for a store or a ledger that is ahead. **Never reported while a refusal is open**; that is `NOT_SETTLED`. |
 | `RISK_STATE_MISSING` | there is no `risk.json` and the log holds records. **Refused.** Nothing is written in its place. |
 | `RISK_STATE_UNREADABLE` | `risk.json` exists and could not be read or believed. **Refused.** The file is left exactly as it was found; nothing is written over it. |
 | `RISK_STATE_WITHOUT_ACCOUNT` | `risk.json` is the pre-schema halt record, which carries no equity, peak, day, streak or dispute. **Refused.** |
-| `HALT_NOT_HELD` | the log's newest `HALT` is followed by no `RESUME` and no `resolve-equity`, and the state on disk is not halted. **Refused.** |
-| `STATE_HASH_REGRESSED` | the state's identity — as it stands, or with a halt set aside — is one the log records at an *earlier* record and not at its newest. The campaign has already moved past this state, so the file was rolled back or restored from an older copy. **Refused**, whether or not a refusal is already open. |
-| `NOT_SETTLED` | a refusal is open, and the file on disk holds an identity no record quotes. Outside a refusal that would be the crash window; after one it is a file no process of this campaign wrote, and a changed file is not a restored one. **Refused.** The reason names the record the file has to match. |
+| `HALT_NOT_HELD` | the campaign's newest `HALT` is followed by no `RESUME` and no `resolve-equity` — wherever it is in the log, even behind later records — and the state on disk is not halted. **Refused.** |
+| `STATE_HASH_REGRESSED` | the state's identity is one the log records at an *earlier* record and not at its newest. The campaign has already moved past this state, so the file was rolled back or restored from an older copy — a copy from before a `flatten`, say, or the halted file of an earlier halt. **Refused**, whether or not a refusal is already open. |
+| `NOT_SETTLED` | a refusal is open, and nothing proves the file on disk is the campaign's state: it holds an identity no record quotes; or the log was written before `HALT`, `RESUME` and `OPERATOR` carried a hash and one of them follows its newest `risk.state_hash`, so not even that one's state is vouched for; or the log has never recorded an identity and the file is not the first-start seed. After a refusal no process of this campaign wrote the file, and a changed file is not a restored one. **Refused.** The reason names the record the file has to match, or the record that makes a match impossible. |
 | `HISTORY_UNVERIFIABLE` | the log holds committed lines that no record could be read from, so whether this campaign has durable history cannot be established. **Refused**, rather than reported as `FIRST_START`, and `risk.json` is not written. The log verification in section 5 is what diagnoses it; nothing here repairs or removes anything. |
 
 Every refusal halts with a reason beginning `risk_continuity:`.
@@ -516,8 +521,10 @@ it would anywhere else; but the engine is built not to persist. So a missing
 across every restart after it, across a `flatten`, across a kill switch, and
 across a crash at any point in the startup. The file itself is the evidence, and
 the next process reaches the same verdict from it on its own — the `RECOVERY`
-record reports the finding, it is not what keeps it. Two things follow for what
-you read while the refusal stands:
+record reports the finding, it is not what keeps it. For the same reason none of
+a refused process's records — its `HALT`, a `flatten` you run — carries a
+`risk.state_hash`: the engine it would describe is one no file holds. Two things
+follow for what you read while the refusal stands:
 
 * `status`'s `risk_halted` describes the file as it was found — `false` for a
   missing one — and not a refused process's halt, and `status` starts nothing,
@@ -562,26 +569,29 @@ reads the same file and refuses again. After a restore, a switch that is still
 present halts and is persisted exactly as before.
 
 **The recovery is to restore the file, not to clear the flag.** Put back the copy
-the campaign last wrote and start again. What settles a refusal is a file the log
-**positively** vouches for, never merely a file that is different:
+the campaign last wrote and start again. A refusal is settled by **exact proof**
+and by nothing else:
 
-* the state the log's newest `risk.state_hash` records — or that state with a halt
-  written into it, where the log's own `HALT` says the campaign was halted; or
-* where a `HALT`, `RESUME` or `OPERATOR` record the campaign itself wrote
-  **before** the refusal follows that newest record, a state no record quotes —
-  those records carry no hash, so this is as far as the log can check it; or
-* on a campaign that has never recorded a `risk.state_hash` at all, a state that
-  holds whatever halt the log says the campaign held.
+* the file's identity is **exactly** the one the log's newest `risk.state_hash`
+  records — which, after a halt, a `resume`, a `flatten` or a `resolve`, is the
+  state that record left, halt and all; or
+* on a campaign that has never recorded a `risk.state_hash` at all — it never
+  decided a minute, never halted and never ran an operator command — the file's
+  identity is **exactly** the first-start seed, the only state such a campaign
+  has held.
 
-An older copy is `STATE_HASH_REGRESSED`, and a file no record quotes is
-`NOT_SETTLED`. That includes a backup taken in the crash window itself — Aegis
-persisted, the record never committed: outside a refusal it would be recovered
-from, but after one it is not evidence of anything. Restore the copy the log's
-newest `risk.state_hash` describes instead; the equity dispute that may follow is
-cleared as in "Clearing an equity dispute" above. The settled start writes
-its settlement record, and if R1-b's equity reconciliation then halts it — after
-a `flatten` during the dispute, it will — `resolve --equity` is available again
-and the campaign runs.
+Not a file that is merely different, not a halted file because the log records a
+halt, and not a file because a `HALT`, `RESUME` or `OPERATOR` record stands
+somewhere after the newest hash. An older copy is `STATE_HASH_REGRESSED`, and
+anything else is `NOT_SETTLED`. That includes a backup taken in the crash window
+itself — Aegis persisted, the record never committed: outside a refusal it would
+be recovered from, but after one it is not evidence of anything. Restore the
+copy the log's newest `risk.state_hash` describes instead; the equity dispute
+that may follow is cleared as in "Clearing an equity dispute" above. The settled
+start writes its settlement record, which says which of the two proofs it
+made, and if R1-b's equity reconciliation then halts it — after a `flatten`
+during the dispute, it will — `resolve --equity` is available again and the
+campaign runs.
 
 **Do not hand-edit `risk.json`,** and in particular do not clear `halted` by
 hand: section 16, and for the reason section 7 gives. That produces
@@ -599,16 +609,23 @@ comes back with it is the campaign's own halt, not a placeholder's.
 * Outside a refusal, a `risk.json` edited to a state no record quotes is
   indistinguishable from the crash window and is recovered from as one — exactly
   as an edited store or ledger is.
-* After a refusal, a campaign with a `HALT`, `RESUME` or `OPERATOR` record
-  after its newest `risk.state_hash` and before the refusal cannot tell its
-  correct backup from any other state no record quotes, and accepts either — the
-  same ambiguity it has with no refusal at all. Giving those records
-  a `risk.state_hash` is a change to what the runner writes and to replay parity,
-  and is canonical **R1-j**'s.
+* A log written **before** `HALT`, `RESUME` and `OPERATOR` carried a hash, with
+  one of them after its newest `risk.state_hash`, cannot vouch for any state:
+  that record moved the state and says nothing about where to. After a refusal
+  such a campaign is `NOT_SETTLED` whatever file you restore, its correct backup
+  included — old history is not retroactively trusted, and there is no command
+  that overrides it (that would be canonical **R1-i**'s). Outside a refusal it
+  starts, and a state nobody quotes is recovered from as the crash window.
+* The tick that writes `INCOMPLETE_STATE` can move the stale-feed mark first,
+  and that record carries no hash; a file saved in that state is one no record
+  quotes, and after a refusal it does not settle.
 * A campaign that has never decided a minute has only ever held the first-start
-  seed, so its genuine `risk.json` and a default one have the same identity; only
-  a halt the log records tells them apart. What protects it is that nothing in
-  the runner writes one.
+  seed, so its genuine `risk.json` and a default one have the same identity, and
+  either settles. What protects it is that nothing in the runner writes one.
+* Giving `HALT`, `RESUME` and `OPERATOR` a `risk.state_hash` is a narrow slice of
+  canonical **R1-j** pulled forward, because nothing less made a settlement
+  exact. It is not R1-j: replay parity, `seq` policy and a deterministic
+  counterpart for operator actions are still that item's.
 
 > **There is still no CLI command that clears a `risk_continuity:` halt, and
 > none is needed: the halt is not in `risk.json` and is re-derived by every start
