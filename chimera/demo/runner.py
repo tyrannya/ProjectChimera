@@ -62,10 +62,10 @@ from chimera.demo.feed import (
 )
 from chimera.demo.inspection import DemoInspection
 from chimera.demo.risk_continuity import (
+    RISK_CONTINUITY_PREFIX,
     RiskContinuity,
     continuity_already_recorded,
     evaluate_risk_continuity,
-    halt_free_state_hash,
     risk_state_hash,
 )
 from chimera.demo.risk_wiring import is_equity_reconciliation_halt, ledger_equity
@@ -185,12 +185,14 @@ class RecoveryCause(str, Enum):
     ``RISK_STATE_DISCONTINUITY``
         R1-c (AEG-4): `risk.json` does not continue the log beside it. It is
         absent, or unreadable, or carries no account at all, or is unhalted
-        where the log records a halt that nothing cleared, or hashes to an
-        identity the log's newest `risk.state_hash` does not record. Unlike the
-        four above it is not a crash cause and names no file that is BEHIND
-        another: the campaign refuses rather than recovering, the record is the
-        evidence that it did, and neither file is touched.
-        `chimera.demo.risk_continuity` decides it.
+        where the log records a halt that nothing cleared, or is older than the
+        log, or -- after a refusal -- is a state no record vouches for. Unlike
+        the four above it is not a crash cause and names no file that is BEHIND
+        another: the campaign refuses rather than recovering, the record reports
+        that it did, and `risk.json` is not written by the refusing process at
+        all. The same cause, with outcome ``CONTINUOUS`` and ``settles_seq``,
+        is the record a later start writes when the right file is back.
+        `chimera.demo.risk_continuity` decides both.
     """
 
     TORN_TAIL = "TORN_TAIL"
@@ -257,7 +259,7 @@ class DemoRunner:
         *,
         contract: Any,
         inspection_factory: Callable[[], DemoInspection],
-        risk_factory: Callable[[Callable[[], float]], RiskEngine],
+        risk_factory: Callable[..., RiskEngine],
         position_factory: Callable[[RiskEngine, Callable[[], float]], HedgedPosition],
         rules: RuleRegistry,
         capital: Decimal,
@@ -329,11 +331,12 @@ class DemoRunner:
         #: R1-c (AEG-4): whether `risk.json` continues the decision log beside
         #: it. Decided here, from the same read-only snapshot and for the same
         #: reason as `_ledger_regression` above: `start()` builds Aegis through
-        #: `build_risk_engine`, which SEEDS a first start's equity and persists
-        #: it, and R1-b's reconciliation can halt on a disagreement -- so a
-        #: verdict taken after startup would be a verdict about a file this
-        #: process had already written, and the identity it compared would be
-        #: one that startup had already moved.
+        #: `build_risk_engine`, which SEEDS a first start's equity, and R1-b's
+        #: reconciliation can halt on a disagreement -- so a verdict taken after
+        #: startup would be about an identity startup had already moved. It is
+        #: also what `start()` builds Aegis by: `risk_factory(clock, persist=...)`
+        #: receives ``persist=False`` when this is a dispute, and the file is
+        #: then never written by this process at all.
         self._risk_continuity = evaluate_risk_continuity(
             self.state_dir,
             load=self._inspection.risk_outcome,
@@ -508,7 +511,19 @@ class DemoRunner:
             # methods: Aegis and both executors share one time domain and one
             # injection path for this active runtime.
             decision_time = self.clock.time
-            self._risk = self._risk_factory(decision_time)
+            # R1-c: a `risk.json` in dispute is evidence, and this process may
+            # not write it -- not the seed over a missing file, not the
+            # kill-switch mirror, not a halt, not the equity or the exposures a
+            # `flatten` moves. Held from BEFORE the engine is constructed, because
+            # the constructor itself checks the switch and `build_risk_engine`
+            # seeds before it returns: a gate applied to the engine afterwards
+            # would already have been too late, and a crash, a failed append or a
+            # refused log between the two would leave a fabricated file standing
+            # where the evidence was. Fixed for this process's life; a settled
+            # dispute is observed by the NEXT process, reading the restored file.
+            self._risk = self._risk_factory(
+                decision_time, persist=not self._risk_continuity.disputed
+            )
             self._position = self._position_factory(self._risk, decision_time)
             active_regression = self._ledger_regressed_against_the_log()
             if self._ledger_regression is None:
@@ -550,19 +565,21 @@ class DemoRunner:
             },
         )
 
-        # R1-c: the finding becomes DURABLE here, immediately after the first
-        # record this process could write and before any later gate can stop it.
-        # The refusal itself still happens in RECOVER, below, so this changes
-        # nothing about which halt reason wins -- what it changes is what
-        # survives a halt that wins instead. `build_risk_engine` above has already written a
-        # default `risk.json` over a missing one, and a SELF_CHECK refusal
-        # between the two used to end the process with that placeholder on disk
-        # and nothing anywhere saying the risk state had been absent: the next
-        # start then found a file, compared it against a log whose newest witness
-        # was hashless, and reached CONTINUOUS on a state the campaign never had.
-        # One record, written at the earliest point the log is open, closes that.
+        # R1-c: the finding is written down at the earliest point the log is
+        # open, before any later gate can end the process. It is a REPORT, not
+        # the safety anchor: the file itself is the anchor, and it is untouched,
+        # so a process that dies before this record commits leaves the next one
+        # exactly the same evidence and the same verdict. The refusal itself is
+        # in RECOVER, below.
+        #
+        # A verdict that settles an open refusal is written down here too. That
+        # record is what ends the stretch of refused processes `_scan` skips, so
+        # what THIS process halts on from now on is campaign history again, and
+        # a later loss of the file is a new event with a record of its own.
         if self._risk_continuity.disputed:
             self._record_risk_continuity()
+        elif self._risk_continuity.settles_seq is not None:
+            self._write_risk_continuity_recovery(self._risk_continuity)
 
         self._enter(RunnerState.SELF_CHECK)
         problem = self.self_check(allow_dirty=allow_dirty)
@@ -580,14 +597,12 @@ class DemoRunner:
             # RECOVERY record and this refusal are the whole of what a
             # discontinuity produces; nothing here repairs anything.
             #
-            # The record was written before SELF_CHECK, not here, so that a
-            # refusal there could not end the process with the finding lost.
-            # `_halt` then writes its own HALT record and, through
-            # `RiskEngine.halt`, puts the reason in `risk.json` -- except on an
-            # UNREADABLE load, where `_persist` writes nothing and the suspect
-            # file stays as it was found, and except where R1-b's reconciliation
-            # halted the engine first and `RiskEngine.halt` kept that reason.
-            # Neither exception loses the finding; the log holds it.
+            # `_halt` writes its own HALT record and halts Aegis in memory. It
+            # reaches no file: this engine was built not to persist. The next
+            # process therefore finds the same `risk.json` -- or the same absence
+            # -- and refuses again for the same reason, whichever halt reason
+            # R1-b's reconciliation, a kill switch or a SELF_CHECK gate put into
+            # the engine first.
             return self._halt(self._risk_continuity.reason)
         outcome = self.position.reconstruct()
         if outcome.state is HedgeState.DISPUTED:
@@ -1061,57 +1076,56 @@ class DemoRunner:
     def _record_risk_continuity(self) -> None:
         """R1-c: write the discontinuity down, at most once per discontinuity.
 
-        Two guards, each covering the other's gap. `already_recorded` is the
-        log's own answer -- it holds a continuity RECOVERY that the file on disk
-        has not settled -- and is what makes a supervisor's restart loop stop
-        counting restart attempts as recoveries. `continuity_already_recorded`
-        compares fingerprints, and catches the case the first cannot see: a
-        refusal that leaves NO file for the next start to recognise. A `risk.json`
-        that is still missing, or still unreadable, gives the next start no
-        identity at all, so the same fresh verdict is re-derived from scratch and
-        only the fingerprint can tell a second detection from a second event.
+        A refused campaign is restarted -- by an operator, by a supervisor, by a
+        systemd restart loop -- and nothing a refused process does reaches
+        `risk.json`, so each restart finds the same file and takes the same
+        verdict with the same fingerprint. `continuity_already_recorded` compares
+        it with the newest continuity RECOVERY and suppresses the repeat. A
+        settlement in between answers first, so the same file lost AGAIN after a
+        restore is written down as the new event it is.
         """
         verdict = self._risk_continuity
-        if verdict.already_recorded:
-            return
         if continuity_already_recorded(self.state_dir, verdict.fingerprint):
             return
         self._write_risk_continuity_recovery(verdict)
 
     def _write_risk_continuity_recovery(self, verdict: RiskContinuity) -> None:
-        """R1-c's RECOVERY record: what was found, and what it was compared with.
+        """R1-c's RECOVERY record: a refusal opened, or a refusal settled.
 
-        Written at most ONCE per discontinuity. A refused campaign is restarted
-        -- by an operator, by a supervisor, by a systemd restart loop -- and each
-        start would otherwise append another record for one event, which turns
-        the log's own count of recoveries into a count of restart attempts.
-        `RiskContinuity.fingerprint` is what makes "the same discontinuity" a
-        decidable question: the verdict and what it was taken from, and no
-        timestamp and no seq of this process's own.
+        A REFUSAL is written when a disputed verdict is first reached, and says
+        what was found and what it was compared with. A SETTLEMENT is written
+        when a later start finds a file that positively continues the log while
+        a refusal is still open (`RiskContinuity.settles_seq`); it closes the
+        stretch of refused processes that `risk_continuity._scan` skips. Both are
+        the same record shape, told apart by the block's ``outcome``.
 
-        Two fields differ from the crash causes' records, and both are the
-        difference between recovering and refusing:
+        Two fields differ from the crash causes' records, for both:
 
         ``evidence_excluded_minute`` is null. Section 9.3 excludes the minute a
-        crash left inconsistent, and a continuity refusal leaves no minute
-        inconsistent at all -- the campaign halts before it decides anything, so
-        there is nothing to exclude and excluding something would drop real
-        evidence. `tools/replay_parity.py::EXCLUDING_RECOVERY_CAUSES` agrees by
-        omission: this cause is not in it.
+        crash left inconsistent, and neither a refusal nor a settlement leaves a
+        minute inconsistent -- a refused process decides nothing, so there is
+        nothing to exclude and excluding something would drop real evidence.
+        `tools/replay_parity.py::EXCLUDING_RECOVERY_CAUSES` agrees by omission:
+        this cause is not in it.
 
         ``records_verified`` is absent rather than zero. The crash causes report
         what `verify_log` counted; this check verifies no chain, and writing 0
         would assert that a verification had run and found nothing.
-
-        And one field the crash causes have no use for. ``seeded_state_hash`` is
-        the identity of the risk state THIS process is holding, which is the file
-        it is about to leave on disk: `start()` has to build Aegis before it can
-        halt it, so on a missing `risk.json` that file is a placeholder holding
-        the configured capital. Recording it is what lets a later start tell "the
-        file is still the one the refusal left" from "a file has been restored",
-        without depending on which halt reason ended up in it -- see
-        `RiskContinuity.block` and `ContinuityOutcome.ALREADY_DISPUTED`.
         """
+        settles = verdict.settles_seq
+        if settles is None:
+            detail = verdict.reason
+            label = RecoveryCause.RISK_STATE_DISCONTINUITY.value.lower()
+        else:
+            witness = verdict.hash_witness
+            detail = (
+                f"{RISK_CONTINUITY_PREFIX} settled: the risk state on disk continues the "
+                f"decision log again, which settles the refusal at RECOVERY record seq "
+                f"{settles}. It hashes to {verdict.observed_state_hash}, and the log's "
+                "newest risk.state_hash is "
+                f"{'(none)' if witness is None else witness.state_hash}"
+            )
+            label = "risk_state_continuity_settled"
         minute_ns = self._minute_ns()
         self._append(
             RecordKind.RECOVERY,
@@ -1119,7 +1133,7 @@ class DemoRunner:
             {
                 "recovery": {
                     "cause": RecoveryCause.RISK_STATE_DISCONTINUITY.value,
-                    "detail": verdict.reason,
+                    "detail": detail,
                     "affected_minute": iso_minute(minute_ns),
                     # Nothing was removed from any file, which is a positive
                     # statement and not a default: failing closed here means the
@@ -1127,23 +1141,22 @@ class DemoRunner:
                     "truncated_bytes": 0,
                     "evidence_excluded_minute": None,
                     "minute_finished": True,
-                    "risk_continuity": verdict.block(
-                        seeded_state_hash=halt_free_state_hash(self.risk.state)
-                    ),
+                    "risk_continuity": verdict.block(),
                 },
                 "veto_or_rejection": {
                     "stage": "recovery",
-                    "label": RecoveryCause.RISK_STATE_DISCONTINUITY.value.lower(),
-                    "detail": verdict.reason,
+                    "label": label,
+                    "detail": detail,
                 },
             },
         )
         self.save_state()
-        logger.critical(
-            "Risk-state continuity REFUSED (%s): %s",
-            verdict.outcome.value,
-            verdict.reason,
-        )
+        if settles is None:
+            logger.critical(
+                "Risk-state continuity REFUSED (%s): %s", verdict.outcome.value, detail
+            )
+        else:
+            logger.warning("Risk-state continuity SETTLED: %s", detail)
 
     def _state_ahead_of_log(self) -> str:
         """What the persisted state holds that the log's last record does not.
@@ -1256,6 +1269,16 @@ class DemoRunner:
     def tick(self, minute_ms: int) -> TickOutcome:
         """One minute, through section 8.1's tick loop."""
         self._require_active("tick")
+        if self._risk_continuity.disputed:
+            # R1-c. `catch_up` and `run_minutes` stop at HALT, but this is the
+            # method they call, and every record it can write carries
+            # `risk.state_hash` -- here, the hash of an engine that persisted
+            # nothing. One such record would become the log's newest witness and
+            # end the refusal on the strength of a state no file holds.
+            raise RunnerError(
+                "cannot decide a minute while the persisted risk state does not continue "
+                f"the decision log: {self._risk_continuity.reason}"
+            )
         minute_ns = int(minute_ms) * _MS_TO_NS
         self.clock.observe(minute_ns + MINUTE_NS)
 
@@ -2301,12 +2324,12 @@ class DemoRunner:
                 "which no command clears."
             )
         # R1-c, and the same rule one paragraph up: a halt whose cause is still
-        # true is not resumable. Resuming here would clear Aegis's halt and write
-        # a RESUME record, and the campaign could then tick -- whose DECISION
-        # record would settle the continuity dispute by the only mechanism that
-        # is allowed to settle one. Restoring the file is what ends this halt;
-        # `flatten` remains available meanwhile, because reducing exposure while
-        # the risk state is in dispute is what HALT is for.
+        # true is not resumable. Nothing here could reach `risk.json` -- this
+        # process holds it as evidence -- but READY would be a lie about a
+        # campaign whose risk state is in dispute. Restoring the file is what
+        # ends this halt; `flatten` remains available meanwhile, because
+        # reducing exposure while the risk state is in dispute is what HALT is
+        # for.
         if self._risk_continuity.disputed:
             raise RunnerError(
                 "cannot resume while the persisted risk state does not continue the "
@@ -2369,6 +2392,18 @@ class DemoRunner:
         note = (note or "").strip()
         if not note:
             raise RunnerError("resolve requires an operator note stating what was checked")
+        # R1-c, before anything is touched. Aegis would clear its copy of the
+        # dispute in memory only -- a disputed process writes no risk state -- but
+        # the store's copy would be cleared and SAVED, so restoring the right
+        # `risk.json` afterwards would bring back an Aegis dispute that no store
+        # still records. This command settles which position is true; a risk
+        # state that does not continue its own log is not one to settle it in.
+        if self._risk_continuity.disputed:
+            raise RunnerError(
+                "cannot resolve a reconciliation dispute while the persisted risk state "
+                f"does not continue the decision log: {self._risk_continuity.reason} "
+                "Restore risk.json first (docs/demo_runbook.md, section 4)."
+            )
         # A fresh CLI process has no recorded instant. Establish that the
         # action could be recorded before even consulting an active position;
         # this preserves the operator-facing refusal and changes nothing.
@@ -2496,15 +2531,12 @@ class DemoRunner:
             # has to. A `risk.json` restored from an older copy usually disagrees
             # with the ledger too, so `seed_or_reconcile_equity` halts Aegis on
             # `equity_dispute:` while the engine is being built -- and
-            # `RiskEngine.halt` keeps the FIRST reason, so the continuity refusal
-            # never reaches the file even though the runner is halted on it.
-            # Settling here would then clear Aegis's halt on the strength of an
-            # answer to a different question, and the OPERATOR record it wrote
-            # would become the log's newest risk witness: the next start would
-            # find nothing left to compare and the discontinuity would be gone
-            # with it. This command settles which of two equities is true; a risk
-            # state that does not continue its own log is not one whose equity is
-            # the question.
+            # `RiskEngine.halt` keeps the FIRST reason, so Aegis is halted on the
+            # equity while the runner is refused on continuity. Settling here
+            # would clear that halt on the strength of an answer to a different
+            # question and report the campaign READY. This command settles which
+            # of two equities is true; a risk state that does not continue its
+            # own log is not one whose equity is the question.
             raise RunnerError(
                 "cannot settle the equity dispute while the persisted risk state does "
                 f"not continue the decision log: {self._risk_continuity.reason} "

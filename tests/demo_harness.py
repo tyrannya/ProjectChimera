@@ -190,8 +190,10 @@ def build(
     # literals, which is why no test could see that `tools/demo_run.py` was
     # dropping twelve of section 7.4's thirteen limits: the harness was not
     # exercising the wiring, it was reimplementing a different one.
-    def _risk_factory(clock: Any) -> Any:
-        return build_risk_engine(cfg, capital=CAPITAL, state_dir=state_dir, clock=clock)
+    def _risk_factory(clock: Any, *, persist: bool) -> Any:
+        return build_risk_engine(
+            cfg, capital=CAPITAL, state_dir=state_dir, clock=clock, persist=persist
+        )
 
     def _position_factory(risk: Any, clock: Any) -> Any:
         return build_hedged_position(

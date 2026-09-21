@@ -352,10 +352,10 @@ def seed_or_reconcile_equity(
 
         Whether a missing ``risk.json`` is itself suspicious -- because the
         decision log already holds records for this campaign -- is **canonical
-        R1-c's** question and is deliberately not answered here. R1-c compares
-        the loaded snapshot with the log's last ``risk.state_hash``/HALT record
-        and writes a ``RECOVERY`` record; this function reads no log and writes
-        no record, so it neither implements nor forecloses that.
+        R1-c's** question and is deliberately not answered here. R1-c answers it
+        before this runs, from the log, and when the answer is a dispute the
+        engine arrives here built with ``persist=False``: the seed then happens
+        in memory only and the absence on disk is left as it was found.
     ``LEGACY``
         The pre-schema document carried ``halted`` and nothing else. It makes no
         claim about equity, so there is again nothing to preserve, and seeding is
@@ -461,6 +461,7 @@ def build_risk_engine(
     capital: Decimal | float,
     state_dir: Path | str | None = None,
     clock: Callable[[], float] | None = None,
+    persist: bool = True,
 ) -> RiskEngine:
     """The demo's Aegis: campaign limits, the campaign's state files, its equity.
 
@@ -471,6 +472,13 @@ def build_risk_engine(
 
     ``capital`` is what a *first* start is worth and nothing else;
     :func:`seed_or_reconcile_equity` holds the line between that and a restart.
+
+    ``persist=False`` is R1-c's: the runner passes it when the ``risk.json`` on
+    disk does not continue the decision log beside it. Everything below still
+    runs -- the kill-switch check, the seed, the reconciliation, any halt they
+    raise -- so the runner holds an engine it can halt and flatten against, and
+    none of it reaches the file. A missing ``risk.json`` stays missing and a
+    stale one keeps its bytes, which is the evidence the dispute is about.
     """
     root = Path(state_dir if state_dir is not None else config.runner_setting("state_dir"))
 
@@ -482,6 +490,7 @@ def build_risk_engine(
         risk_limits(config.limits),
         state_path=root / "risk.json",
         kill_switch_path=root / "KILL_SWITCH",
+        persist=persist,
         **kwargs,
     )
     seed_or_reconcile_equity(engine, capital=capital, state_dir=root)

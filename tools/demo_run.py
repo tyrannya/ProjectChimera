@@ -143,8 +143,10 @@ def _load(args: argparse.Namespace) -> DemoRunner:
     # under one risk regime and enforced under another; the mapping is one
     # audited function now, and `tests/test_demo_risk_wiring.py` holds this file
     # to using it.
-    def _risk_factory(clock: Any) -> Any:
-        return build_risk_engine(config, capital=capital, state_dir=state_dir, clock=clock)
+    def _risk_factory(clock: Any, *, persist: bool) -> Any:
+        return build_risk_engine(
+            config, capital=capital, state_dir=state_dir, clock=clock, persist=persist
+        )
 
     def _position_factory(risk: Any, clock: Any) -> Any:
         return build_hedged_position(

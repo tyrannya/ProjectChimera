@@ -27,19 +27,28 @@ reconciled, repaired or bootstrapped. Nothing here writes a file, opens a socket
 reads a clock or mutates a :class:`chimera.risk.RiskEngine`. What to DO about a
 verdict is the runner's; see :meth:`chimera.demo.runner.DemoRunner.start`.
 
+**A disputed file is evidence, and nothing a disputed process does may write
+it.** The runner takes this verdict before it builds Aegis, and when the verdict
+is a dispute it builds Aegis with ``persist=False``
+(:meth:`chimera.risk.RiskEngine._persist`). The engine still loads, seeds,
+reconciles, halts and flattens -- in memory, which is what the runner needs to
+refuse and to reduce exposure -- and ``risk.json`` keeps exactly the bytes, or
+exactly the absence, it was found with. That is what makes every verdict below
+REPEATABLE: the next process reads the same file and reaches the same answer,
+whatever the processes in between did. An earlier revision let a disputed
+process keep writing -- the seed over a missing file, the kill-switch mirror,
+`flatten`'s equity and exposures, a reconciliation note -- and then had to guess
+from the changed file whether it had been restored. It guessed "a different file
+means a restore", and the independent review measured a permitted `flatten`
+dissolving the dispute through the CLI, and a placeholder seeded before a crash,
+a failed append or a forged log standing in for the missing state afterwards.
+
 **A hashless record may not switch the comparison off.** Only DECISION, FUNDING,
 RECONCILIATION and LIQUIDATION_TOUCH carry ``risk.state_hash``; HALT, RESUME,
 OPERATOR, STARTUP, SHUTDOWN, INCOMPLETE_STATE, SKIPPED_STALE and RECOVERY carry
-none. An earlier revision of this module stopped its backward scan at the first
-HALT, RESUME or OPERATOR record and, finding no hash there, compared nothing at
-all -- so a ``risk.json`` restored from four minutes earlier passed behind a
-``flatten``, behind a ``resume``, and behind a second HALT, and an OLDER halted
-state passed a newer HALT history merely because both said ``halted``. The
-independent review measured all three.
-
-So the scan walks past **every** record that carries no hash and takes the newest
-one that does. That record pins an identity, and the question the comparison
-really asks is directional:
+none. The scan walks past **every** record that carries no hash and takes the
+newest one that does. That record pins an identity, and the question the
+comparison really asks is directional:
 
 ``the loaded identity IS the newest witness's``
     the file is the state the campaign last recorded. Continuous.
@@ -51,86 +60,61 @@ really asks is directional:
     either the ordinary crash window -- ``tick`` persists the risk state and then
     commits the DECISION that quotes it, and a process killed between the two
     leaves precisely this -- or a hashless record after the witness legitimately
-    moved the state and said nothing about where to. The two are told apart by
-    whether such a record is in the tail at all; see ``STATE_AHEAD_OF_LOG``.
+    moved the state and said nothing about where to. See ``STATE_AHEAD_OF_LOG``,
+    and ``NOT_SETTLED`` for why neither excuse is available after a refusal.
 
 **A halt is normalised away before the identities are compared, because
 ``RiskEngine.halt`` is the one transition the log does not record and CAN be
 inverted.** ``halted`` and ``halt_reason`` are inside ``risk.state_hash`` and a
-HALT record carries no hash, so a halted state never hashes to any witness --
-which is why a naive comparison disputes every healthy restart after a halt, and
-why an older halted state used to pass. :meth:`chimera.risk.RiskEngine.halt`
-sets exactly those two fields and nothing else, so the identity the same state
-had *before* it was halted is computable, and both identities are compared. A
-healthy restart after a halt matches the newest witness on the second; an older
-halted state matches an EARLIER witness on it and is refused. No other
-transition is inverted: RESUME's and each OPERATOR command's effects are not
-reconstructed here, and a state they moved is reported as one no witness
-records.
+HALT record carries no hash, so a halted state never hashes to any witness.
+:meth:`chimera.risk.RiskEngine.halt` sets exactly those two fields and nothing
+else, so the identity the same state had *before* it was halted is computable,
+and both identities are compared. No other transition is inverted: RESUME's and
+each OPERATOR command's effects are not reconstructed here.
 
-**Nothing a refused startup wrote is campaign history.** Refusing writes a
-RECOVERY record and halts, and the halt writes a HALT record of its own. Read
-back as ordinary evidence, that HALT condemned the very file the runbook tells an
-operator to restore: the restored state is legitimately NOT halted, the log's
-newest halt witness was R1-c's own refusal, and the documented recovery looped --
-one more RECOVERY per attempt, the correct backup replaced by another halted
-placeholder each time. Recognising this module's own halt reason would not have
-been enough on its own, because a startup gate that refuses for its OWN reason
-leaves the same shape: a ``source_identity`` halt on the placeholder
-``build_risk_engine`` had just seeded says "this campaign is halted" just as
-loudly. So the rule is drawn one level up. Every record at or after the newest
-continuity RECOVERY that no hash-bearing record follows is a process starting,
-finding the risk state in dispute and stopping -- no campaign decided anything in
-that stretch, by construction -- and none of it witnesses anything about the risk
-state. See :func:`_scan`.
+**Nothing a disputed process wrote is campaign history.** A refusal is written
+down as a continuity ``RECOVERY`` record, and every record after it until the
+matching settlement -- the continuity ``RECOVERY`` a later start writes when the
+file on disk positively continues the log again -- was written by a process
+holding the risk state as evidence: its HALT records halted an engine that wrote
+nothing, and its OPERATOR records moved nothing on disk. Reading one of them back
+as "this campaign is halted" or "this campaign's state was moved" would condemn
+the correct restore, or excuse an incorrect one. So that stretch is skipped, and
+the settlement record is what ends it: the settled process's own halts are
+ordinary history again, and a later loss is a new event with a record of its
+own. See :func:`_scan`.
 
-**The finding is durable in the LOG, not in ``risk.json``.** A continuity refusal
-used to be remembered only as ``risk.json``'s halt reason, and
-:meth:`chimera.risk.RiskEngine.halt` keeps the FIRST reason -- so when R1-b's
-``equity_dispute`` halted the engine while it was still being built, the
-continuity reason never reached the file and the next process found nothing to
-re-raise. The review measured the dispute evaporating across one ordinary
-restart and ``resolve --equity`` then clearing a rolled-back state. Both are
-consulted now: the halt reason in the file, AND the log's own continuity
-RECOVERY record.
-
-That record stands as an OPEN dispute until one of two things happens. A
-hash-bearing record follows it -- the campaign ran again, so it was settled and
-the dispute is behind the newest witness where the scan never reaches it. Or the
-file on disk stops being the one the refusal left behind, which is what restoring
-a backup does. The second is decided by an identity the record carries:
-:func:`halt_free_state_hash` of the state the refusing process was holding, taken
-with any halt set aside because WHICH halt ends up in that file is precisely what
-is not stable -- `build_risk_engine` seeds a placeholder over a missing
-``risk.json`` and then a dirty working tree, an equity dispute or R1-c itself
-halts it, and each of those writes a different reason into the same state. It
-needs no ``risk.state_hash`` in the log, so a campaign that halted before it
-decided its first minute is neither bricked by a refusal nor able to pass its
-placeholder off as history. See :class:`ContinuityOutcome.ALREADY_DISPUTED`.
+**A refusal is settled by a positive match, never by a change.** While a refusal
+is open, the file is compared against the campaign's history exactly as it would
+be on any start, with one difference: an identity that no record quotes is not
+the crash window any more, because no process could have written it -- a
+disputed process writes nothing -- and so it proves nothing. The refusal is
+settled only by a file the log itself vouches for: the newest witness's state,
+or that state with a halt written into it; or, where the campaign's own history
+before the refusal moved the state by a hashless command, a state consistent
+with that; or, on a campaign that has never recorded an identity at all, one
+that holds whatever halt the log says it held.
 
 **A disagreement has a DIRECTION, and only one of them fails closed.** This is
-what "the same continuity the store and ledger already have" means, and getting
-it wrong breaks the runner's crash semantics rather than tightening them. The
-carry ledger is refused when it holds **less** than the log has already committed
--- `DemoRunner._ledger_regressed_against_the_log`, which halts. It is *recovered
-from* when it holds **more**: that is section 9.3's ``LOG_BEHIND_STATE``, the
-state was persisted and the record that quotes it was not, a ``RECOVERY`` record
-is written, the affected minute leaves the evidence and the campaign carries on.
-``risk.json`` gets exactly that treatment, and `tests/test_demo_runner.py`'s
-two-sided control refuses the alternative on the ledger's behalf.
+what "the same continuity the store and ledger already have" means. The carry
+ledger is refused when it holds **less** than the log has already committed and
+recovered from when it holds **more** (section 9.3's ``LOG_BEHIND_STATE``).
+``risk.json`` gets exactly that treatment outside a refusal, and
+`tests/test_demo_runner.py`'s two-sided control refuses the alternative on the
+ledger's behalf.
 
-The limit of that is stated rather than implied: a ``risk.json`` edited to a
-state no witness records is indistinguishable from the crash window and is
-accepted as ahead, exactly as an edited store or ledger is. What continuity buys
-is that a state which is *absent*, *unreadable*, *unhalted where the log records
-a halt*, *demonstrably older than the log* or *already the subject of an
-unsettled refusal* can no longer pass.
-
-**Fail closed, and preserve the evidence.** Every dispute below leaves both files
-exactly as they were found: this module writes nothing, and the runner's refusal
-is a halt plus a ``RECOVERY`` record, never a repair. A ``risk.json`` that could
-not be read is additionally protected by :meth:`chimera.risk.RiskEngine._persist`,
-which writes nothing at all while the load was UNREADABLE.
+The limits are stated rather than implied. Outside a refusal, a ``risk.json``
+edited to a state no witness records is indistinguishable from the crash window
+and is accepted as ahead, exactly as an edited store or ledger is. A campaign
+whose last risk-moving record before a refusal is hashless (``flatten``,
+``resume``, ``resolve``) cannot tell its correct post-command backup from any
+other state no record quotes; giving those records a hash is R1-j's. And a
+campaign that has never recorded a ``risk.state_hash`` cannot tell its genuine
+first-start state from another one holding the same halt -- the genuine one IS a
+default seed. What continuity buys is that a state which is *absent*,
+*unreadable*, *unhalted where the log records a halt*, *demonstrably older than
+the log*, or *unvouched for after a refusal* can no longer pass, and that no
+process fabricates one.
 
 Nothing here creates scientific evidence, a prospective boundary, an alpha claim
 or any real-money authority.
@@ -155,7 +139,6 @@ __all__ = [
     "RISK_CONTINUITY_PREFIX",
     "RISK_HASH_EXCLUDED",
     "ContinuityOutcome",
-    "OpenDispute",
     "RiskContinuity",
     "Witness",
     "continuity_already_recorded",
@@ -220,12 +203,12 @@ RISK_HASH_EXCLUDED = frozenset({"order_times", "cooldown_until", "day"})
 #: SKIPPED_STALE         no       nothing
 #: ===================== ======== =======================================
 #:
-#: The three below are the hashless kinds that CAN move it. They no longer END
-#: the backward scan -- that was the defect -- but a state whose identity no
-#: witness records is told apart from the crash window by whether one of them is
-#: in the tail. Giving them a ``risk.state_hash`` would close the residual and is
-#: a change to what the runner WRITES, which reaches replay parity; it is not
-#: this item's.
+#: The three below are the hashless kinds that CAN move it. They do not END the
+#: backward scan, but a state whose identity no witness records is told apart
+#: from the crash window by whether one of them is in the campaign's own tail.
+#: Giving them a ``risk.state_hash`` would close that residual and is a change to
+#: what the runner WRITES, which reaches replay parity; it is R1-j's, not this
+#: item's.
 _RISK_MOVING_KINDS = frozenset(
     {RecordKind.HALT.value, RecordKind.RESUME.value, RecordKind.OPERATOR.value}
 )
@@ -246,9 +229,9 @@ def is_risk_continuity_halt(reason: str) -> bool:
     """Whether ``reason`` is the halt THIS module's verdict produces.
 
     Asked rather than matched, so a rewording of the reason cannot leave the
-    campaign holding a halt that no code admits to recognising. It is also what
-    keeps this module's own refusal out of its own evidence: see
-    :class:`ContinuityOutcome`'s ``ALREADY_DISPUTED``.
+    campaign holding a halt that no code admits to recognising. The runner's
+    refusal halts on it; the file never carries it, because the engine that halts
+    on it writes nothing.
     """
     return isinstance(reason, str) and reason.startswith(RISK_CONTINUITY_PREFIX)
 
@@ -282,17 +265,10 @@ def halt_free_state_hash(state: RiskState) -> str:
 
     :meth:`chimera.risk.RiskEngine.halt` sets ``halted`` and ``halt_reason`` and
     touches nothing else, so this really is its inverse rather than an
-    approximation of one. Two things need it, and both are about a halt the log
-    does not record:
-
-    * a HALT record carries no ``risk.state_hash``, so a halted state's own
-      identity is in no witness -- without this the log could say nothing at all
-      about a halted file, which is how an older halted state used to pass a
-      newer HALT history merely for being halted too;
-    * the state a refused start leaves on disk gets halted by whatever refused
-      it, and WHICH reason wins is not stable. This identity is, which is what
-      lets a later start recognise that file and what
-      :attr:`OpenDispute.seeded_hash` records.
+    approximation of one. A HALT record carries no ``risk.state_hash``, so a
+    halted state's own identity is in no witness -- without this the log could
+    say nothing at all about a halted file, which is how an older halted state
+    used to pass a newer HALT history merely for being halted too.
     """
     return risk_state_hash(replace(state, halted=False, halt_reason=""))
 
@@ -308,23 +284,15 @@ class ContinuityOutcome(str, Enum):
     FIRST_START = "FIRST_START"
     #: History exists and nothing refuses the persisted state. Either its
     #: identity is the newest witness's, or no witness records it and a hashless
-    #: record in the tail legitimately moved it.
+    #: record in the campaign's tail legitimately moved it. Written into the log
+    #: as the SETTLEMENT of a refusal when one is open; see
+    #: :attr:`RiskContinuity.settles_seq`.
     CONTINUOUS = "CONTINUOUS"
     #: Whether the log holds durable history could not be established: day files
     #: hold committed lines that no record could be read from. Reported as its
     #: own answer rather than as ``FIRST_START``, which would tell an operator
     #: that a campaign whose history is unreadable has none.
     HISTORY_UNVERIFIABLE = "HISTORY_UNVERIFIABLE"
-    #: A discontinuity a previous start already detected and wrote down, and
-    #: which nothing has settled since. Re-deriving it would report a LATER shape
-    #: of the same problem under a different name and append a second record for
-    #: one event. Two things say so and either is enough, because each covers the
-    #: other's gap: ``risk.json``'s own halt reason, which `RiskEngine.halt`'s
-    #: first-reason-wins can lose to an `equity_dispute` raised while the engine
-    #: was being built; and the log's newest continuity RECOVERY record, which is
-    #: OPEN while no hash-bearing record follows it and the file on disk is still
-    #: the one that refusal left behind (:attr:`OpenDispute.seeded_hash`).
-    ALREADY_DISPUTED = "ALREADY_DISPUTED"
     #: History exists and there is no ``risk.json``. The audit's AEG-4.
     RISK_STATE_MISSING = "RISK_STATE_MISSING"
     #: History exists and ``risk.json`` could not be read or believed.
@@ -343,11 +311,20 @@ class ContinuityOutcome(str, Enum):
     #: every persist precedes the record that quotes it, so no crash produces
     #: this direction.
     STATE_HASH_REGRESSED = "STATE_HASH_REGRESSED"
+    #: The loaded state's identity is one NO witness records, nothing in the
+    #: campaign's tail moved it without a hash, and a continuity refusal is open.
+    #: Without the refusal this is ``STATE_AHEAD_OF_LOG`` -- the crash window.
+    #: With it, it is a file that appeared after a process found the risk state
+    #: in dispute, and no process could have written it: a disputed process
+    #: writes nothing. It is not evidence that the state was restored, so the
+    #: refusal stands.
+    NOT_SETTLED = "NOT_SETTLED"
     #: The loaded state's identity is one NO witness records, and no hashless
     #: record moved it since the newest one. The ordinary crash window: the state
     #: was persisted and the record quoting it was not. Not a dispute;
     #: :meth:`chimera.demo.runner.DemoRunner._state_ahead_of_log` reports it as
-    #: section 9.3's ``LOG_BEHIND_STATE`` and the campaign recovers.
+    #: section 9.3's ``LOG_BEHIND_STATE`` and the campaign recovers. Never
+    #: reached while a refusal is open; that is ``NOT_SETTLED``.
     STATE_AHEAD_OF_LOG = "STATE_AHEAD_OF_LOG"
 
 
@@ -357,20 +334,20 @@ class ContinuityOutcome(str, Enum):
 #: ``STATE_AHEAD_OF_LOG``'s absence from it is visible as the decision it is.
 _DISPUTED_OUTCOMES = frozenset(
     {
-        ContinuityOutcome.ALREADY_DISPUTED,
         ContinuityOutcome.HISTORY_UNVERIFIABLE,
         ContinuityOutcome.RISK_STATE_MISSING,
         ContinuityOutcome.RISK_STATE_UNREADABLE,
         ContinuityOutcome.RISK_STATE_WITHOUT_ACCOUNT,
         ContinuityOutcome.HALT_NOT_HELD,
         ContinuityOutcome.STATE_HASH_REGRESSED,
+        ContinuityOutcome.NOT_SETTLED,
     }
 )
 
 
 @dataclass(frozen=True)
 class Witness:
-    """One log record, in the only five respects this comparison uses."""
+    """One log record, in the only four respects this comparison uses."""
 
     seq: int
     kind: str
@@ -378,33 +355,12 @@ class Witness:
     state_hash: str = ""
     #: ``operator.command`` on an OPERATOR record, otherwise ``""``.
     command: str = ""
-    #: ``veto_or_rejection.detail`` -- on a HALT record, the reason the runner
-    #: halted for, which `DemoRunner._halt` also hands to `RiskEngine.halt` and
-    #: so is the reason that lands in ``risk.json`` when nothing had halted it
-    #: already. See :func:`_settles`.
-    detail: str = ""
 
     def describe(self) -> str:
         """The witness in words, for a halt reason that must read the same on
         every host: a kind, a sequence number and a command, and no path."""
         named = f"{self.kind} record seq {self.seq}"
         return f"{named} (`{self.command}`)" if self.command else named
-
-
-@dataclass(frozen=True)
-class OpenDispute:
-    """A continuity RECOVERY record the log holds and nothing has settled."""
-
-    seq: int
-    fingerprint: str
-    detail: str
-    #: :func:`halt_free_state_hash` of the risk state the refusing process was
-    #: holding when it wrote this record -- the file it was about to leave on
-    #: disk. A later start that still finds that identity has not been given a
-    #: different file, whatever has since been halted into it. ``""`` on a record
-    #: written before this field existed, which then settles nothing and disputes
-    #: nothing.
-    seeded_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -428,6 +384,10 @@ class RiskContinuity:
     matched_witness: Witness | None = None
     #: Whether the log holds any record at all.
     has_history: bool = False
+    #: The ``seq`` of the continuity refusal this verdict SETTLES: set only on a
+    #: ``CONTINUOUS`` verdict taken while one is open. The runner writes the
+    #: settlement down, which is what ends the stretch :func:`_scan` skips.
+    settles_seq: int | None = None
 
     @property
     def disputed(self) -> bool:
@@ -444,23 +404,8 @@ class RiskContinuity:
         """
         return self.outcome is ContinuityOutcome.STATE_AHEAD_OF_LOG
 
-    @property
-    def already_recorded(self) -> bool:
-        """Whether the discontinuity is one a previous start already wrote down."""
-        return self.outcome is ContinuityOutcome.ALREADY_DISPUTED
-
-    def block(self, *, seeded_state_hash: str = "") -> dict[str, Any]:
+    def block(self) -> dict[str, Any]:
         """The ``recovery.risk_continuity`` block of the RECOVERY record.
-
-        ``seeded_state_hash`` comes from the RUNNER rather than from this
-        read-only verdict, and it is the whole of how a refusal is later known to
-        be unsettled: :func:`halt_free_state_hash` of the risk state the refusing
-        process is holding, which is the file it is about to leave behind.
-        `build_risk_engine` has to run before anything can halt it, so on a
-        MISSING load that file is a freshly seeded placeholder holding the
-        configured capital; on a rolled-back load it is the rolled-back state.
-        Either way a later start that finds the same identity has been given no
-        new file, and one that finds a different identity has.
 
         Every hash is written under a ``*_hash`` name, which
         :func:`chimera.demo.decision_log._validate_hashes` holds to
@@ -488,8 +433,8 @@ class RiskContinuity:
             block["unhalted_state_hash"] = self.unhalted_state_hash
         if self.hash_witness is not None and self.hash_witness.state_hash:
             block["witness_state_hash"] = self.hash_witness.state_hash
-        if seeded_state_hash:
-            block["seeded_state_hash"] = seeded_state_hash
+        if self.settles_seq is not None:
+            block["settles_seq"] = self.settles_seq
         return block
 
     @property
@@ -501,7 +446,9 @@ class RiskContinuity:
         verdict plus what it was taken from -- never a timestamp and never a seq
         of this process's own records -- so repeated starts against an unchanged
         pair of files produce the same value and repeated starts against a
-        CHANGED one do not.
+        CHANGED one do not. The files stay unchanged across a disputed process
+        because nothing it does is persisted, and the witnesses stay unchanged
+        because everything it wrote is skipped (:func:`_scan`).
         """
         from chimera.demo.rules import canonical_hash
 
@@ -541,14 +488,16 @@ class _LogFacts:
     #: The newest record carrying a ``risk.state_hash``, hashless records walked
     #: past. ``None`` when the log has never recorded an identity.
     hash_witness: Witness | None
-    #: The newest HALT, RESUME or ``resolve-equity`` NEWER than the hash witness.
-    #: This module's own refusal halts are not among them.
+    #: The newest HALT, RESUME or ``resolve-equity`` NEWER than the hash witness,
+    #: among the records that are campaign history.
     halt_witness: Witness | None
     #: Whether a hashless record that can move the risk state sits between the
-    #: hash witness and the end of the log.
+    #: hash witness and the end of the log, among the records that are campaign
+    #: history.
     moved_since_witness: bool
-    #: The newest continuity RECOVERY with no hash-bearing record after it.
-    open_dispute: OpenDispute | None
+    #: The ``seq`` of the continuity refusal that opened the stretch still open
+    #: at the end of the log, or ``None`` when no refusal is open.
+    open_refusal_seq: int | None
 
 
 def _records_newest_first(state_dir: str | Path) -> Iterator[Mapping[str, Any]]:
@@ -607,19 +556,12 @@ def _witness(record: Mapping[str, Any]) -> Witness:
         found = operator.get("command")
         if isinstance(found, str):
             command = found
-    veto = record.get("veto_or_rejection")
-    detail = ""
-    if isinstance(veto, Mapping):
-        found = veto.get("detail")
-        if isinstance(found, str):
-            detail = found
     seq = record.get("seq")
     return Witness(
         seq=int(seq) if isinstance(seq, int) else -1,
         kind=str(record.get("kind", "")),
         state_hash=state_hash,
         command=command,
-        detail=detail,
     )
 
 
@@ -633,65 +575,25 @@ def _clears_a_halt(witness: Witness) -> bool:
     )
 
 
-def _open_dispute(record: Mapping[str, Any], witness: Witness) -> OpenDispute | None:
-    """This record as an unsettled continuity refusal, when that is what it is."""
-    if witness.kind != RecordKind.RECOVERY.value:
+def _continuity_block(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """This record's ``recovery.risk_continuity`` block, when it is one of ours."""
+    if str(record.get("kind", "")) != RecordKind.RECOVERY.value:
         return None
     recovery = record.get("recovery")
     if not isinstance(recovery, Mapping):
         return None
     block = recovery.get("risk_continuity")
-    if not isinstance(block, Mapping):
-        return None
-    return OpenDispute(
-        seq=witness.seq,
-        fingerprint=str(block.get("fingerprint_hash", "")),
-        detail=str(recovery.get("detail", "")),
-        seeded_hash=str(block.get("seeded_state_hash", "")),
-    )
+    return block if isinstance(block, Mapping) else None
 
 
-def _settles(
-    dispute: OpenDispute, *, state: RiskState, halt_free: str, halt_witness: Witness | None
-) -> bool:
-    """Whether what is on disk now settles the refusal the log still holds open.
+def _settles_a_refusal(block: Mapping[str, Any]) -> bool:
+    """Whether this continuity record is a SETTLEMENT rather than a refusal.
 
-    Only asked when the log holds a continuity RECOVERY that no hash-bearing
-    record follows, so the campaign has not run past it. Three ways out, and each
-    exists because one of the others cannot answer:
-
-    ``there is nothing on disk to recognise``
-        the ``risk.json`` is still missing, or still unreadable, so it has no
-        identity at all. There is no file to say "this is the one the refusal
-        left", and the fresh verdict below refuses it again on its own terms.
-        `DemoRunner._record_risk_continuity`'s fingerprint is what stops the
-        second detection becoming a second record.
-    ``a different file is there``
-        the state's identity, with any halt set aside, is not the one the
-        refusing process was holding. Something has been restored. This is the
-        ordinary way out and the one the runbook documents.
-    ``the same state is there, carrying a halt the log recorded BEFORE the
-    refusal``
-        the narrow case where the first two cannot tell the difference: a
-        campaign that halted before it decided its first minute holds nothing but
-        the first start's seed plus a halt, and a placeholder seeded over its
-        missing ``risk.json`` holds the same seed plus a DIFFERENT halt. Setting
-        the halt aside makes the two equal by construction. What separates them
-        is which halt: the campaign's is a HALT record the log wrote before the
-        refusal, and no process after the refusal could have put that reason into
-        the file. Without this the documented restore could not terminate for
-        such a campaign, which is not a safety property, it is a brick.
+    Only ``CONTINUOUS`` settles, and only that is recognised: an outcome this
+    build does not know is read as a refusal, so a record written by some later
+    vocabulary can never open the log up by being misread.
     """
-    if not halt_free:
-        return True
-    if halt_free != dispute.seeded_hash:
-        return True
-    return (
-        state.halted
-        and halt_witness is not None
-        and halt_witness.kind == RecordKind.HALT.value
-        and halt_witness.detail == state.halt_reason
-    )
+    return block.get("outcome") == ContinuityOutcome.CONTINUOUS.value
 
 
 def _scan(state_dir: str | Path) -> _LogFacts:
@@ -705,25 +607,21 @@ def _scan(state_dir: str | Path) -> _LogFacts:
     * the **halt witness** is only looked for in the tail newer than it, because
       the hash pins ``halted`` and a HALT older than the hash witness can add
       nothing;
-    * the **open dispute** is likewise only looked for there, which is precisely
-      the definition: a continuity RECOVERY that a hash-bearing record follows is
-      one the campaign has since run past, so it is settled.
+    * a **refusal** is only looked for there too: one that a hash-bearing record
+      follows is one the campaign has since run past.
 
     An ordinary start therefore reads one record. Only a log that has never
     recorded an identity is walked in full, and such a log is short.
 
-    **Nothing a refused startup wrote is campaign evidence.** The tail is then
-    read forwards, and everything at or after the first continuity RECOVERY in it
-    is skipped. No hash-bearing record can be in that stretch -- the tail ends at
-    one by construction -- so nothing there is a campaign deciding anything; it
-    is a sequence of processes starting, finding the risk state in dispute and
-    stopping. The HALT records among them are halts of the very state R1-c
-    refused, and reading one back as "this campaign is halted and nothing cleared
-    it" is how the correct restored backup came to be condemned. A ``source_identity``
-    refusal on a freshly seeded placeholder produced exactly that HALT without
-    R1-c even being the reason for it, which is why recognising this module's own
-    halt reason would not have been enough: this one is nobody's refusal, it is a
-    different gate refusing a state R1-c had already written off.
+    **The tail is then read forwards, in stretches.** A continuity refusal opens
+    a stretch and the continuity settlement after it closes it; everything in
+    between -- the refusal's own HALT, a `flatten` an operator ran meanwhile, a
+    kill switch that halted a process, further refusals as other files were
+    tried -- was written by a process that held the risk state as evidence and
+    persisted none of it, so none of it describes the file and none of it is
+    read. Records before the first refusal and after a settlement are the
+    campaign's own history and are read as usual. A stretch still open at the
+    end of the log is the refusal nothing has settled.
     """
     has_history = False
     hash_witness: Witness | None = None
@@ -739,15 +637,16 @@ def _scan(state_dir: str | Path) -> _LogFacts:
 
     halt_witness: Witness | None = None
     moved_since_witness = False
-    open_dispute: OpenDispute | None = None
-    refused_since = False
+    open_refusal_seq: int | None = None
     for record, witness in reversed(tail):  # chain order: the newest wins
-        found = _open_dispute(record, witness)
-        if found is not None:
-            open_dispute = found
-            refused_since = True
+        block = _continuity_block(record)
+        if block is not None:
+            if _settles_a_refusal(block):
+                open_refusal_seq = None
+            elif open_refusal_seq is None:
+                open_refusal_seq = witness.seq
             continue
-        if refused_since:
+        if open_refusal_seq is not None:
             continue
         if witness.kind in _RISK_MOVING_KINDS:
             moved_since_witness = True
@@ -760,7 +659,7 @@ def _scan(state_dir: str | Path) -> _LogFacts:
         hash_witness=hash_witness,
         halt_witness=halt_witness,
         moved_since_witness=moved_since_witness,
-        open_dispute=open_dispute,
+        open_refusal_seq=open_refusal_seq,
     )
 
 
@@ -797,31 +696,21 @@ def continuity_already_recorded(state_dir: str | Path, fingerprint: str) -> bool
     """Whether the log's newest continuity RECOVERY record names this same one.
 
     A refused campaign gets restarted -- by an operator, by a supervisor, by a
-    systemd restart loop -- and the discontinuity is still there each time. One
-    event deserves one record, so the writer asks this first.
-
-    ``ALREADY_DISPUTED`` is the other half of that guarantee and the one that
-    carries most of it: it fires when the log still holds an unsettled refusal,
-    whatever shape the files have taken since. This catches the remaining case,
-    where a log that has never recorded an identity leaves nothing to pin a state
-    against and the same fresh verdict is therefore re-derived on every start.
+    systemd restart loop -- and the discontinuity is still there each time,
+    unchanged, because the refusal wrote nothing to the file. One event deserves
+    one record, so the writer asks this first.
 
     "Newest" means the newest RECOVERY record that carries a ``risk_continuity``
-    block, not the newest RECOVERY record of any kind: a torn tail repaired
-    between two refused starts writes a RECOVERY of its own, and letting that one
-    answer would append a second record for a discontinuity that had already been
-    written down.
+    block, refusal or settlement, and not the newest RECOVERY record of any kind:
+    a torn tail repaired between two refused starts writes a RECOVERY of its own,
+    and letting that one answer would append a second record for a discontinuity
+    that had already been written down. A settlement answering is what makes a
+    LATER loss of the same file a new event rather than a repeat of the first.
     """
     for record in _records_newest_first(state_dir):
-        if str(record.get("kind", "")) != RecordKind.RECOVERY.value:
-            continue
-        recovery = record.get("recovery")
-        if not isinstance(recovery, Mapping):
-            continue
-        block = recovery.get("risk_continuity")
-        if not isinstance(block, Mapping):
-            continue
-        return block.get("fingerprint_hash") == fingerprint
+        block = _continuity_block(record)
+        if block is not None:
+            return block.get("fingerprint_hash") == fingerprint
     return False
 
 
@@ -839,8 +728,7 @@ def evaluate_risk_continuity(
     one a startup has since seeded or halted.
 
     The order of the checks is the order of what they can prove, strongest first:
-    a campaign with no history cannot have broken any, a discontinuity already
-    written down is not re-derived under a second name, a state that is not there
+    a campaign with no history cannot have broken any, a state that is not there
     cannot be compared, and only a state that loaded is measured against a
     witness.
     """
@@ -854,10 +742,6 @@ def evaluate_risk_continuity(
         halt_free_state_hash(state) if load is RiskStateLoad.LOADED and state.halted else ""
     )
     identities = tuple(identity for identity in (observed, unhalted) if identity)
-    # This state with any halt set aside: what it is, independently of what has
-    # been halted into it since. `unhalted` when it is halted, `observed` when it
-    # is not, and the two are one function of one state.
-    halt_free = unhalted or observed
     pinned = hash_witness is not None and hash_witness.state_hash in identities
     matched: Witness | None = None
 
@@ -872,25 +756,9 @@ def evaluate_risk_continuity(
             halt_witness=facts.halt_witness,
             matched_witness=matched,
             has_history=facts.has_history,
-        )
-
-    def already_disputed(reason: str) -> RiskContinuity:
-        """The refusal a previous start already made, quoted rather than remade.
-
-        The reason is the one that was recorded, and it is already prefixed --
-        it came either from `risk.json`'s halt reason or from the RECOVERY
-        record's own detail, both of which this module wrote. Passing it through
-        `verdict` would prefix it twice.
-        """
-        return RiskContinuity(
-            outcome=ContinuityOutcome.ALREADY_DISPUTED,
-            reason=reason,
-            load=load,
-            observed_state_hash=observed,
-            unhalted_state_hash=unhalted,
-            hash_witness=hash_witness,
-            halt_witness=facts.halt_witness,
-            has_history=facts.has_history,
+            settles_seq=(
+                facts.open_refusal_seq if outcome is ContinuityOutcome.CONTINUOUS else None
+            ),
         )
 
     if not facts.has_history:
@@ -900,8 +768,8 @@ def evaluate_risk_continuity(
                 "the decision log holds committed lines that no record could be read "
                 "from, so whether this campaign has durable history cannot be "
                 "established and the risk state cannot be compared against it. Nothing "
-                "here is repaired or removed; verify the log (docs/demo_runbook.md, "
-                "section 4)",
+                "here is repaired or removed, and risk.json is not written while this "
+                "stands; verify the log (docs/demo_runbook.md, section 4)",
             )
         # Nothing has been decided under this state directory, so there is no
         # continuity to break. This is the case R1-c must NOT convert into a
@@ -909,46 +777,13 @@ def evaluate_risk_continuity(
         # refusing it would mean no campaign could ever start.
         return verdict(ContinuityOutcome.FIRST_START)
 
-    if load is RiskStateLoad.LOADED and is_risk_continuity_halt(state.halt_reason):
-        # A previous start detected a discontinuity, wrote its RECOVERY record
-        # and halted, and the halt is still in the file.
-        return already_disputed(state.halt_reason)
-
-    if facts.open_dispute is not None and not _settles(
-        facts.open_dispute,
-        state=state,
-        halt_free=halt_free,
-        halt_witness=facts.halt_witness,
-    ):
-        # The log still holds an unsettled refusal -- nothing hash-bearing has
-        # been written since, so the campaign has not run past it -- and the file
-        # on disk is the one that refusal left behind, identified by what the
-        # refusing process was holding when it wrote the record. Nothing has been
-        # restored; only a halt has been written into the same state, and which
-        # halt won is not something to rest on.
-        #
-        # That is what survives `RiskEngine.halt` keeping the FIRST reason: an
-        # `equity_dispute` raised while the engine was being built leaves no
-        # continuity reason in `risk.json` at all. And it is what survives a
-        # startup gate -- a dirty working tree, say -- ending the process before
-        # RECOVER could refuse, with `build_risk_engine`'s freshly seeded
-        # placeholder standing where the missing state had been and that gate's
-        # own reason halted into it.
-        #
-        # It settles the moment a different file appears, which is what the
-        # documented restore does, and it needs no `risk.state_hash` in the log
-        # to do it -- so a campaign that never decided a minute is neither
-        # bricked by the refusal nor able to pass its placeholder off as history.
-        return already_disputed(facts.open_dispute.detail)
-
     if load is RiskStateLoad.UNREADABLE:
         return verdict(
             ContinuityOutcome.RISK_STATE_UNREADABLE,
             "the decision log holds records for this campaign and risk.json could not "
             "be read, so what Aegis was enforcing cannot be established. The file is "
-            "left exactly as it was found and nothing is written over it; restore it "
-            "from a copy at least as recent as the log's last risk.state_hash record "
-            "(docs/demo_runbook.md, section 4)",
+            "left exactly as it was found and nothing is written over it; restore the "
+            "copy the campaign last wrote (docs/demo_runbook.md, section 4)",
         )
 
     if load is RiskStateLoad.MISSING:
@@ -957,9 +792,9 @@ def evaluate_risk_continuity(
             "the decision log holds records for this campaign and there is no risk.json, "
             "so a halt, a peak equity, a cooldown, an order window, a funding streak or "
             "an open reconciliation dispute would be silently reset to a default nothing "
-            "recorded. An absent risk state is not evidence that the campaign had none; "
-            "restore it from a copy at least as recent as the log's last risk.state_hash "
-            "record (docs/demo_runbook.md, section 4)",
+            "recorded. An absent risk state is not evidence that the campaign had none, "
+            "and nothing is written in its place; restore the copy the campaign last "
+            "wrote (docs/demo_runbook.md, section 4)",
         )
 
     if load is RiskStateLoad.LEGACY:
@@ -1009,11 +844,28 @@ def evaluate_risk_continuity(
                 f"{hash_witness.state_hash}. The campaign has already moved past the "
                 "state this file holds, and every persist precedes the record that "
                 "quotes it, so no crash produces this: risk.json was rolled back, "
-                "restored from an older copy or replaced. Restore it from a copy at "
-                "least as recent as the log's last risk.state_hash record "
-                "(docs/demo_runbook.md, section 4)",
+                "restored from an older copy or replaced. Restore the copy the "
+                "campaign last wrote (docs/demo_runbook.md, section 4)",
             )
         if not facts.moved_since_witness:
+            if facts.open_refusal_seq is not None:
+                # Outside a refusal this is the crash window, and only a live
+                # `tick` produces it. Inside one, no process wrote this file --
+                # the refusing processes write nothing -- so an identity no record
+                # quotes says nothing about whether the state was restored, and a
+                # changed file is not a settled one.
+                return verdict(
+                    ContinuityOutcome.NOT_SETTLED,
+                    "the log holds a continuity refusal (RECOVERY record seq "
+                    f"{facts.open_refusal_seq}) that nothing has settled, and the risk "
+                    f"state on disk hashes to {observed}, which no record quotes. That "
+                    "is not evidence of a restore: a file that appears after a refusal "
+                    "was written by no process of this campaign, and nothing the "
+                    "campaign recorded before the refusal moved its state without a "
+                    "hash. Restore the copy the log's newest risk.state_hash describes "
+                    f"-- the {hash_witness.describe()}, which is "
+                    f"{hash_witness.state_hash} (docs/demo_runbook.md, section 4)",
+                )
             return verdict(ContinuityOutcome.STATE_AHEAD_OF_LOG)
 
     return verdict(ContinuityOutcome.CONTINUOUS)

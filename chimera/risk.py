@@ -407,6 +407,8 @@ class RiskEngine:
         state_path: str | Path | None = None,
         clock=time.time,
         kill_switch_path: str | Path | None = None,
+        *,
+        persist: bool = True,
     ) -> None:
         self.limits = limits or RiskLimits()
         self.state = RiskState()
@@ -419,6 +421,20 @@ class RiskEngine:
         #: Set when the state file existed and could not be believed. While it is
         #: set nothing may overwrite that file; see :meth:`_persist`.
         self._state_unreadable = False
+        #: ``False`` for an engine whose state file is evidence in a dispute
+        #: someone else has found. It loads, halts and enforces exactly as any
+        #: other engine does, in memory, and writes NOTHING -- from before the
+        #: constructor's own kill-switch check to the end of its life. Fixed at
+        #: construction and never flipped: the dispute is settled by the right
+        #: file being put back, which a NEW engine then reads and its caller
+        #: then checks.
+        self._persist_enabled = persist
+        if not persist and self._state_path is not None:
+            logger.critical(
+                "Risk state at %s is held as evidence: this engine enforces in memory "
+                "and writes nothing to it.",
+                self._state_path,
+            )
         #: What the read below found. ``MISSING`` until it says otherwise, which
         #: is also the right answer for an engine given no ``state_path`` at all:
         #: such an engine has no file to have been restored from.
@@ -623,11 +639,19 @@ class RiskEngine:
         for the same reason; :meth:`adopt_after_unreadable` is the deliberate way
         through.
 
+        An engine constructed with ``persist=False`` writes nothing either, for
+        a reason that has nothing to do with this engine's own read: its caller
+        has found the file in dispute (R1-c,
+        :mod:`chimera.demo.risk_continuity`). Every mutation reaches disk through
+        this one method -- a seed, a halt, the kill-switch mirror, an equity, an
+        exposure, a reconciliation note -- so holding it here holds all of them,
+        including the ones nobody has written yet.
+
         ``updated_at`` is stamped from the engine's own clock, not from the wall
         clock, so an injected or replayed clock governs every timestamp the
         engine writes rather than only the ones a decision reads.
         """
-        if self._state_path is None:
+        if self._state_path is None or not self._persist_enabled:
             return
         if self._state_unreadable:
             logger.error(
@@ -790,6 +814,11 @@ class RiskEngine:
             raise RiskViolation(
                 "adopting an empty risk state after an unreadable file requires a "
                 "stated reason"
+            )
+        if not self._persist_enabled:
+            raise RiskViolation(
+                "this engine holds its state file as evidence and writes nothing; moving "
+                "that file aside is a change to the evidence, not a way round it"
             )
 
         preserved: Path | None = None
