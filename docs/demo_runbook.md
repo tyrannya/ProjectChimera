@@ -391,7 +391,7 @@ disputed campaign gets started repeatedly and a record each time would bury the
 finding in copies of itself. The `HALT` record each restart writes is unchanged.
 A finding that recurs after a genuine repair — the file restored, a minute
 decided, the file lost again — is recorded again, because the log restated the
-hash in between.
+hash in between. Each sealed restart's own `STARTUP` still says it was sealed.
 
 **What is deliberately not a dispute.**
 
@@ -408,34 +408,69 @@ hash in between.
   recovery away. So a `RISK_STATE_MISMATCH` stands down when the triage really
   found a crash, and only then. The three findings no crash can produce — an
   absent file, an unreadable one, a pre-schema one — never stand down.
-* A crash between `RiskEngine.halt`'s persist and the `HALT` record that would
-  have named it. A halt touches Aegis alone, so section 9.3's own triage —
-  stores, ledger, chain head — finds nothing to defer to, and the campaign used
-  to seal on an unclearable `risk_continuity:` halt for a guard (a kill switch,
-  a drawdown breach, a reconciliation dispute) that had already tripped for a
-  real, actionable reason. The proof is narrower than "the file is halted":
-  reverting the found file's `halted`/`halt_reason` to the one prior value a
-  *first* halt can have (`false`/`""` — `RiskEngine.halt` is a no-op once
-  already halted) must reproduce the log's own hash exactly, or the finding
-  stands as before. `recovery.risk_continuity.halt_transition_explains_mismatch`
-  says which happened. The campaign then halts on the guard's own reason
-  instead, with the operator remedy that reason already has.
+* A crash inside one of five narrow **Aegis-only** windows, and only when it is
+  *proved*. Aegis persists before the record that would restate it, and in
+  these windows nothing but Aegis moved, so section 9.3's triage — stores,
+  ledger accumulators, chain head — finds nothing. Each is proved by reverting
+  exactly the fields that window writes to the one value they held before, and
+  requiring the result to reproduce the log's **full** `risk.state_hash`:
+  * `halt` — a bare `RiskEngine.halt` (a rule exception, a dispute, any
+    `_halt` site) before its `HALT` record: `halted`/`halt_reason` back to
+    `false`/`""`.
+  * `kill_switch_halt` — the kill switch found on a running engine before its
+    `HALT` record: the mirror, `halted` and `halt_reason` back, and the reason
+    must be one of the two `check_kill_switch` writes. Whether the switch file
+    is still there at the restart does not matter; the mirror is what persisted.
+  * `kill_switch_mirror` — the same look on an already-halted engine: the mirror
+    alone.
+  * `equity` / `equity_halt` — the tick's `update_equity` (with or without the
+    drawdown / daily-loss halt it raises) before the minute's `DECISION`, on the
+    **same UTC day and below the peak**. The prior equity is in the log in
+    plaintext — the last `DECISION`'s (or flatten's) `ledger_effect.equity` —
+    and the proof additionally requires the carry ledger to hold exactly the
+    found equity (the same crash wrote the ledger first) and the real
+    `update_equity`, replayed on the reconstructed prior, to reproduce the file.
+    A funding minute is this window too.
+
+  A proved window writes the `RISK_STATE_MISMATCH` `RECOVERY` record, whose
+  `detail` names the window, and does **not** seal: the campaign halts on the
+  guard's own reason (or, for a plain equity window, continues and re-decides
+  the minute). `recovery.risk_continuity.halt_transition_explains_mismatch` is
+  `true` exactly when the proved window persisted a halt.
+
+  **Still sealed, and canonical R1-i's:** the same `update_equity` window when
+  it **rolled the UTC day** (every UTC midnight — the prior `day_start_equity` is
+  the equity of whichever write first touched the previous day, possibly the
+  configured capital, which no record carries) or **set a new peak** (the prior
+  `peak_equity` is the maximum over every equity Aegis was ever given). Both are
+  reconstructions of the campaign's equity history, which is replay. So is a
+  crash between `note_funding_settlement` and its `FUNDING` record, one that
+  moved the feed mark, and any combination of two windows. A sealed crash window
+  looks exactly like a swapped file; record it as an incident and stop.
 * A log that does not verify. A forged log halts the campaign on `log_forged:`,
   which is the graver finding and the one that owns it; an edited log may not
   condemn a state file. It also may not excuse one: a forged log beside a missing
   `risk.json` still refuses to seed.
 
-**A halt raised by one of these findings states nothing about the file.** The
-engine is sealed when the finding is raised — it halts in memory and writes
-nothing — so neither the `HALT` records the disputed restarts append nor an
-`OPERATOR` record from a `flatten` issued while sealed (permitted; that is what
-`HALT` is for) persisted anything, and both are skipped when the next start
-looks for the log's last statement. That is what makes a repair work: restore
-the state directory from a backup taken after the log's last restatement and
-the comparison falls back to that restatement, which the restored file
-matches. Without it R1-c's own halt would disagree with a correctly restored
-file for ever — or, for the `OPERATOR` case, an unrelated flatten would read as
-`MOVED` and silently clear a dispute nothing had actually repaired.
+**A sealed run's records state nothing about the file.** The engine is sealed
+when a finding stands — it halts in memory and writes nothing — so neither the
+`HALT` that run appends nor an `OPERATOR` record from a `flatten` issued in it
+(permitted; that is what `HALT` is for) persisted anything. Every `STARTUP`
+record carries `risk_continuity_sealed`, which says whether **that run** was
+sealed, and the next start skips the `HALT`, `RESUME`, `OPERATOR` and
+`INCOMPLETE_STATE` records of sealed runs when it looks for the log's last
+statement. It is per run: the next `STARTUP` states its own value, and a
+`RECOVERY` record by itself says nothing about it (a proved crash window writes
+one and runs unsealed). A `STARTUP` without the field was written by a build that
+could not seal, and reads as `false`.
+
+That is what makes a repair work: restore the state directory from a backup taken
+after the log's last restatement and the comparison falls back to that
+restatement, which the restored file matches — and the repaired run starts
+unsealed, so what it does (a `flatten` before any minute is decided included) is
+read as it always was. Without it R1-c's own halt would disagree with a
+correctly restored file for ever, or a flatten during the seal would read as
+`MOVED` and silently clear a dispute nothing had repaired.
 
 **Reading the finding.** `status` prints a `risk_continuity` block and it does
 not start the runner, which matters when the campaign will not start:
