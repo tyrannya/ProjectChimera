@@ -1408,6 +1408,72 @@ def test_halt_transition_explains_mismatch_needs_a_state_hash_statement(tmp_path
     assert not risk_continuity._halt_transition_explains_mismatch(snapshot, history)
 
 
+def advance_equity_only(state_dir: Path, delta: float) -> None:
+    """Simulate a kill strictly between ``update_equity``'s persist and the tick's
+    own ``DECISION`` append: ``equity`` and ``daily_pnl`` move, nothing else does.
+    """
+    document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    document["equity"] = float(document["equity"]) + delta
+    document["daily_pnl"] = float(document["daily_pnl"]) + delta
+    risk_json(state_dir).write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def test_an_equity_only_crash_window_is_reproduced_and_pinned_not_fixed(tmp_path):
+    """B1, shape 1 -- reproduced, and deliberately left unfixed. Pinned rather
+    than answered, as ``test_an_empty_log_beside_a_live_risk_state_is_not_r1cs_question``
+    (Case H) already does for a different gap.
+
+    A kill between ``RiskEngine.update_equity``'s persist and the tick's own
+    ``DECISION`` append (``chimera/demo/runner.py``: ``self.risk.update_equity(...)``
+    then ``self._append(RecordKind.DECISION, ...)``, with nothing else touched
+    when the tick traded nothing) leaves the same SHAPE as the halt-transition
+    window above: Aegis moved, the log's last statement is the ``STATE_HASH``
+    from before it, and section 9.3's own triage finds nothing to defer to.
+
+    It is NOT closed the same way. ``RiskEngine.halt`` is invertible because its
+    prior value is always known (``halted: False`` -- a second halt is a no-op,
+    so the window can only be reached from there). ``update_equity`` has no such
+    known prior: the equity it mutated FROM is not recoverable from the found
+    file (which holds only the new value), the ledger (which holds only the
+    CURRENT mark, not a history of prior ones -- see
+    ``chimera.demo.risk_wiring.ledger_equity``), or the log (whose
+    ``risk.state_hash`` is a one-way hash of the prior full state, never its
+    raw fields). A reconstruction that only checked the NEW equity against the
+    ledger and let the rest through would be exactly the kind of widening the
+    remediation prompt for this session forbids: it would also pass a foreign
+    file whose author matched the equity and nothing else. Closing this shape
+    needs either the log to carry more than a hash or a replay of the crashed
+    minute against the recorded market data -- a load-bearing redesign of
+    crash/continuity semantics, which is canonical R1-i's, not this session's.
+
+    This test exists so the gap is pinned rather than merely described in a PR
+    body: it reproduces the window and asserts today's behaviour, so a future
+    R1-i fix changes THIS test rather than leaving the shape unconsidered.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    advance_equity_only(state_dir, 123.45)
+
+    resumed = restart(tmp_path, config)
+
+    assert (
+        resumed.runner.state is RunnerState.HALT
+    ), "reproduced: the campaign halts, same as any RISK_STATE_MISMATCH"
+    assert resumed.runner.risk.continuity_disputed, (
+        "not fixed: sealed exactly as an ordinary foreign/swapped file would be, "
+        "with no crash-aware repair path -- this is the gap, pinned"
+    )
+    block = continuity_recoveries(state_dir)[0]["recovery"]["risk_continuity"]
+    assert block["fault"] == RiskContinuityFault.RISK_STATE_MISMATCH.value
+    assert block["halt_transition_explains_mismatch"] is False, (
+        "the halt-transition proof is correctly scoped: it must not (and does not) "
+        "reach for this shape"
+    )
+
+
 # ---------------------------------------------------------------------------
 # PR #102 remediation: B2, kill-switch ordering around a not-yet-triaged file
 # ---------------------------------------------------------------------------
