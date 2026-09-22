@@ -49,6 +49,7 @@ from typing import Any, Callable, Mapping
 
 from chimera.carry.ledger import CarryLedger, LoadOutcome
 from chimera.demo.config import COUNT_LIMITS, DemoConfig, DemoLimits
+from chimera.demo.risk_continuity import assess_risk_continuity
 from chimera.risk import RiskEngine, RiskLimits, RiskStateLoad
 
 
@@ -350,17 +351,23 @@ def seed_or_reconcile_equity(
         No file: nothing has ever been persisted, so there is nothing to
         preserve and ``capital`` is the only claim available. Seed.
 
-        Whether a missing ``risk.json`` is itself suspicious -- because the
-        decision log already holds records for this campaign -- is **canonical
-        R1-c's** question and is deliberately not answered here. R1-c compares
-        the loaded snapshot with the log's last ``risk.state_hash``/HALT record
-        and writes a ``RECOVERY`` record; this function reads no log and writes
-        no record, so it neither implements nor forecloses that.
+        Whether a missing ``risk.json`` is suspicious -- because the decision log
+        already holds records for this campaign -- is **canonical R1-c's**
+        question, and it is now answered one level up, in
+        :func:`build_risk_engine`, BEFORE this function is reached. That is
+        where it has to be: seeding is a write, and a file created from the
+        configured capital cannot be un-created afterwards. So by the time
+        ``MISSING`` arrives here it is a first start that R1-c has checked
+        against the log and found to be one; this function still reads no log
+        and writes no record.
     ``LEGACY``
         The pre-schema document carried ``halted`` and nothing else. It makes no
         claim about equity, so there is again nothing to preserve, and seeding is
         exactly what this build did before. Its halt, if it had one, is already
-        restored and is untouched by the seed.
+        restored and is untouched by the seed. R1-c refuses this combination
+        against a log that holds records -- a campaign with a history had an
+        account, and a document that claims none cannot be its state -- so what
+        reaches here is a legacy file on a campaign with no committed record.
     ``UNREADABLE``
         The engine has failed closed onto a deliberately empty state, is halted,
         and will not write that state over the file it could not read. Seeding
@@ -471,6 +478,46 @@ def build_risk_engine(
 
     ``capital`` is what a *first* start is worth and nothing else;
     :func:`seed_or_reconcile_equity` holds the line between that and a restart.
+
+    **Canonical R1-c (AEG-4) is checked first, and the order is the point.**
+    :func:`chimera.demo.risk_continuity.assess_risk_continuity` asks whether the
+    state this engine just read can be the continuation of the campaign's
+    decision log. It is asked HERE rather than in the runner because the very
+    next statement is a write: on a ``MISSING`` load
+    :func:`seed_or_reconcile_equity` seeds the configured capital and persists
+    it, so a campaign whose log holds a month of records would have a brand-new
+    ``risk.json`` on disk before anything had a chance to notice the month was
+    missing -- and the restart after that one would find a ``LOADED`` state this
+    process invented. A check made afterwards cannot un-make that file.
+
+    The three faults no crash can produce are the three this stops for, and they
+    are the same three where the next statement would fabricate something: an
+    absent file and a pre-schema one are what
+    :func:`seed_or_reconcile_equity` seeds the configured capital for, and an
+    unreadable one is already sealed by R1-b. The fourth --
+    ``RISK_STATE_MISMATCH``, a readable current-schema state whose hash is not
+    the one the log last restated -- is deliberately NOT stopped here: a crash
+    inside a tick produces it too
+    (:attr:`chimera.demo.risk_continuity.RiskContinuity.crash_could_explain`),
+    only the runner's crash triage can tell the two apart, and nothing is
+    fabricated by letting it through -- the state is ``LOADED``, so what happens
+    next is R1-b's reconciliation against the campaign's accounting rather than
+    a seed. :meth:`chimera.demo.runner.DemoRunner._risk_continuity_stands`
+    decides that one, and seals the engine there before startup can write.
+
+    When the verdict disputes, the engine is halted and SEALED
+    (:meth:`chimera.risk.RiskEngine.halt_for_continuity_dispute`): nothing is
+    seeded, nothing is reconciled, and nothing is written over -- or into the
+    place of -- the file an operator has to look at. The campaign's own record
+    of the finding is the ``RECOVERY`` record :class:`chimera.demo.runner.DemoRunner`
+    writes from the same verdict; this function appends nothing, because a
+    function that builds a risk engine has no business opening a log for write.
+
+    The reconciliation is skipped on a dispute rather than being run first, and
+    deliberately: R1-b's question is *does the persisted equity match the
+    campaign's accounting*, and it presumes the persisted state is this
+    campaign's. When that presumption is what is in dispute, an answer to it
+    would be an answer about the wrong file.
     """
     root = Path(state_dir if state_dir is not None else config.runner_setting("state_dir"))
 
@@ -484,6 +531,12 @@ def build_risk_engine(
         kill_switch_path=root / "KILL_SWITCH",
         **kwargs,
     )
+    continuity = assess_risk_continuity(
+        load=engine.load_outcome, snapshot=engine.loaded_snapshot, state_dir=root
+    )
+    if continuity.disputed and not continuity.crash_could_explain:
+        engine.halt_for_continuity_dispute(continuity.halt_reason)
+        return engine
     seed_or_reconcile_equity(engine, capital=capital, state_dir=root)
     return engine
 

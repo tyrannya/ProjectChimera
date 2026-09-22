@@ -25,7 +25,7 @@ from chimera.carry.ledger import CarryLedger
 from chimera.demo.config import DemoConfig
 from chimera.demo.risk_wiring import risk_limits
 from chimera.futures.store import FuturesStore
-from chimera.risk import RiskEngine, RiskState
+from chimera.risk import RiskEngine, RiskState, RiskStateLoad
 
 if TYPE_CHECKING:  # pragma: no cover - imports used only by the active snapshot
     from chimera.carry.hedge import HedgedPosition
@@ -44,6 +44,12 @@ class DemoInspection:
     """The persisted fields ``status`` and pre-start recovery checks may read."""
 
     risk_state: RiskState
+    #: What the READ found, not what the state looks like. Canonical R1-c needs
+    #: it: "there is no risk.json" and "there is one and it says the account is
+    #: flat" are different facts, and only the read can tell them apart. Carried
+    #: here because the load-time answer has to survive until the runner asks,
+    #: and by then the active engine has seeded, reconciled or failed closed.
+    risk_outcome: RiskStateLoad
     hedge_state: HedgeState
     spot_quantity: Decimal
     perp_quantity: Decimal
@@ -68,6 +74,7 @@ class DemoInspection:
         perp = position.leg("perp").quantity
         return cls(
             risk_state=risk.state,
+            risk_outcome=risk.load_outcome,
             hedge_state=position.state,
             spot_quantity=spot,
             perp_quantity=perp,
@@ -106,6 +113,7 @@ def inspect_demo_state(
     ledger = CarryLedger.open(root / "carry_ledger.json", capital=Decimal(capital))
     return DemoInspection(
         risk_state=risk.state,
+        risk_outcome=risk.load_outcome,
         hedge_state=HedgeState.FLAT,
         spot_quantity=spot_store.state.position(SPOT_SYMBOL).quantity,
         perp_quantity=perp_store.state.position(PERP_SYMBOL).quantity,

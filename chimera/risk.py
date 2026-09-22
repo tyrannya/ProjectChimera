@@ -245,6 +245,63 @@ class RiskState:
     funding_adverse_streak: int = 0
     funding_halt: bool = False
 
+    def snapshot(self) -> dict[str, Any]:
+        """The semantic state, for hashing into a decision log.
+
+        Identical inputs must give identical bytes, so this carries the fields a
+        decision depends on and nothing that merely describes *this* process: no
+        write time, no state-file path, no host, no PID. ``updated_at``
+        therefore stays in the file and out of here — it changes on every write,
+        including writes that changed no decision, and a hash that moved for
+        that reason would report two identical states as different.
+
+        ``schema`` *is* included: it names the contract the other fields are to
+        be read under, so two states that agree field-for-field under different
+        contracts should not hash alike.
+
+        The derived drawdown is excluded for the same reason it is not
+        persisted: it is a function of ``peak_equity`` and ``equity``, both of
+        which are here, so carrying it would add a second reading of one fact
+        rather than any information.
+
+        The order window is reported as stored. It is pruned at every mutation
+        and before every write, which keeps this a pure function of the state
+        rather than of the clock at the moment somebody asked.
+
+        It is a method of the STATE rather than of the engine because R1-c has
+        to hash a state that was read off disk and never became a live engine:
+        :attr:`RiskEngine.loaded_snapshot` is taken from here before anything
+        this process does can move it. :meth:`RiskEngine.snapshot` delegates, so
+        there is exactly one canonical form.
+        """
+        state = self
+        return {
+            "schema": RISK_STATE_SCHEMA,
+            "equity": float(state.equity),
+            "peak_equity": float(state.peak_equity),
+            "day_start_equity": float(state.day_start_equity),
+            "day": str(state.day),
+            "daily_pnl": float(state.daily_pnl),
+            "open_positions": {
+                key: float(state.open_positions[key]) for key in sorted(state.open_positions)
+            },
+            "order_times": [float(t) for t in state.order_times],
+            "consecutive_losses": int(state.consecutive_losses),
+            "cooldown_until": float(state.cooldown_until),
+            "halted": bool(state.halted),
+            "halt_reason": str(state.halt_reason),
+            "kill_switch": bool(state.kill_switch),
+            "stale_feed_since": (
+                None if state.stale_feed_since is None else float(state.stale_feed_since)
+            ),
+            "reconciliation_disputed": {
+                key: str(state.reconciliation_disputed[key])
+                for key in sorted(state.reconciliation_disputed)
+            },
+            "funding_adverse_streak": int(state.funding_adverse_streak),
+            "funding_halt": bool(state.funding_halt),
+        }
+
     def to_dict(self, *, updated_at: str) -> dict[str, Any]:
         """The persisted document: the schema, the write time, and the state."""
         return {
@@ -360,11 +417,25 @@ class RiskEngine:
         #: Set when the state file existed and could not be believed. While it is
         #: set nothing may overwrite that file; see :meth:`_persist`.
         self._state_unreadable = False
+        #: Set when R1-c found that this state cannot be the continuation of the
+        #: campaign's decision log. Blocks writing for the same reason the flag
+        #: above does; see :meth:`halt_for_continuity_dispute`.
+        self._continuity_disputed = False
         #: What the read below found. ``MISSING`` until it says otherwise, which
         #: is also the right answer for an engine given no ``state_path`` at all:
         #: such an engine has no file to have been restored from.
         self._load_outcome = RiskStateLoad.MISSING
         self._load_state()
+        #: The state AS THE READ ABOVE FOUND IT. Taken here, between the read and
+        #: the kill-switch look below, because both of the things that happen
+        #: next legitimately move the state: `check_kill_switch` mirrors a file
+        #: that may have appeared while the process was down, and a caller's
+        #: seeding or reconciliation moves the equity. R1-c compares the FILE
+        #: with the decision log, so it has to compare what the file said; an
+        #: operator engaging the kill switch between two runs is not a
+        #: continuity failure, and a comparison taken one line later would call
+        #: it one. See :attr:`loaded_snapshot`.
+        self._loaded_snapshot = self.state.snapshot()
         # Before anything can be approved, for an engine that was given a switch.
         # A kill switch consulted only when the caller remembers to consult it is
         # exactly the kind of guard this module's header refuses to rely on.
@@ -392,6 +463,25 @@ class RiskEngine:
         file that is by then no longer there.
         """
         return self._load_outcome
+
+    @property
+    def loaded_snapshot(self) -> dict[str, Any]:
+        """:meth:`snapshot` of the state the constructor's read found, unmoved.
+
+        The counterpart of :attr:`load_outcome` and the other half of what R1-c
+        needs: the outcome says whether there was a file, and this says what it
+        contained, in the one canonical form the decision log's
+        ``risk.state_hash`` is computed from.
+
+        It is a copy, and it is taken BEFORE the constructor's
+        :meth:`check_kill_switch` and before any caller seeds or reconciles, so
+        it answers "what did the file say" and never "what has this process done
+        since". For an ``UNREADABLE`` load it is the deliberately empty halted
+        state :meth:`_fail_closed` adopted -- the absence of a claim, not a
+        claim -- and ``load_outcome`` is what says so; R1-c reads the outcome
+        first and never hashes it.
+        """
+        return dict(self._loaded_snapshot)
 
     # ------------------------------------------------------------------
     # kill switch
@@ -578,6 +668,14 @@ class RiskEngine:
                 self._state_path,
             )
             return
+        if self._continuity_disputed:
+            logger.error(
+                "Not writing risk state to %s: it does not continue the campaign's "
+                "decision log and is being preserved exactly as it is (or left absent "
+                "exactly as it is). See the RECOVERY record the runner wrote.",
+                self._state_path,
+            )
+            return
         self._prune_order_times()
         stamped = datetime.fromtimestamp(self._clock(), timezone.utc).isoformat()
         payload = (
@@ -703,6 +801,51 @@ class RiskEngine:
         self._state_unreadable = True
         self._load_outcome = RiskStateLoad.UNREADABLE
         logger.critical("Starting in HALTED state: %s", reason)
+
+    def halt_for_continuity_dispute(self, reason: str) -> None:
+        """Halt on R1-c's finding, and write nothing over the evidence afterwards.
+
+        Canonical R1-c (AEG-4): a ``risk.json`` that is missing, unreadable, or
+        disagrees with what the campaign's decision log last recorded about the
+        risk state is a dispute, not a default. The decision itself is
+        :func:`chimera.demo.risk_continuity.assess_risk_continuity`'s; this is
+        the engine's half of it, and it does two things.
+
+        **It halts**, so Aegis -- the central risk authority -- permits nothing
+        while the dispute stands. The halt is :meth:`halt`, which keeps the
+        FIRST reason: an engine that already failed closed on an unreadable file
+        keeps R1-b's reason for it, and gains this finding through the log's
+        ``RECOVERY`` record rather than by having its halt reason rewritten.
+
+        **It stops writing.** The reasoning is :meth:`_persist`'s, in the case
+        that file is the evidence:
+
+        * ``MISSING`` -- the absence is the finding. Writing a halted state here
+          would create the file the dispute is about, so the next start would
+          see a ``LOADED`` state it invented and report a different finding
+          about it. The absence stays absent, and the restart after this one
+          reaches exactly this one again.
+        * ``UNREADABLE`` -- already sealed by :meth:`_fail_closed`, for the same
+          reason. This changes nothing there.
+        * ``LOADED``/``LEGACY`` -- the bytes on disk are what an operator has to
+          look at to decide which side is right. Halting writes ``halted`` and
+          ``halt_reason`` over them, and the disputed state would then no longer
+          be readable in the file it came from.
+
+        There is deliberately no way out of this from here. Clearing a dispute
+        is an operator action with exactly one path per dispute kind, which is
+        canonical **R1-i**; R1-c's job is to make the condition visible and fail
+        closed, and inventing a clearing path for it would be taking R1-i's
+        decision. :meth:`adopt_after_unreadable` is not that path and cannot be
+        reached from here: it refuses unless the LOAD was unreadable.
+        """
+        self._continuity_disputed = True
+        self.halt(reason)
+
+    @property
+    def continuity_disputed(self) -> bool:
+        """Whether R1-c sealed this engine. Reported, never re-derived."""
+        return self._continuity_disputed
 
     def adopt_after_unreadable(self, note: str) -> Path | None:
         """An operator's explicit decision to start recording again from empty.
@@ -840,53 +983,12 @@ class RiskEngine:
     def snapshot(self) -> dict[str, Any]:
         """The semantic state, for hashing into a decision log.
 
-        Identical inputs must give identical bytes, so this carries the fields a
-        decision depends on and nothing that merely describes *this* process: no
-        write time, no state-file path, no host, no PID. ``updated_at``
-        therefore stays in the file and out of here — it changes on every write,
-        including writes that changed no decision, and a hash that moved for
-        that reason would report two identical states as different.
-
-        ``schema`` *is* included: it names the contract the other fields are to
-        be read under, so two states that agree field-for-field under different
-        contracts should not hash alike.
-
-        The derived drawdown is excluded for the same reason it is not
-        persisted: it is a function of ``peak_equity`` and ``equity``, both of
-        which are here, so carrying it would add a second reading of one fact
-        rather than any information.
-
-        The order window is reported as stored. It is pruned at every mutation
-        and before every write, which keeps this a pure function of the state
-        rather than of the clock at the moment somebody asked.
+        The body is :meth:`RiskState.snapshot`, because R1-c needs the same
+        bytes for a state that was read off disk and never became an engine --
+        see :attr:`loaded_snapshot`. Two spellings of one canonical form is the
+        way a persisted state and the hash the log holds for it drift apart.
         """
-        state = self.state
-        return {
-            "schema": RISK_STATE_SCHEMA,
-            "equity": float(state.equity),
-            "peak_equity": float(state.peak_equity),
-            "day_start_equity": float(state.day_start_equity),
-            "day": str(state.day),
-            "daily_pnl": float(state.daily_pnl),
-            "open_positions": {
-                key: float(state.open_positions[key]) for key in sorted(state.open_positions)
-            },
-            "order_times": [float(t) for t in state.order_times],
-            "consecutive_losses": int(state.consecutive_losses),
-            "cooldown_until": float(state.cooldown_until),
-            "halted": bool(state.halted),
-            "halt_reason": str(state.halt_reason),
-            "kill_switch": bool(state.kill_switch),
-            "stale_feed_since": (
-                None if state.stale_feed_since is None else float(state.stale_feed_since)
-            ),
-            "reconciliation_disputed": {
-                key: str(state.reconciliation_disputed[key])
-                for key in sorted(state.reconciliation_disputed)
-            },
-            "funding_adverse_streak": int(state.funding_adverse_streak),
-            "funding_halt": bool(state.funding_halt),
-        }
+        return self.state.snapshot()
 
     # ------------------------------------------------------------------
     # account state

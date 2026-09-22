@@ -336,6 +336,11 @@ def _status(runner: DemoRunner) -> dict[str, Any]:
         "last_minute_processed": runner.cursor.last_minute_processed,
         "last_record_hash": runner.last_record_hash,
         "risk_halted": inspection.risk_state.halted,
+        # Canonical R1-c's load-time verdict on `risk.json` against the decision
+        # log. Reported by the one command that never calls `start()`, for the
+        # same reason `ledger_complaint` is: an operator whose campaign will not
+        # start has to be able to see WHY without starting it.
+        "risk_continuity": runner.risk_continuity.status_block(),
         # The one read-only inspection command must not report a ledger the guard
         # has refused as if it were the campaign's. `_ledger_regression` is
         # decided in `__init__`, so it is available here without `start()` --
