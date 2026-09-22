@@ -75,7 +75,7 @@ vouch for.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -317,8 +317,6 @@ class RiskContinuity:
     #: Whether the verified log already holds a ``RECOVERY`` record for this same
     #: finding, with nothing restating the risk state since.
     already_recorded: bool = False
-    #: Kept so callers can report it without re-deriving the path.
-    state_dir: Path = field(default_factory=Path)
 
     @property
     def disputed(self) -> bool:
@@ -554,12 +552,8 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
     )
 
 
-def _no_dispute(
-    load: RiskStateLoad, history: LogRiskHistory, found: str, state_dir: Path
-) -> RiskContinuity:
-    return RiskContinuity(
-        load=load, history=history, found_state_hash=found, state_dir=state_dir
-    )
+def _no_dispute(load: RiskStateLoad, history: LogRiskHistory, found: str) -> RiskContinuity:
+    return RiskContinuity(load=load, history=history, found_state_hash=found)
 
 
 def assess_risk_continuity(
@@ -618,7 +612,7 @@ def assess_risk_continuity(
     found = "" if no_account_claim else risk_state_hash(snapshot)
 
     if not history.has_history:
-        return _no_dispute(load, history, found, root)
+        return _no_dispute(load, history, found)
 
     fault: RiskContinuityFault | None = None
     detail = ""
@@ -673,20 +667,15 @@ def assess_risk_continuity(
                 )
 
     if fault is None:
-        return _no_dispute(load, history, found, root)
+        return _no_dispute(load, history, found)
 
-    return RiskContinuity(
-        load=load,
-        history=history,
-        fault=fault,
-        detail=detail,
-        found_state_hash=found,
-        already_recorded=_already_recorded((fault.value, load.value, found), history=history),
-        state_dir=root,
+    verdict = RiskContinuity(
+        load=load, history=history, fault=fault, detail=detail, found_state_hash=found
     )
+    return replace(verdict, already_recorded=_already_recorded(verdict))
 
 
-def _already_recorded(identity: tuple[str, str, str], *, history: LogRiskHistory) -> bool:
+def _already_recorded(verdict: RiskContinuity) -> bool:
     """Whether this exact finding is already in the log, unanswered.
 
     Two conditions, and both are needed.
@@ -701,13 +690,13 @@ def _already_recorded(identity: tuple[str, str, str], *, history: LogRiskHistory
     recorded as the new event it is. Without this a fault that recurred after a
     successful repair would be recorded once, for ever.
     """
-    recorded = history.recorded_dispute
+    recorded = verdict.history.recorded_dispute
     if recorded is None:
         return False
     seq, recorded_identity = recorded
-    if recorded_identity != identity:
+    if recorded_identity != verdict.identity:
         return False
-    restated = history.last_restated_seq
+    restated = verdict.history.last_restated_seq
     return restated is None or restated < seq
 
 
