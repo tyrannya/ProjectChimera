@@ -767,6 +767,15 @@ def test_an_empty_log_beside_a_live_risk_state_is_not_r1cs_question(tmp_path):
     harness = campaign(tmp_path)
     config = harness.runner.config
     state_dir = harness.state_dir
+    # Through `shutdown`, and not because the test wants a SHUTDOWN record --
+    # the whole directory goes a line later. The runner holds the day file OPEN
+    # for append, and Windows refuses to unlink a file another handle has open
+    # (POSIX allows it, which is why this passed locally and failed on the
+    # windows-latest job). The production entry point is what closes the log, so
+    # it is what this uses; the assertion below is what stops the fix being
+    # quietly undone.
+    harness.runner.shutdown("closing the log before the directory is removed")
+    assert harness.runner._log is None, "the day file must not still be open"
     shutil.rmtree(state_dir / LOG_DIR_NAME)
 
     resumed = build(tmp_path, days=(DAY,), config=config, start=False)
