@@ -94,6 +94,17 @@ _ORDER_WINDOW_S = 60.0
 #: guard whose reach depends on the current directory is not a guard anyway.
 DEFAULT_KILL_SWITCH_PATH = Path("user_data/KILL_SWITCH")
 
+#: The only two halt reasons :meth:`RiskEngine.check_kill_switch` writes: the
+#: switch is there, or its path could not be examined. Named once because
+#: canonical R1-c inverts that halt to prove a crash window (see
+#: ``chimera.demo.risk_continuity``), and a second spelling of either string
+#: would let the proof and the guard drift apart silently.
+KILL_SWITCH_HALT_REASONS: tuple[str, str] = (
+    "kill_switch",
+    "kill_switch: the switch path could not be examined, which is not evidence that it "
+    "is absent",
+)
+
 
 class RiskStateLoad(str, Enum):
     """How :meth:`RiskEngine._load_state` found the state file. Never inferred later.
@@ -626,7 +637,7 @@ class RiskEngine:
         self.state.kill_switch = present
         if present and not self.state.halted:
             if problem is None:
-                self.halt("kill_switch")
+                self.halt(KILL_SWITCH_HALT_REASONS[0])
             else:
                 # The path and the errno go to the log, not into the reason.
                 # The reason is persisted and hashed into the decision log by
@@ -638,10 +649,7 @@ class RiskEngine:
                     self._kill_switch_path,
                     problem,
                 )
-                self.halt(
-                    "kill_switch: the switch path could not be examined, which is "
-                    "not evidence that it is absent"
-                )
+                self.halt(KILL_SWITCH_HALT_REASONS[1])
         elif mirror_moved:
             self._persist()
         return self.state.kill_switch

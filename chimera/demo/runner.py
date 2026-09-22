@@ -62,12 +62,13 @@ from chimera.demo.feed import (
 )
 from chimera.demo.inspection import DemoInspection
 from chimera.demo.risk_continuity import (
+    RISK_CONTINUITY_SEALED_FIELD,
     RiskContinuity,
     RiskContinuityFault,
     assess_risk_continuity,
     risk_state_hash,
 )
-from chimera.demo.risk_wiring import is_equity_reconciliation_halt, ledger_equity
+from chimera.demo.risk_wiring import is_equity_reconciliation_halt, ledger_equity, risk_limits
 from chimera.demo.rules import HedgeTarget, RuleDecision, RuleError, RuleRegistry
 from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.domain import PositionSide
@@ -367,10 +368,16 @@ class DemoRunner:
         #: changed. `build_risk_engine` reaches the same verdict from the
         #: engine's own load-time snapshot, which is how the seeding is stopped
         #: before it happens; this copy is what writes the RECOVERY record.
+        #: The limits and the ledger's equity are what the equity crash-window
+        #: proof needs (`chimera.demo.risk_continuity._crash_transition`); the
+        #: equity is read through R1-b's own `ledger_equity`, so the proof and
+        #: R1-b's reconciliation compare the same two numbers the same way.
         self._risk_continuity = assess_risk_continuity(
             load=self._inspection.risk_outcome,
             snapshot=self._inspection.risk_state.snapshot(),
             state_dir=self.state_dir,
+            limits=risk_limits(config.limits),
+            ledger_equity=ledger_equity(self.state_dir, capital=self.capital),
         )
         self._inspection_ledger_unreadable = (
             self._inspection.ledger.outcome is LoadOutcome.UNREADABLE
@@ -589,6 +596,14 @@ class DemoRunner:
                 ),
                 "allow_dirty": bool(allow_dirty),
                 "rules": list(self.rules.ids),
+                # Canonical R1-c: whether THIS run's Aegis is sealed by a
+                # continuity dispute. Settled above (and by `build_risk_engine`)
+                # and never changed for the rest of the run, so it is per-run
+                # provenance: a sealed engine persists nothing, and the next
+                # start must not read this run's HALT/RESUME/OPERATOR records as
+                # statements about `risk.json`. See
+                # `chimera.demo.risk_continuity.read_log_risk_history`.
+                RISK_CONTINUITY_SEALED_FIELD: self.risk.continuity_disputed,
             },
         )
 
@@ -608,12 +623,13 @@ class DemoRunner:
         # out of the single `cause` a `_Recovery` can carry. The campaign then
         # stops on the halt raised above, below.
         #
-        # Also written when the halt-transition proof is what deferred the
-        # finding: unlike the triage-covered deferral above, `_triage_log`
-        # wrote nothing for that shape (a halt touches Aegis alone), so this is
-        # the only record this crash window gets. It is not double-reporting
-        # one crash under two names, because there is no other name for it.
-        if continuity_stands or self._risk_continuity.halt_transition_explains_mismatch:
+        # Also written when a crash-window proof is what deferred the finding:
+        # unlike the triage-covered deferral above, `_triage_log` wrote nothing
+        # for those shapes (they touch Aegis alone), so this is the only record
+        # the window gets. It is not double-reporting one crash under two names,
+        # because there is no other name for it. Such a run is NOT sealed, and
+        # its STARTUP record above says so.
+        if continuity_stands or self._risk_continuity.crash_transition:
             self._write_risk_continuity_recovery()
         outcome = self.position.reconstruct()
         if outcome.state is HedgeState.DISPUTED:
@@ -1129,22 +1145,27 @@ class DemoRunner:
         produce -- an absent file, an unreadable one, a pre-schema one -- are
         never deferred, whatever the triage found.
 
-        False also for the one shape `_triage_log` structurally cannot see: a
-        kill between `RiskEngine.halt`'s persist and `_halt`'s own `HALT`
-        append moves nothing `_triage_log` compares -- no store, no ledger, no
-        chain head -- because a halt touches Aegis alone, so triage always
-        returns `None` for it and the check above never fires.
-        `RiskContinuity.halt_transition_explains_mismatch` is the proof for
-        that shape instead of a trace of some OTHER file: it is true only when
-        reverting the found file's `halted`/`halt_reason` to the one prior
-        value a first halt can have (`False`/``""``) reproduces the log's own
-        hash exactly, which nothing but that one crash window can do. See
-        `chimera.demo.risk_continuity._halt_transition_explains_mismatch`.
+        False also for the crash windows `_triage_log` structurally cannot see:
+        a kill between an Aegis-only persist and the record that would restate
+        it moves nothing `_triage_log` compares -- no store, no ledger
+        accumulator, no chain head -- so triage returns `None` and the check
+        above never fires. `RiskContinuity.crash_transition` is the proof for
+        those instead of a trace of some OTHER file, and it is deliberately
+        narrow: a bare halt, a kill-switch halt or mirror, or a same-day
+        `update_equity` (with or without the halt it raises) persisted before
+        its `HALT` or `DECISION`. It is non-empty only when reverting exactly
+        the fields that window writes reproduces the log's own FULL hash, and,
+        for the equity window, the real `update_equity` replayed on that prior
+        reproduces the file and the carry ledger holds the same equity. A day
+        roll or a new peak is NOT proved -- the prior baseline and peak are
+        stated nowhere in plaintext, and recovering them is replay, canonical
+        R1-i -- so those windows stay sealed. See
+        `chimera.demo.risk_continuity._crash_transition`.
         """
         verdict = self._risk_continuity
         if not verdict.disputed:
             return False
-        if verdict.halt_transition_explains_mismatch:
+        if verdict.crash_transition:
             return False
         return not (verdict.crash_could_explain and triage is not None)
 

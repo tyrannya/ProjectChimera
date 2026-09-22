@@ -509,7 +509,8 @@ def build_risk_engine(
     the one the log last restated -- is deliberately NOT stopped here: a crash
     inside a tick produces it too
     (:attr:`chimera.demo.risk_continuity.RiskContinuity.crash_could_explain`),
-    only the runner's crash triage can tell the two apart, and nothing is
+    only the runner can tell the two apart (its crash triage, and the
+    crash-window proofs that need the limits and ledger it reads), and nothing is
     fabricated by letting it through -- the state is ``LOADED``, so what happens
     next is R1-b's reconciliation against the campaign's accounting rather than
     a seed. :meth:`chimera.demo.runner.DemoRunner._risk_continuity_stands`

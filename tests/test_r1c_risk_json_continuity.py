@@ -44,8 +44,10 @@ import chimera.demo.risk_continuity as risk_continuity
 import chimera.demo.risk_wiring as risk_wiring
 import chimera.demo.runner as runner_module
 from chimera.demo.decision_log import LOG_DIR_NAME, RecordKind
+from chimera.demo.fixtures import SyntheticFeed
 from chimera.demo.risk_continuity import (
     RISK_CONTINUITY_PREFIX,
+    RISK_CONTINUITY_SEALED_FIELD,
     LogRiskStatement,
     RiskContinuityFault,
     assess_risk_continuity,
@@ -58,8 +60,10 @@ from chimera.demo.runner import (
     RunnerState,
     _risk_hash,
 )
-from chimera.risk import RiskEngine, RiskStateLoad
-from tests.demo_harness import CAPITAL, DAY, build, campaign_config
+from chimera.demo.rules import RuleError
+from chimera.demo.rules_carry import CarryRule
+from chimera.risk import RiskEngine, RiskState, RiskStateLoad
+from tests.demo_harness import CAPITAL, DAY, NEXT_DAY, build, campaign_config
 
 #: Enough minutes for the campaign to open a position, book fees and write
 #: several hash-bearing records, with minutes left over for a restart to decide.
@@ -117,7 +121,7 @@ def campaign(tmp_path: Path, *, minutes: int = MINUTES):
     return harness
 
 
-def restart(tmp_path: Path, config) -> Any:
+def restart(tmp_path: Path, config, *, days: tuple[str, ...] = (DAY,)) -> Any:
     """A second process over the same files, as production really builds one.
 
     ``now_ns`` is seeded past the log's tail because the campaigns here are
@@ -130,7 +134,7 @@ def restart(tmp_path: Path, config) -> Any:
     """
     state_dir = Path(config.runner_setting("state_dir"))
     committed = records(state_dir)
-    resumed = build(tmp_path, days=(DAY,), config=config, start=False)
+    resumed = build(tmp_path, days=days, config=config, start=False)
     tail = max((int(r["runner_now_ns"]) for r in committed), default=None)
     resumed.runner.start(now_ns=None if tail is None else tail + 60_000_000_000)
     return resumed
@@ -1065,7 +1069,7 @@ def _blind_to(**overrides: Any) -> Callable[..., Any]:
     """A mutant assessment that edits the history before the real one reads it."""
     real = assess_risk_continuity
 
-    def mutant(*, load, snapshot, state_dir, history=None):
+    def mutant(*, load, snapshot, state_dir, history=None, **inputs):
         history = read_log_risk_history(state_dir) if history is None else history
         from dataclasses import replace
 
@@ -1074,6 +1078,7 @@ def _blind_to(**overrides: Any) -> Callable[..., Any]:
             snapshot=snapshot,
             state_dir=state_dir,
             history=replace(history, **overrides),
+            **inputs,
         )
 
     return mutant
@@ -1112,10 +1117,12 @@ def test_mutant_b_treating_an_unreadable_state_as_a_first_start(tmp_path, monkey
     risk_json(state_dir).write_text("{not json", encoding="utf-8")
     real = assess_risk_continuity
 
-    def mutant(*, load, snapshot, state_dir, history=None):
+    def mutant(*, load, snapshot, state_dir, history=None, **inputs):
         if load is RiskStateLoad.UNREADABLE:
             load = RiskStateLoad.MISSING
-        return real(load=load, snapshot=snapshot, state_dir=state_dir, history=history)
+        return real(
+            load=load, snapshot=snapshot, state_dir=state_dir, history=history, **inputs
+        )
 
     _install(monkeypatch, mutant)
 
@@ -1251,11 +1258,11 @@ def test_mutant_g_recording_the_finding_on_every_restart(tmp_path, monkeypatch):
     risk_json(state_dir).unlink()
     real = assess_risk_continuity
 
-    def mutant(*, load, snapshot, state_dir, history=None):
+    def mutant(*, load, snapshot, state_dir, history=None, **inputs):
         from dataclasses import replace
 
         return replace(
-            real(load=load, snapshot=snapshot, state_dir=state_dir, history=history),
+            real(load=load, snapshot=snapshot, state_dir=state_dir, history=history, **inputs),
             already_recorded=False,
         )
 
@@ -1322,81 +1329,375 @@ def test_the_seal_is_what_keeps_the_absence_absent(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# PR #102 remediation: B1, a crash that only touches Aegis
+# PR #102 remediation: B1, the crash windows `_triage_log` cannot see
 # ---------------------------------------------------------------------------
-def halt_the_file_only(state_dir: Path, reason: str) -> None:
-    """A kill strictly between ``RiskEngine.halt``'s persist and the HALT append.
+class ProcessKilled(BaseException):
+    """A process death. Deliberately NOT an ``Exception``: ``DemoRunner._halt``
+    catches those around its append, and nothing catches a real kill."""
 
-    Written directly, as ``move_the_peak`` is: a real crash there leaves
-    ``risk.json`` halted with nothing else disturbed and no HALT record, which
-    is exactly what setting the two fields ``halt`` touches reproduces without
-    needing to actually kill a process mid-write.
+
+def die_before_append(harness, kind: RecordKind, action: Callable[[], Any]) -> None:
+    """Run ``action`` through the production path and kill it at its first ``kind`` append.
+
+    Nothing is hand-edited: every file on disk is exactly what production
+    persisted up to the line before the append. The day file the dead runner
+    held open is then closed, as the OS closes a dead process's handles.
     """
-    document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
-    document["halted"] = True
-    document["halt_reason"] = reason
-    risk_json(state_dir).write_text(
-        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    real = runner_module.DemoRunner._append
+
+    def append(self, record_kind, minute_ns, payload):
+        if record_kind is kind:
+            raise ProcessKilled(f"killed before the {kind.value} append")
+        return real(self, record_kind, minute_ns, payload)
+
+    runner_module.DemoRunner._append = append
+    try:
+        with pytest.raises(ProcessKilled):
+            action()
+    finally:
+        runner_module.DemoRunner._append = real
+    if harness.runner._log is not None:
+        harness.runner._log.close()
+
+
+def next_minute(harness) -> int:
+    """The minute the campaign would decide next."""
+    return harness.runner.cursor.last_minute_processed + 60_000
+
+
+def widen_the_basis(monkeypatch, *, from_minute: int, by: float) -> None:
+    """Market data, not state: the perpetual closes ``by`` wider from one minute on.
+
+    The fixture's hedged position is otherwise worth the same every minute, so
+    this is what gives Aegis an ordinary mark-to-market move to persist. A few
+    dollars is below anything the carry rule trades on, so the minute books no
+    fill, fee or funding -- the case `_triage_log` has nothing to compare for.
+    """
+    real = SyntheticFeed.perp_close
+    monkeypatch.setattr(
+        SyntheticFeed,
+        "perp_close",
+        lambda self, index: round(
+            real(self, index) + (by if index >= from_minute else 0.0), 2
+        ),
     )
 
 
-def test_a_halt_only_crash_window_is_deferred_like_a_crash(tmp_path):
-    """B1, shape 2. Section 9.3's triage finds nothing here: a halt touches
-    only Aegis, so no store, ledger or chain head moves for it to compare.
-    Before the fix this was reported as an unclearable ``RISK_STATE_MISMATCH``
-    forever; the halt-transition proof recognises it instead, so the campaign
-    halts on the guard that actually tripped and an operator can act on it.
+def startup_flags(state_dir: Path) -> list[Any]:
+    """Each run's own ``STARTUP.risk_continuity_sealed``, in order."""
+    return [
+        record.get(RISK_CONTINUITY_SEALED_FIELD, "absent")
+        for record in records(state_dir)
+        if record["kind"] == RecordKind.STARTUP.value
+    ]
+
+
+def assert_proved_and_deferred(resumed, state_dir: Path, transition: str) -> dict[str, Any]:
+    """The shared half of every proved crash window: recorded, deferred, not sealed."""
+    verdict = resumed.runner.risk_continuity
+    assert verdict.fault is RiskContinuityFault.RISK_STATE_MISMATCH, "the hash did move"
+    assert verdict.crash_transition == transition
+    assert not resumed.runner.risk.continuity_disputed, "proved, so not sealed"
+    assert not (resumed.runner.halt_reason or "").startswith(RISK_CONTINUITY_PREFIX)
+    assert startup_flags(state_dir)[-1] is False
+    block = continuity_recoveries(state_dir)[-1]["recovery"]["risk_continuity"]
+    assert block["fault"] == RiskContinuityFault.RISK_STATE_MISMATCH.value
+    assert f"({transition}:" in block["detail"], "the record names the window"
+    return block
+
+
+def raise_in_the_rule(monkeypatch) -> str:
+    """A real halt site: the actionable rule raises, and `tick` halts on it."""
+
+    def evaluate(self, state, portfolio):
+        raise RuleError("synthetic rule failure")
+
+    monkeypatch.setattr(CarryRule, "evaluate", evaluate)
+    return "rule_exception: R1_carry: synthetic rule failure"
+
+
+def test_a_real_bare_halt_crash_is_proved_and_deferred(tmp_path, monkeypatch):
+    """B1 shape 2, the bare halt: ``RiskEngine.halt`` persisted, the kill came
+    before ``_halt``'s ``HALT`` append. Reproduced through a real halt site (a
+    rule exception) rather than by editing ``risk.json``.
     """
     harness = campaign(tmp_path)
     config = harness.runner.config
     state_dir = harness.state_dir
-    reason = "max drawdown breached: 6.00% >= 5.00%"
-    halt_the_file_only(state_dir, reason)
+    reason = raise_in_the_rule(monkeypatch)
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.HALT, lambda: harness.tick(minute))
+    assert json.loads(risk_json(state_dir).read_text(encoding="utf-8"))["halted"] is True
 
     resumed = restart(tmp_path, config)
 
-    assert resumed.runner.state is RunnerState.HALT
-    assert (
-        resumed.runner.halt_reason == reason
-    ), "the real cause, not an unclearable risk_continuity halt"
-    assert not resumed.runner.halt_reason.startswith(RISK_CONTINUITY_PREFIX)
-    assert not resumed.runner.risk.continuity_disputed, "not sealed: nothing to repair"
-    assert bytes_of(risk_json(state_dir)) is not None
-    block = continuity_recoveries(state_dir)[0]["recovery"]["risk_continuity"]
-    assert block["fault"] == RiskContinuityFault.RISK_STATE_MISMATCH.value
+    block = assert_proved_and_deferred(resumed, state_dir, "halt")
     assert block["halt_transition_explains_mismatch"] is True
+    assert resumed.runner.state is RunnerState.HALT
+    assert resumed.runner.halt_reason == reason, "the guard that really tripped"
+
+
+@pytest.mark.parametrize("switch_removed_before_restart", [False, True])
+def test_a_real_kill_switch_halt_crash_is_proved_and_deferred(
+    tmp_path, switch_removed_before_restart
+):
+    """B1 shape 2, the kill switch. ``check_kill_switch`` moves THREE hashed
+    fields -- the mirror, ``halted`` and ``halt_reason`` -- so the bare-halt
+    revert alone never reproduced the log's hash and this window sealed for
+    ever, with the switch left in place or not. The mirror is what persisted,
+    so whether the file is still there at the restart does not enter the proof.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    before = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    switch = state_dir / "KILL_SWITCH"
+    switch.write_text("stop\n", encoding="utf-8")
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.HALT, lambda: harness.tick(minute))
+    after = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    moved = {k for k in after if k != "updated_at" and after[k] != before[k]}
+    assert moved == {"kill_switch", "halted", "halt_reason"}, "the real window's shape"
+    if switch_removed_before_restart:
+        switch.unlink()
+
+    resumed = restart(tmp_path, config)
+
+    block = assert_proved_and_deferred(resumed, state_dir, "kill_switch_halt")
+    assert block["halt_transition_explains_mismatch"] is True
+    assert resumed.runner.halt_reason == "kill_switch"
+
+
+def test_a_forged_kill_switch_reason_is_not_proved(tmp_path):
+    """Negative control (constructed): the real kill-switch window, then the
+    halt reason rewritten to one ``check_kill_switch`` never writes. Every
+    other field is still the log's own prior state, and it must still seal.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.HALT, lambda: harness.tick(minute))
+    document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    document["halt_reason"] = "kill_switch: something else"
+    risk_json(state_dir).write_text(json.dumps(document), encoding="utf-8")
+
+    resumed = restart(tmp_path, config)
+
+    assert resumed.runner.risk.continuity_disputed
+    assert resumed.runner.risk_continuity.crash_transition == ""
+    assert startup_flags(state_dir)[-1] is True
+
+
+def test_a_real_drawdown_halt_crash_is_proved_and_deferred(tmp_path, monkeypatch):
+    """A2. The drawdown halt fires INSIDE ``update_equity``, so the window moves
+    ``equity`` and ``daily_pnl`` as well as the halt, and the record it precedes
+    is the minute's ``DECISION``, not a ``HALT``. The limit is the campaign's
+    own, set between the drawdown the campaign already carries and the one the
+    widened basis produces, so the breach is a real one on the real path.
+    """
+    widen_the_basis(monkeypatch, from_minute=MINUTES, by=5.0)
+    config = campaign_config(tmp_path / "state", limits={"max_drawdown_pct": 0.0005})
+    harness = build(tmp_path, days=(DAY,), config=config)
+    harness.run(MINUTES)
+    assert not harness.runner.risk.state.halted
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.DECISION, lambda: harness.tick(minute))
+    state_dir = harness.state_dir
+    halted = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    assert halted["halted"] and halted["halt_reason"].startswith("max drawdown breached")
+
+    resumed = restart(tmp_path, config)
+
+    block = assert_proved_and_deferred(resumed, state_dir, "equity_halt")
+    assert block["halt_transition_explains_mismatch"] is True
+    assert resumed.runner.halt_reason == halted["halt_reason"]
+
+
+def test_a_real_intraday_equity_crash_is_proved_and_deferred(tmp_path, monkeypatch):
+    """B1 shape 1, the ordinary form: ``_save_ledger()`` then ``update_equity``
+    persisted a new mark, and the kill came before the ``DECISION`` append.
+
+    The prior equity is NOT hidden behind the hash: the last ``DECISION``
+    carries it in plaintext as ``ledger_effect.equity``. The proof reverts
+    ``equity`` and ``daily_pnl`` to it, requires the FULL prior hash, replays the
+    real ``update_equity``, and requires the ledger to hold the found equity.
+    The campaign then re-decides the minute and the log catches up.
+    """
+    widen_the_basis(monkeypatch, from_minute=MINUTES, by=5.0)
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    last_decision = [r for r in records(state_dir) if r["kind"] == "DECISION"][-1]
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.DECISION, lambda: harness.tick(minute))
+    found = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    assert found["equity"] != float(last_decision["ledger_effect"]["equity"]), "it moved"
+
+    resumed = restart(tmp_path, config)
+
+    block = assert_proved_and_deferred(resumed, state_dir, "equity")
+    assert block["halt_transition_explains_mismatch"] is False, "nothing halted"
+    assert resumed.runner.state is RunnerState.READY
+    resumed.tick(minute)
+    history = read_log_risk_history(state_dir)
+    on_disk = RiskState.from_dict(json.loads(risk_json(state_dir).read_text(encoding="utf-8")))
+    assert history.state_hash == risk_state_hash(
+        on_disk.snapshot()
+    ), "the re-decided minute restates exactly the state on disk"
+
+
+def test_a_real_funding_minute_crash_is_proved_and_deferred(tmp_path):
+    """B1 shape 1 on a funding minute. The ``FUNDING`` record restates the hash
+    WITHOUT moving Aegis's equity, so its own ``ledger_effect.equity`` is not
+    the prior equity; the last ``DECISION``'s is, and that is what is used.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    harness.feed.write_settlements([DAY], hours=(1,))
+    harness.runner.cursor._settlements = None
+    harness.run(59)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.DECISION, lambda: harness.tick(minute))
+    funding = [r for r in records(state_dir) if r["kind"] == "FUNDING"]
+    assert funding, "the settlement was booked and recorded before the kill"
+    found = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    assert found["equity"] == float(funding[-1]["ledger_effect"]["equity"])
+
+    resumed = restart(tmp_path, config)
+
+    assert_proved_and_deferred(resumed, state_dir, "equity")
+    assert resumed.runner.state is RunnerState.READY
+
+
+def test_a_real_day_roll_crash_stays_sealed_for_r1i(tmp_path):
+    """PINNED, not fixed: the UTC day-roll window.
+
+    ``update_equity`` on a new UTC day overwrites ``day_start_equity`` and
+    ``daily_pnl``. The prior baseline is stated in plaintext nowhere -- it is
+    the equity of whichever write first touched the previous day, possibly the
+    configured capital seed, which no record carries -- so proving this window
+    means reconstructing the campaign's equity history: replay, canonical
+    R1-i. It stays sealed, and this deterministic boundary is reached every
+    UTC midnight (here on the 23:59 minute, which Aegis dates by its close).
+    """
+    harness = build(tmp_path, days=(DAY, NEXT_DAY))
+    start = harness.first_minute_ms() + 1435 * 60_000
+    harness.run(4, start=start)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    before = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.DECISION, lambda: harness.tick(minute))
+    after = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    assert after["day"] != before["day"], "reproduced: the day rolled in the window"
+    assert after["day_start_equity"] != before["day_start_equity"]
+
+    resumed = restart(tmp_path, config, days=(DAY, NEXT_DAY))
+
+    assert resumed.runner.risk.continuity_disputed, "sealed: R1-i's to prove"
+    assert resumed.runner.risk_continuity.crash_transition == ""
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+
+
+def test_a_real_new_peak_crash_stays_sealed_for_r1i(tmp_path):
+    """PINNED, not fixed: the new-peak window. ``update_equity`` above the old
+    peak overwrites ``peak_equity``, whose prior value is the running maximum of
+    every equity Aegis was ever given -- history again, so R1-i's. A large
+    funding receipt is the fixture's way to lift the hedged equity past the
+    seeded capital.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    harness.feed.write_settlements([DAY], hours=(1,), rates={(DAY, 1): "0.005"})
+    harness.runner.cursor._settlements = None
+    harness.run(59)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    before = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.DECISION, lambda: harness.tick(minute))
+    after = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    assert after["peak_equity"] > before["peak_equity"], "reproduced: a new peak"
+
+    resumed = restart(tmp_path, config)
+
+    assert resumed.runner.risk.continuity_disputed, "sealed: R1-i's to prove"
+    assert resumed.runner.risk_continuity.crash_transition == ""
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["peak_equity", "daily_pnl", "equity_and_daily_pnl", "halted_by_drawdown"],
+)
+def test_the_equity_proof_refuses_a_file_that_is_not_the_crash(tmp_path, monkeypatch, tamper):
+    """Negative controls (constructed after a REAL intra-day crash).
+
+    ``peak_equity``: a foreign file carrying the ledger's own equity and the
+    right ``daily_pnl`` -- the full prior hash catches it.
+    ``daily_pnl``: the prior hash still matches (the candidate's ``daily_pnl`` is
+    derived, not copied), so it is the forward replay of ``update_equity`` that
+    catches it.
+    ``equity_and_daily_pnl``: a consistent state whose equity is not the ledger's
+    -- the ledger condition catches it.
+    ``halted_by_drawdown``: a drawdown halt the campaign's limits never raise
+    at this equity -- the forward replay catches it.
+    """
+    widen_the_basis(monkeypatch, from_minute=MINUTES, by=5.0)
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.DECISION, lambda: harness.tick(minute))
+    document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    if tamper == "peak_equity":
+        document["peak_equity"] += 1.0
+    elif tamper == "daily_pnl":
+        document["daily_pnl"] += 1.0
+    elif tamper == "equity_and_daily_pnl":
+        document["equity"] += 1.0
+        document["daily_pnl"] += 1.0
+    else:
+        document["halted"] = True
+        document["halt_reason"] = "max drawdown breached: 9.00% >= 5.00%"
+    risk_json(state_dir).write_text(json.dumps(document), encoding="utf-8")
+
+    resumed = restart(tmp_path, config)
+
+    assert resumed.runner.risk.continuity_disputed
+    assert resumed.runner.risk_continuity.crash_transition == ""
+    assert startup_flags(state_dir)[-1] is True
 
 
 def test_the_halt_transition_proof_still_catches_a_swap(tmp_path):
-    """The pair for the halt-transition deferral: a halted file that ALSO
-    differs somewhere else must still be reported, or the proof would excuse
-    exactly the foreign/swapped state R1-c exists to catch.
+    """Negative control (constructed): a halted file that ALSO differs
+    somewhere else must still be reported, or the proof would excuse exactly
+    the foreign/swapped state R1-c exists to catch.
     """
     harness = campaign(tmp_path)
     config = harness.runner.config
     state_dir = harness.state_dir
     move_the_peak(state_dir)
-    halt_the_file_only(state_dir, "max drawdown breached: 6.00% >= 5.00%")
+    document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    document["halted"] = True
+    document["halt_reason"] = "max drawdown breached: 6.00% >= 5.00%"
+    risk_json(state_dir).write_text(json.dumps(document), encoding="utf-8")
 
     resumed = restart(tmp_path, config)
 
     assert resumed.runner.state is RunnerState.HALT
-    assert resumed.runner.risk.continuity_disputed, (
-        "sealed: the peak also moved, so the halt-transition proof must not excuse it "
-        "-- RiskEngine.halt's own first-reason rule is a separate, legitimate reason "
-        "the runner's reported halt_reason may still read 'max drawdown breached...'"
-    )
+    assert resumed.runner.risk.continuity_disputed
     assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
     block = continuity_recoveries(state_dir)[0]["recovery"]["risk_continuity"]
     assert block["halt_transition_explains_mismatch"] is False
 
 
-def test_halt_transition_explains_mismatch_needs_a_state_hash_statement(tmp_path):
-    """The proof is scoped to a ``STATE_HASH`` statement, stated directly.
+def test_a_crash_window_proof_needs_a_state_hash_statement(tmp_path):
+    """The proofs are scoped to a ``STATE_HASH`` statement, stated directly.
 
     A ``HALTED`` or ``RUNNING`` statement already has its own rule (section 5);
-    the halt-transition proof must not additionally fire for those and excuse
-    something the existing rule was written to catch.
+    no crash-window proof may additionally fire for those.
     """
     harness = campaign(tmp_path)
     halt_the_campaign(harness)
@@ -1405,13 +1706,11 @@ def test_halt_transition_explains_mismatch_needs_a_state_hash_statement(tmp_path
     assert history.statement is LogRiskStatement.HALTED
     snapshot = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
 
-    assert not risk_continuity._halt_transition_explains_mismatch(snapshot, history)
+    assert risk_continuity._crash_transition(snapshot, history) == ""
 
 
 def advance_equity_only(state_dir: Path, delta: float) -> None:
-    """Simulate a kill strictly between ``update_equity``'s persist and the tick's
-    own ``DECISION`` append: ``equity`` and ``daily_pnl`` move, nothing else does.
-    """
+    """Move ``equity`` and ``daily_pnl`` in ``risk.json`` alone, ledger untouched."""
     document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
     document["equity"] = float(document["equity"]) + delta
     document["daily_pnl"] = float(document["daily_pnl"]) + delta
@@ -1420,37 +1719,11 @@ def advance_equity_only(state_dir: Path, delta: float) -> None:
     )
 
 
-def test_an_equity_only_crash_window_is_reproduced_and_pinned_not_fixed(tmp_path):
-    """B1, shape 1 -- reproduced, and deliberately left unfixed. Pinned rather
-    than answered, as ``test_an_empty_log_beside_a_live_risk_state_is_not_r1cs_question``
-    (Case H) already does for a different gap.
-
-    A kill between ``RiskEngine.update_equity``'s persist and the tick's own
-    ``DECISION`` append (``chimera/demo/runner.py``: ``self.risk.update_equity(...)``
-    then ``self._append(RecordKind.DECISION, ...)``, with nothing else touched
-    when the tick traded nothing) leaves the same SHAPE as the halt-transition
-    window above: Aegis moved, the log's last statement is the ``STATE_HASH``
-    from before it, and section 9.3's own triage finds nothing to defer to.
-
-    It is NOT closed the same way. ``RiskEngine.halt`` is invertible because its
-    prior value is always known (``halted: False`` -- a second halt is a no-op,
-    so the window can only be reached from there). ``update_equity`` has no such
-    known prior: the equity it mutated FROM is not recoverable from the found
-    file (which holds only the new value), the ledger (which holds only the
-    CURRENT mark, not a history of prior ones -- see
-    ``chimera.demo.risk_wiring.ledger_equity``), or the log (whose
-    ``risk.state_hash`` is a one-way hash of the prior full state, never its
-    raw fields). A reconstruction that only checked the NEW equity against the
-    ledger and let the rest through would be exactly the kind of widening the
-    remediation prompt for this session forbids: it would also pass a foreign
-    file whose author matched the equity and nothing else. Closing this shape
-    needs either the log to carry more than a hash or a replay of the crashed
-    minute against the recorded market data -- a load-bearing redesign of
-    crash/continuity semantics, which is canonical R1-i's, not this session's.
-
-    This test exists so the gap is pinned rather than merely described in a PR
-    body: it reproduces the window and asserts today's behaviour, so a future
-    R1-i fix changes THIS test rather than leaving the shape unconsidered.
+def test_an_equity_move_the_ledger_never_saw_is_not_the_crash_window(tmp_path):
+    """Negative control (constructed). This used to be the "shape 1" pin, and it
+    did not model the crash: the real window persists the LEDGER first
+    (``_save_ledger()`` then ``update_equity``), so a ``risk.json`` whose equity
+    moved while the ledger did not is not that window. It stays sealed.
     """
     harness = campaign(tmp_path)
     config = harness.runner.config
@@ -1459,19 +1732,9 @@ def test_an_equity_only_crash_window_is_reproduced_and_pinned_not_fixed(tmp_path
 
     resumed = restart(tmp_path, config)
 
-    assert (
-        resumed.runner.state is RunnerState.HALT
-    ), "reproduced: the campaign halts, same as any RISK_STATE_MISMATCH"
-    assert resumed.runner.risk.continuity_disputed, (
-        "not fixed: sealed exactly as an ordinary foreign/swapped file would be, "
-        "with no crash-aware repair path -- this is the gap, pinned"
-    )
-    block = continuity_recoveries(state_dir)[0]["recovery"]["risk_continuity"]
-    assert block["fault"] == RiskContinuityFault.RISK_STATE_MISMATCH.value
-    assert block["halt_transition_explains_mismatch"] is False, (
-        "the halt-transition proof is correctly scoped: it must not (and does not) "
-        "reach for this shape"
-    )
+    assert resumed.runner.state is RunnerState.HALT
+    assert resumed.runner.risk.continuity_disputed
+    assert resumed.runner.risk_continuity.crash_transition == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1545,14 +1808,48 @@ def test_the_runner_still_halts_on_a_kill_switch_once_triage_has_run(tmp_path):
     assert resumed.runner.risk.state.halt_reason == "kill_switch"
 
 
+@pytest.mark.parametrize("already_halted_by", ["continuity_seal", "a_logged_halt"])
+def test_a_kill_switch_at_start_keeps_the_first_halt_reason(
+    tmp_path, monkeypatch, already_halted_by
+):
+    """B2, the runner half. ``start()`` consults the switch for its effect and
+    reports the engine's FIRST reason, so an engine already halted -- sealed by
+    a continuity dispute, or restored halted from a logged halt -- is not
+    relabelled ``kill_switch``, and the sealed file's bytes are not touched.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    if already_halted_by == "continuity_seal":
+        move_the_peak(state_dir)
+    else:
+        raise_in_the_rule(monkeypatch)
+        harness.tick(next_minute(harness))
+        assert harness.runner.state is RunnerState.HALT
+    first = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))["halt_reason"]
+    disputed_bytes = bytes_of(risk_json(state_dir))
+    (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+
+    resumed = restart(tmp_path, config)
+
+    assert resumed.runner.state is RunnerState.HALT
+    if already_halted_by == "continuity_seal":
+        assert resumed.runner.halt_reason.startswith(RISK_CONTINUITY_PREFIX)
+        assert bytes_of(risk_json(state_dir)) == disputed_bytes
+    else:
+        assert resumed.runner.halt_reason == first
+        assert first.startswith("rule_exception:")
+
+
 # ---------------------------------------------------------------------------
-# PR #102 remediation: B3, an OPERATOR record erasing the seal
+# PR #102 remediation: B3, which records a SEALED run wrote (per-run provenance)
 # ---------------------------------------------------------------------------
 def test_a_flatten_during_a_continuity_halt_does_not_clear_the_dispute(tmp_path):
-    """B3. A ``flatten`` is permitted while halted, including while sealed by
+    """B3 (a). A ``flatten`` is permitted while halted, including while sealed by
     a continuity dispute, and its ``OPERATOR`` record must not read on the
     next restart as ``MOVED`` -- which makes no comparable claim -- and
-    silently clear a dispute nothing has actually repaired.
+    silently clear a dispute nothing has actually repaired. The sealed run says
+    so in its own ``STARTUP``.
     """
     harness = campaign(tmp_path)
     config = harness.runner.config
@@ -1563,6 +1860,7 @@ def test_a_flatten_during_a_continuity_halt_does_not_clear_the_dispute(tmp_path)
     disputed = restart(tmp_path, config)
     assert disputed.runner.state is RunnerState.HALT
     assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+    assert startup_flags(state_dir) == [False, True]
     disputed.runner.flatten("operator: reduce to flat while investigating")
     assert (
         bytes_of(risk_json(state_dir)) == disputed_bytes
@@ -1581,3 +1879,155 @@ def test_a_flatten_during_a_continuity_halt_does_not_clear_the_dispute(tmp_path)
         "the file -- the DECISION before it must still stand, not be shadowed by a "
         "MOVED that lets rule 5 check nothing"
     )
+
+
+@pytest.mark.parametrize("damage", ["mismatch", "absent"])
+def test_a_repaired_campaign_may_flatten_and_restart(tmp_path, damage):
+    """B3 (b), the reviewed P3 regression. Dispute, sealed run, the operator
+    restores the exact pre-dispute bytes, a new run starts UNSEALED and READY,
+    flattens before any minute restates the hash, and restarts. That flatten
+    moved ``risk.json`` legitimately; reading it as a sealed run's record (as
+    the "from the RECOVERY until the next hash" rule did) sealed it again.
+
+    ``absent`` also pins that a repair is possible at all after ``ABSENT``: the
+    sealed run's own HALT must not become a statement once the file is back.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    good = bytes_of(risk_json(state_dir))
+    if damage == "absent":
+        risk_json(state_dir).unlink()
+    else:
+        move_the_peak(state_dir)
+    restart(tmp_path, config)
+    risk_json(state_dir).write_bytes(good)
+
+    repaired = restart(tmp_path, config)
+    assert repaired.runner.state is RunnerState.READY
+    repaired.runner.flatten("operator: flat after the repair")
+    again = restart(tmp_path, config)
+
+    assert again.runner.state is RunnerState.READY
+    assert not again.runner.risk_continuity.disputed
+    assert len(continuity_recoveries(state_dir)) == 1, "no second, bogus finding"
+    assert startup_flags(state_dir) == [False, True, False, False]
+
+
+def test_a_proved_crash_then_flatten_and_resume_restarts_healthy(tmp_path, monkeypatch):
+    """B3 (c), the reviewed P4 regression. A proved bare-halt crash writes an
+    R1-c RECOVERY record WITHOUT sealing anything, and its run's STARTUP says
+    ``False``. The flatten and resume that follow are that unsealed run's own,
+    real transitions and must stay statements.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    raise_in_the_rule(monkeypatch)
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.HALT, lambda: harness.tick(minute))
+    deferred = restart(tmp_path, config)
+    assert deferred.runner.risk_continuity.crash_transition == "halt"
+    deferred.runner.flatten("operator: flat")
+    deferred.runner.resume("operator: checked the rule")
+
+    again = restart(tmp_path, config)
+
+    assert again.runner.state is RunnerState.READY
+    assert not again.runner.risk_continuity.disputed
+    assert len(continuity_recoveries(state_dir)) == 1
+    assert startup_flags(state_dir) == [False, False, False]
+
+
+def test_repeated_sealed_restarts_each_say_sealed_and_record_once(tmp_path):
+    """B3 (d). Every sealed run states ``True`` for itself, and the finding is
+    still recorded once: per-run provenance does not change idempotence.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    risk_json(state_dir).unlink()
+
+    for _ in range(3):
+        restart(tmp_path, config)
+
+    assert startup_flags(state_dir) == [False, True, True, True]
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_ABSENT.value]
+
+
+def test_a_sealed_run_does_not_contaminate_the_repaired_run_after_it(tmp_path):
+    """B3 (e). After a sealed run, the repaired run's own HALT (a real kill
+    switch, persisted) is a statement again: the next STARTUP starts a new run
+    with its own value, and nothing sticky carries the seal across.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    good = bytes_of(risk_json(state_dir))
+    risk_json(state_dir).unlink()
+    restart(tmp_path, config)
+    risk_json(state_dir).write_bytes(good)
+    repaired = restart(tmp_path, config)
+    assert repaired.runner.state is RunnerState.READY
+    halt_the_campaign(repaired)
+
+    history = read_log_risk_history(state_dir)
+    again = restart(tmp_path, config)
+
+    assert history.statement is LogRiskStatement.HALTED, "the unsealed run's HALT stands"
+    assert not again.runner.risk_continuity.disputed
+    assert again.runner.risk_continuity.crash_transition == ""
+    assert startup_flags(state_dir) == [False, True, False, False]
+
+
+def test_a_startup_without_the_field_is_read_as_unsealed(tmp_path, monkeypatch):
+    """B3 (f). Logs written before the field existed have no key, and every one
+    of them was written by a build that could not seal (``main`` has no
+    ``halt_for_continuity_dispute`` at all), so absent is ``False`` and their
+    HALT records keep main's meaning. Driven by stripping the key from a real
+    runner's STARTUP payload, which is what such a build wrote.
+    """
+    real = runner_module.DemoRunner._append
+
+    def append(self, kind, minute_ns, payload):
+        if kind is RecordKind.STARTUP:
+            payload = {k: v for k, v in payload.items() if k != RISK_CONTINUITY_SEALED_FIELD}
+        return real(self, kind, minute_ns, payload)
+
+    monkeypatch.setattr(runner_module.DemoRunner, "_append", append)
+    harness = campaign(tmp_path)
+    halt_the_campaign(harness)
+    state_dir = harness.state_dir
+    clear_the_halt_in_the_file(state_dir)
+
+    history = read_log_risk_history(state_dir)
+    again = restart(tmp_path, harness.runner.config)
+
+    assert startup_flags(state_dir)[0] == "absent"
+    assert history.statement is LogRiskStatement.HALTED, "honoured, as on main"
+    assert again.runner.risk_continuity.fault is RiskContinuityFault.RISK_STATE_MISMATCH
+
+
+def test_a_crash_before_the_startup_record_leaves_no_stale_marker(tmp_path):
+    """B3 (g). A start that adjudicated a dispute and died before its STARTUP
+    append left nothing: no marker, no RECOVERY, and the file untouched. The
+    next start reaches the same finding from scratch.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    risk_json(state_dir).unlink()
+    committed = records(state_dir)
+    tail = max(int(r["runner_now_ns"]) for r in committed)
+    dying = build(tmp_path, days=(DAY,), config=config, start=False)
+    die_before_append(
+        dying, RecordKind.STARTUP, lambda: dying.runner.start(now_ns=tail + 60_000_000_000)
+    )
+    assert records(state_dir) == committed
+    assert not risk_json(state_dir).exists()
+
+    again = restart(tmp_path, config)
+
+    assert again.runner.risk.continuity_disputed
+    assert startup_flags(state_dir) == [False, True]
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_ABSENT.value]

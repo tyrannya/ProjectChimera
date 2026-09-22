@@ -76,6 +76,8 @@ vouch for.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -88,7 +90,13 @@ from chimera.demo.decision_log import (
     verify_log,
 )
 from chimera.demo.rules import canonical_hash
-from chimera.risk import RiskStateLoad
+from chimera.risk import (
+    KILL_SWITCH_HALT_REASONS,
+    RiskEngine,
+    RiskLimits,
+    RiskState,
+    RiskStateLoad,
+)
 
 #: Risk-state fields that are WALL CLOCK or HOST DATE rather than decision
 #: semantics, and are therefore outside ``risk.state_hash``.
@@ -113,6 +121,17 @@ RISK_HASH_EXCLUDED: frozenset[str] = frozenset({"order_times", "cooldown_until",
 #: reason names the finding after it.
 RISK_CONTINUITY_PREFIX = "risk_continuity:"
 
+#: The ``STARTUP`` payload field that says whether THIS run's Aegis was sealed
+#: by an R1-c dispute (:attr:`chimera.risk.RiskEngine.continuity_disputed`,
+#: settled before ``STARTUP`` is appended and fixed for the run's life). A
+#: sealed engine persists nothing, so the ``HALT``, ``RESUME``, ``OPERATOR`` and
+#: ``INCOMPLETE_STATE`` records its run appends describe no write to
+#: ``risk.json``; :func:`read_log_risk_history` reads the field per run, from
+#: one ``STARTUP`` to the next, and never carries it across. Absent means
+#: ``False``: every log written before this field existed was written by a
+#: build that could not seal at all.
+RISK_CONTINUITY_SEALED_FIELD = "risk_continuity_sealed"
+
 
 def risk_state_hash(snapshot: Mapping[str, Any]) -> str:
     """Section 9.1's ``risk.state_hash`` for a :meth:`chimera.risk.RiskState.snapshot`.
@@ -129,47 +148,153 @@ def risk_state_hash(snapshot: Mapping[str, Any]) -> str:
     )
 
 
-def _halt_transition_explains_mismatch(
-    snapshot: Mapping[str, Any], history: "LogRiskHistory"
-) -> bool:
-    """Whether a bare, first halt is PROVABLY the only difference from the log.
+#: The crash windows :func:`_crash_transition` can prove, by name, and which of
+#: them persisted a halt. The name is what the ``RECOVERY`` record's ``detail``
+#: reports; the record's ``halt_transition_explains_mismatch`` is true exactly
+#: for the halting ones.
+CRASH_TRANSITIONS: frozenset[str] = frozenset(
+    {"halt", "kill_switch_halt", "kill_switch_mirror", "equity", "equity_halt"}
+)
+_HALTING_TRANSITIONS: frozenset[str] = frozenset({"halt", "kill_switch_halt", "equity_halt"})
 
-    A crash between :meth:`chimera.risk.RiskEngine.halt`'s persist and
-    ``DemoRunner._halt``'s ``HALT`` append (:meth:`RiskEngine.check_kill_switch`,
-    a rule exception, a dispute, and every other halt site) leaves ``risk.json``
-    halted while the log's last risk statement is still the ``STATE_HASH`` from
-    before it -- the hash comparison below sees exactly what a swapped file
-    looks like, for a reason no different from section 9.3's own crash windows.
 
-    Unlike an equity-moving crash window, this one is provable rather than
-    merely plausible, because :meth:`chimera.risk.RiskEngine.halt` touches
-    exactly two fields (``halted``, ``halt_reason``) and only when
-    ``self.state.halted`` was ``False`` a moment before -- it returns
-    immediately otherwise, "idempotent: re-halting does not re-alert". So
-    whenever the log's last statement is a ``STATE_HASH`` (never a ``HALTED``
-    or a ``RUNNING`` one) and this crash window is what produced the found
-    file, THAT record's own state was ``halted: False``, because a halt that
-    was already on would have made ``RiskEngine.halt`` a no-op and left no
-    crash window to fall into. Reverting the found snapshot's ``halted`` and
-    ``halt_reason`` to that known prior value and re-hashing therefore either
-    reproduces the log's own hash EXACTLY -- proving nothing else moved -- or
-    it does not, in which case some other field also differs and this returns
-    ``False`` as it must: a foreign or stale file that merely happens to be
-    halted is not let through by only checking the one field a legitimate
-    crash could explain.
+def _crash_transition(
+    snapshot: Mapping[str, Any],
+    history: "LogRiskHistory",
+    *,
+    limits: RiskLimits | None = None,
+    ledger_equity: Decimal | None = None,
+) -> str:
+    """Which ONE production persist-then-append window provably produced this file.
 
-    This is deliberately narrower than "the file is halted": an equity change,
-    a peak, a streak or a reconciliation dispute all being unmoved is exactly
-    what is being proved, not assumed.
+    Returns the window's name (see :data:`CRASH_TRANSITIONS`), or ``""`` when
+    none is proved -- and ``""`` is what keeps the file disputed.
+
+    Every window here has the same shape. An Aegis method persists
+    ``risk.json`` and the record that would restate the hash is appended after
+    it; a process killed in between leaves the file one transition ahead of the
+    log's last ``STATE_HASH`` statement, and section 9.3's ``_triage_log`` sees
+    none of it, because no store, ledger accumulator or chain head moved.
+
+    **The proof, and the only thing accepted.** For each window a candidate
+    PRIOR state is built by reverting exactly the fields that window writes, to
+    the one value they can have held before it. The candidate is accepted only
+    if its FULL ``risk.state_hash`` equals the log's -- so every other hashed
+    field (peak, day baseline, streaks, positions, disputes, feed mark) is
+    proved unmoved, not assumed -- and, for an equity window, only if the real
+    :meth:`chimera.risk.RiskEngine.update_equity` applied to that candidate
+    reproduces the found file's hash exactly. Nothing is accepted because it
+    "looks like" a crash. A foreign or swapped file passes only if it is, in
+    every hashed field, the log's own prior state carried through one real
+    transition.
+
+    The windows:
+
+    ``halt``
+        :meth:`RiskEngine.halt` from a running state -- a rule exception, a
+        dispute, a funding or execution failure, every ``DemoRunner._halt``
+        site -- persisted before ``_halt`` appended its ``HALT``. ``halt`` moves
+        ``halted`` and ``halt_reason`` only, and only from ``halted: False``
+        (it is a no-op otherwise), so the prior is ``False``/``""``.
+    ``kill_switch_halt``
+        :meth:`RiskEngine.check_kill_switch` finding the switch present on a
+        running engine: the mirror goes ``False`` -> ``True`` and it halts with
+        one of :data:`chimera.risk.KILL_SWITCH_HALT_REASONS`, then the tick or
+        ``start()`` appends ``HALT``. Three fields, and the reason must be one of
+        the two that method writes. Whether the switch file is still there at
+        the restart does not enter the proof: the mirror is what was persisted.
+    ``kill_switch_mirror``
+        The same look on an engine that was ALREADY halted (a ``DECISION``
+        whose own ``update_equity`` breached a limit, then a later minute's
+        switch): only the mirror moves.
+    ``equity`` / ``equity_halt``
+        :meth:`RiskEngine.update_equity` in the tick's PERSISTENCE step,
+        persisted before the minute's ``DECISION`` -- with or without the
+        drawdown / daily-loss halt ``_record_equity`` raises inside it. The
+        prior equity is NOT hidden behind the hash: every ``DECISION`` (and
+        every flatten's ``OPERATOR``) carries the exact equity it handed Aegis
+        as ``ledger_effect.equity``, and the newest one is
+        :attr:`LogRiskHistory.equity_given`. The prior ``daily_pnl`` follows
+        from it and the unmoved ``day_start_equity``. Two further conditions:
+        the found equity must equal the carry ledger's persisted equity,
+        compared exactly as R1-b compares them, because the same crash wrote
+        the ledger immediately before Aegis (``DemoRunner._decide``:
+        ``_save_ledger()`` then ``update_equity``); and the forward replay
+        above. A funding minute is the same window: its ``FUNDING`` record
+        restates the hash without moving Aegis's equity, and the tick's
+        ``update_equity`` follows it.
+
+    **What this does not prove, and why each stays disputed.** A ``DECISION``
+    that rolled the UTC day overwrote ``day_start_equity`` and ``daily_pnl``,
+    and one that set a new peak overwrote ``peak_equity``. The values they held
+    before are stated in plaintext nowhere: the prior day's baseline is the
+    equity of whichever write first touched that day (possibly the configured
+    capital seed, which no record carries), and the prior peak is the running
+    maximum over every equity Aegis was ever given. Recovering either is a
+    reconstruction of the campaign's equity history -- replay -- which is
+    canonical **R1-i**'s crash/restart work, so those windows stay
+    ``RISK_STATE_MISMATCH``. So do the windows closed by a ``STATE_HASH``
+    record rather than a ``HALT`` or ``DECISION`` (``note_funding_settlement``'s
+    streak before its ``FUNDING`` record), those that move the feed mark
+    (``note_feed``), and any combination of two windows. Deliberately: an
+    unproved window is sealed, never waved through.
     """
     if history.statement is not LogRiskStatement.STATE_HASH:
-        return False
-    if not snapshot.get("halted"):
-        return False
-    reverted = dict(snapshot)
-    reverted["halted"] = False
-    reverted["halt_reason"] = ""
-    return risk_state_hash(reverted) == history.state_hash
+        return ""
+    found = dict(snapshot)
+    running = {"halted": False, "halt_reason": ""}
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    if found.get("halted"):
+        candidates.append(("halt", running))
+        if found.get("kill_switch"):
+            if found.get("halt_reason") in KILL_SWITCH_HALT_REASONS:
+                candidates.append(("kill_switch_halt", {"kill_switch": False, **running}))
+            candidates.append(("kill_switch_mirror", {"kill_switch": False}))
+    for name, prior in candidates:
+        if risk_state_hash({**found, **prior}) == history.state_hash:
+            return name
+    return _equity_transition(found, history, limits=limits, ledger_equity=ledger_equity)
+
+
+def _equity_transition(
+    found: dict[str, Any],
+    history: "LogRiskHistory",
+    *,
+    limits: RiskLimits | None,
+    ledger_equity: Decimal | None,
+) -> str:
+    """The ``equity`` / ``equity_halt`` half of :func:`_crash_transition`.
+
+    Needs the campaign's limits (to replay ``update_equity``'s own guards) and
+    the ledger's equity. A caller that has neither -- ``build_risk_engine``,
+    which defers every ``RISK_STATE_MISMATCH`` to the runner anyway -- gets no
+    equity proof, never a weaker one.
+    """
+    given = history.equity_given
+    if limits is None or ledger_equity is None or given is None:
+        return ""
+    if float(ledger_equity) != found["equity"]:
+        return ""
+    try:
+        day = datetime.fromisoformat(str(found["day"])).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ""
+    before = {**found, "equity": given, "daily_pnl": given - found["day_start_equity"]}
+    options = [("equity", before)]
+    if found["halted"]:
+        options.append(("equity_halt", {**before, "halted": False, "halt_reason": ""}))
+    target = risk_state_hash(found)
+    for name, prior in options:
+        if risk_state_hash(prior) != history.state_hash:
+            continue
+        # A detached engine -- no state file, no switch -- so the replay writes
+        # nothing anywhere. Same day as the found file, so no day roll.
+        replay = RiskEngine(limits, check_kill_switch_at_construction=False)
+        replay.state = RiskState.from_dict(prior)
+        replay.update_equity(float(found["equity"]), now=day)
+        if risk_state_hash(replay.snapshot()) == target:
+            return name
+    return ""
 
 
 class LogRiskStatement(str, Enum):
@@ -190,10 +315,11 @@ class LogRiskStatement(str, Enum):
         that the campaign is halted, and a file that says otherwise has had a
         halt cleared behind the log's back.
 
-        With one exception, and it is R1-c's own doing: a ``HALT`` appended while
-        the engine was SEALED by a continuity dispute did not persist anything,
-        so it claims nothing about the file. See ``sealed`` in
-        :func:`read_log_risk_history`.
+        With one exception, and it is R1-c's own doing: a ``HALT`` appended by a
+        run whose engine was SEALED by a continuity dispute did not persist
+        anything, so it claims nothing about the file. Which runs were sealed is
+        read off each run's own ``STARTUP`` record
+        (:data:`RISK_CONTINUITY_SEALED_FIELD`); see :func:`read_log_risk_history`.
 
     ``RUNNING``
         A ``RESUME`` record. An operator cleared a halt, and again no hash was
@@ -209,10 +335,10 @@ class LogRiskStatement(str, Enum):
         the window closes.
 
         With the same one exception as ``HALTED``: a ``MOVED`` record appended
-        while the engine was SEALED claims nothing either, because the seal
-        also refused the write it would otherwise describe -- a `flatten`
-        issued during a continuity halt persists no equity to `risk.json`. See
-        ``sealed`` in :func:`read_log_risk_history`.
+        by a sealed run claims nothing either, because the seal also refused the
+        write it would otherwise describe -- a ``flatten`` issued during a
+        continuity halt persists no equity to ``risk.json``. The same holds for
+        ``RUNNING``.
 
     ``NONE``
         The log says nothing about the risk state: it holds no records, or only
@@ -336,6 +462,15 @@ class LogRiskHistory:
     #: The newest R1-c ``RECOVERY`` record already in the log, as
     #: ``(seq, identity)``. ``None`` when the log holds none.
     recorded_dispute: tuple[int, tuple[str, str, str]] | None = None
+    #: The equity the log last records Aegis being HANDED by
+    #: ``update_equity``: the ``ledger_effect.equity`` of the newest ``DECISION``
+    #: or ``OPERATOR`` record that carries one. Both writers
+    #: pass the very same mark to ``update_equity`` and to the block
+    #: (``DemoRunner._decide`` and ``DemoRunner.flatten``). ``FUNDING`` and
+    #: ``LIQUIDATION_TOUCH`` blocks are NOT this: those records do not call
+    #: ``update_equity``. Used only as the candidate prior equity of
+    #: :func:`_crash_transition`, whose hash check decides whether it was.
+    equity_given: float | None = None
 
     @property
     def has_history(self) -> bool:
@@ -366,14 +501,26 @@ class RiskContinuity:
     #: Whether the verified log already holds a ``RECOVERY`` record for this same
     #: finding, with nothing restating the risk state since.
     already_recorded: bool = False
-    #: Whether a bare, first halt is PROVABLY the only difference between the
-    #: found file and the log's last ``STATE_HASH``. See
-    #: :func:`_halt_transition_explains_mismatch`.
-    halt_transition_explains_mismatch: bool = False
+    #: The one production crash window PROVED to turn the log's last
+    #: ``STATE_HASH`` into the found file (:data:`CRASH_TRANSITIONS`), or ``""``.
+    #: See :func:`_crash_transition`. Non-empty only on a
+    #: ``RISK_STATE_MISMATCH``, and a non-empty one is what defers it.
+    crash_transition: str = ""
 
     @property
     def disputed(self) -> bool:
         return self.fault is not None
+
+    @property
+    def halt_transition_explains_mismatch(self) -> bool:
+        """Whether the proved crash window is one that persisted a HALT.
+
+        The ``RECOVERY`` block's field of the same name. Narrower than
+        :attr:`crash_transition` on purpose: an ``equity`` window halted
+        nothing, and the name says "halt". The window itself is named in
+        :attr:`detail`, and whether the run was sealed in its ``STARTUP``.
+        """
+        return self.crash_transition in _HALTING_TRANSITIONS
 
     @property
     def identity(self) -> tuple[str, str, str]:
@@ -412,7 +559,8 @@ class RiskContinuity:
         continuity halt would be R1-c taking a recovery away.
         :meth:`chimera.demo.runner.DemoRunner._risk_continuity_stands` is where
         the deferral happens, and it defers only when the triage really found a
-        crash.
+        crash, or when :func:`_crash_transition` PROVES one of the Aegis-only
+        windows the triage cannot see (:attr:`crash_transition`).
 
         Nothing a crash does can DELETE ``risk.json``, corrupt it, or replace it
         with a pre-schema document, so the other three faults stand whatever
@@ -558,35 +706,45 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
     last_restated_seq: int | None = None
     recorded: tuple[int, tuple[str, str, str]] | None = None
 
-    #: True from an R1-c RECOVERY record until the next record that restates the
-    #: hash. While it is set the engine was SEALED -- `halt_for_continuity_dispute`
-    #: halts in memory and writes nothing -- so the HALT records the disputed
-    #: restarts append correspond to no write at all, and reading one as "the
-    #: campaign is halted, and the file should say so" would be R1-c condemning
-    #: a file for the halt R1-c itself raised. It would also make a REPAIR
-    #: impossible: restore the right `risk.json` and the log's own halt would
-    #: disagree with it for ever.
+    equity_given: float | None = None
+
+    #: Whether the RUN the current record belongs to had a SEALED engine, as
+    #: that run's own ``STARTUP`` record says (:data:`RISK_CONTINUITY_SEALED_FIELD`).
+    #: A run is every record from one ``STARTUP`` to the next, and each run
+    #: states its own value: nothing is carried from one run into another.
     #:
-    #: The same reasoning covers ``MOVED`` (``OPERATOR``/``INCOMPLETE_STATE``)
-    #: while sealed. `RiskEngine._persist` refuses every write while
-    #: `_continuity_disputed` is set, so a `flatten` issued during the seal --
-    #: permitted, because "HALT is what it is for" -- persists nothing to
-    #: `risk.json` either, and its `OPERATOR` record is no more a statement
-    #: about the file than the HALT record beside it. Reading it as `MOVED`
-    #: ("the log makes no comparable claim") let a flatten during the seal erase
-    #: the seal itself: the very next restart saw the log's newest risk
-    #: statement as `MOVED`, ran rule 5's `STATE_HASH`/`HALTED` branches never,
-    #: found no fault, and unsealed a `risk.json` nobody had repaired.
-    sealed = False
+    #: A sealed engine persists nothing (`RiskEngine._persist` refuses every
+    #: write while `_continuity_disputed` is set), so a ``HALT``, ``RESUME``,
+    #: ``OPERATOR`` or ``INCOMPLETE_STATE`` appended by a sealed run corresponds
+    #: to no write at all. Reading one as a statement would be R1-c condemning a
+    #: file for the halt R1-c itself raised -- restore the right `risk.json` and
+    #: the sealed run's own HALT would disagree with it for ever -- or, for an
+    #: ``OPERATOR``, would let a flatten issued during the seal erase the seal:
+    #: ``MOVED`` makes no comparable claim, so the next restart would check
+    #: nothing and unseal a `risk.json` nobody had repaired.
+    #:
+    #: Per run, and not "from an R1-c RECOVERY record until the next restated
+    #: hash" as an earlier revision had it. A RECOVERY record is not evidence
+    #: that any later record was written while sealed: the run that REPAIRED the
+    #: file starts unsealed and may flatten before it ticks, and a proved crash
+    #: window writes an R1-c RECOVERY without sealing anything. Reading either
+    #: run's records as sealed made a legitimate flatten a false dispute.
+    #:
+    #: ``INCOMPLETE_STATE`` shares the rule structurally, not because a sealed
+    #: run reaches it in production: the CLI never ticks after ``start()``
+    #: returns HALT, and every sealed run does. Only a harness driving ``tick``
+    #: past a HALT can append one from a sealed run.
+    sealed_run = False
 
     for path in day_files(root):
         for record in read_records(path):
             seq = record.get("seq")
             seq = int(seq) if isinstance(seq, int) else None
+            kind = str(record.get("kind", ""))
+            if kind == RecordKind.STARTUP.value:
+                sealed_run = record.get(RISK_CONTINUITY_SEALED_FIELD) is True
             found, record_hash = _statement_of(record)
-            if found is LogRiskStatement.STATE_HASH:
-                sealed = False
-            elif sealed and found in (
+            if sealed_run and found in (
                 LogRiskStatement.HALTED,
                 LogRiskStatement.RUNNING,
                 LogRiskStatement.MOVED,
@@ -595,15 +753,21 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
                 found = LogRiskStatement.NONE
             if found is not LogRiskStatement.NONE:
                 statement = found
-                statement_kind = str(record.get("kind", ""))
+                statement_kind = kind
                 statement_seq = seq
                 state_hash = record_hash
                 if found is LogRiskStatement.STATE_HASH:
                     last_restated_seq = seq
+            if kind in (RecordKind.DECISION.value, RecordKind.OPERATOR.value):
+                effect = record.get("ledger_effect")
+                if isinstance(effect, Mapping):
+                    try:
+                        equity_given = float(effect["equity"])
+                    except (KeyError, TypeError, ValueError):
+                        pass
             identity = _recorded_dispute(record)
             if identity is not None and seq is not None:
                 recorded = (seq, identity)
-                sealed = True
 
     return LogRiskHistory(
         records=verification.records,
@@ -615,6 +779,7 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
         state_hash=state_hash,
         last_restated_seq=last_restated_seq,
         recorded_dispute=recorded,
+        equity_given=equity_given,
     )
 
 
@@ -628,6 +793,8 @@ def assess_risk_continuity(
     snapshot: Mapping[str, Any],
     state_dir: str | Path,
     history: LogRiskHistory | None = None,
+    limits: RiskLimits | None = None,
+    ledger_equity: Decimal | None = None,
 ) -> RiskContinuity:
     """R1-c's verdict: is this ``risk.json`` the continuation of this log?
 
@@ -642,6 +809,11 @@ def assess_risk_continuity(
 
     ``history`` is injectable so a test can drive each branch against a log it
     really built, and so a caller holding one need not read the log twice.
+
+    ``limits`` and ``ledger_equity`` (the campaign's limits and
+    :func:`chimera.demo.risk_wiring.ledger_equity`) are what the ``equity``
+    crash-window proof needs; see :func:`_crash_transition`. Without them that
+    one proof is not attempted and the finding stands, which is the safe side.
 
     The rules, in the order they are applied:
 
@@ -682,7 +854,7 @@ def assess_risk_continuity(
 
     fault: RiskContinuityFault | None = None
     detail = ""
-    halt_explains = False
+    transition = ""
     # The FILE, never the path to it. A halt reason is hashed into
     # `risk.state_hash` (`RiskState.snapshot` carries `halt_reason`), and
     # `RiskEngine._load_state` already refuses to put a path in one for that
@@ -730,7 +902,16 @@ def assess_risk_continuity(
                     "Nothing has been recorded since that could have moved it. "
                     "Neither side is rewritten to make them agree"
                 )
-                halt_explains = _halt_transition_explains_mismatch(snapshot, history)
+                transition = _crash_transition(
+                    snapshot, history, limits=limits, ledger_equity=ledger_equity
+                )
+                if transition:
+                    detail += (
+                        f". It is exactly the log's own last state carried through ONE "
+                        f"production crash window ({transition}: an Aegis write persisted "
+                        "and the process died before the record that restates it), so "
+                        "the finding is recorded and deferred rather than sealed"
+                    )
         elif history.statement is LogRiskStatement.HALTED:
             if not snapshot.get("halted"):
                 fault = RiskContinuityFault.RISK_STATE_MISMATCH
@@ -750,7 +931,7 @@ def assess_risk_continuity(
         fault=fault,
         detail=detail,
         found_state_hash=found,
-        halt_transition_explains_mismatch=halt_explains,
+        crash_transition=transition,
     )
     return replace(verdict, already_recorded=_already_recorded(verdict))
 
@@ -781,6 +962,8 @@ def _already_recorded(verdict: RiskContinuity) -> bool:
 
 
 __all__ = [
+    "CRASH_TRANSITIONS",
+    "RISK_CONTINUITY_SEALED_FIELD",
     "RISK_CONTINUITY_PREFIX",
     "RISK_HASH_EXCLUDED",
     "LogRiskHistory",
