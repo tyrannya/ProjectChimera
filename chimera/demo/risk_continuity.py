@@ -478,6 +478,21 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
     they may be believed at all and ``read_records`` yields only the complete,
     canonical ones -- it stops at the first line it cannot read, so a torn tail's
     bytes are never presented as a record.
+
+    **A disclosed limit, not a designed one.** "Is there a log at all" is
+    :func:`chimera.demo.decision_log.day_files`' answer, and it asks
+    ``Path.is_dir()`` -- which returns ``False`` for a directory it merely could
+    not EXAMINE, exactly the fail-open shape
+    :meth:`chimera.risk.RiskEngine._load_state` and
+    :meth:`chimera.carry.ledger.CarryLedger.open` were both fixed to avoid. A log
+    directory on a degraded mount therefore reads here as "no history", and a
+    missing ``risk.json`` beside it would pass as a first start. R1-c does not
+    add a second reader for this: ``day_files`` and ``verify_log`` are the
+    decision log's own, R1-c composes with them rather than around them, and
+    hardening them is a change to the log module that would reach every caller.
+    Through the runner the campaign still fails closed by another route --
+    ``DecisionLog.open`` raises on the first append, so nothing decides a minute
+    -- and the exposure is a ``build_risk_engine`` call with no runner behind it.
     """
     root = Path(state_dir) / LOG_DIR_NAME
     if not day_files(root):
