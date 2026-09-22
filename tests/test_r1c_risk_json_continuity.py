@@ -891,7 +891,7 @@ def test_the_daily_report_reads_the_finding_it_was_not_written_for(tmp_path):
     halts = daily_report(state_dir, DAY)["halts"]
 
     assert halts["recoveries"] == 1
-    assert "there is no persisted risk state" in halts["recovery_events"][0]["detail"]
+    assert "there is no persisted risk.json" in halts["recovery_events"][0]["detail"]
     assert halts["count"] == 1, "and the halt beside it is counted too"
 
 
@@ -913,6 +913,73 @@ def test_every_continuity_fault_has_a_recovery_cause():
     """
     for fault in RiskContinuityFault:
         assert RecoveryCause(fault.value).value == fault.value
+
+
+@pytest.mark.parametrize(
+    ("load", "history"),
+    [
+        (
+            RiskStateLoad.MISSING,
+            risk_continuity.LogRiskHistory(
+                records=9,
+                statement=LogRiskStatement.STATE_HASH,
+                statement_kind="DECISION",
+                statement_seq=7,
+                state_hash="sha256:" + "a" * 64,
+            ),
+        ),
+        (
+            RiskStateLoad.UNREADABLE,
+            risk_continuity.LogRiskHistory(records=9),
+        ),
+        (
+            RiskStateLoad.LEGACY,
+            risk_continuity.LogRiskHistory(records=9),
+        ),
+        (
+            RiskStateLoad.LOADED,
+            risk_continuity.LogRiskHistory(
+                records=9,
+                statement=LogRiskStatement.STATE_HASH,
+                statement_kind="DECISION",
+                statement_seq=7,
+                state_hash="sha256:" + "a" * 64,
+            ),
+        ),
+    ],
+    ids=("absent", "unreadable", "pre-schema", "mismatch"),
+)
+def test_a_continuity_halt_reason_is_the_same_on_every_host(load, history):
+    """No host path in a halt reason, because a halt reason is HASHED.
+
+    `RiskState.snapshot` carries `halt_reason`, so the reason is part of
+    `risk.state_hash`. `RiskEngine._load_state` already refuses to put a path in
+    one -- "a path or errno string would differ between hosts in the same
+    semantic state" -- and R1-b's equity dispute names no path either. A reason
+    that carried the state directory would make two hosts in the same semantic
+    state hash differently, and a replay of a disputed campaign from another
+    directory would diverge for a reason that is not a decision.
+
+    Two directories that share nothing, one finding: the reasons must be equal
+    character for character, and neither may quote either directory.
+    """
+    here = Path("/srv/chimera/campaign-one/state")
+    there = Path("/var/lib/other/deep/nested/elsewhere")
+    snapshot = _snapshot_of(halted=False)
+
+    reasons = {
+        str(root): assess_risk_continuity(
+            load=load, snapshot=snapshot, state_dir=root, history=history
+        ).halt_reason
+        for root in (here, there)
+    }
+
+    assert len(set(reasons.values())) == 1, reasons
+    reason = next(iter(reasons.values()))
+    assert reason.startswith(RISK_CONTINUITY_PREFIX), "the fixture must really dispute"
+    assert "risk.json" in reason, "and it still names the file an operator opens"
+    for root in (here, there):
+        assert str(root) not in reason
 
 
 def test_the_continuity_hash_is_the_one_the_runner_writes(tmp_path):

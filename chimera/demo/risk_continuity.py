@@ -616,13 +616,20 @@ def assess_risk_continuity(
 
     fault: RiskContinuityFault | None = None
     detail = ""
-    where = f"{root / 'risk.json'}"
+    # The FILE, never the path to it. A halt reason is hashed into
+    # `risk.state_hash` (`RiskState.snapshot` carries `halt_reason`), and
+    # `RiskEngine._load_state` already refuses to put a path in one for that
+    # reason: "a path or errno string would differ between hosts in the same
+    # semantic state". R1-b's equity dispute names no path either. A campaign
+    # has exactly one risk state file and the runbook says where it lives, so
+    # the name is what an operator needs; the resolved path goes to the logger.
+    where = "risk.json"
     seen = f"the decision log holds {history.records} verified record(s)"
 
     if load is RiskStateLoad.UNREADABLE:
         fault = RiskContinuityFault.RISK_STATE_UNREADABLE
         detail = (
-            f"the persisted risk state at {where} could not be read and {seen}. The "
+            f"the persisted {where} could not be read and {seen}. The "
             "campaign has a history this file can no longer account for, so the file "
             "is preserved exactly as it is, nothing is seeded, and the campaign does "
             "not run"
@@ -630,7 +637,7 @@ def assess_risk_continuity(
     elif load is RiskStateLoad.MISSING:
         fault = RiskContinuityFault.RISK_STATE_ABSENT
         detail = (
-            f"there is no persisted risk state at {where} and {seen}. This is not a "
+            f"there is no persisted {where} and {seen}. This is not a "
             "first start: the equity, the peak, the day's baseline, the streaks, the "
             "open reconciliation disputes and any halt the campaign was carrying are "
             "not recoverable from the configured capital, and seeding it would put a "
@@ -639,7 +646,7 @@ def assess_risk_continuity(
     elif load is RiskStateLoad.LEGACY:
         fault = RiskContinuityFault.RISK_STATE_PRE_SCHEMA
         detail = (
-            f"the persisted risk state at {where} is the pre-schema halt record -- it "
+            f"the persisted {where} is the pre-schema halt record -- it "
             f"carries a halt claim and no account state at all -- and {seen}. A "
             "campaign whose log holds records had an account, so this document cannot "
             "be the state those records were written against; it is neither an absent "
@@ -650,7 +657,7 @@ def assess_risk_continuity(
             if found != history.state_hash:
                 fault = RiskContinuityFault.RISK_STATE_MISMATCH
                 detail = (
-                    f"the persisted risk state at {where} hashes to {found} and the "
+                    f"the persisted {where} hashes to {found} and the "
                     f"log's last risk.state_hash, on the {history.statement_kind} "
                     f"record at seq {history.statement_seq}, is {history.state_hash}. "
                     "Nothing has been recorded since that could have moved it. "
@@ -661,9 +668,9 @@ def assess_risk_continuity(
                 fault = RiskContinuityFault.RISK_STATE_MISMATCH
                 detail = (
                     f"the log's last statement about the risk state is the HALT record "
-                    f"at seq {history.statement_seq} and the persisted risk state at "
-                    f"{where} is not halted. A halt is cleared by an operator resume, "
-                    "which the log would hold; this one was cleared behind it"
+                    f"at seq {history.statement_seq} and the persisted {where} is "
+                    "not halted. A halt is cleared by an operator resume, which the "
+                    "log would hold; this one was cleared behind it"
                 )
 
     if fault is None:
