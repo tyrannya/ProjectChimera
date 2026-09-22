@@ -129,6 +129,49 @@ def risk_state_hash(snapshot: Mapping[str, Any]) -> str:
     )
 
 
+def _halt_transition_explains_mismatch(
+    snapshot: Mapping[str, Any], history: "LogRiskHistory"
+) -> bool:
+    """Whether a bare, first halt is PROVABLY the only difference from the log.
+
+    A crash between :meth:`chimera.risk.RiskEngine.halt`'s persist and
+    ``DemoRunner._halt``'s ``HALT`` append (:meth:`RiskEngine.check_kill_switch`,
+    a rule exception, a dispute, and every other halt site) leaves ``risk.json``
+    halted while the log's last risk statement is still the ``STATE_HASH`` from
+    before it -- the hash comparison below sees exactly what a swapped file
+    looks like, for a reason no different from section 9.3's own crash windows.
+
+    Unlike an equity-moving crash window, this one is provable rather than
+    merely plausible, because :meth:`chimera.risk.RiskEngine.halt` touches
+    exactly two fields (``halted``, ``halt_reason``) and only when
+    ``self.state.halted`` was ``False`` a moment before -- it returns
+    immediately otherwise, "idempotent: re-halting does not re-alert". So
+    whenever the log's last statement is a ``STATE_HASH`` (never a ``HALTED``
+    or a ``RUNNING`` one) and this crash window is what produced the found
+    file, THAT record's own state was ``halted: False``, because a halt that
+    was already on would have made ``RiskEngine.halt`` a no-op and left no
+    crash window to fall into. Reverting the found snapshot's ``halted`` and
+    ``halt_reason`` to that known prior value and re-hashing therefore either
+    reproduces the log's own hash EXACTLY -- proving nothing else moved -- or
+    it does not, in which case some other field also differs and this returns
+    ``False`` as it must: a foreign or stale file that merely happens to be
+    halted is not let through by only checking the one field a legitimate
+    crash could explain.
+
+    This is deliberately narrower than "the file is halted": an equity change,
+    a peak, a streak or a reconciliation dispute all being unmoved is exactly
+    what is being proved, not assumed.
+    """
+    if history.statement is not LogRiskStatement.STATE_HASH:
+        return False
+    if not snapshot.get("halted"):
+        return False
+    reverted = dict(snapshot)
+    reverted["halted"] = False
+    reverted["halt_reason"] = ""
+    return risk_state_hash(reverted) == history.state_hash
+
+
 class LogRiskStatement(str, Enum):
     """What the log's newest record about the risk state actually says.
 
@@ -317,6 +360,10 @@ class RiskContinuity:
     #: Whether the verified log already holds a ``RECOVERY`` record for this same
     #: finding, with nothing restating the risk state since.
     already_recorded: bool = False
+    #: Whether a bare, first halt is PROVABLY the only difference between the
+    #: found file and the log's last ``STATE_HASH``. See
+    #: :func:`_halt_transition_explains_mismatch`.
+    halt_transition_explains_mismatch: bool = False
 
     @property
     def disputed(self) -> bool:
@@ -406,6 +453,7 @@ class RiskContinuity:
             "log_records": self.history.records,
             "log_trustworthy": self.history.trustworthy,
             "log_torn_tail": self.history.torn,
+            "halt_transition_explains_mismatch": self.halt_transition_explains_mismatch,
         }
         if self.history.state_hash:
             block["log_state_hash"] = self.history.state_hash
@@ -616,6 +664,7 @@ def assess_risk_continuity(
 
     fault: RiskContinuityFault | None = None
     detail = ""
+    halt_explains = False
     # The FILE, never the path to it. A halt reason is hashed into
     # `risk.state_hash` (`RiskState.snapshot` carries `halt_reason`), and
     # `RiskEngine._load_state` already refuses to put a path in one for that
@@ -663,6 +712,7 @@ def assess_risk_continuity(
                     "Nothing has been recorded since that could have moved it. "
                     "Neither side is rewritten to make them agree"
                 )
+                halt_explains = _halt_transition_explains_mismatch(snapshot, history)
         elif history.statement is LogRiskStatement.HALTED:
             if not snapshot.get("halted"):
                 fault = RiskContinuityFault.RISK_STATE_MISMATCH
@@ -677,7 +727,12 @@ def assess_risk_continuity(
         return _no_dispute(load, history, found)
 
     verdict = RiskContinuity(
-        load=load, history=history, fault=fault, detail=detail, found_state_hash=found
+        load=load,
+        history=history,
+        fault=fault,
+        detail=detail,
+        found_state_hash=found,
+        halt_transition_explains_mismatch=halt_explains,
     )
     return replace(verdict, already_recorded=_already_recorded(verdict))
 

@@ -1319,3 +1319,161 @@ def test_the_seal_is_what_keeps_the_absence_absent(tmp_path, monkeypatch):
     assert (
         second.runner.risk.load_outcome is RiskStateLoad.LOADED
     ), "and the absence is gone: the next start reads a state nothing recorded"
+
+
+# ---------------------------------------------------------------------------
+# PR #102 remediation: B1, a crash that only touches Aegis
+# ---------------------------------------------------------------------------
+def halt_the_file_only(state_dir: Path, reason: str) -> None:
+    """A kill strictly between ``RiskEngine.halt``'s persist and the HALT append.
+
+    Written directly, as ``move_the_peak`` is: a real crash there leaves
+    ``risk.json`` halted with nothing else disturbed and no HALT record, which
+    is exactly what setting the two fields ``halt`` touches reproduces without
+    needing to actually kill a process mid-write.
+    """
+    document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    document["halted"] = True
+    document["halt_reason"] = reason
+    risk_json(state_dir).write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def test_a_halt_only_crash_window_is_deferred_like_a_crash(tmp_path):
+    """B1, shape 2. Section 9.3's triage finds nothing here: a halt touches
+    only Aegis, so no store, ledger or chain head moves for it to compare.
+    Before the fix this was reported as an unclearable ``RISK_STATE_MISMATCH``
+    forever; the halt-transition proof recognises it instead, so the campaign
+    halts on the guard that actually tripped and an operator can act on it.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    reason = "max drawdown breached: 6.00% >= 5.00%"
+    halt_the_file_only(state_dir, reason)
+
+    resumed = restart(tmp_path, config)
+
+    assert resumed.runner.state is RunnerState.HALT
+    assert (
+        resumed.runner.halt_reason == reason
+    ), "the real cause, not an unclearable risk_continuity halt"
+    assert not resumed.runner.halt_reason.startswith(RISK_CONTINUITY_PREFIX)
+    assert not resumed.runner.risk.continuity_disputed, "not sealed: nothing to repair"
+    assert bytes_of(risk_json(state_dir)) is not None
+    block = continuity_recoveries(state_dir)[0]["recovery"]["risk_continuity"]
+    assert block["fault"] == RiskContinuityFault.RISK_STATE_MISMATCH.value
+    assert block["halt_transition_explains_mismatch"] is True
+
+
+def test_the_halt_transition_proof_still_catches_a_swap(tmp_path):
+    """The pair for the halt-transition deferral: a halted file that ALSO
+    differs somewhere else must still be reported, or the proof would excuse
+    exactly the foreign/swapped state R1-c exists to catch.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    move_the_peak(state_dir)
+    halt_the_file_only(state_dir, "max drawdown breached: 6.00% >= 5.00%")
+
+    resumed = restart(tmp_path, config)
+
+    assert resumed.runner.state is RunnerState.HALT
+    assert resumed.runner.risk.continuity_disputed, (
+        "sealed: the peak also moved, so the halt-transition proof must not excuse it "
+        "-- RiskEngine.halt's own first-reason rule is a separate, legitimate reason "
+        "the runner's reported halt_reason may still read 'max drawdown breached...'"
+    )
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+    block = continuity_recoveries(state_dir)[0]["recovery"]["risk_continuity"]
+    assert block["halt_transition_explains_mismatch"] is False
+
+
+def test_halt_transition_explains_mismatch_needs_a_state_hash_statement(tmp_path):
+    """The proof is scoped to a ``STATE_HASH`` statement, stated directly.
+
+    A ``HALTED`` or ``RUNNING`` statement already has its own rule (section 5);
+    the halt-transition proof must not additionally fire for those and excuse
+    something the existing rule was written to catch.
+    """
+    harness = campaign(tmp_path)
+    halt_the_campaign(harness)
+    state_dir = harness.state_dir
+    history = read_log_risk_history(state_dir)
+    assert history.statement is LogRiskStatement.HALTED
+    snapshot = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+
+    assert not risk_continuity._halt_transition_explains_mismatch(snapshot, history)
+
+
+# ---------------------------------------------------------------------------
+# PR #102 remediation: B2, kill-switch ordering around a not-yet-triaged file
+# ---------------------------------------------------------------------------
+def test_a_kill_switch_does_not_create_the_file_a_missing_dispute_is_about(tmp_path):
+    """B2. A ``risk.json`` gone from a campaign with history is a dispute
+    (Case: ``RISK_STATE_ABSENT``); the constructor's own kill-switch look must
+    not create the very file that dispute says is absent before R1-c can seal
+    it, or the campaign's next restart finds a ``LOADED`` state this process
+    invented.
+    """
+    harness = campaign(tmp_path, minutes=3)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    risk_json(state_dir).unlink()
+    (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+
+    engine = risk_wiring.build_risk_engine(config, capital=CAPITAL, state_dir=state_dir)
+
+    assert not risk_json(
+        state_dir
+    ).exists(), "the kill switch must not create the file the ABSENT dispute is about"
+    assert engine.continuity_disputed
+    assert engine.state.halt_reason.startswith(RISK_CONTINUITY_PREFIX), (
+        "the continuity reason, not one 'kill_switch' persisted ahead of it and kept "
+        "by RiskEngine.halt's first-reason rule"
+    )
+
+
+def test_a_kill_switch_does_not_overwrite_a_disputed_file_before_triage(tmp_path):
+    """B2. A mismatched ``risk.json`` is deferred to the runner's own crash
+    triage (``crash_could_explain``), so ``build_risk_engine`` must not let a
+    present kill switch halt-and-persist over the disputed bytes before that
+    triage has had a chance to run; a halted, kill-switch-mirrored copy of the
+    disputed file is not the evidence an operator has to look at.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    move_the_peak(state_dir)
+    disputed_bytes = bytes_of(risk_json(state_dir))
+    (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+
+    engine = risk_wiring.build_risk_engine(config, capital=CAPITAL, state_dir=state_dir)
+
+    assert bytes_of(risk_json(state_dir)) == disputed_bytes, (
+        "the disputed bytes must survive a kill switch present at the same restart, "
+        "before the runner's triage has run"
+    )
+    assert (
+        not engine.continuity_disputed
+    ), "build_risk_engine defers a MISMATCH; it does not seal one itself"
+
+
+def test_the_runner_still_halts_on_a_kill_switch_once_triage_has_run(tmp_path):
+    """The pair for both B2 cases: a kill switch beside an ORDINARY restart
+    (no continuity dispute at all) still halts exactly as before -- the fix
+    defers the check for a disputed, not-yet-triaged file; it does not remove
+    it.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+
+    resumed = restart(tmp_path, config)
+
+    assert resumed.runner.state is RunnerState.HALT
+    assert resumed.runner.halt_reason == "kill_switch"
+    assert resumed.runner.risk.state.halt_reason == "kill_switch"

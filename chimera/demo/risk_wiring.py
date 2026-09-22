@@ -490,6 +490,16 @@ def build_risk_engine(
     missing -- and the restart after that one would find a ``LOADED`` state this
     process invented. A check made afterwards cannot un-make that file.
 
+    The engine is built with ``check_kill_switch_at_construction=False`` for the
+    same reason. ``RiskEngine.__init__`` otherwise ends by consulting the kill
+    switch itself, and that consultation can halt-and-persist -- so a kill
+    switch left engaged beside a MISSING or MISMATCHED ``risk.json`` used to
+    create or overwrite the very file this function has not yet had a chance to
+    dispute, before ``assess_risk_continuity`` below ever ran. The engine is
+    still checked against the switch, explicitly, but only once it is known
+    that nothing here is about to seal it: see the ``check_kill_switch`` call
+    below.
+
     The three faults no crash can produce are the three this stops for, and they
     are the same three where the next statement would fabricate something: an
     absent file and a pre-schema one are what
@@ -529,6 +539,7 @@ def build_risk_engine(
         risk_limits(config.limits),
         state_path=root / "risk.json",
         kill_switch_path=root / "KILL_SWITCH",
+        check_kill_switch_at_construction=False,
         **kwargs,
     )
     continuity = assess_risk_continuity(
@@ -537,6 +548,17 @@ def build_risk_engine(
     if continuity.disputed and not continuity.crash_could_explain:
         engine.halt_for_continuity_dispute(continuity.halt_reason)
         return engine
+    if not continuity.disputed:
+        # Deliberately NOT for a crash-could-explain ``RISK_STATE_MISMATCH``.
+        # That fault is deferred to `chimera.demo.runner.DemoRunner`'s own
+        # triage, which has not run yet -- it needs the log read before
+        # anything here writes -- so a kill switch present beside a disputed,
+        # not-yet-triaged file must not halt-and-persist over the disputed
+        # bytes before the runner decides whether the finding stands. The
+        # runner checks the switch itself, later, once that decision is made
+        # (`DemoRunner.start`); an undisputed engine has no such decision
+        # pending and is checked here as it always was.
+        engine.check_kill_switch()
     seed_or_reconcile_equity(engine, capital=capital, state_dir=root)
     return engine
 

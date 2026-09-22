@@ -405,6 +405,8 @@ class RiskEngine:
         state_path: str | Path | None = None,
         clock=time.time,
         kill_switch_path: str | Path | None = None,
+        *,
+        check_kill_switch_at_construction: bool = True,
     ) -> None:
         self.limits = limits or RiskLimits()
         self.state = RiskState()
@@ -439,7 +441,18 @@ class RiskEngine:
         # Before anything can be approved, for an engine that was given a switch.
         # A kill switch consulted only when the caller remembers to consult it is
         # exactly the kind of guard this module's header refuses to rely on.
-        self.check_kill_switch()
+        #
+        # ``check_kill_switch_at_construction=False`` is the one deliberate
+        # exception, and it exists for exactly one caller:
+        # `chimera.demo.risk_wiring.build_risk_engine`. That function has to ask
+        # canonical R1-c whether `_loaded_snapshot` above may be believed at all
+        # BEFORE anything mutates the file it came from -- `check_kill_switch`
+        # can itself halt-and-persist, on a mirror that was `False` a moment ago
+        # -- so a caller answering R1-c's question needs a construction that
+        # loads and snapshots but does not yet write. Every other caller takes
+        # the default and is unaffected.
+        if check_kill_switch_at_construction:
+            self.check_kill_switch()
 
     @property
     def load_outcome(self) -> RiskStateLoad:

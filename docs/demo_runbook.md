@@ -408,6 +408,18 @@ hash in between.
   recovery away. So a `RISK_STATE_MISMATCH` stands down when the triage really
   found a crash, and only then. The three findings no crash can produce — an
   absent file, an unreadable one, a pre-schema one — never stand down.
+* A crash between `RiskEngine.halt`'s persist and the `HALT` record that would
+  have named it. A halt touches Aegis alone, so section 9.3's own triage —
+  stores, ledger, chain head — finds nothing to defer to, and the campaign used
+  to seal on an unclearable `risk_continuity:` halt for a guard (a kill switch,
+  a drawdown breach, a reconciliation dispute) that had already tripped for a
+  real, actionable reason. The proof is narrower than "the file is halted":
+  reverting the found file's `halted`/`halt_reason` to the one prior value a
+  *first* halt can have (`false`/`""` — `RiskEngine.halt` is a no-op once
+  already halted) must reproduce the log's own hash exactly, or the finding
+  stands as before. `recovery.risk_continuity.halt_transition_explains_mismatch`
+  says which happened. The campaign then halts on the guard's own reason
+  instead, with the operator remedy that reason already has.
 * A log that does not verify. A forged log halts the campaign on `log_forged:`,
   which is the graver finding and the one that owns it; an edited log may not
   condemn a state file. It also may not excuse one: a forged log beside a missing

@@ -607,13 +607,27 @@ class DemoRunner:
         # its own RECOVERY record rather than one of them displacing the other
         # out of the single `cause` a `_Recovery` can carry. The campaign then
         # stops on the halt raised above, below.
-        if continuity_stands:
+        #
+        # Also written when the halt-transition proof is what deferred the
+        # finding: unlike the triage-covered deferral above, `_triage_log`
+        # wrote nothing for that shape (a halt touches Aegis alone), so this is
+        # the only record this crash window gets. It is not double-reporting
+        # one crash under two names, because there is no other name for it.
+        if continuity_stands or self._risk_continuity.halt_transition_explains_mismatch:
             self._write_risk_continuity_recovery()
         outcome = self.position.reconstruct()
         if outcome.state is HedgeState.DISPUTED:
             return self._halt(f"dispute: {outcome.detail}")
-        if self.risk.check_kill_switch():
-            return self._halt("kill_switch")
+        # Checked for its effect, not its return: `RiskEngine.halt` keeps the
+        # FIRST reason, so an engine already halted here -- by
+        # `build_risk_engine`'s own `check_kill_switch` call, or by R1-c's
+        # continuity seal above -- is untouched by a fresh switch, and
+        # `self.risk.state` already carries whichever reason came first.
+        # Reporting `"kill_switch"` unconditionally here, as this used to,
+        # relabelled a continuity dispute -- which never re-engages the switch,
+        # since `_persist` refuses the write -- as an ordinary kill-switch halt
+        # on the very same restart.
+        self.risk.check_kill_switch()
         if self.risk.state.halted:
             return self._halt(self.risk.state.halt_reason or "risk halted")
 
@@ -1114,9 +1128,23 @@ class DemoRunner:
         hide behind, and is reported. And the three faults a crash cannot
         produce -- an absent file, an unreadable one, a pre-schema one -- are
         never deferred, whatever the triage found.
+
+        False also for the one shape `_triage_log` structurally cannot see: a
+        kill between `RiskEngine.halt`'s persist and `_halt`'s own `HALT`
+        append moves nothing `_triage_log` compares -- no store, no ledger, no
+        chain head -- because a halt touches Aegis alone, so triage always
+        returns `None` for it and the check above never fires.
+        `RiskContinuity.halt_transition_explains_mismatch` is the proof for
+        that shape instead of a trace of some OTHER file: it is true only when
+        reverting the found file's `halted`/`halt_reason` to the one prior
+        value a first halt can have (`False`/``""``) reproduces the log's own
+        hash exactly, which nothing but that one crash window can do. See
+        `chimera.demo.risk_continuity._halt_transition_explains_mismatch`.
         """
         verdict = self._risk_continuity
         if not verdict.disputed:
+            return False
+        if verdict.halt_transition_explains_mismatch:
             return False
         return not (verdict.crash_could_explain and triage is not None)
 
