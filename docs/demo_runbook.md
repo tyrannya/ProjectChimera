@@ -427,12 +427,15 @@ hash in between.
 
 **A halt raised by one of these findings states nothing about the file.** The
 engine is sealed when the finding is raised — it halts in memory and writes
-nothing — so the `HALT` records the disputed restarts append did not persist
-anything, and they are skipped when the next start looks for the log's last
-statement. That is what makes a repair work: restore the state directory from a
-backup taken after the log's last restatement and the comparison falls back to
-that restatement, which the restored file matches. Without it R1-c's own halt
-would disagree with a correctly restored file for ever.
+nothing — so neither the `HALT` records the disputed restarts append nor an
+`OPERATOR` record from a `flatten` issued while sealed (permitted; that is what
+`HALT` is for) persisted anything, and both are skipped when the next start
+looks for the log's last statement. That is what makes a repair work: restore
+the state directory from a backup taken after the log's last restatement and
+the comparison falls back to that restatement, which the restored file
+matches. Without it R1-c's own halt would disagree with a correctly restored
+file for ever — or, for the `OPERATOR` case, an unrelated flatten would read as
+`MOVED` and silently clear a dispute nothing had actually repaired.
 
 **Reading the finding.** `status` prints a `risk_continuity` block and it does
 not start the runner, which matters when the campaign will not start:

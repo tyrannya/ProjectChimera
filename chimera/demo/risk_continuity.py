@@ -208,6 +208,12 @@ class LogRiskStatement(str, Enum):
         checked. The campaign's very next decided minute restates the hash and
         the window closes.
 
+        With the same one exception as ``HALTED``: a ``MOVED`` record appended
+        while the engine was SEALED claims nothing either, because the seal
+        also refused the write it would otherwise describe -- a `flatten`
+        issued during a continuity halt persists no equity to `risk.json`. See
+        ``sealed`` in :func:`read_log_risk_history`.
+
     ``NONE``
         The log says nothing about the risk state: it holds no records, or only
         records of kinds that neither carry nor move one.
@@ -560,6 +566,17 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
     #: a file for the halt R1-c itself raised. It would also make a REPAIR
     #: impossible: restore the right `risk.json` and the log's own halt would
     #: disagree with it for ever.
+    #:
+    #: The same reasoning covers ``MOVED`` (``OPERATOR``/``INCOMPLETE_STATE``)
+    #: while sealed. `RiskEngine._persist` refuses every write while
+    #: `_continuity_disputed` is set, so a `flatten` issued during the seal --
+    #: permitted, because "HALT is what it is for" -- persists nothing to
+    #: `risk.json` either, and its `OPERATOR` record is no more a statement
+    #: about the file than the HALT record beside it. Reading it as `MOVED`
+    #: ("the log makes no comparable claim") let a flatten during the seal erase
+    #: the seal itself: the very next restart saw the log's newest risk
+    #: statement as `MOVED`, ran rule 5's `STATE_HASH`/`HALTED` branches never,
+    #: found no fault, and unsealed a `risk.json` nobody had repaired.
     sealed = False
 
     for path in day_files(root):
@@ -572,6 +589,7 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
             elif sealed and found in (
                 LogRiskStatement.HALTED,
                 LogRiskStatement.RUNNING,
+                LogRiskStatement.MOVED,
             ):
                 # Not a statement about the file. The previous one stands.
                 found = LogRiskStatement.NONE

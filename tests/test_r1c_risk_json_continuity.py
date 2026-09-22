@@ -1477,3 +1477,41 @@ def test_the_runner_still_halts_on_a_kill_switch_once_triage_has_run(tmp_path):
     assert resumed.runner.state is RunnerState.HALT
     assert resumed.runner.halt_reason == "kill_switch"
     assert resumed.runner.risk.state.halt_reason == "kill_switch"
+
+
+# ---------------------------------------------------------------------------
+# PR #102 remediation: B3, an OPERATOR record erasing the seal
+# ---------------------------------------------------------------------------
+def test_a_flatten_during_a_continuity_halt_does_not_clear_the_dispute(tmp_path):
+    """B3. A ``flatten`` is permitted while halted, including while sealed by
+    a continuity dispute, and its ``OPERATOR`` record must not read on the
+    next restart as ``MOVED`` -- which makes no comparable claim -- and
+    silently clear a dispute nothing has actually repaired.
+    """
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    move_the_peak(state_dir)
+    disputed_bytes = bytes_of(risk_json(state_dir))
+
+    disputed = restart(tmp_path, config)
+    assert disputed.runner.state is RunnerState.HALT
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+    disputed.runner.flatten("operator: reduce to flat while investigating")
+    assert (
+        bytes_of(risk_json(state_dir)) == disputed_bytes
+    ), "the seal must still refuse the write a flatten would otherwise make"
+    operator_records = [r for r in records(state_dir) if r["kind"] == "OPERATOR"]
+    assert operator_records, "the flatten must really have been recorded"
+
+    again = restart(tmp_path, config)
+
+    assert (
+        again.runner.state is RunnerState.HALT
+    ), "an OPERATOR record written while sealed must not clear the dispute"
+    assert again.runner.risk_continuity.disputed
+    assert read_log_risk_history(state_dir).statement is LogRiskStatement.STATE_HASH, (
+        "the OPERATOR record written while sealed must not read as a statement about "
+        "the file -- the DECISION before it must still stand, not be shadowed by a "
+        "MOVED that lets rule 5 check nothing"
+    )
