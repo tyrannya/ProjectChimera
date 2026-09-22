@@ -868,6 +868,33 @@ def test_the_recovery_record_excludes_no_minute(tmp_path):
     assert recovery["truncated_bytes"] == 0
 
 
+def test_the_daily_report_reads_the_finding_it_was_not_written_for(tmp_path):
+    """The record is new; the report that has to read it is not.
+
+    `reports._halts_block` counts RECOVERY records and quotes each one's
+    `veto_or_rejection.detail`. A block shaped so that the report could not read
+    it would leave the day a campaign lost its risk state looking, in the one
+    document an operator files, like a day nothing happened.
+
+    The halt itself collapses to `other`, which is R1-b's `equity_dispute:`
+    treatment too: naming a new cause in `HALT_CAUSES` is a reports decision and
+    PR-12 owns it.
+    """
+    from chimera.demo.reports import daily_report
+
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    risk_json(state_dir).unlink()
+    restart(tmp_path, config)
+
+    halts = daily_report(state_dir, DAY)["halts"]
+
+    assert halts["recoveries"] == 1
+    assert "there is no persisted risk state" in halts["recovery_events"][0]["detail"]
+    assert halts["count"] == 1, "and the halt beside it is counted too"
+
+
 def test_the_r1c_causes_are_not_in_the_parity_tools_excluding_set():
     """The two sets are written down twice and must never overlap."""
     from tools.replay_parity import EXCLUDING_RECOVERY_CAUSES
