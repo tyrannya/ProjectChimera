@@ -413,6 +413,15 @@ hash in between.
   condemn a state file. It also may not excuse one: a forged log beside a missing
   `risk.json` still refuses to seed.
 
+**A halt raised by one of these findings states nothing about the file.** The
+engine is sealed when the finding is raised — it halts in memory and writes
+nothing — so the `HALT` records the disputed restarts append did not persist
+anything, and they are skipped when the next start looks for the log's last
+statement. That is what makes a repair work: restore the state directory from a
+backup taken after the log's last restatement and the comparison falls back to
+that restatement, which the restored file matches. Without it R1-c's own halt
+would disagree with a correctly restored file for ever.
+
 **Reading the finding.** `status` prints a `risk_continuity` block and it does
 not start the runner, which matters when the campaign will not start:
 `disputed`, `fault`, `risk_state_load` (`MISSING` / `LOADED` / `LEGACY` /

@@ -645,18 +645,10 @@ def test_a_crash_inside_a_tick_stays_section_9_3s_recovery(tmp_path):
     continues. The hash comparison sees the same thing a swapped file looks
     like, so R1-c stands down when the triage has really found a crash.
     """
-    from chimera.futures.executor import FlattenCause
-
     harness = campaign(tmp_path, minutes=3)
     config = harness.runner.config
     state_dir = harness.state_dir
-    first = harness.first_minute_ms()
-    state = harness.runner.cursor.state_for(
-        first + 2 * 60_000, now_ns=harness.runner.clock.now_ns
-    )
-    harness.runner.position.install_quote(state)
-    harness.runner.position.emergency_reduce(FlattenCause.RISK_HALT, state)
-    harness.runner._save_ledger()
+    crash_the_campaign(harness)
 
     resumed = restart(tmp_path, config)
 
@@ -695,21 +687,70 @@ def test_the_deferral_is_narrow_enough_to_still_catch_a_swap(tmp_path):
     )
 
 
+def crash_the_campaign(harness) -> None:
+    """Leave the state files genuinely AHEAD of the log, as a kill mid-tick does.
+
+    A booking is persisted and the record that would quote it is never written,
+    which is what ``DemoRunner._state_ahead_of_log`` reports as
+    ``LOG_BEHIND_STATE``.
+    """
+    from chimera.futures.executor import FlattenCause
+
+    state = harness.runner.cursor.state_for(
+        harness.first_minute_ms() + 2 * 60_000, now_ns=harness.runner.clock.now_ns
+    )
+    harness.runner.position.install_quote(state)
+    harness.runner.position.emergency_reduce(FlattenCause.RISK_HALT, state)
+    harness.runner._save_ledger()
+
+
 @pytest.mark.parametrize(
-    "fault",
+    ("mutate", "cause"),
     [
-        RiskContinuityFault.RISK_STATE_ABSENT,
-        RiskContinuityFault.RISK_STATE_UNREADABLE,
-        RiskContinuityFault.RISK_STATE_PRE_SCHEMA,
+        (lambda sd: risk_json(sd).unlink(), RecoveryCause.RISK_STATE_ABSENT),
+        (
+            lambda sd: risk_json(sd).write_text("{not json", encoding="utf-8"),
+            RecoveryCause.RISK_STATE_UNREADABLE,
+        ),
+        (
+            lambda sd: risk_json(sd).write_text(
+                json.dumps({"halted": False, "halt_reason": "", "updated_at": "x"}),
+                encoding="utf-8",
+            ),
+            RecoveryCause.RISK_STATE_PRE_SCHEMA,
+        ),
     ],
+    ids=("absent", "unreadable", "pre-schema"),
 )
-def test_the_faults_no_crash_produces_are_never_deferred(tmp_path, fault):
-    """A crash cannot delete a file, corrupt one, or make it pre-schema."""
-    harness = campaign(tmp_path)
-    risk_json(harness.state_dir).unlink()
-    resumed = build(tmp_path, days=(DAY,), config=harness.runner.config, start=False)
-    verdict = resumed.runner.risk_continuity
-    assert not verdict.crash_could_explain or verdict.fault is not fault
+def test_the_faults_no_crash_produces_are_never_deferred(tmp_path, mutate, cause):
+    """A crash cannot delete a file, corrupt one, or make it pre-schema.
+
+    The narrow half of the deferral, end to end: the campaign really has the
+    crash section 9.3 recovers from AND has lost its risk state, and the second
+    finding is not swallowed by the first. A deferral written as "any crash
+    stands the finding down" passes
+    `test_a_crash_inside_a_tick_stays_section_9_3s_recovery` and fails here,
+    which is the only reason that test cannot be the whole witness.
+    """
+    harness = campaign(tmp_path, minutes=3)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    crash_the_campaign(harness)
+    mutate(state_dir)
+
+    resumed = restart(tmp_path, config)
+
+    crash = [
+        r
+        for r in records(state_dir)
+        if r["kind"] == RecordKind.RECOVERY.value
+        and r["recovery"]["cause"] == RecoveryCause.LOG_BEHIND_STATE.value
+    ]
+    assert crash, "the crash must really be there, or the deferral is not exercised"
+    assert causes(state_dir) == [
+        cause.value
+    ], "and the lost risk state is reported beside it, not instead of it"
+    assert resumed.runner.state is RunnerState.HALT
 
 
 def test_an_empty_log_beside_a_live_risk_state_is_not_r1cs_question(tmp_path):
