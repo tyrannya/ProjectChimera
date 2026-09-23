@@ -160,6 +160,11 @@ def test_a_hook_that_cannot_start_is_not_a_block(tmp_path):
         "git " * 30_000,
         "git status; " * 20_000 + "git -C x reset --hard",
         "bash -c 'git status' " * 5_000,
+        "bash -c env " + "-c env " * 140_000,
+        "bash -c compgen " + "-c compgen " * 90_000,
+        "env " + "> x " * 250_000,
+        "{" * 1_000_000 + "git status",
+        "& (Get-Command git) " * 50_000 + "status",
     ],
     ids=[
         "1MB-words",
@@ -170,6 +175,11 @@ def test_a_hook_that_cannot_start_is_not_a_block(tmp_path):
         "30k-git-words",
         "20k-git-segments",
         "5k-launchers",
+        "140k-env-launch-flags",
+        "90k-compgen-launch-flags",
+        "250k-redirects",
+        "1M-braces",
+        "50k-get-command",
     ],
 )
 def test_pathological_input_finishes_far_inside_the_timeout(command):

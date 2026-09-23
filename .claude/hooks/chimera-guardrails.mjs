@@ -50,15 +50,22 @@ const WRITERS = new Set([
 ]);
 // Words after which the next word is in command position: prefix wrappers and
 // launcher flags (`sudo printenv`, `bash -c printenv`). `echo printenv` is text.
-const WRAPPERS = new Set([
-  "sudo", "doas", "env", "command", "exec", "builtin", "time", "nohup", "nice", "xargs",
-  "watch", "-c", "/c", "/k", "-lc", "-command",
+const PREFIXES = new Set([
+  "sudo", "doas", "env", "command", "exec", "builtin", "time", "nohup", "nice", "xargs", "watch",
 ]);
+const LAUNCH_FLAGS = new Set(["-c", "/c", "/k", "-lc", "-command"]);
+const WRAPPERS = new Set([...PREFIXES, ...LAUNCH_FLAGS]);
+// `env` options that take the next word as their value (`env -u NAME`, `env -C DIR`).
+const ENV_VALUE_OPTS = new Set(["-u", "--unset", "-c", "--chdir"]);
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 const SECRET_NAMES = new Set([
   ".npmrc", ".pypirc", ".netrc", "_netrc", ".git-credentials", ".credentials.json",
 ]);
 const DOTNET_WRITE = /\[(system\.)?io\.(file|directory)\]::(write|append|create|delete|move|copy|replace|open)/;
+// PowerShell `(Get-Command git)` / `(gcm "git.exe").Source`: a literal command
+// resolved as an invocation target (`& (Get-Command git) push`) is that command.
+const GET_COMMAND =
+  /^\(\s*(?:get-command|gcm)\s+(?:-name\s+)?(?:"([^"]*)"|'([^']*)'|([^\s"'(){};|&]+))\s*\)(?:\.(?:source|path|definition)\b)?/i;
 const MAX_COMMAND = 2_000_000;
 // More `git` words than this in one segment is not a command anyone writes; it
 // is refused rather than inspected, because inspecting each occurrence against
@@ -119,8 +126,9 @@ const exe = (w) =>
 
 // Split a command into segments of words the way a shell would, well enough to
 // find what runs. Total: it never throws and always terminates. `ps` selects
-// PowerShell/cmd escaping (backtick and caret escape, backslash is literal)
-// instead of bash's (backslash escapes, backtick substitutes). Callers run both.
+// PowerShell/cmd escaping (backtick and caret escape, backslash is literal, and
+// `{ }` script blocks split segments) instead of bash's (backslash escapes,
+// backtick substitutes). Callers run both.
 // Heredoc and here-string bodies are data: they are returned separately and not
 // segmented, so a commit message that mentions a command does not trip a rule.
 function lex(src, ps) {
@@ -133,6 +141,7 @@ function lex(src, ps) {
   let mode = "cmd";
   let close = null;
   let heredocs = [];
+  let gcm;
   const add = (s) => {
     w = (w ?? "") + s;
   };
@@ -258,6 +267,16 @@ function lex(src, ps) {
         add(src.slice(start, endMark));
         i = endMark + 3;
       }
+    } else if (ps && (c === "{" || c === "}")) {
+      // A script block's body is commands: `&{git …}`, `if ($x) {git …}`.
+      // Quoted and here-string braces never get here; they are data.
+      endSeg();
+      i++;
+    } else if (ps && c === "(" && (gcm = GET_COMMAND.exec(src.slice(i, i + 400)))) {
+      endSeg();
+      add(gcm[1] ?? gcm[2] ?? gcm[3]);
+      endWord();
+      i += gcm[0].length;
     } else if (c === ";" || c === "|" || c === "(" || c === ")") {
       endSeg();
       i++;
@@ -411,6 +430,11 @@ function ghRule(lower, k) {
   if (a === "auth" && (b === "token" || (b === "status" && rest.some((x) => x === "-t" || x === "--show-token")))) {
     return "secret-token";
   }
+  // `gh config get oauth_token` prints the stored token; gh takes `-h/--host`
+  // before or after the key and even before `get`, so placement is not checked.
+  if (a === "config" && lower.slice(k + 2).includes("get") && lower.slice(k + 2).includes("oauth_token")) {
+    return "secret-token";
+  }
   if (a === "repo" && b === "delete") return "git-remote-ref-rewrite";
   if (a !== "api") return null;
   let method = "";
@@ -428,12 +452,80 @@ function ghRule(lower, k) {
 
 // --- segments ----------------------------------------------------------------
 
+// Where commands start in a segment: the first word; the word after a prefix
+// wrapper that is itself a command (`sudo env`); the utility after `env`'s
+// options and NAME=value assignments; and the word after a launcher's command
+// flag once a launcher has run (`bash -c env`, `cmd /c set`), so `grep -c set`
+// is not a command. `bare` is set when an `env` has nothing left to run, which
+// prints the environment. One pass, each word visited once: a hook that is slow
+// on a crafted command times out, and a timeout lets the call through.
+function commandPositions(lower, names) {
+  const at = new Set([0]);
+  let launched = false;
+  let bare = false;
+  for (let k = 0; k < lower.length; k++) {
+    if (!at.has(k)) {
+      if (launched && LAUNCH_FLAGS.has(lower[k])) at.add(k + 1);
+    } else if (names[k] === "env") {
+      let j = k + 1;
+      while (j < lower.length && (lower[j].startsWith("-") || lower[j].includes("="))) {
+        j += ENV_VALUE_OPTS.has(lower[j]) ? 2 : 1;
+      }
+      if (j >= lower.length) bare = true;
+      else at.add(j);
+      k = j - 1;
+    } else if (PREFIXES.has(names[k])) at.add(k + 1);
+    else if (LAUNCHERS.has(names[k])) launched = true;
+  }
+  return { at, bare };
+}
+
+// A command that prints the whole environment, judged at each command position.
+// Redirect targets are not arguments: `env > out.txt` is still a bare `env`.
+function isEnvDump(words, redirects) {
+  const targets = new Set(redirects);
+  const plain = words.filter((x) => !targets.has(x));
+  const names = plain.map(exe);
+  const lower = plain.map((x) => x.toLowerCase());
+  const { at, bare } = commandPositions(lower, names);
+  if (bare) return true;
+  const last = lower.length - 1;
+  const cmd = names.indexOf("cmd");
+  const lastAssign = lower.findLastIndex((x) => x.includes("="));
+  const lastListFlag = lower.findLastIndex((x) => x === "-e" || x === "-v");
+  // Every word after k passes. Runs stop at the next such command, so each word
+  // is scanned at most once per rule.
+  const only = (k, test) => {
+    for (let j = k + 1; j <= last; j++) if (!test(lower[j])) return false;
+    return true;
+  };
+  return [...at].some((k) => {
+    switch (names[k]) {
+      case "printenv":
+        return true;
+      case "set": // cmd's `set PREFIX` lists every variable starting with PREFIX
+        return k === last || (cmd !== -1 && cmd < k && lastAssign < k);
+      case "export":
+        return only(k, (x) => x === "-p");
+      case "declare":
+      case "typeset":
+        return only(k, (x) => x.startsWith("-"));
+      case "compgen":
+        return lastListFlag > k;
+      default:
+        return false;
+    }
+  });
+}
+
 function checkSegment({ words, redirects }) {
   if (words.some(isSecretWord)) return "secret-path";
   const names = words.map(exe);
   const lower = words.map((x) => x.toLowerCase());
+  // printenv keeps its original, broader test: any word after a wrapper word.
   const atCommand = (k) => k === 0 || WRAPPERS.has(lower[k - 1]);
   if (names.some((n, k) => n === "printenv" && atCommand(k))) return "env-dump";
+  if (isEnvDump(words, redirects)) return "env-dump";
   if (
     lower.some(
       (x) =>
@@ -441,17 +533,6 @@ function checkSegment({ words, redirects }) {
         x.includes("getenvironmentvariables") ||
         /\/proc\/[^/]*\/environ$/.test(x.replace(/\\/g, "/")),
     )
-  ) {
-    return "env-dump";
-  }
-  const rest = lower.slice(1);
-  const flagsOnly = rest.every((x) => x.startsWith("-"));
-  if (
-    (names[0] === "env" && flagsOnly) ||
-    (names[0] === "set" && rest.length === 0) ||
-    (names[0] === "export" && rest.every((x) => x === "-p")) ||
-    ((names[0] === "declare" || names[0] === "typeset") && flagsOnly) ||
-    (names[0] === "compgen" && rest.some((x) => x === "-e" || x === "-v"))
   ) {
     return "env-dump";
   }
