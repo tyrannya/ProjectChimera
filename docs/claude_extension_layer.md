@@ -53,7 +53,7 @@ What they cover, by canonical form only. Git accepts any unique abbreviation of 
   - `git branch -D *`, `git branch -f *`, `git branch *--forc*`, `git checkout -B *`, `git switch -C *`, `git switch *--force-*`;
   - `git worktree remove *--f*`, `git worktree remove -f *`, `git tag -f *`, `git tag *--forc*`;
   - `git update-ref *`, `git replace *`, `git reflog expire|delete *`, `git filter-branch|filter-repo *`;
-  - `printenv`, `gh auth token*`, `gh auth status *-t*`, `git credential*`, `gh repo delete*`.
+  - `printenv`, `gh auth token*`, `gh auth status *-t*`, `gh config *get *oauth_token*`, `git credential*`, `gh repo delete*`.
 - **Secrets, via `Read(...)` and `Edit(...)`.** `Edit` governs Write, Edit and NotebookEdit, and a `Read` deny also blocks Edit and Write. Read and Edit rules also apply to `cat`/`head`/`tail`/`sed` and to shell redirect targets.
   - `//**/.env`, `//**/.envrc`, `//**/.env[-_]*`, and every `.env.*` except `.env.example` (see below);
   - `//**/*.pem`, `//**/*.key`;
@@ -100,6 +100,7 @@ built-in tools whose input can carry a shell command or a file path.
   - quotes are concatenated;
   - segments split on `; & | && || ( )`, newlines, `$( )` and backticks, including inside double quotes;
   - `2>&1` is treated as a redirect, not a separator;
+  - in the PowerShell pass, unquoted `{` and `}` also split segments, so a script block's body is read as commands (`&{git …}`, `if ($x) {git …}`), and a literal `(Get-Command <name>)` or `(gcm [-Name] <name>)`, optionally followed by `.Source`/`.Path`/`.Definition`, is read as the word `<name>`, so `& (Get-Command git) push --force` is a `git` command. Braces inside quotes and here-strings stay data;
   - line continuations are joined;
   - heredocs and PowerShell here-strings are treated as data, so a commit message may *mention* `git push --force`. The exception is a heredoc fed to a launcher on its own line (`bash <<EOF`, `cat <<EOF | bash`), which is analysed as commands.
 - File fields: `file_path`, `notebook_path`, `path`, `glob`.
@@ -136,9 +137,17 @@ Rules, by id (every deny message carries the id):
 | `git-metadata-write` | Write/Edit/NotebookEdit into any `.git`; shell redirects into `.git`; `cp/mv/rm/tee/Set-Content/Remove-Item/…`, `sed -i` or a PowerShell `[IO.File]::Write…/Delete…/Move…` naming a `.git` path | Read/Grep/`cat`/`ls`/`Get-Content`/`[IO.File]::ReadAllText` of `.git`; `.gitignore`, `.github/` |
 | `encoded-command` | `powershell`/`pwsh -EncodedCommand` (any prefix, `-ec`) | `-Command`, `-ea` |
 | `secret-path` | every `.env*` name except `.env.example` (`.envrc`, `.env-prod`, …); `*.pem`, `*.key`, `id_{rsa,dsa,ecdsa,ed25519}*`; any `.ssh` or `.aws` directory; `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `.git-credentials`, `.credentials.json`; GitHub CLI `hosts.yml`. Matching is case-insensitive, also in `--env-file=.env`, `host:.ssh/…`, `.env::$DATA`, `.env.` | `.env.example`, `test_keys.py`, prose words with no path separator (`"id_rsa rotation runbook"`) |
-| `env-dump` | `printenv` in command position; bare `env`, `set`, `export [-p]`, `declare`/`typeset` with only flags, `compgen -e/-v`; listing the PowerShell `env:` drive; `GetEnvironmentVariables()`; `/proc/*/environ` | `echo printenv`, `grep printenv`, `"env: …"` commit scopes, `Get-Item Env:PATH`, `echo $env:PATH`, `set -euo pipefail`, `env X=1 cmd` |
-| `secret-token` | `gh auth token`; `gh auth status -t/--show-token`; `git credential …`, `git credential-*` | `gh auth status`, `git config --get credential.helper` |
+| `env-dump` | at a command position (see below): `printenv`; `env` with only options (`-u NAME`, `-C DIR`, flags) and `NAME=value` assignments, so nothing left to run; bare `set`, and `set PREFIX` without `=` under `cmd`; `export [-p]`; `declare`/`typeset` with only flags; `compgen -e/-v`. Redirect targets are not arguments (`env > out.txt`). Also listing the PowerShell `env:` drive; `GetEnvironmentVariables()`; `/proc/*/environ` | `echo env`, `printf "set"`, `bash -c "echo env"`, `grep printenv`, `git log \| grep -c set`, `"env: …"` commit scopes, `Get-Item Env:PATH`, `echo $env:PATH`, `set -euo pipefail`, `cmd /c set FOO=bar`, `env X=1 pytest …` (the utility after the assignments is judged instead) |
+| `secret-token` | `gh auth token`; `gh auth status -t/--show-token`; `gh config … get … oauth_token`, with `-h/--host` anywhere, including before `get`; `git credential …`, `git credential-*` | `gh auth status`, `gh config get git_protocol`, `gh config list`, `git config --get credential.helper` |
 | `internal-error` | stdin that is not a JSON object; a command over 2 MB; more than 64 `git` words in one segment; any exception inside the hook | — |
+
+**Command position**, for `env-dump`, is one of:
+- the first word of a segment;
+- the word after a prefix wrapper (`sudo`, `env`, `nohup`, `xargs`, …) that is itself at a command position;
+- the utility after `env`'s options and assignments;
+- the word after a launcher's command flag (`-c`, `-lc`, `/c`, `/k`, `-Command`), once a launcher (`bash`, `sh`, `cmd`, `pwsh`, …) has appeared in the segment.
+
+Launcher strings are dissolved and re-inspected as described above, so `bash -c "env FOO=1"` and `bash -c "sh -c env"` are judged at their inner command position. `printenv` keeps its older, broader test: any word after one of those wrapper or flag words.
 
 **Output contract.**
 - On a block: deny JSON on stdout (`hookSpecificOutput.permissionDecision: "deny"`), the same reason on stderr, and exit code **2**. Claude Code blocks on exit 2 even if it ignores the JSON.
@@ -159,7 +168,7 @@ Rules, by id (every deny message carries the id):
 
 So the hook fails closed *inside a run*, but the layer as a whole does not. The canonical destructive forms and the secret files stay denied without the hook. The alternate forms of §2.2 do not. Tests characterise this:
 - `test_a_hook_that_cannot_start_is_not_a_block`;
-- `test_pathological_input_finishes_far_inside_the_timeout`, which checks that each case finishes in under 5 s against the 10 s budget: 1 MB of words, 30k `git` words, 20k git segments, 5k launchers, deep nesting, long heredocs;
+- `test_pathological_input_finishes_far_inside_the_timeout`, which checks that each case finishes in under 5 s against the 10 s budget: 1 MB of words, 30k `git` words, 20k git segments, 5k launchers, deep nesting, long heredocs, and the command-position, redirect, brace and `Get-Command` paths of §4.2;
 - `test_native_floor_covers_canonical_forms` and `test_native_floor_leaves_ordinary_work_alone`.
 
 ## 3. Why the layer is built this way
@@ -217,6 +226,20 @@ A read-only reviewer ran about 59 payloads through the hook. It ran on the same 
 
 The author's own review added: bash `$'…'` quoting; `[IO.File]::` writes into `.git`; `git credential`; the GitHub CLI `hosts.yml` and Claude `.credentials.json`; `declare -p` / `compgen -e`; and `gh api` ref PATCH/DELETE / GraphQL ref mutations / `gh repo delete`, which are published-history rewrites that never call `git push`.
 
+### 4.2 Independent review round (PR #101 at `5dbd576`)
+
+A fresh independent review returned REQUEST CHANGES with three merge-blocking bypasses. Each was reproduced against the hook at `5dbd576` before it was fixed. The fixtures added for each one fail on `5dbd576`, and a targeted mutation of each fix makes them fail again.
+
+| finding | disposition |
+|---|---|
+| B1: `bash -c env`, `sh -c "set"`, `cmd /c set`, `env FOO=1` were allowed. Dump commands were only recognised as the first word of a segment, and `env NAME=value` was not "flags only" | fixed: `env-dump` is judged at every command position (§2.2); `env` counts as a dump when nothing is left to run after its options and assignments |
+| B2: PowerShell `&{git push --force}`, `if ($true) {git push --force}`, `& (Get-Command git) push --force` were allowed. `{git` was taken as the command, and the resolved `git` sat in its own segment | fixed: in the PowerShell pass, braces split script blocks; a literal `(Get-Command <name>)` is read as `<name>` |
+| B3: `gh config get -h github.com oauth_token` printed the stored token and passed both tiers | fixed, in both tiers: native `gh config *get *oauth_token*` (Bash and PowerShell), and the hook's `secret-token` rule |
+
+The gh syntax was checked on gh 2.67.0 against an isolated `GH_CONFIG_DIR` that held a dummy sentinel for a fake host, with the token environment variables unset. No real credential was read. gh returned the sentinel for `-h H`, `--host H`, `--host=H` and `-hH`, with the host before or after the key, after `--`, and even before `get` (`gh config -h H get oauth_token`). The key is case-sensitive. `gh config list` does not print the token. The new native rule was checked against the documented rule semantics in the test model, not live-probed.
+
+The author's first B1 draft rescanned the words after each command position. On a crafted 1 MB command (`bash -c env -c env …`) that took about 90 s, which is a timeout, and a timeout lets the call through. The shipped version visits each word once. Timing cases for these paths were added.
+
 ## 5. Threat model and residual limits
 
 The layer is a **seatbelt against careless or accidental agent actions**, not a
@@ -231,7 +254,8 @@ sandbox against a determined adversary. Known gaps:
   - strings piped into `xargs`;
   - `cd .git && rm refs/…`;
   - `git fetch +src:dst` into local branches;
-  - `printenv` behind a wrapper that takes an argument (`timeout 5 printenv`);
+  - an environment dump behind a wrapper that takes an argument (`timeout 5 printenv`, `sudo -u root env`, `nice -n 5 env`);
+  - a PowerShell command resolved other than as a literal `(Get-Command <name>)`: a wildcard or computed name, or a variable (`$g = Get-Command git; & $g …`);
   - 8.3 short names and symlinks;
   - a heredoc whose delimiter is chosen to swallow later lines.
 - **Not covered by design:** printing a single variable (`echo $VAR`, `Get-Item Env:X`) and `git stash drop`/`clear`. The stash stack is shared across worktrees, so treat `stash drop`/`clear` with care.
@@ -242,6 +266,7 @@ sandbox against a determined adversary. Known gaps:
   - `echo git rebase`;
   - a word exactly equal to `git-rebase` (e.g. a branch of that name);
   - quoted text (not a heredoc) in a command that also contains a launcher;
+  - unquoted braces around a guarded word, which the PowerShell pass reads as a script block (`echo {set}`, `${set}`);
   - copying *out of* `.git` with `cp`.
 - **Tamper resistance is governance, not mechanism.** The rule file forbids weakening `.claude/` in an unrelated task. Nothing mechanically stops an edit to the hook or `settings.json`, and those edits show up in review.
 - Commands the owner runs themselves are never inspected, by design.
