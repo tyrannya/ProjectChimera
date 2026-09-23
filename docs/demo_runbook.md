@@ -386,6 +386,24 @@ record whose `recovery.cause` names it, and each halting the campaign:
 | `RISK_STATE_PRE_SCHEMA` | `risk.json` is the pre-schema halt record — a halt claim and no account state — and the log holds records. |
 | `RISK_STATE_MISMATCH` | `risk.json` is readable and current, and is not the state the log last recorded: a different hash, or running where the log says halted. |
 
+**Nothing writes the questioned file before the verdict.** The finding is
+reached from the file as it was read, and until it is settled nothing — not the
+kill switch, not R1-b's equity reconciliation, not an operator command — may
+change it: an absent `risk.json` stays absent and a present one stays
+byte-identical. Three of the findings are settled at once and seal. A
+`RISK_STATE_MISMATCH` is settled later in the same start, once the crash triage
+below has run, and Aegis is held unchanged until then. If the finding stands,
+the file is still exactly the bytes that were found when the campaign halts on
+`risk_continuity:`, whatever its equity says against the carry ledger. If a
+crash explains it, the file is released, and only **then** does R1-b reconcile
+its equity against the ledger — so a crash that also left the two equities
+apart still halts on `equity_dispute:`, now after the verdict rather than
+before it. (Until PR #102's third remediation that reconciliation ran first,
+and a stale or foreign file whose equity was not the ledger's had R1-b's
+`equity_dispute:` halt persisted over it before R1-c ruled: the found bytes were
+lost, the campaign reported R1-b's reason instead of R1-c's, and every restart
+recorded the file it had itself rewritten as a new finding.)
+
 The `RECOVERY` record is written **once per finding**, not once per restart: a
 disputed campaign gets started repeatedly and a record each time would bury the
 finding in copies of itself. The `HALT` record each restart writes is unchanged.
@@ -439,14 +457,19 @@ hash in between. Each sealed restart's own `STARTUP` still says it was sealed.
   `true` exactly when the proved window persisted a halt.
 
   **Still sealed, and canonical R1-i's:** the same `update_equity` window when
-  it **rolled the UTC day** (every UTC midnight — the prior `day_start_equity` is
-  the equity of whichever write first touched the previous day, possibly the
-  configured capital, which no record carries) or **set a new peak** (the prior
-  `peak_equity` is the maximum over every equity Aegis was ever given). Both are
-  reconstructions of the campaign's equity history, which is replay. So is a
-  crash between `note_funding_settlement` and its `FUNDING` record, one that
-  moved the feed mark, and any combination of two windows. A sealed crash window
-  looks exactly like a swapped file; record it as an incident and stop.
+  it **rolled the UTC day** (every UTC midnight) or **set a new peak**. The
+  values those overwrote are not unavailable: the prior `day_start_equity` is the
+  equity of whichever write first touched the previous UTC day, and the prior
+  `peak_equity` the running maximum of every equity Aegis was handed, and both
+  may be reconstructable from the configured capital or a bounded scan of the
+  log's earlier records. But neither is restated by the record the crash
+  preceded, so proving either window takes historical reconstruction —
+  replay-shaped logic over the campaign's equity history — rather than the
+  narrow one-step local inverse the five proved windows use, and that is R1-i's
+  work. So is a crash between `note_funding_settlement` and its `FUNDING`
+  record (unless section 9.3's triage finds that crash through the ledger), one
+  that moved the feed mark, and any combination of two windows. A sealed crash
+  window looks exactly like a swapped file; record it as an incident and stop.
 * A log that does not verify. A forged log halts the campaign on `log_forged:`,
   which is the graver finding and the one that owns it; an edited log may not
   condemn a state file. It also may not excuse one: a forged log beside a missing
@@ -457,12 +480,34 @@ when a finding stands — it halts in memory and writes nothing — so neither t
 `HALT` that run appends nor an `OPERATOR` record from a `flatten` issued in it
 (permitted; that is what `HALT` is for) persisted anything. Every `STARTUP`
 record carries `risk_continuity_sealed`, which says whether **that run** was
-sealed, and the next start skips the `HALT`, `RESUME`, `OPERATOR` and
-`INCOMPLETE_STATE` records of sealed runs when it looks for the log's last
-statement. It is per run: the next `STARTUP` states its own value, and a
-`RECOVERY` record by itself says nothing about it (a proved crash window writes
-one and runs unsealed). A `STARTUP` without the field was written by a build that
-could not seal, and reads as `false`.
+sealed, and the next start skips **every** record of a sealed run when it looks
+for the log's last statement — `HALT`, `RESUME`, `OPERATOR`, `INCOMPLETE_STATE`,
+and also any record carrying a `risk.state_hash`. A run that could not write
+`risk.json` cannot prove what it holds, and when the disputed file was itself
+halted a sealed engine's hash is exactly that file's hash, so reading it would
+clear the dispute with no repair at all. It is per run: the next `STARTUP`
+states its own value, and a `RECOVERY` record by itself says nothing about it (a
+proved crash window writes one and runs unsealed).
+
+A sealed engine also cannot move **in memory**. It refuses `resume` and an
+adopted equity outright, so `resume` and `resolve --equity` are refused against
+a continuity seal and change nothing (`resolve --equity` exits refused and
+prints no state), and it ignores the observations a `flatten` or a
+reconstruction reports to it, so those still complete. Without that, a state
+changed only in memory would be restated by the next hash-bearing record as if
+it had been written.
+
+**Older logs.** A `STARTUP` without the field reads as `false` (unsealed). That
+is correct for every log written by a `main` build from before PR #102, none of
+which can seal, and every build from `74edc25` on writes the field on every
+`STARTUP`. It is **not** correct for a log written by an intermediate, unmerged
+build of PR #102 from `dded833` up to and including `471c1b7`: those could
+already seal but did not yet write the field (it arrived in `74edc25`), so a
+sealed run of theirs would be read as unsealed and its `HALT`/`OPERATOR`
+records as statements about `risk.json`. The compatibility condition is
+therefore: **no state directory that a build merged from PR #102 reads was ever
+run by one of those intermediate builds.** Whether that holds is for the owner
+to attest separately; this document does not attest it.
 
 That is what makes a repair work: restore the state directory from a backup taken
 after the log's last restatement and the comparison falls back to that
