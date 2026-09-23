@@ -57,13 +57,16 @@ from chimera.demo.risk_continuity import (
 from chimera.demo.runner import (
     CAUSES_WITHOUT_AN_AFFECTED_MINUTE,
     RecoveryCause,
+    RunnerError,
     RunnerState,
     _risk_hash,
 )
 from chimera.demo.rules import RuleError
 from chimera.demo.rules_carry import CarryRule
-from chimera.risk import RiskEngine, RiskState, RiskStateLoad
+from chimera.risk import RiskEngine, RiskLimits, RiskState, RiskStateLoad, RiskViolation
 from tests.demo_harness import CAPITAL, DAY, NEXT_DAY, build, campaign_config
+from tests.test_demo_cli import written_config
+from tools import demo_run
 
 #: Enough minutes for the campaign to open a position, book fees and write
 #: several hash-bearing records, with minutes left over for a restart to decide.
@@ -177,6 +180,17 @@ def move_the_peak(state_dir: Path) -> None:
     risk_json(state_dir).write_text(
         json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+
+
+def pre_b5_sealed_run_rule(found: LogRiskStatement, *, sealed_run: bool) -> LogRiskStatement:
+    """``risk_continuity._statement_in_run`` as it was before PR #102's B5 fix.
+
+    A sealed run's HALT, RESUME and MOVED records were ignored and its
+    restated ``risk.state_hash`` was still read as a statement. Monkeypatched
+    in as a mutant only.
+    """
+    suppressed = (LogRiskStatement.HALTED, LogRiskStatement.RUNNING, LogRiskStatement.MOVED)
+    return LogRiskStatement.NONE if sealed_run and found in suppressed else found
 
 
 def forge_the_log(state_dir: Path) -> None:
@@ -1158,6 +1172,14 @@ def test_mutant_d_reading_the_statement_off_the_physically_last_record(tmp_path,
     compares the file against itself on the next start.
 
     Kills `test_a_recorded_dispute_does_not_become_its_own_evidence`.
+
+    Since PR #102's B5 remediation this RECOVERY record is ALSO masked by a
+    second, independent defense: it is written by a SEALED run, and no record of
+    a sealed run is a statement about ``risk.json`` at all. So the mutant is
+    first shown to be stopped by that defense alone, and then exercised with
+    that one rule put back to its pre-B5 form (a sealed run's HALT, RESUME and
+    MOVED records ignored, its restated hashes read), to show the structural
+    read is still load-bearing by itself.
     """
     harness = campaign(tmp_path)
     config = harness.runner.config
@@ -1176,6 +1198,12 @@ def test_mutant_d_reading_the_statement_off_the_physically_last_record(tmp_path,
         return real_statement(record)
 
     monkeypatch.setattr(risk_continuity, "_statement_of", mutant)
+
+    assert (
+        restart(tmp_path, config).runner.state is RunnerState.HALT
+    ), "the sealed-run rule alone keeps R1-c's own record from being a statement"
+
+    monkeypatch.setattr(risk_continuity, "_statement_in_run", pre_b5_sealed_run_rule)
 
     again = restart(tmp_path, config)
 
@@ -1576,11 +1604,12 @@ def test_a_real_day_roll_crash_stays_sealed_for_r1i(tmp_path):
     """PINNED, not fixed: the UTC day-roll window.
 
     ``update_equity`` on a new UTC day overwrites ``day_start_equity`` and
-    ``daily_pnl``. The prior baseline is stated in plaintext nowhere -- it is
-    the equity of whichever write first touched the previous day, possibly the
-    configured capital seed, which no record carries -- so proving this window
-    means reconstructing the campaign's equity history: replay, canonical
-    R1-i. It stays sealed, and this deterministic boundary is reached every
+    ``daily_pnl``. The prior baseline is not restated by the record the crash
+    preceded -- it is the equity of whichever write first touched the previous
+    day, which the configured capital or a bounded scan of earlier records may
+    reconstruct -- so proving this window means historical reconstruction of
+    the campaign's equity history, replay-shaped logic beyond R1-c's one-step
+    local inverse: canonical R1-i. It stays sealed, and this deterministic boundary is reached every
     UTC midnight (here on the 23:59 minute, which Aegis dates by its close).
     """
     harness = build(tmp_path, days=(DAY, NEXT_DAY))
@@ -1981,10 +2010,13 @@ def test_a_sealed_run_does_not_contaminate_the_repaired_run_after_it(tmp_path):
 
 
 def test_a_startup_without_the_field_is_read_as_unsealed(tmp_path, monkeypatch):
-    """B3 (f). Logs written before the field existed have no key, and every one
-    of them was written by a build that could not seal (``main`` has no
-    ``halt_for_continuity_dispute`` at all), so absent is ``False`` and their
-    HALT records keep main's meaning. Driven by stripping the key from a real
+    """B3 (f). Logs written before the field existed have no key. For a log
+    from a pre-PR-#102 ``main`` build that is right: ``main`` has no
+    ``halt_for_continuity_dispute`` at all, so absent is ``False`` and its HALT
+    records keep main's meaning. (Intermediate PR #102 builds ``dded833`` to
+    ``471c1b7`` could seal without writing the field; that compatibility
+    condition is stated in the runbook for the owner to attest, and is not
+    something this test, or the code, can establish.) Driven by stripping the key from a real
     runner's STARTUP payload, which is what such a build wrote.
     """
     real = runner_module.DemoRunner._append
@@ -2031,3 +2063,599 @@ def test_a_crash_before_the_startup_record_leaves_no_stale_marker(tmp_path):
     assert again.runner.risk.continuity_disputed
     assert startup_flags(state_dir) == [False, True]
     assert causes(state_dir) == [RecoveryCause.RISK_STATE_ABSENT.value]
+
+
+# ---------------------------------------------------------------------------
+# PR #102 remediation 3, B4: nothing writes the questioned file before the verdict
+# ---------------------------------------------------------------------------
+# `assess_risk_continuity` defers one finding, a crash-could-explain
+# RISK_STATE_MISMATCH, to the runner. `build_risk_engine` used to run R1-b's
+# reconciliation in the meantime, and a stale or foreign file whose equity is
+# not the ledger's made R1-b halt on `equity_dispute:` and PERSIST that halt over
+# the disputed bytes -- before the runner had decided anything.
+def seed_or_reconcile_calls(monkeypatch) -> list[tuple[str, bool]]:
+    """Record who ran R1-b's reconciliation, and whether R1-c still held the engine.
+
+    Both call sites are wrapped -- `build_risk_engine`'s and `DemoRunner.start`'s
+    -- and each still runs the real function, so the campaign is unchanged.
+    """
+    calls: list[tuple[str, bool]] = []
+    real = risk_wiring.seed_or_reconcile_equity
+
+    def spy(site: str) -> Callable[..., None]:
+        def wrapped(engine, *, capital, state_dir):
+            calls.append((site, engine.continuity_pending))
+            real(engine, capital=capital, state_dir=state_dir)
+
+        return wrapped
+
+    monkeypatch.setattr(risk_wiring, "seed_or_reconcile_equity", spy("build_risk_engine"))
+    monkeypatch.setattr(runner_module, "seed_or_reconcile_equity", spy("DemoRunner.start"))
+    return calls
+
+
+def foreign_equity_campaign(tmp_path: Path):
+    """A real campaign, then a current-schema ``risk.json`` whose equity is not
+    the ledger's: the file R1-b's reconciliation would dispute, and R1-c too."""
+    harness = campaign(tmp_path)
+    state_dir = harness.state_dir
+    advance_equity_only(state_dir, 777.0)
+    disputed = bytes_of(risk_json(state_dir))
+    assert disputed is not None
+    accounted = risk_wiring.ledger_equity(state_dir, capital=CAPITAL)
+    assert accounted is not None
+    assert float(accounted) != json.loads(disputed)["equity"], "R1-b would halt on it"
+    return harness, disputed
+
+
+def test_b4_r1b_does_not_write_over_a_mismatch_before_the_verdict(tmp_path, monkeypatch):
+    """B4-1. The engine is HELD, not reconciled; the finding stands; the bytes
+    are the ones that were found; the halt is R1-c's; one RECOVERY, keyed on the
+    found file's own hash."""
+    harness, disputed = foreign_equity_campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    found = risk_state_hash(RiskState.from_dict(json.loads(disputed)).snapshot())
+
+    engine = risk_wiring.build_risk_engine(config, capital=CAPITAL, state_dir=state_dir)
+    assert engine.continuity_pending and not engine.continuity_disputed
+    assert not engine.halted, "held, not halted: the verdict is not in yet"
+    assert bytes_of(risk_json(state_dir)) == disputed, "and nothing reconciled over it"
+
+    calls = seed_or_reconcile_calls(monkeypatch)
+    resumed = restart(tmp_path, config)
+
+    assert calls == [], "the finding stood, so R1-b is never asked about the wrong file"
+    assert resumed.runner.state is RunnerState.HALT
+    assert resumed.runner.halt_reason.startswith(RISK_CONTINUITY_PREFIX)
+    assert resumed.runner.risk.state.halt_reason.startswith(RISK_CONTINUITY_PREFIX)
+    assert resumed.runner.risk.continuity_disputed
+    assert bytes_of(risk_json(state_dir)) == disputed, "byte-identical"
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+    block = continuity_recoveries(state_dir)[0]["recovery"]["risk_continuity"]
+    assert block["found_state_hash"] == found, "the evidence the runner found, not made"
+    halts = [r for r in records(state_dir) if r["kind"] == RecordKind.HALT.value]
+    assert [
+        h["veto_or_rejection"]["detail"][: len(RISK_CONTINUITY_PREFIX)] for h in halts
+    ] == [RISK_CONTINUITY_PREFIX], "no equity_dispute halt anywhere in the log"
+    assert startup_flags(state_dir)[-1] is True
+
+
+def test_b4_repeated_restarts_find_the_same_file_and_record_it_once(tmp_path):
+    """B4-2. Each restart sees the file it was left, because no start wrote it:
+    the same ``found_state_hash`` every time and one RECOVERY for the incident.
+    Before the fix the first restart's R1-b halt changed the hash, and the
+    second restart recorded the "new" file as a second finding."""
+    harness, disputed = foreign_equity_campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+
+    seen = []
+    for _ in range(3):
+        resumed = restart(tmp_path, config)
+        assert resumed.runner.halt_reason.startswith(RISK_CONTINUITY_PREFIX)
+        assert bytes_of(risk_json(state_dir)) == disputed
+        seen.append(resumed.runner.risk_continuity.identity)
+
+    assert len(set(seen)) == 1, seen
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+    assert startup_flags(state_dir) == [False, True, True, True]
+
+
+def crash_before_a_paid_settlement_is_recorded(tmp_path: Path):
+    """A real kill between a PAID funding settlement's writes and its ``FUNDING``
+    record. Nothing is hand-edited.
+
+    ``DemoRunner._settle_funding`` books the settlement into the ledger (which
+    marks it) and reports it to Aegis (``note_funding_settlement``, which moves
+    the hashed adverse streak) before it appends the record that restates the
+    hash. So the kill leaves all three at once: a ``RISK_STATE_MISMATCH`` no
+    Aegis-only proof explains (the funding-streak window is unproved), a
+    section 9.3 ``LOG_BEHIND_STATE`` triage that does explain it, and a ledger
+    equity Aegis never received -- the disagreement R1-b exists to catch.
+    """
+    harness = build(tmp_path, days=(DAY,))
+    harness.feed.write_settlements([DAY], hours=(1,), rate="-0.0001")
+    harness.runner.cursor._settlements = None
+    harness.run(59)
+    before = json.loads(risk_json(harness.state_dir).read_text(encoding="utf-8"))
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.FUNDING, lambda: harness.tick(minute))
+    after = json.loads(risk_json(harness.state_dir).read_text(encoding="utf-8"))
+    moved = {k for k in after if k != "updated_at" and after[k] != before[k]}
+    assert moved == {"funding_adverse_streak"}, "the real window's shape"
+    return harness
+
+
+def test_b4_a_real_crash_mismatch_is_reconciled_after_the_verdict(tmp_path, monkeypatch):
+    """B4-3. The crash explains the mismatch, so the file is released -- and R1-b
+    runs THEN, exactly once, on the released engine, and still disputes the
+    equity the crash left behind. The operator's clearing path works and the
+    campaign runs again."""
+    harness = crash_before_a_paid_settlement_is_recorded(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    found = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    accounted = risk_wiring.ledger_equity(state_dir, capital=CAPITAL)
+    assert accounted is not None and float(accounted) != found["equity"]
+
+    calls = seed_or_reconcile_calls(monkeypatch)
+    resumed = restart(tmp_path, config)
+
+    verdict = resumed.runner.risk_continuity
+    assert verdict.fault is RiskContinuityFault.RISK_STATE_MISMATCH
+    assert verdict.crash_transition == "", "not an Aegis-only window"
+    assert RecoveryCause.LOG_BEHIND_STATE.value in [
+        r["recovery"]["cause"] for r in records(state_dir) if r["kind"] == "RECOVERY"
+    ], "section 9.3's triage is what explains it"
+    assert not resumed.runner.risk.continuity_disputed and not continuity_recoveries(state_dir)
+    assert calls == [("DemoRunner.start", False)], "R1-b ran once, after the release"
+    assert resumed.runner.state is RunnerState.HALT
+    assert resumed.runner.halt_reason.startswith(risk_wiring.EQUITY_DISPUTE_PREFIX)
+    assert json.loads(risk_json(state_dir).read_text(encoding="utf-8"))["halt_reason"] == (
+        resumed.runner.halt_reason
+    ), "and, the verdict being in, it may persist its halt"
+
+    settling = restart(tmp_path, config)
+    settling.runner.resolve_equity("operator: crash at the settlement; the ledger is right")
+    assert settling.runner.state is RunnerState.READY
+    assert settling.runner.risk.state.equity == float(accounted)
+
+    again = restart(tmp_path, config)
+    assert again.runner.state is RunnerState.READY, again.runner.halt_reason
+    assert not again.runner.risk_continuity.disputed
+
+
+def test_b4_skipping_the_post_verdict_reconciliation_would_be_caught(tmp_path, monkeypatch):
+    """Mutation witness for B4-3: a runner that released the hold and did NOT
+    run R1-b would start this campaign READY on an equity its ledger does not
+    hold. The test above fails against it."""
+    harness = crash_before_a_paid_settlement_is_recorded(tmp_path)
+    monkeypatch.setattr(runner_module, "seed_or_reconcile_equity", lambda *a, **k: None)
+
+    resumed = restart(tmp_path, harness.runner.config)
+
+    assert resumed.runner.state is RunnerState.READY, "the dispute went unnoticed"
+
+
+def test_b4_an_ordinary_restart_still_gets_r1bs_equity_dispute(tmp_path, monkeypatch):
+    """B4-4. The control: a loaded restart with NO R1-c finding and a genuine
+    equity disagreement (R1-b's own crash window, on a minute that traded
+    nothing, so ``risk.json`` did not move). R1-b runs where it always did --
+    inside ``build_risk_engine`` -- and halts and persists exactly as before."""
+    widen_the_basis(monkeypatch, from_minute=MINUTES, by=5.0)
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    unmoved = risk_state_hash(
+        RiskState.from_dict(json.loads(risk_json(state_dir).read_text("utf-8"))).snapshot()
+    )
+    real = RiskEngine.update_equity
+
+    def killed(self, *args, **kwargs):
+        raise ProcessKilled("killed in update_equity")
+
+    monkeypatch.setattr(RiskEngine, "update_equity", killed)
+    with pytest.raises(ProcessKilled):
+        harness.tick(next_minute(harness))
+    monkeypatch.setattr(RiskEngine, "update_equity", real)
+    harness.runner._log.close()
+    on_disk = RiskState.from_dict(json.loads(risk_json(state_dir).read_text("utf-8")))
+    assert risk_state_hash(on_disk.snapshot()) == unmoved, "risk.json did not move"
+
+    calls = seed_or_reconcile_calls(monkeypatch)
+    resumed = restart(tmp_path, config)
+
+    assert not resumed.runner.risk_continuity.disputed
+    assert calls == [("build_risk_engine", False)], "where, and as, it always ran"
+    assert resumed.runner.state is RunnerState.HALT
+    assert resumed.runner.halt_reason.startswith(risk_wiring.EQUITY_DISPUTE_PREFIX)
+    persisted = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    assert persisted["halt_reason"].startswith(risk_wiring.EQUITY_DISPUTE_PREFIX)
+    assert not continuity_recoveries(state_dir)
+    assert startup_flags(state_dir)[-1] is False
+
+
+def test_b4_resolve_equity_refuses_a_sealed_engine_through_the_cli(tmp_path, capsys):
+    """B4-5. ``resolve --equity`` against an unresolved continuity seal changes
+    nothing and says so: exit REFUSED, no READY on stdout, no OPERATOR record,
+    the file untouched, and the next start still disputes the same finding.
+    Before the fix the seal carried R1-b's ``equity_dispute:`` reason, so the
+    command adopted the equity in memory, wrote an OPERATOR record, printed
+    READY -- and the refused write left the next start disputing again."""
+    harness, disputed = foreign_equity_campaign(tmp_path)
+    state_dir = harness.state_dir
+    config_path = written_config(tmp_path, harness)
+    argv = ["--config", str(config_path), "--root", str(harness.root), "--profile", "TEST"]
+
+    assert demo_run.main(argv + ["run"]) == demo_run.EXIT_HALTED
+    assert json.loads(capsys.readouterr().out)["reason"].startswith(RISK_CONTINUITY_PREFIX)
+    committed = records(state_dir)
+
+    code = demo_run.main(argv + ["resolve", "--equity", "--note", "the ledger is right"])
+
+    out = capsys.readouterr()
+    assert code == demo_run.EXIT_REFUSED
+    assert out.out == "", "nothing claims the dispute was settled"
+    assert "sealed by an R1-c continuity dispute" in out.err
+    assert bytes_of(risk_json(state_dir)) == disputed
+    appended = records(state_dir)[len(committed) :]
+    assert [r["kind"] for r in appended if r["kind"] == RecordKind.OPERATOR.value] == []
+    assert demo_run.main(argv + ["run"]) == demo_run.EXIT_HALTED
+    assert json.loads(capsys.readouterr().out)["reason"].startswith(RISK_CONTINUITY_PREFIX)
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+
+
+def test_b4_resolve_equity_refuses_a_seal_that_kept_an_equity_dispute_reason(tmp_path):
+    """B4-5, the other door. A foreign file that was itself halted on
+    ``equity_dispute:`` keeps that reason under the seal (a halt keeps its
+    first reason), so the reason alone looks settleable. The runner refuses
+    with its own error -- not the engine's exception -- and changes nothing."""
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    move_the_peak(state_dir)
+    document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    document["halted"] = True
+    document["halt_reason"] = f"{risk_wiring.EQUITY_DISPUTE_PREFIX} a stale copy's own halt"
+    risk_json(state_dir).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    disputed = bytes_of(risk_json(state_dir))
+
+    sealed = restart(tmp_path, config)
+    assert sealed.runner.risk.continuity_disputed
+    assert risk_wiring.is_equity_reconciliation_halt(sealed.runner.risk.state.halt_reason)
+    before = sealed.runner.risk.snapshot()
+    committed = records(state_dir)
+
+    with pytest.raises(RunnerError, match="sealed by an R1-c continuity dispute"):
+        sealed.runner.resolve_equity("operator: the ledger is right")
+
+    assert sealed.runner.risk.snapshot() == before
+    assert sealed.runner.state is RunnerState.HALT
+    assert records(state_dir) == committed
+    assert bytes_of(risk_json(state_dir)) == disputed
+
+
+# ---------------------------------------------------------------------------
+# PR #102 remediation 3, B5: a sealed engine cannot move, even in memory
+# ---------------------------------------------------------------------------
+def loaded_engine(tmp_path: Path) -> tuple[RiskEngine, Path]:
+    """A plain Aegis over a state file it wrote itself, reloaded: ``LOADED``,
+    running, with an open position and a live day -- so every mutation below has
+    something real to move."""
+    state_path = tmp_path / "aegis" / "risk.json"
+    writer = RiskEngine(RiskLimits(), state_path=state_path)
+    writer.update_equity(1_000_000.0)
+    writer.set_position_exposure("BTC/USDT:USDT", 100_000.0)
+    engine = RiskEngine(
+        RiskLimits(), state_path=state_path, kill_switch_path=tmp_path / "KILL"
+    )
+    assert engine.load_outcome is RiskStateLoad.LOADED and not engine.halted
+    return engine, state_path
+
+
+#: Every public RiskEngine method that changes ``RiskState``, and one call of it
+#: that really would. ``halt`` and ``check_kill_switch`` are separate below.
+OBSERVATIONS: dict[str, Callable[[RiskEngine], Any]] = {
+    "update_equity": lambda e: e.update_equity(1_000_500.0),
+    "record_order": lambda e: e.record_order(),
+    "record_trade_result": lambda e: e.record_trade_result(-1.0),
+    "set_position_exposure": lambda e: e.set_position_exposure("ETH/USDT:USDT", 5.0),
+    "close_position": lambda e: e.close_position("BTC/USDT:USDT"),
+    "note_feed": lambda e: e.note_feed(0, 10**18),
+    "note_reconciliation": lambda e: e.note_reconciliation("BTC/USDT", "disputed"),
+    "note_funding_settlement": lambda e: e.note_funding_settlement(
+        "BTC/USDT:USDT", "LONG", 0.001
+    ),
+}
+OPERATOR_DECISIONS: dict[str, Callable[[RiskEngine], Any]] = {
+    "resume": lambda e: e.resume(),
+    "adopt_reconciled_equity": lambda e: e.adopt_reconciled_equity(
+        1_000_500.0, clearing=e.state.halt_reason, note="operator: adopt"
+    ),
+    "adopt_after_unreadable": lambda e: e.adopt_after_unreadable("operator: adopt"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(OBSERVATIONS))
+def test_b5_the_mutation_list_is_not_vacuous(tmp_path, name):
+    """B5-5 (engine level), the control for the two tests below: on an ordinary
+    engine every listed call really moves the state and really persists it."""
+    engine, state_path = loaded_engine(tmp_path)
+    before, disk = engine.snapshot(), bytes_of(state_path)
+
+    OBSERVATIONS[name](engine)
+
+    assert engine.snapshot() != before
+    assert bytes_of(state_path) != disk
+
+
+@pytest.mark.parametrize("name", sorted(OBSERVATIONS))
+def test_b5_a_sealed_engine_does_not_move_on_an_observation(tmp_path, name):
+    """Every observation is refused BEFORE it moves anything, and without an
+    exception: the flatten and reconstruction paths that call these must keep
+    working while the campaign is halted. Snapshot and bytes both unchanged."""
+    engine, state_path = loaded_engine(tmp_path)
+    engine.halt_for_continuity_dispute(f"{RISK_CONTINUITY_PREFIX} test")
+    sealed, disk = engine.snapshot(), bytes_of(state_path)
+
+    OBSERVATIONS[name](engine)
+
+    assert engine.snapshot() == sealed
+    assert bytes_of(state_path) == disk
+
+
+@pytest.mark.parametrize("name", sorted(OBSERVATIONS) + ["halt"])
+def test_b5_a_held_engine_refuses_every_mutation_loudly(tmp_path, name):
+    """B4's hold: while R1-c's verdict is pending every mutation RAISES -- an
+    ordering defect is made loud -- and nothing moves in memory or on disk."""
+    engine, state_path = loaded_engine(tmp_path)
+    engine.hold_for_continuity_adjudication()
+    held, disk = engine.snapshot(), bytes_of(state_path)
+    call = OBSERVATIONS.get(name, lambda e: e.halt("some guard"))
+
+    with pytest.raises(RiskViolation, match="R1-c has not yet decided"):
+        call(engine)
+
+    assert engine.snapshot() == held
+    assert bytes_of(state_path) == disk
+
+
+@pytest.mark.parametrize("hold", ["sealed", "pending"])
+@pytest.mark.parametrize("name", sorted(OPERATOR_DECISIONS))
+def test_b5_operator_decisions_are_refused_before_anything_moves(tmp_path, name, hold):
+    """B5-1 / B5-2. ``resume``, ``adopt_reconciled_equity`` and
+    ``adopt_after_unreadable`` raise on a sealed (or held) engine, before any
+    field moves and before any file is moved aside."""
+    engine, state_path = loaded_engine(tmp_path)
+    if hold == "sealed":
+        engine.halt_for_continuity_dispute(f"{risk_wiring.EQUITY_DISPUTE_PREFIX} stale")
+    else:
+        engine.hold_for_continuity_adjudication()
+    before, disk = engine.snapshot(), bytes_of(state_path)
+
+    with pytest.raises(RiskViolation, match="R1-c"):
+        OPERATOR_DECISIONS[name](engine)
+
+    assert engine.snapshot() == before
+    assert bytes_of(state_path) == disk
+
+
+def test_b5_ordinary_resume_and_adoption_are_unchanged(tmp_path):
+    """B5-5. The same two decisions on an unsealed engine move the state and
+    persist it, exactly as before."""
+    engine, state_path = loaded_engine(tmp_path)
+    reason = f"{risk_wiring.EQUITY_DISPUTE_PREFIX} the two files disagree"
+    engine.halt(reason)
+    engine.adopt_reconciled_equity(1_000_500.0, clearing=reason, note="operator: ledger")
+    assert not engine.halted and engine.state.equity == 1_000_500.0
+    assert json.loads(state_path.read_text("utf-8"))["equity"] == 1_000_500.0
+
+    engine.halt("some guard")
+    engine.resume()
+    assert not engine.halted
+    assert json.loads(state_path.read_text("utf-8"))["halted"] is False
+
+
+@pytest.mark.parametrize("hold", ["sealed", "pending"])
+def test_b5_the_kill_switch_is_only_looked_at_while_held(tmp_path, hold):
+    """``check_kill_switch`` still reports an engaged switch, and moves neither
+    the hashed mirror nor the halt. A sealed engine is already halted; a held
+    one is waiting for a verdict nothing may pre-empt."""
+    engine, state_path = loaded_engine(tmp_path)
+    if hold == "sealed":
+        engine.halt_for_continuity_dispute(f"{RISK_CONTINUITY_PREFIX} test")
+    else:
+        engine.hold_for_continuity_adjudication()
+    before, disk = engine.snapshot(), bytes_of(state_path)
+    (tmp_path / "KILL").write_text("stop\n", encoding="utf-8")
+
+    assert engine.check_kill_switch() is True
+
+    assert engine.snapshot() == before
+    assert bytes_of(state_path) == disk
+
+
+def test_b5_a_held_engine_approves_nothing(tmp_path):
+    """The hold is not a halt, so the entry gate refuses on it by name."""
+    engine, _ = loaded_engine(tmp_path)
+    assert engine.evaluate_entry("ETH/USDT:USDT", 1_000_000.0, 100.0, 97.0).allowed
+    engine.hold_for_continuity_adjudication()
+
+    decision = engine.evaluate_entry("ETH/USDT:USDT", 1_000_000.0, 100.0, 97.0)
+
+    assert not decision.allowed and "continuity" in decision.reason
+
+
+@pytest.mark.parametrize("start", ["running", "halted", "missing", "held"])
+def test_b5_the_seal_establishes_its_own_halt_and_writes_nothing(tmp_path, start):
+    """B5-6. ``halt_for_continuity_dispute`` halts in memory -- with R1-c's
+    reason on a running state, keeping the first reason on a halted one -- seals,
+    ends a hold, and writes nothing: the found bytes stay, an absent file stays
+    absent."""
+    reason = f"{RISK_CONTINUITY_PREFIX} test"
+    if start == "missing":
+        state_path = tmp_path / "aegis" / "risk.json"
+        engine = RiskEngine(RiskLimits(), state_path=state_path)
+    else:
+        engine, state_path = loaded_engine(tmp_path)
+    if start == "halted":
+        engine.halt("an earlier guard")
+    if start == "held":
+        engine.hold_for_continuity_adjudication()
+    disk = bytes_of(state_path)
+
+    engine.halt_for_continuity_dispute(reason)
+
+    assert engine.halted and engine.continuity_disputed and not engine.continuity_pending
+    assert engine.state.halt_reason == ("an earlier guard" if start == "halted" else reason)
+    assert bytes_of(state_path) == disk
+    if start == "missing":
+        assert not state_path.exists()
+
+
+def sealed_restart(tmp_path: Path, *, halted_file: bool):
+    """A foreign ``risk.json`` (the peak moved), optionally one that was itself
+    halted, restarted into a real continuity seal."""
+    harness = campaign(tmp_path)
+    config = harness.runner.config
+    state_dir = harness.state_dir
+    move_the_peak(state_dir)
+    if halted_file:
+        document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+        document["halted"] = True
+        document["halt_reason"] = "a stale copy's own halt"
+        risk_json(state_dir).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    disputed = bytes_of(risk_json(state_dir))
+    sealed = restart(tmp_path, config)
+    assert sealed.runner.risk.continuity_disputed and sealed.runner.state is RunnerState.HALT
+    return sealed, config, state_dir, disputed
+
+
+def attempt_the_laundering(sealed) -> dict[str, Any]:
+    """The review's sequence against a sealed runner, in process: clear the
+    halt, adopt an equity, then decide a minute so a ``DECISION`` restates
+    ``risk.state_hash``. Returns that DECISION. Refusals are swallowed here
+    and asserted by the callers."""
+    engine = sealed.runner.risk
+    for attempt in (
+        lambda: engine.resume(),
+        lambda: engine.adopt_reconciled_equity(
+            engine.state.equity, clearing=engine.state.halt_reason, note="operator: adopt"
+        ),
+    ):
+        try:
+            attempt()
+        except RiskViolation:
+            pass
+    sealed.tick(next_minute(sealed))
+    decision = records(sealed.state_dir)[-1]
+    assert decision["kind"] == RecordKind.DECISION.value, "a DECISION really was reached"
+    return decision
+
+
+@pytest.mark.parametrize("halted_file", [False, True], ids=["running-file", "halted-file"])
+def test_b5_the_review_laundering_sequence_does_not_clear_the_dispute(tmp_path, halted_file):
+    """B5-3 / B5-4. The review's probe ended READY, with no continuity fault and
+    ``STARTUP`` false. Now: the decisions are refused, the DECISION the sealed
+    run still reaches is not a statement, and the restart finds the same finding,
+    already recorded, over the same bytes.
+
+    The halted-file case is why the scanner rule is needed ON TOP of the engine
+    refusal: a sealed engine that did not move at all still hashes to exactly
+    the disputed file when that file was already halted, so its DECISION
+    restates the disputed file's own hash."""
+    sealed, config, state_dir, disputed = sealed_restart(tmp_path, halted_file=halted_file)
+    engine = sealed.runner.risk
+    finding = sealed.runner.risk_continuity
+    before = engine.snapshot()
+    with pytest.raises(RunnerError, match="sealed by an R1-c continuity dispute"):
+        sealed.runner.resume("operator: I looked at it")
+
+    decision = attempt_the_laundering(sealed)
+
+    assert engine.snapshot()["halted"] and engine.continuity_disputed
+    assert {k: v for k, v in engine.snapshot().items() if k != "order_times"} == {
+        k: v for k, v in before.items() if k != "order_times"
+    }, "nothing the sequence asked for moved the sealed state"
+    assert decision["risk"]["state_hash"] == _risk_hash(engine)
+    if halted_file:
+        assert decision["risk"]["state_hash"] == finding.found_state_hash, (
+            "the laundering precondition itself: the sealed run restated the "
+            "disputed file's own hash"
+        )
+    history = read_log_risk_history(state_dir)
+    assert history.state_hash == finding.history.state_hash, "not a statement"
+
+    again = restart(tmp_path, config)
+
+    assert again.runner.state is RunnerState.HALT
+    assert again.runner.risk_continuity.fault is RiskContinuityFault.RISK_STATE_MISMATCH
+    assert again.runner.risk_continuity.identity == finding.identity
+    assert again.runner.risk_continuity.already_recorded
+    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+    assert startup_flags(state_dir) == [False, True, True]
+    assert bytes_of(risk_json(state_dir)) == disputed
+
+
+@pytest.mark.parametrize(
+    ("engine_refuses", "scanner_ignores", "laundered"),
+    [
+        (True, True, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+    ids=["both", "engine-only", "scanner-only", "neither"],
+)
+def test_b5_each_defense_alone_stops_the_review_sequence(
+    tmp_path, monkeypatch, engine_refuses, scanner_ignores, laundered
+):
+    """Mutation witness. With BOTH defenses removed the review's exact outcome
+    is reproduced -- READY, no continuity fault, ``STARTUP`` false -- so this
+    test can fail. Either defense alone stops it for a running foreign file;
+    the halted-file case above is the one only the scanner rule stops."""
+    if not engine_refuses:
+        monkeypatch.setattr(RiskEngine, "_continuity_guard", lambda self, *a, **k: False)
+    if not scanner_ignores:
+        monkeypatch.setattr(risk_continuity, "_statement_in_run", pre_b5_sealed_run_rule)
+    sealed, config, state_dir, _ = sealed_restart(tmp_path, halted_file=False)
+    attempt_the_laundering(sealed)
+
+    again = restart(tmp_path, config)
+
+    if laundered:
+        assert again.runner.state is RunnerState.READY
+        assert not again.runner.risk_continuity.disputed
+        assert startup_flags(state_dir)[-1] is False
+    else:
+        assert again.runner.state is RunnerState.HALT
+        assert again.runner.risk_continuity.fault is RiskContinuityFault.RISK_STATE_MISMATCH
+        assert startup_flags(state_dir)[-1] is True
+
+
+def test_a_real_kill_switch_mirror_crash_is_proved_and_deferred(tmp_path, monkeypatch):
+    """The ``kill_switch_mirror`` window's direct witness, which the suite
+    lacked. Aegis is ALREADY halted -- a real drawdown breach inside a decided
+    minute -- so the next minute's switch look persists the mirror alone, and
+    the kill lands before ``_halt`` appends its ``HALT``."""
+    widen_the_basis(monkeypatch, from_minute=MINUTES, by=5.0)
+    config = campaign_config(tmp_path / "state", limits={"max_drawdown_pct": 0.0005})
+    harness = build(tmp_path, days=(DAY,), config=config)
+    harness.run(MINUTES + 1)
+    state_dir = harness.state_dir
+    breached = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    assert breached["halted"] and breached["halt_reason"].startswith("max drawdown breached")
+    assert records(state_dir)[-1]["kind"] == RecordKind.DECISION.value, "restated halted"
+    (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
+    minute = next_minute(harness)
+    die_before_append(harness, RecordKind.HALT, lambda: harness.tick(minute))
+    after = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
+    moved = {k for k in after if k != "updated_at" and after[k] != breached[k]}
+    assert moved == {"kill_switch"}, "the real window's shape: the mirror alone"
+
+    resumed = restart(tmp_path, config)
+
+    block = assert_proved_and_deferred(resumed, state_dir, "kill_switch_mirror")
+    assert block["halt_transition_explains_mismatch"] is False, "it halted nothing"
+    assert resumed.runner.halt_reason == breached["halt_reason"], "the first reason"

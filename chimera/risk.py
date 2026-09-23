@@ -434,6 +434,11 @@ class RiskEngine:
         #: campaign's decision log. Blocks writing for the same reason the flag
         #: above does; see :meth:`halt_for_continuity_dispute`.
         self._continuity_disputed = False
+        #: Set while R1-c has found a dispute that only a later step can
+        #: adjudicate -- the state may yet be one crash window ahead of the log,
+        #: or it may be foreign. Nothing may change this state while it is set;
+        #: see :meth:`hold_for_continuity_adjudication`.
+        self._continuity_pending = False
         #: What the read below found. ``MISSING`` until it says otherwise, which
         #: is also the right answer for an engine given no ``state_path`` at all:
         #: such an engine has no file to have been restored from.
@@ -515,13 +520,79 @@ class RiskEngine:
         return self.state.halted
 
     def halt(self, reason: str) -> None:
-        """Block all new entries. Idempotent: re-halting does not re-alert."""
+        """Block all new entries. Idempotent: re-halting does not re-alert.
+
+        A continuity-sealed engine is halted by construction, so the first line
+        already makes this a no-op there. An engine whose continuity is still
+        PENDING refuses outright: a halt raised before R1-c has decided would
+        land its reason, and its write, on the very state being adjudicated.
+        """
         if self.state.halted:
             return
+        self._continuity_guard("halt")
+        self._halt_in_memory(reason)
+        self._persist()
+
+    def _halt_in_memory(self, reason: str) -> None:
+        """The halt itself, without the write. :meth:`halt` and the R1-c seal share it."""
         self.state.halted = True
         self.state.halt_reason = reason
         logger.critical("RISK HALT: %s", reason)
-        self._persist()
+
+    def _continuity_guard(self, operation: str, *, operator: bool = False) -> bool:
+        """Refuse, BEFORE anything moves, a mutation R1-c has not cleared.
+
+        The one guard every public method that changes :class:`RiskState` calls
+        first, so the refusal happens before the in-memory state moves rather
+        than at :meth:`_persist` -- which is too late: a state that changed in
+        memory and was never written is still hashed into the decision log by
+        the next record that carries ``risk.state_hash``, and that record would
+        then describe a transition no file ever held. Three answers:
+
+        * **Continuity pending** (:meth:`hold_for_continuity_adjudication`):
+          raises :class:`RiskViolation` for EVERY mutation. Nothing is supposed
+          to reach this engine between the load and R1-c's verdict, so anything
+          that does is an ordering defect, and it is made loud rather than
+          silently applied to -- or silently dropped from -- the state in
+          question.
+        * **Continuity sealed** (:meth:`halt_for_continuity_dispute`) and
+          ``operator`` -- a deliberate decision to change what the state says
+          (:meth:`resume`, :meth:`adopt_reconciled_equity`,
+          :meth:`adopt_after_unreadable`): raises. Nothing the decision asks for
+          could be written, so accepting it would report a change that never
+          happened, and clearing the halt in memory would let the next record
+          restate a state no file holds.
+        * **Continuity sealed**, an observation (an equity, a feed mark, an
+          exposure, a settlement, an order): returns ``True`` and the caller
+          returns without changing anything. Not a raise, because the callers
+          are the flatten and reconstruction paths that must keep working while
+          the campaign is halted -- a flatten reduces exposure, which is what
+          HALT is for -- and a raise there would strand the legs mid-command.
+          The engine is halted and stays so, so dropping the observation
+          approves nothing it would otherwise refuse.
+
+        Returns ``False`` when nothing holds this engine.
+        """
+        if self._continuity_pending:
+            raise RiskViolation(
+                f"{operation}() refused: R1-c has not yet decided whether this risk state "
+                "continues the campaign's decision log, and nothing may change it -- in "
+                "memory or on disk -- before that verdict"
+            )
+        if not self._continuity_disputed:
+            return False
+        if operator:
+            raise RiskViolation(
+                f"{operation}() refused: this risk state is sealed by an R1-c continuity "
+                "dispute, so nothing it would change can be persisted, and a change made "
+                "only in memory would be restated to the decision log as if it had been"
+            )
+        logger.error(
+            "%s() not applied: the risk state is sealed by an R1-c continuity dispute "
+            "and is held exactly as it was loaded",
+            operation,
+        )
+        return True
 
     def resume(self) -> None:
         """Clear the halt. Only ever called by an explicit operator action.
@@ -546,7 +617,12 @@ class RiskEngine:
         flat — an operator note and a fresh minute — so a blanket resume that
         silently forgot a disputed position would be the failure the dispute
         exists to prevent.
+
+        Refused while R1-c holds or seals this engine; see
+        :meth:`_continuity_guard`. A continuity halt is not an ordinary halt, and
+        clearing it only in memory is how a dispute would be laundered.
         """
+        self._continuity_guard("resume", operator=True)
         self.state.halted = False
         self.state.halt_reason = ""
         self.state.kill_switch = False
@@ -615,6 +691,11 @@ class RiskEngine:
             return False
 
         problem: str | None = None
+        # While R1-c holds or seals this engine the look is only a look: it says
+        # whether the switch is engaged and moves neither the hashed mirror nor
+        # the halt. A sealed engine is already halted; a pending one is waiting
+        # for a verdict nothing may pre-empt (see `_continuity_guard`).
+        look_only = self._continuity_pending or self._continuity_disputed
         try:
             self._kill_switch_path.stat()
         except FileNotFoundError as exc:
@@ -633,6 +714,8 @@ class RiskEngine:
         else:
             present = True
 
+        if look_only:
+            return present
         mirror_moved = self.state.kill_switch != present
         self.state.kill_switch = present
         if present and not self.state.halted:
@@ -833,8 +916,8 @@ class RiskEngine:
         the engine's half of it, and it does two things.
 
         **It halts**, so Aegis -- the central risk authority -- permits nothing
-        while the dispute stands. The halt is :meth:`halt`, which keeps the
-        FIRST reason: an engine that already failed closed on an unreadable file
+        while the dispute stands. The halt keeps the FIRST reason, as
+        :meth:`halt` does: an engine that already failed closed on an unreadable file
         keeps R1-b's reason for it, and gains this finding through the log's
         ``RECOVERY`` record rather than by having its halt reason rewritten.
 
@@ -859,14 +942,71 @@ class RiskEngine:
         closed, and inventing a clearing path for it would be taking R1-i's
         decision. :meth:`adopt_after_unreadable` is not that path and cannot be
         reached from here: it refuses unless the LOAD was unreadable.
+
+        **The seal is also a refusal to change the state in memory**, not only on
+        disk (see :meth:`_continuity_guard`). Refusing the write alone was too
+        late: :meth:`resume` or :meth:`adopt_reconciled_equity` moved the state
+        in memory, the write was refused, and the next record carrying
+        ``risk.state_hash`` restated a state no file held -- which, when it
+        happened to equal the untouched disputed file, cleared the dispute on
+        the next start. So the seal is set FIRST, and the halt is then made in
+        memory directly rather than through :meth:`halt`, which would ask the
+        guard this call has just engaged. The halt keeps the FIRST reason, as
+        :meth:`halt` does: a state that was loaded halted keeps its own.
+
+        Also the end of a :meth:`hold_for_continuity_adjudication`: the verdict
+        is in, and it is that the dispute stands.
         """
+        self._continuity_pending = False
         self._continuity_disputed = True
-        self.halt(reason)
+        if not self.state.halted:
+            self._halt_in_memory(reason)
 
     @property
     def continuity_disputed(self) -> bool:
         """Whether R1-c sealed this engine. Reported, never re-derived."""
         return self._continuity_disputed
+
+    def hold_for_continuity_adjudication(self) -> None:
+        """Freeze this state until R1-c's verdict on it is in.
+
+        For the one R1-c finding the engine's builder cannot settle by itself: a
+        ``RISK_STATE_MISMATCH``, which a crash inside a tick produces as well as
+        a stale or foreign file does. Only
+        :class:`chimera.demo.runner.DemoRunner` can tell the two apart -- its
+        crash triage and the crash-window proofs need the log's tail and the
+        ledger -- and until it has, the file must stay byte for byte what it
+        was, because if the finding stands those bytes are the evidence.
+
+        So nothing may change the state, in memory or on disk, while the hold is
+        on: every mutation raises (:meth:`_continuity_guard`),
+        :meth:`check_kill_switch` only looks, and :meth:`evaluate_entry`
+        approves nothing. The hold ends one of two ways, and both are the
+        verdict's: :meth:`halt_for_continuity_dispute` (it stands: halt and
+        seal) or :meth:`release_continuity_hold` (a crash explains it).
+
+        It halts nothing and writes nothing itself, so a verdict that clears the
+        finding releases the state exactly as it was loaded.
+        """
+        if self._continuity_disputed:
+            raise RiskViolation("this engine is already sealed by an R1-c continuity dispute")
+        self._continuity_pending = True
+
+    def release_continuity_hold(self) -> None:
+        """End a :meth:`hold_for_continuity_adjudication`: the finding was explained.
+
+        After this the engine is an ordinary loaded engine again. Whatever the
+        hold deferred -- R1-b's equity reconciliation, the kill-switch look --
+        is the caller's to run next, now that it may write.
+        """
+        if not self._continuity_pending:
+            raise RiskViolation("there is no R1-c continuity hold on this engine to release")
+        self._continuity_pending = False
+
+    @property
+    def continuity_pending(self) -> bool:
+        """Whether an R1-c finding on this state is still awaiting its verdict."""
+        return self._continuity_pending
 
     def adopt_after_unreadable(self, note: str) -> Path | None:
         """An operator's explicit decision to start recording again from empty.
@@ -885,7 +1025,12 @@ class RiskEngine:
         closed on; clearing that is :meth:`resume`, a separate deliberate act, so
         that "I have preserved the evidence" and "I accept trading from an empty
         state" are never the same keystroke.
+
+        Refused while R1-c seals the engine: moving the file aside would change
+        the very evidence the continuity dispute is about (an unreadable file
+        would become an absent one), and R1-c defines no clearing path.
         """
+        self._continuity_guard("adopt_after_unreadable", operator=True)
         if not self._state_unreadable:
             raise RiskViolation(
                 "adopt_after_unreadable() is for a state file that exists and could "
@@ -950,7 +1095,12 @@ class RiskEngine:
         If the adopted equity is itself a breach, the engine stays halted on
         THAT, named, rather than on the dispute. Either way the disagreement is
         settled, so the next start does not raise it again.
+
+        Refused while R1-c holds or seals the engine, before anything moves: the
+        adopted equity could not be written, so the disagreement would not be
+        settled at all, only hidden in memory (:meth:`_continuity_guard`).
         """
+        self._continuity_guard("adopt_reconciled_equity", operator=True)
         if not note:
             raise RiskViolation("adopting a reconciled equity requires a stated reason")
         if self._state_unreadable:
@@ -1030,6 +1180,8 @@ class RiskEngine:
         day an account went to zero showed a flat P&L. The halt is unaffected;
         this is about what the file says happened.
         """
+        if self._continuity_guard("update_equity"):
+            return
         if equity <= 0:
             self.state.equity = equity
             self.state.daily_pnl = equity - self.state.day_start_equity
@@ -1087,6 +1239,8 @@ class RiskEngine:
 
     def record_order(self) -> None:
         """Register an order for rate limiting. Halts if the rate is exceeded."""
+        if self._continuity_guard("record_order"):
+            return
         now = self._clock()
         self._prune_order_times()
         self.state.order_times.append(now)
@@ -1099,6 +1253,8 @@ class RiskEngine:
 
     def record_trade_result(self, profit_abs: float) -> None:
         """Track the loss streak and start a cooldown when it is hit."""
+        if self._continuity_guard("record_trade_result"):
+            return
         if profit_abs < 0:
             self.state.consecutive_losses += 1
             if self.state.consecutive_losses >= self.limits.loss_streak_limit:
@@ -1127,6 +1283,8 @@ class RiskEngine:
         ``FreqtradeBot.enter_positions``. Position adjustments extend that one
         trade rather than creating a second.
         """
+        if self._continuity_guard("set_position_exposure"):
+            return
         if stake > 0:
             self.state.open_positions[pair] = stake
         else:
@@ -1134,6 +1292,8 @@ class RiskEngine:
         self._persist()
 
     def close_position(self, pair: str) -> None:
+        if self._continuity_guard("close_position"):
+            return
         self.state.open_positions.pop(pair, None)
         self._persist()
 
@@ -1169,6 +1329,8 @@ class RiskEngine:
         would otherwise begin with no opinion about freshness and approve
         entries on data nobody has checked.
         """
+        if self._continuity_guard("note_feed"):
+            return
         delay_s = (now_ns - last_minute_close_ns) / 1e9
         if delay_s < 0:
             if self.state.stale_feed_since is None:
@@ -1200,6 +1362,8 @@ class RiskEngine:
         restart does not, which is why it lives in the persisted state: a
         dispute a reboot forgets is a dispute that gets traded through.
         """
+        if self._continuity_guard("note_reconciliation"):
+            return
         if disputed is None:
             self.state.reconciliation_disputed.pop(symbol, None)
             logger.warning("Reconciliation dispute on %s cleared by operator", symbol)
@@ -1231,6 +1395,8 @@ class RiskEngine:
         a settlement belongs to a position, and guessing which way an
         unattributed one cut would put a fabricated number into a guard.
         """
+        if self._continuity_guard("note_funding_settlement"):
+            return
         sign = _position_sign(side)
         if sign is None:
             raise RiskViolation(
@@ -1363,6 +1529,11 @@ class RiskEngine:
 
         if self.state.halted:
             return RiskDecision(False, f"halted: {self.state.halt_reason}")
+
+        if self._continuity_pending:
+            # A state R1-c has not yet vouched for authorises nothing; see
+            # `hold_for_continuity_adjudication`.
+            return RiskDecision(False, "risk continuity not yet adjudicated")
 
         if self._clock() < self.state.cooldown_until:
             remaining = self.state.cooldown_until - self._clock()

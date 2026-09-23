@@ -376,7 +376,12 @@ def seed_or_reconcile_equity(
         against an account state that does not exist.
     ``LOADED``
         A restart carrying real persisted history. Do not touch the equity;
-        reconcile it instead.
+        reconcile it instead. A ``LOADED`` state R1-c has found a
+        ``RISK_STATE_MISMATCH`` in is not reconciled until that finding is
+        adjudicated: :func:`build_risk_engine` holds it, and
+        :meth:`chimera.demo.runner.DemoRunner.start` calls this function once a
+        crash has explained it -- or never, when the dispute stands, because
+        the answer would be about the wrong file and would be written over it.
 
     **Reconciliation.** The comparison is exact and invents no tolerance,
     because it is made in the domain the value actually travelled through. The
@@ -510,11 +515,18 @@ def build_risk_engine(
     inside a tick produces it too
     (:attr:`chimera.demo.risk_continuity.RiskContinuity.crash_could_explain`),
     only the runner can tell the two apart (its crash triage, and the
-    crash-window proofs that need the limits and ledger it reads), and nothing is
-    fabricated by letting it through -- the state is ``LOADED``, so what happens
-    next is R1-b's reconciliation against the campaign's accounting rather than
-    a seed. :meth:`chimera.demo.runner.DemoRunner._risk_continuity_stands`
-    decides that one, and seals the engine there before startup can write.
+    crash-window proofs that need the limits and ledger it reads).
+    :meth:`chimera.demo.runner.DemoRunner._risk_continuity_stands` decides that
+    one. Until it has, the engine is HELD
+    (:meth:`chimera.risk.RiskEngine.hold_for_continuity_adjudication`): no kill
+    switch look that could write, and **no R1-b reconciliation either**. An
+    earlier revision let R1-b run here on the grounds that a ``LOADED`` state is
+    reconciled rather than seeded, so nothing is fabricated -- but
+    reconciliation is itself a writer: a stale or foreign file whose equity is
+    not the ledger's made it halt on ``equity_dispute:`` and persist that halt
+    over the bytes R1-c was about to dispute. The runner seals the held engine
+    if the finding stands and releases it -- then runs
+    :func:`seed_or_reconcile_equity` -- if a crash explains it.
 
     When the verdict disputes, the engine is halted and SEALED
     (:meth:`chimera.risk.RiskEngine.halt_for_continuity_dispute`): nothing is
@@ -528,7 +540,8 @@ def build_risk_engine(
     deliberately: R1-b's question is *does the persisted equity match the
     campaign's accounting*, and it presumes the persisted state is this
     campaign's. When that presumption is what is in dispute, an answer to it
-    would be an answer about the wrong file.
+    would be an answer about the wrong file. The same holds while the dispute is
+    merely pending, and there the answer would also be a write.
     """
     root = Path(state_dir if state_dir is not None else config.runner_setting("state_dir"))
 
@@ -549,17 +562,22 @@ def build_risk_engine(
     if continuity.disputed and not continuity.crash_could_explain:
         engine.halt_for_continuity_dispute(continuity.halt_reason)
         return engine
-    if not continuity.disputed:
-        # Deliberately NOT for a crash-could-explain ``RISK_STATE_MISMATCH``.
-        # That fault is deferred to `chimera.demo.runner.DemoRunner`'s own
-        # triage, which has not run yet -- it needs the log read before
-        # anything here writes -- so a kill switch present beside a disputed,
-        # not-yet-triaged file must not halt-and-persist over the disputed
-        # bytes before the runner decides whether the finding stands. The
-        # runner checks the switch itself, later, once that decision is made
-        # (`DemoRunner.start`); an undisputed engine has no such decision
-        # pending and is checked here as it always was.
-        engine.check_kill_switch()
+    if continuity.disputed:
+        # A crash-could-explain ``RISK_STATE_MISMATCH``: pending, not settled.
+        # `chimera.demo.runner.DemoRunner.start` adjudicates it (its crash
+        # triage, the crash-window proofs), and until it has, NOTHING may touch
+        # the questioned file -- not the kill switch, and not R1-b either: a
+        # stale or foreign file whose equity is not the ledger's made R1-b halt
+        # on `equity_dispute:` and persist that halt over the disputed bytes,
+        # destroying the evidence, changing the hash the finding is keyed on,
+        # and leaving the campaign halted on R1-b's reason instead of R1-c's.
+        # The hold makes every writer refuse; the runner either seals the
+        # engine (the finding stands) or releases it and runs R1-b's
+        # reconciliation then, looking at the switch later in `start()` as it
+        # already did for this case.
+        engine.hold_for_continuity_adjudication()
+        return engine
+    engine.check_kill_switch()
     seed_or_reconcile_equity(engine, capital=capital, state_dir=root)
     return engine
 

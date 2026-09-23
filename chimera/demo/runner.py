@@ -68,7 +68,12 @@ from chimera.demo.risk_continuity import (
     assess_risk_continuity,
     risk_state_hash,
 )
-from chimera.demo.risk_wiring import is_equity_reconciliation_halt, ledger_equity, risk_limits
+from chimera.demo.risk_wiring import (
+    is_equity_reconciliation_halt,
+    ledger_equity,
+    risk_limits,
+    seed_or_reconcile_equity,
+)
 from chimera.demo.rules import HedgeTarget, RuleDecision, RuleError, RuleRegistry
 from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.domain import PositionSide
@@ -575,6 +580,18 @@ class DemoRunner:
         continuity_stands = self._risk_continuity_stands(triage)
         if continuity_stands:
             self.risk.halt_for_continuity_dispute(self._risk_continuity.halt_reason)
+        elif self.risk.continuity_pending:
+            # The other verdict on a `RISK_STATE_MISMATCH` `build_risk_engine`
+            # held: a crash explains it, so the file is this campaign's own state
+            # one window ahead of the log. Only NOW may anything write to it, and
+            # the first writer is the one the hold deferred -- R1-b's
+            # reconciliation against the carry ledger, which every loaded
+            # restart owes and which ran BEFORE this verdict until it was found
+            # to persist its `equity_dispute:` halt over bytes this very check
+            # might have had to preserve. The kill switch is looked at below, as
+            # it always was for this case.
+            self.risk.release_continuity_hold()
+            seed_or_reconcile_equity(self.risk, capital=self.capital, state_dir=self.state_dir)
 
         self._append(
             RecordKind.STARTUP,
@@ -1157,9 +1174,10 @@ class DemoRunner:
         the fields that window writes reproduces the log's own FULL hash, and,
         for the equity window, the real `update_equity` replayed on that prior
         reproduces the file and the carry ledger holds the same equity. A day
-        roll or a new peak is NOT proved -- the prior baseline and peak are
-        stated nowhere in plaintext, and recovering them is replay, canonical
-        R1-i -- so those windows stay sealed. See
+        roll or a new peak is NOT proved -- the prior baseline and peak are not
+        restated by the record the crash preceded, and reconstructing them from
+        the campaign's history is replay-shaped work, canonical R1-i -- so
+        those windows stay sealed. See
         `chimera.demo.risk_continuity._crash_transition`.
         """
         verdict = self._risk_continuity
@@ -2324,6 +2342,16 @@ class DemoRunner:
             raise RunnerError("resume requires an operator note stating what was checked")
         if self.state is not RunnerState.HALT:
             raise RunnerError("the runner is not halted; there is nothing to resume from")
+        # Canonical R1-c: a continuity-sealed Aegis may not be resumed, and
+        # `RiskEngine.resume` refuses it too. Checked here first so the refusal
+        # is the operator-facing one and comes before anything is appended.
+        if self.risk.continuity_disputed:
+            raise RunnerError(
+                "cannot resume: Aegis is sealed by an R1-c continuity dispute "
+                f"({self.risk.state.halt_reason}). Nothing it would clear can be "
+                "persisted, and this build has no clearing path for the finding; see "
+                "the RECOVERY record and docs/demo_runbook.md"
+            )
         # A halt whose cause is still true is not resumable. `resume` used to go
         # straight to RECOVER, so a ledger that may not speak could have its halt
         # cleared without the file being repaired: the mute correctly kept it
@@ -2522,6 +2550,20 @@ class DemoRunner:
             )
         self._require_active("resolve-equity")
         reason = self.risk.state.halt_reason
+        # Before the halt reason is even read as an equity dispute. A sealed
+        # engine persists nothing, so an adoption here would be a READY that
+        # the next start contradicts -- and `RiskEngine.adopt_reconciled_equity`
+        # refuses it anyway, as an exception the CLI would show as a traceback.
+        # The engine can carry an `equity_dispute:` reason under the seal when
+        # the disputed file was itself halted on one: the seal keeps the first.
+        if self.risk.continuity_disputed:
+            raise RunnerError(
+                "cannot settle the equity dispute: Aegis is sealed by an R1-c continuity "
+                f"dispute and is halted on {reason!r}. The persisted risk state is not "
+                "known to be this campaign's, so no equity adopted into it could be "
+                "written; nothing was changed. See the RECOVERY record and "
+                "docs/demo_runbook.md"
+            )
         if not self.risk.state.halted or not is_equity_reconciliation_halt(reason):
             held = f"halted on {reason!r}" if self.risk.state.halted else "not halted"
             raise RunnerError(

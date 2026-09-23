@@ -124,12 +124,20 @@ RISK_CONTINUITY_PREFIX = "risk_continuity:"
 #: The ``STARTUP`` payload field that says whether THIS run's Aegis was sealed
 #: by an R1-c dispute (:attr:`chimera.risk.RiskEngine.continuity_disputed`,
 #: settled before ``STARTUP`` is appended and fixed for the run's life). A
-#: sealed engine persists nothing, so the ``HALT``, ``RESUME``, ``OPERATOR`` and
-#: ``INCOMPLETE_STATE`` records its run appends describe no write to
-#: ``risk.json``; :func:`read_log_risk_history` reads the field per run, from
-#: one ``STARTUP`` to the next, and never carries it across. Absent means
-#: ``False``: every log written before this field existed was written by a
-#: build that could not seal at all.
+#: sealed engine persists nothing, so no record its run appends -- a restated
+#: ``risk.state_hash`` included -- describes a write to ``risk.json``;
+#: :func:`read_log_risk_history` reads the field per run, from one ``STARTUP``
+#: to the next, and never carries it across.
+#:
+#: Absent means ``False``. That is right for every log written by a ``main``
+#: build from before PR #102 (none can seal) and moot for every build from
+#: ``74edc25`` on (each writes the field on every ``STARTUP``). It is WRONG for
+#: a log written by an intermediate, unmerged PR #102 build from ``dded833`` up
+#: to and including ``471c1b7``, which could already seal but did not yet write
+#: the field; a sealed run of one of those reads here as unsealed. Reading such
+#: a log correctly is outside this code: the compatibility condition -- no state
+#: directory was ever run by one of those builds -- is for the owner to attest,
+#: and ``docs/demo_runbook.md`` states it.
 RISK_CONTINUITY_SEALED_FIELD = "risk_continuity_sealed"
 
 
@@ -227,11 +235,13 @@ def _crash_transition(
     **What this does not prove, and why each stays disputed.** A ``DECISION``
     that rolled the UTC day overwrote ``day_start_equity`` and ``daily_pnl``,
     and one that set a new peak overwrote ``peak_equity``. The values they held
-    before are stated in plaintext nowhere: the prior day's baseline is the
-    equity of whichever write first touched that day (possibly the configured
-    capital seed, which no record carries), and the prior peak is the running
-    maximum over every equity Aegis was ever given. Recovering either is a
-    reconstruction of the campaign's equity history -- replay -- which is
+    before are not restated by the record the crash preceded: the prior day's
+    baseline is the equity of whichever write first touched that day, and the
+    prior peak is the running maximum over every equity Aegis was ever given.
+    Neither is necessarily unavailable -- the configured capital or a bounded
+    scan of the log's earlier records may reconstruct them -- but that is
+    historical reconstruction, replay-shaped logic over the campaign's equity
+    history, well beyond the one-step local inverse every proof here is. It is
     canonical **R1-i**'s crash/restart work, so those windows stay
     ``RISK_STATE_MISMATCH``. So do the windows closed by a ``STATE_HASH``
     record rather than a ``HALT`` or ``DECISION`` (``note_funding_settlement``'s
@@ -654,6 +664,16 @@ def _statement_of(record: Mapping[str, Any]) -> tuple[LogRiskStatement, str]:
     return LogRiskStatement.NONE, ""
 
 
+def _statement_in_run(found: LogRiskStatement, *, sealed_run: bool) -> LogRiskStatement:
+    """What a record's statement counts for, given the run that appended it.
+
+    Nothing, when the run's own ``STARTUP`` says its Aegis was SEALED -- of any
+    kind, a restated ``risk.state_hash`` included; the previous statement
+    stands. See the ``sealed_run`` notes in :func:`read_log_risk_history`.
+    """
+    return LogRiskStatement.NONE if sealed_run else found
+
+
 def _recorded_dispute(record: Mapping[str, Any]) -> tuple[str, str, str] | None:
     """The identity of an R1-c finding a previous start already recorded."""
     if str(record.get("kind", "")) != RecordKind.RECOVERY.value:
@@ -734,6 +754,17 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
     #: run reaches it in production: the CLI never ticks after ``start()``
     #: returns HALT, and every sealed run does. Only a harness driving ``tick``
     #: past a HALT can append one from a sealed run.
+    #:
+    #: So does a ``STATE_HASH`` -- a ``DECISION``, ``FUNDING``,
+    #: ``RECONCILIATION`` or ``LIQUIDATION_TOUCH`` record carrying
+    #: ``risk.state_hash`` -- and this is not only defence in depth. The engine
+    #: refuses every mutation while sealed (``RiskEngine._continuity_guard``), so
+    #: a sealed run's hash is the hash of the state as it was LOADED, plus the
+    #: continuity halt if it was not already halted. When the disputed file was
+    #: itself halted, that is exactly the disputed file's own hash: a sealed run
+    #: that restated it would hand the next start a "matching" statement and
+    #: clear the dispute with no repair at all. A record from a run that could
+    #: not write ``risk.json`` cannot prove what ``risk.json`` holds.
     sealed_run = False
 
     for path in day_files(root):
@@ -744,13 +775,7 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
             if kind == RecordKind.STARTUP.value:
                 sealed_run = record.get(RISK_CONTINUITY_SEALED_FIELD) is True
             found, record_hash = _statement_of(record)
-            if sealed_run and found in (
-                LogRiskStatement.HALTED,
-                LogRiskStatement.RUNNING,
-                LogRiskStatement.MOVED,
-            ):
-                # Not a statement about the file. The previous one stands.
-                found = LogRiskStatement.NONE
+            found = _statement_in_run(found, sealed_run=sealed_run)
             if found is not LogRiskStatement.NONE:
                 statement = found
                 statement_kind = kind
