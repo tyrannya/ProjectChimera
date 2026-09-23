@@ -608,24 +608,41 @@ def test_the_state_directory_is_not_part_of_the_hashed_identity():
     assert config_hash(build("/srv/a/state")) == config_hash(build("/srv/b/state"))
 
 
-def test_max_catchup_minutes_is_part_of_the_hashed_identity():
-    """The negative control for the test above: a path is excluded, a rule is not.
+def test_a_runner_setting_is_part_of_the_hashed_identity():
+    """The negative control for the test above: a path is excluded, a pace is not.
 
-    `max_catchup_minutes` decides how many minutes a restart processes, which
-    changes which decisions exist at all, so it belongs in the identity.
+    `reconcile_every_minutes` decides how often the reconciliation runs, and a
+    reconciliation can halt a campaign, so it belongs in the identity. This test
+    used to make the same point with `max_catchup_minutes`, which R1-g removed.
     """
 
-    def build(limit: int):
+    def build(every: int):
         return parse_demo_config(
             {
                 **_campaign_payload(),
                 "profile": "TEST",
-                "runner": {"max_catchup_minutes": limit},
+                "runner": {"reconcile_every_minutes": every},
             },
             expected_profile=ConfigProfile.TEST,
         )
 
-    assert config_hash(build(3)) != config_hash(build(5))
+    assert config_hash(build(30)) != config_hash(build(60))
+
+
+def test_the_retired_catch_up_cap_is_refused_by_name():
+    """R1-g removed it, and a config still carrying it is told so.
+
+    Not accepted and ignored: a bound that no code path enforces is the defect
+    class R1-k hunts, and this one had entered the config hash, so a campaign
+    could have been identified by a limit that did nothing. Nor is it refused as
+    an "unknown key", which would leave an operator bisecting for a setting that
+    was deliberately removed.
+    """
+    with pytest.raises(DemoConfigError, match="retired setting") as raised:
+        parse_demo_config(
+            {**_campaign_payload(), "runner": {"max_catchup_minutes": 3}},
+        )
+    assert "R1-g" in str(raised.value)
 
 
 def test_an_unknown_runner_setting_is_refused_rather_than_defaulted():
@@ -637,4 +654,4 @@ def test_a_runner_setting_that_is_not_one_is_refused_when_read():
     config = parse_demo_config(_campaign_payload())
     with pytest.raises(DemoConfigError, match="is not a runner setting"):
         config.runner_setting("grace")
-    assert config.runner_setting("max_catchup_minutes") == 3
+    assert config.runner_setting("reconcile_every_minutes") == 60

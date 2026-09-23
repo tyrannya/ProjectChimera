@@ -421,25 +421,35 @@ def test_the_runner_written_kinds_are_the_runners_own_append_sites(tmp_path):
         assert isinstance(first.value, ast.Name) and first.value.id == "RecordKind"
         written.add(first.attr)
     assert sorted(written) == sorted(reports.RUNNER_WRITTEN_KINDS)
-    # The second, independent oracle. Every one of section 9.1's kinds now has a
-    # writer: PR-10R closed the D1 gap, and this equality is what says so from
-    # the runner's own source rather than from a constant beside it.
-    assert set(TWELVE_KINDS) - written == set()
+    # The second, independent oracle, and R1-g moved it by exactly one kind.
+    # PR-10R had closed the D1 gap and every one of section 9.1's twelve kinds
+    # had a writer. R1-g removed the age cap, so `SKIPPED_STALE` has no append
+    # site in this build -- and the kind deliberately stays in the log schema,
+    # because logs written before R1-g hold such records. Naming it here rather
+    # than dropping the assertion keeps the fact checked: a future build that
+    # quietly grew a second unwritable kind would still fail.
+    assert set(TWELVE_KINDS) - written == {"SKIPPED_STALE"}
 
 
 def test_input_coverage_separates_absent_from_unwritable(tmp_path):
-    """A campaign log: absent kinds, and every one of them writable.
+    """A campaign log: absent kinds, and which of them this build could write.
 
-    The block's whole job is to keep those two facts apart. On this build the
-    second is uniformly true, so every zero below is an observation -- which is
-    the claim the block has to be able to make, and could not before PR-10R.
+    The block's whole job is to keep those two facts apart, and since R1-g this
+    build actually exercises both sides of it. Every zero below except one is an
+    observation; ``SKIPPED_STALE``'s is a statement about the build, because the
+    age cap that wrote those records is gone and nothing appends one any more.
     """
     harness = _campaign(tmp_path)
     coverage = daily_report(harness.state_dir, DAY)["input_coverage"]["by_kind"]
 
     assert coverage["FUNDING"] == {"present": False, "records": 0, "runner_can_write": True}
-    for kind in ("RECONCILIATION", "LIQUIDATION_TOUCH", "RECOVERY", "SKIPPED_STALE"):
+    for kind in ("RECONCILIATION", "LIQUIDATION_TOUCH", "RECOVERY"):
         assert coverage[kind]["runner_can_write"] is True, kind
+    assert coverage["SKIPPED_STALE"] == {
+        "present": False,
+        "records": 0,
+        "runner_can_write": False,
+    }
     assert coverage["HALT"] == {"present": False, "records": 0, "runner_can_write": True}
     assert coverage["DECISION"]["present"] is True
     assert coverage["DECISION"]["runner_can_write"] is True
@@ -461,16 +471,18 @@ def test_input_coverage_marks_a_kind_present_when_the_log_holds_one(tmp_path):
         ],
     )
     coverage = daily_report(state_dir, DAY)["input_coverage"]["by_kind"]
-    for kind in (
-        "FUNDING",
-        "RECONCILIATION",
-        "LIQUIDATION_TOUCH",
-        "RECOVERY",
-        "SKIPPED_STALE",
-    ):
+    for kind in ("FUNDING", "RECONCILIATION", "LIQUIDATION_TOUCH", "RECOVERY"):
         assert coverage[kind]["present"] is True, kind
         assert coverage[kind]["records"] == 1, kind
         assert coverage[kind]["runner_can_write"] is True, kind
+    # A record this build cannot write is still counted when the log holds one.
+    # That is the case R1-g created and the reason the kind stays in the schema:
+    # a report reading a pre-R1-g campaign has to be able to report its skips.
+    assert coverage["SKIPPED_STALE"] == {
+        "present": True,
+        "records": 1,
+        "runner_can_write": False,
+    }
 
 
 def test_a_record_with_no_minute_is_counted_rather_than_dropped(tmp_path):

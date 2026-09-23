@@ -106,11 +106,18 @@ FAULTS_FIELD = "faults"
 #: which is an operational timing rather than anything a decision depends on.
 RUNNER_FIELD = "runner"
 
-#: Section 2.2 line 119 names ``max_catchup_minutes`` and gives it 3; section
-#: 8.1's READY row gives the grace 5 seconds. These are the runner's pace, not
-#: its judgement -- no threshold here can change what a rule decides.
+#: Section 8.1's READY row gives the grace 5 seconds. These are the runner's
+#: pace, not its judgement -- no threshold here can change what a rule decides.
+#:
+#: ``max_catchup_minutes`` was here, with section 2.2 line 119's default of 3,
+#: until R1-g removed the age cap it configured: the runner now decides every
+#: closed minute since its last decided one. It is deliberately NOT kept as an
+#: accepted-and-ignored key. A configured bound that no code path enforces is
+#: the defect class R1-k exists to hunt, and it is worse here than elsewhere,
+#: because this one entered the CONFIG HASH: a campaign could be identified by a
+#: limit that did nothing. A config still carrying the key is now refused by
+#: name rather than silently honoured or silently dropped.
 RUNNER_DEFAULTS: Mapping[str, Any] = {
-    "max_catchup_minutes": 3,
     "ready_grace_seconds": 5,
     "reconcile_every_minutes": 60,
     "state_dir": "state/demo",
@@ -137,8 +144,21 @@ PATH_SETTINGS: frozenset[str] = frozenset({"state_dir"})
 #: non-positive value on any of them switches a section 8.1 behaviour off
 #: instead of pacing it; see :meth:`DemoConfig.runner_setting`.
 _POSITIVE_SETTINGS: frozenset[str] = frozenset(
-    {"max_catchup_minutes", "reconcile_every_minutes", "ready_grace_seconds"}
+    {"reconcile_every_minutes", "ready_grace_seconds"}
 )
+
+#: Runner settings that once existed and now do not, with what to say about
+#: each. A config carrying one is refused with its history rather than with
+#: "unknown key", because the operator's question is "what happened to my
+#: setting", and a parser that answers it saves a bisect.
+RETIRED_SETTINGS: Mapping[str, str] = {
+    "max_catchup_minutes": (
+        "removed by R1-g: the runner now decides every closed minute since its "
+        "last decided minute, so there is no age cap left to configure. Remove "
+        "the key; a minute the recorder never wrote is still recorded as "
+        "INCOMPLETE_STATE"
+    ),
+}
 
 #: Section 7.4's proposed demo limits, by name. Every one is required: a limit
 #: that could be omitted would fall back to a default nobody reviewed, and the
@@ -377,8 +397,8 @@ def canonical_material(config: DemoConfig) -> str:
     if config.faults is not None:
         material[FAULTS_FIELD] = dict(config.faults)
     # The rule parameters are decision-relevant in the plainest sense. The runner
-    # block is hashed too -- `max_catchup_minutes` decides how many minutes a
-    # restart processes, which changes which decisions exist at all -- but
+    # block is hashed too -- `reconcile_every_minutes` decides how often the
+    # reconciliation runs, and a reconciliation can halt a campaign -- but
     # WITHOUT `state_dir`, which is a path.
     #
     # This function's contract above says "no path anywhere", and the reason is
@@ -601,6 +621,12 @@ def parse_demo_config(
     if runner is not None and not isinstance(runner, Mapping):
         raise DemoConfigError(f"{where}{RUNNER_FIELD} must be a JSON object")
     if runner is not None:
+        retired = sorted(set(runner) & set(RETIRED_SETTINGS))
+        if retired:
+            detail = "; ".join(f"{name}: {RETIRED_SETTINGS[name]}" for name in retired)
+            raise DemoConfigError(
+                f"{where}{RUNNER_FIELD} carries retired setting(s) {retired}. {detail}"
+            )
         unknown_runner = sorted(set(runner) - set(RUNNER_DEFAULTS))
         if unknown_runner:
             raise DemoConfigError(

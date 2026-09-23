@@ -108,6 +108,7 @@ RUNNER_STATE_SCHEMAS_READ: tuple[str, ...] = (
 )
 
 MINUTE_NS = 60_000_000_000
+MINUTE_MS = 60_000
 _MS_TO_NS = 1_000_000
 ZERO = Decimal("0")
 SPOT_LEG = "spot"
@@ -216,7 +217,12 @@ class TickOutcome:
 
     minute_ms: int
     state: RunnerState
-    kind: RecordKind
+    #: The record this minute wrote, or ``None`` when the minute was DEFERRED
+    #: (R1-g): the runner could not yet decide it, wrote nothing, and left the
+    #: cursor where it was so the same minute is attempted again. A deferral is
+    #: not a non-decision to be recorded -- the minute has not been passed over,
+    #: it has not been reached -- so it deliberately has no record kind.
+    kind: RecordKind | None
     decisions: list[RuleDecision] = field(default_factory=list)
     vetoed: bool = False
     executed: bool = False
@@ -1089,6 +1095,21 @@ class DemoRunner:
             reason = f"feed_unreadable: {exc}"
             self._halt(reason)
             return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
+        # R1-g's funding deferral, and it is placed HERE for a reason: before
+        # `install_quote` ages the fill model, before the feed is noted and
+        # before the minute is counted as attempted. A deferred minute must
+        # leave nothing behind, because the next pass runs it again from the
+        # top; a deferral after any of those would have the retry age the model
+        # twice and count the minute twice.
+        #
+        # Only a COMPLETE minute may defer. An incomplete one has no decision to
+        # wait for -- it books no funding at all -- and deferring it would be a
+        # wait for something that is never coming.
+        if state.complete:
+            defer = self._funding_defer_reason(minute_ms, state)
+            if defer is not None:
+                return self._deferred(minute_ms, defer)
+
         self.risk.note_feed(minute_ns + MINUTE_NS, self.clock.now_ns)
         # Counted here, before anything is decided about the minute, because the
         # quantity is "minutes attempted": a minute that halts inside a rule is
@@ -2400,41 +2421,50 @@ class DemoRunner:
         return self.run_minutes(minutes)
 
     def catch_up(self, *, now_ms: int | None = None) -> list[TickOutcome]:
-        """Process every pending minute in order; decide only the recent ones.
+        """Decide every closed minute since the last decided one, in order.
 
-        Section 2.2 line 120, in full: "minutes between the persisted cursor and
-        now are processed in order with `catch_up=True` in the log, and no
-        position change is executed for catch-up minutes older than the
-        configured `max_catchup_minutes` (default 3): older minutes are logged as
-        `SKIPPED_STALE`."
+        **R1-g removed the age cap this method used to apply.** Section 2.2 line
+        120 had the runner decide only the newest `max_catchup_minutes`
+        (default 3) pending minutes and write `SKIPPED_STALE` for every older
+        one. The master roadmap's R1-g replaces that with "the runner decides
+        every closed minute since its last decided minute (no three-minute cap)
+        or records each skip with a reason", and its acceptance is zero
+        `SKIPPED_STALE` minutes while the recorder was healthy.
 
-        Two clauses, and before PR-10R only half of the first was implemented:
-        the runner ticked the OLDEST `max_catchup_minutes` pending minutes and
-        abandoned the rest with no record. That is the wrong end of the queue --
-        a restart after a two-hour outage decided the two-hour-old minutes at the
-        two-hour-old book and left the current ones unread -- and it left the
-        campaign's log with a hole where the abandoned minutes should be, because
-        nothing in the log said they had been passed over.
+        **Why deciding an old minute is sound here, and would not be in a system
+        that read a clock.** The objection to acting on a two-hour-old minute is
+        that the market has moved. That objection is about acting at the CURRENT
+        price on a STALE signal, and this runner cannot do that: every input to
+        the minute comes from the minute's own recorded row, the fill is priced
+        from the book recorded at that minute, and
+        :class:`~chimera.demo.clock.RunnerClock` is advanced by observed record
+        instants rather than by the wall. A minute decided late is decided at
+        exactly the state it would have been decided at on time, which is also
+        why a replay of the same files reproduces it. The freshness question --
+        "is the feed live enough to be trading at all" -- is a different one, it
+        belongs to the READY gate, and R1-f is where it is answered.
 
-        What runs now: every minute from the cursor up to `now_ms` is accounted
-        for, in order. The last `max_catchup_minutes` of them are ticked
-        normally. Every older one advances the cursor and writes one
-        `SKIPPED_STALE` record naming its age -- no rule evaluates, no Aegis
-        check runs and no position changes, which is exactly "no position change
-        is executed".
+        What is left of the old behaviour: nothing skips for age. A minute the
+        recorder never wrote still cannot be decided, and that minute is
+        recorded as `INCOMPLETE_STATE` by :meth:`tick`, naming what was missing.
+        So every minute is still accounted for and every non-decision still
+        carries its reason; what no longer happens is a decision being abandoned
+        because the runner was behind.
 
         `now_ms` is the instant catching up is happening at. Without one the
         newest minute the feed holds is used, because that is the newest minute
         that could be decided; a caller that means something else says so.
 
-        Section 9.1's schema has no `catch_up` key, so it is written at the TOP
-        LEVEL of the record -- the log's writer permits extra keys, and section
-        10's parity comparison lists the fields that must match without naming
-        this one, so a flag both live and replay produce identically cannot break
-        parity. Recorded in the PR.
+        **The `catch_up` flag is gone with the skip it belonged to.** Section 2.2
+        line 120 also had every drained minute carry `catch_up: True` at the top
+        level of its record, and the only writer of that flag was the
+        `SKIPPED_STALE` path this change removes. It is not reinstated on the
+        decision records, and deliberately so: in a replay EVERY minute is
+        caught up, so a flag written live would differ from the same minute's
+        flag in replay, and section 10's comparison would be reading a field
+        whose value records when the runner looked rather than what it decided.
         """
         self._require_active("catch_up")
-        limit = int(self.config.runner_setting("max_catchup_minutes"))
         # Read once. The window is what it was when catching up began; letting it
         # move as minutes are processed would make the answer depend on how long
         # the catch-up itself took, which is a wall-clock dependency by another
@@ -2458,11 +2488,15 @@ class DemoRunner:
             minute = self.cursor.next_minute_ms(now_ms=newest)
             if minute is None:
                 break
-            age = 0 if newest is None else (int(newest) - int(minute)) // 60_000
-            if age >= limit:
-                outcomes.append(self._skipped_stale(minute, age=age, limit=limit))
-            else:
-                outcomes.append(self.tick(minute))
+            outcome = self.tick(minute)
+            outcomes.append(outcome)
+            if outcome.kind is None:
+                # The minute is DEFERRED, not done: the cursor has not moved and
+                # the loop would hand back the same minute for ever. Stop here
+                # and let the caller come round again once the recorder has
+                # published further. Minutes are decided in order, so a later
+                # minute may not be decided ahead of this one.
+                break
         return outcomes
 
     def _newest_minute_ms(self, *, now_ms: int | None = None) -> int | None:
@@ -2477,45 +2511,90 @@ class DemoRunner:
             return int(now_ms)
         return self.cursor.latest_minute_ms()
 
-    def _skipped_stale(self, minute_ms: int, *, age: int, limit: int) -> TickOutcome:
-        """One catch-up minute too old to act on. Recorded, never silently dropped.
+    def _funding_defer_reason(self, minute_ms: int, state: MarketState) -> str | None:
+        """Why this minute cannot be decided yet, or ``None`` if it can (R1-g).
 
-        The cursor advances because the minute HAS been dealt with: the answer
-        for it is "too old to decide", which is a fact about the campaign and not
-        a gap in it. Nothing else about the position, the ledger or Aegis moves,
-        so a SKIPPED_STALE minute cannot change what a later minute decides.
+        R1-g: "a minute whose close coincides with a funding instant is decidable
+        only once its settlement row exists in the recorder output (or the
+        recorder has marked the instant as no-settlement) -- a late settlement
+        row defers the decision rather than skipping the booking."
+
+        **The defect this closes.** :meth:`_settle_funding` books every recorded
+        settlement the minute closed over. A settlement row that had not arrived
+        when the minute was decided was therefore booked against a LATER minute,
+        whichever one happened to be current when the row landed. A replay of
+        the same files -- where every row is present from the start -- books it
+        against the minute it belongs to. Same files, two different logs: a
+        parity divergence whose cause is a race that neither log records.
+
+        **What is compared.** The venue's own published schedule, carried on the
+        minute's recorded row as ``next_funding_time_ms``, against the
+        recorder's published watermark. If a scheduled settlement falls in the
+        window this minute would book -- ``(last processed minute, this minute's
+        close]`` -- and the recorder has not yet observed as far as that
+        instant, the minute waits. Once the watermark passes the instant, the
+        settlements file is complete for it by the recorder's own account: a row
+        means book it, no row means there was none to book, and either way the
+        answer no longer depends on when the runner happened to look.
+
+        Two deliberate non-cases. A watermark the recorder has not published at
+        all does NOT defer every minute: a campaign running against a recorder
+        that publishes no watermark would never decide anything, which is a
+        worse failure than the race this closes, so an absent watermark defers
+        only a minute that actually has a scheduled settlement in its window.
+        And a minute with no scheduled instant in its window never waits,
+        whatever the watermark says -- there is nothing for it to wait for.
         """
-        minute_ns = int(minute_ms) * _MS_TO_NS
-        self.clock.observe(minute_ns + MINUTE_NS)
-        record_hash = self._append(
-            RecordKind.SKIPPED_STALE,
-            minute_ns,
-            {
-                "catch_up": True,
-                "stale": {
-                    "age_minutes": int(age),
-                    "max_catchup_minutes": int(limit),
-                },
-                "veto_or_rejection": {
-                    "stage": "feed",
-                    "label": "skipped_stale",
-                    "detail": (
-                        f"the minute is {age} minute(s) behind the newest available one "
-                        f"and max_catchup_minutes is {limit}; no rule evaluated and no "
-                        "position changed"
-                    ),
-                },
-            },
+        scheduled = state.next_funding_time_ms
+        if scheduled is None:
+            return None
+        close_ms = int(minute_ms) + MINUTE_MS
+        last = self.cursor.last_minute_processed
+        # The window the booking would cover. Its lower bound is the previous
+        # decided minute's close, so a settlement is considered exactly once --
+        # by the first minute that closes at or after it.
+        lower_ms = int(minute_ms) if last is None else int(last) + MINUTE_MS
+        if not (lower_ms < int(scheduled) <= close_ms):
+            return None
+        # The row may simply be here already, which is the ordinary case and the
+        # requirement's own first clause: "decidable once its settlement row
+        # exists in the recorder output". Nothing waits when there is nothing
+        # left to wait for, and this is checked before the watermark so a run
+        # against a recorder that publishes no watermark at all still decides
+        # every minute whose settlements have landed.
+        try:
+            rows = self.cursor.settlements()
+        except Exception:
+            # An unreadable settlements file is not a reason to wait. It is a
+            # halt, and `_settle_funding` is where that is decided -- deferring
+            # here would hide a broken file behind an endless wait.
+            return None
+        if any(int(row.get(SETTLEMENT_INSTANT_FIELD, -1)) == int(scheduled) for row in rows):
+            return None
+        watermark = self.cursor.funding_watermark_ms()
+        if watermark is not None and int(watermark) >= int(scheduled):
+            return None
+        return (
+            f"funding settlement scheduled at {int(scheduled)} falls in this minute's "
+            f"booking window and the recorder has observed the funding stream only "
+            f"through {watermark!r}; deciding now would book the settlement against "
+            "a later minute than a replay would"
         )
-        self.cursor.mark_processed(minute_ms)
-        self.save_state()
-        return TickOutcome(
-            minute_ms,
-            self.state,
-            RecordKind.SKIPPED_STALE,
-            detail=f"stale by {age} minute(s)",
-            record_hash=record_hash,
-        )
+
+    def _deferred(self, minute_ms: int, reason: str) -> TickOutcome:
+        """The minute waits. Nothing is written and the cursor does not move.
+
+        No record, deliberately. A deferral is not an outcome for the minute --
+        it is the absence of one yet -- and writing it would put in the campaign
+        log an event that depends on when the runner looked, which is exactly the
+        wall-clock dependence the log is built to exclude. A replay, where the
+        row is already present, defers nothing and its log is identical.
+
+        Nothing else moves either: no clock observation, no state save, no
+        position, no Aegis call. The next pass re-reads the same minute.
+        """
+        logger.info("minute %s deferred: %s", minute_ms, reason)
+        return TickOutcome(minute_ms, self.state, None, detail=reason)
 
     # ------------------------------------------------------------------
     # helpers

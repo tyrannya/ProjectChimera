@@ -130,13 +130,20 @@ LEGS: tuple[str, ...] = ("spot", "perp")
 #: ``tests/test_demo_reports.py`` walks the runner's AST and fails if this tuple
 #: and its call sites disagree, so the disclosure cannot quietly go stale.
 #:
-#: PR-10R made the remaining five reachable: ``FUNDING`` from section 6.5's
-#: settlement path, ``RECONCILIATION`` from section 8.1's hourly and
-#: post-execution checks, ``LIQUIDATION_TOUCH`` from section 6.7's per-minute
-#: check, ``RECOVERY`` from section 9.3's crash handling and ``SKIPPED_STALE``
-#: from section 2.2's catch-up rule. All twelve are now written, and the tuple is
-#: kept — not deleted — because it is what makes that a checked fact rather than
-#: a claim in a docstring.
+#: PR-10R made five more reachable: ``FUNDING`` from section 6.5's settlement
+#: path, ``RECONCILIATION`` from section 8.1's hourly and post-execution checks,
+#: ``LIQUIDATION_TOUCH`` from section 6.7's per-minute check, ``RECOVERY`` from
+#: section 9.3's crash handling and ``SKIPPED_STALE`` from section 2.2's
+#: catch-up rule.
+#:
+#: **R1-g then removed the last of those.** The runner no longer skips a minute
+#: for being old, so nothing in this build appends a ``SKIPPED_STALE`` record and
+#: it is not in the tuple. The KIND itself stays in the log schema and in
+#: ``records_by_kind``, because logs written before R1-g hold such records and a
+#: report that could not count them would be unable to read the campaign's own
+#: history. That is exactly the distinction ``input_coverage`` exists to draw: a
+#: day with no ``SKIPPED_STALE`` record and a build that cannot write one are
+#: different facts, and both are now reported for this kind.
 RUNNER_WRITTEN_KINDS: tuple[str, ...] = (
     "DECISION",
     "FUNDING",
@@ -148,7 +155,6 @@ RUNNER_WRITTEN_KINDS: tuple[str, ...] = (
     "RECOVERY",
     "RESUME",
     "SHUTDOWN",
-    "SKIPPED_STALE",
     "STARTUP",
 )
 
