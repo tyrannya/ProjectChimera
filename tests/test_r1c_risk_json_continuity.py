@@ -2318,7 +2318,9 @@ def test_b4_resolve_equity_refuses_a_seal_that_kept_an_equity_dispute_reason(tmp
     document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
     document["halted"] = True
     document["halt_reason"] = f"{risk_wiring.EQUITY_DISPUTE_PREFIX} a stale copy's own halt"
-    risk_json(state_dir).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    risk_json(state_dir).write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     disputed = bytes_of(risk_json(state_dir))
 
     sealed = restart(tmp_path, config)
@@ -2525,7 +2527,9 @@ def sealed_restart(tmp_path: Path, *, halted_file: bool):
         document = json.loads(risk_json(state_dir).read_text(encoding="utf-8"))
         document["halted"] = True
         document["halt_reason"] = "a stale copy's own halt"
-        risk_json(state_dir).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+        risk_json(state_dir).write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     disputed = bytes_of(risk_json(state_dir))
     sealed = restart(tmp_path, config)
     assert sealed.runner.risk.continuity_disputed and sealed.runner.state is RunnerState.HALT
