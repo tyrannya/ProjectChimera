@@ -347,6 +347,195 @@ counters, cooldowns and funding state are all left exactly as the previous
 process wrote them, and the UTC day rolls on the first real mark rather than on
 construction.
 
+### When a missing `risk.json` is not a first start
+
+"There was no `risk.json`" is the right reading of a first start and the wrong
+reading of a campaign that has already run. The decision log is what tells the
+two apart, and it is now read before anything is seeded.
+
+**The log is evidence here, not a second risk authority.** Aegis remains the
+central risk authority; what the log answers is one question — *is the persisted
+Aegis state believable?* — and when the answer is no, the campaign stops rather
+than trading on a state nobody can vouch for. Nothing is rewritten to make the
+two agree: not the log, and not `risk.json`.
+
+**What is compared.** Every start reads the campaign's **verified** decision log
+and finds its last statement about the risk state. That is not the last line of
+the file and not the last record that happens to contain a hash:
+
+* `DECISION`, `FUNDING`, `RECONCILIATION` and `LIQUIDATION_TOUCH` records carry a
+  `risk.state_hash` — the whole Aegis snapshot, hashed. Those **restate** the
+  state, and `risk.json` must hash to the newest one.
+* a `HALT` record states that the campaign halted and restates no hash, so what
+  is checked against it is that `risk.json` is halted too.
+* a `RESUME`, an `OPERATOR` record (a flatten, a settled equity) or an
+  `INCOMPLETE_STATE` record can move the state and restate nothing, so nothing is
+  checked against them. The next decided minute restates the hash and the window
+  closes. **Do not read "the last line is the risk state" into this**: an
+  ordinary flatten really does move the equity and really does write a record
+  with no risk block, and a comparison that ignored that would refuse the most
+  routine thing in this runbook.
+
+**What is a dispute.** Four findings, each written to the log as a `RECOVERY`
+record whose `recovery.cause` names it, and each halting the campaign:
+
+| `recovery.cause` | what was found |
+| --- | --- |
+| `RISK_STATE_ABSENT` | there is no `risk.json` and the log holds records. Not a first start; the configured capital is **not** seeded. |
+| `RISK_STATE_UNREADABLE` | `risk.json` exists, could not be believed, and the log holds records. The bytes are preserved exactly as they are. |
+| `RISK_STATE_PRE_SCHEMA` | `risk.json` is the pre-schema halt record — a halt claim and no account state — and the log holds records. |
+| `RISK_STATE_MISMATCH` | `risk.json` is readable and current, and is not the state the log last recorded: a different hash, or running where the log says halted. |
+
+**Nothing writes the questioned file before the verdict.** The finding is
+reached from the file as it was read, and until it is settled nothing — not the
+kill switch, not R1-b's equity reconciliation, not an operator command — may
+change it: an absent `risk.json` stays absent and a present one stays
+byte-identical. Three of the findings are settled at once and seal. A
+`RISK_STATE_MISMATCH` is settled later in the same start, once the crash triage
+below has run, and Aegis is held unchanged until then. If the finding stands,
+the file is still exactly the bytes that were found when the campaign halts on
+`risk_continuity:`, whatever its equity says against the carry ledger. If a
+crash explains it, the file is released, and only **then** does R1-b reconcile
+its equity against the ledger — so a crash that also left the two equities
+apart still halts on `equity_dispute:`, now after the verdict rather than
+before it. (Until PR #102's third remediation that reconciliation ran first,
+and a stale or foreign file whose equity was not the ledger's had R1-b's
+`equity_dispute:` halt persisted over it before R1-c ruled: the found bytes were
+lost, the campaign reported R1-b's reason instead of R1-c's, and every restart
+recorded the file it had itself rewritten as a new finding.)
+
+The `RECOVERY` record is written **once per finding**, not once per restart: a
+disputed campaign gets started repeatedly and a record each time would bury the
+finding in copies of itself. The `HALT` record each restart writes is unchanged.
+A finding that recurs after a genuine repair — the file restored, a minute
+decided, the file lost again — is recorded again, because the log restated the
+hash in between. Each sealed restart's own `STARTUP` still says it was sealed.
+
+**What is deliberately not a dispute.**
+
+* A first start: no records, so there is nothing to be continuous with.
+* A halted campaign restarting halted. It keeps the reason it halted for.
+* A `risk.json` that is *more* cautious than the log — halted where the log's
+  newest statement is a `RESUME`. Refusing that would be a refusal with no safety
+  in it.
+* A crash inside a tick. Aegis persists before the record that restates it, so a
+  process killed in between leaves a `risk.json` genuinely **ahead** of the log —
+  which looks exactly like a swapped file. Section 9.3's own triage already names
+  that crash (`LOG_BEHIND_STATE`, `LOG_AHEAD_OF_STATE`, `TORN_TAIL`), excludes
+  what it must and continues, and a continuity halt on top would take that
+  recovery away. So a `RISK_STATE_MISMATCH` stands down when the triage really
+  found a crash, and only then. The three findings no crash can produce — an
+  absent file, an unreadable one, a pre-schema one — never stand down.
+* A crash inside one of five narrow **Aegis-only** windows, and only when it is
+  *proved*. Aegis persists before the record that would restate it, and in
+  these windows nothing but Aegis moved, so section 9.3's triage — stores,
+  ledger accumulators, chain head — finds nothing. Each is proved by reverting
+  exactly the fields that window writes to the one value they held before, and
+  requiring the result to reproduce the log's **full** `risk.state_hash`:
+  * `halt` — a bare `RiskEngine.halt` (a rule exception, a dispute, any
+    `_halt` site) before its `HALT` record: `halted`/`halt_reason` back to
+    `false`/`""`.
+  * `kill_switch_halt` — the kill switch found on a running engine before its
+    `HALT` record: the mirror, `halted` and `halt_reason` back, and the reason
+    must be one of the two `check_kill_switch` writes. Whether the switch file
+    is still there at the restart does not matter; the mirror is what persisted.
+  * `kill_switch_mirror` — the same look on an already-halted engine: the mirror
+    alone.
+  * `equity` / `equity_halt` — the tick's `update_equity` (with or without the
+    drawdown / daily-loss halt it raises) before the minute's `DECISION`, on the
+    **same UTC day and below the peak**. The prior equity is in the log in
+    plaintext — the last `DECISION`'s (or flatten's) `ledger_effect.equity` —
+    and the proof additionally requires the carry ledger to hold exactly the
+    found equity (the same crash wrote the ledger first) and the real
+    `update_equity`, replayed on the reconstructed prior, to reproduce the file.
+    A funding minute is this window too.
+
+  A proved window writes the `RISK_STATE_MISMATCH` `RECOVERY` record, whose
+  `detail` names the window, and does **not** seal: the campaign halts on the
+  guard's own reason (or, for a plain equity window, continues and re-decides
+  the minute). `recovery.risk_continuity.halt_transition_explains_mismatch` is
+  `true` exactly when the proved window persisted a halt.
+
+  **Still sealed, and canonical R1-i's:** the same `update_equity` window when
+  it **rolled the UTC day** (every UTC midnight) or **set a new peak**. The
+  values those overwrote are not unavailable: the prior `day_start_equity` is the
+  equity of whichever write first touched the previous UTC day, and the prior
+  `peak_equity` the running maximum of every equity Aegis was handed, and both
+  may be reconstructable from the configured capital or a bounded scan of the
+  log's earlier records. But neither is restated by the record the crash
+  preceded, so proving either window takes historical reconstruction —
+  replay-shaped logic over the campaign's equity history — rather than the
+  narrow one-step local inverse the five proved windows use, and that is R1-i's
+  work. So is a crash between `note_funding_settlement` and its `FUNDING`
+  record (unless section 9.3's triage finds that crash through the ledger), one
+  that moved the feed mark, and any combination of two windows. A sealed crash
+  window looks exactly like a swapped file; record it as an incident and stop.
+* A log that does not verify. A forged log halts the campaign on `log_forged:`,
+  which is the graver finding and the one that owns it; an edited log may not
+  condemn a state file. It also may not excuse one: a forged log beside a missing
+  `risk.json` still refuses to seed.
+
+**A sealed run's records state nothing about the file.** The engine is sealed
+when a finding stands — it halts in memory and writes nothing — so neither the
+`HALT` that run appends nor an `OPERATOR` record from a `flatten` issued in it
+(permitted; that is what `HALT` is for) persisted anything. Every `STARTUP`
+record carries `risk_continuity_sealed`, which says whether **that run** was
+sealed, and the next start skips **every** record of a sealed run when it looks
+for the log's last statement — `HALT`, `RESUME`, `OPERATOR`, `INCOMPLETE_STATE`,
+and also any record carrying a `risk.state_hash`. A run that could not write
+`risk.json` cannot prove what it holds, and when the disputed file was itself
+halted a sealed engine's hash is exactly that file's hash, so reading it would
+clear the dispute with no repair at all. It is per run: the next `STARTUP`
+states its own value, and a `RECOVERY` record by itself says nothing about it (a
+proved crash window writes one and runs unsealed).
+
+A sealed engine also cannot move **in memory**. It refuses `resume` and an
+adopted equity outright, so `resume` and `resolve --equity` are refused against
+a continuity seal and change nothing (`resolve --equity` exits refused and
+prints no state), and it ignores the observations a `flatten` or a
+reconstruction reports to it, so those still complete. Without that, a state
+changed only in memory would be restated by the next hash-bearing record as if
+it had been written.
+
+**Older logs.** A `STARTUP` without the field reads as `false` (unsealed). That
+is correct for every log written by a `main` build from before PR #102, none of
+which can seal, and every build from `74edc25` on writes the field on every
+`STARTUP`. It is **not** correct for a log written by an intermediate, unmerged
+build of PR #102 from `dded833` up to and including `471c1b7`: those could
+already seal but did not yet write the field (it arrived in `74edc25`), so a
+sealed run of theirs would be read as unsealed and its `HALT`/`OPERATOR`
+records as statements about `risk.json`. The compatibility condition is
+therefore: **no state directory that a build merged from PR #102 reads was ever
+run by one of those intermediate builds.** Whether that holds is for the owner
+to attest separately; this document does not attest it.
+
+That is what makes a repair work: restore the state directory from a backup taken
+after the log's last restatement and the comparison falls back to that
+restatement, which the restored file matches — and the repaired run starts
+unsealed, so what it does (a `flatten` before any minute is decided included) is
+read as it always was. Without it R1-c's own halt would disagree with a
+correctly restored file for ever, or a flatten during the seal would read as
+`MOVED` and silently clear a dispute nothing had repaired.
+
+**Reading the finding.** `status` prints a `risk_continuity` block and it does
+not start the runner, which matters when the campaign will not start:
+`disputed`, `fault`, `risk_state_load` (`MISSING` / `LOADED` / `LEGACY` /
+`UNREADABLE`), `log_statement`, `log_records`, and the two hashes when there are
+two. The same block is inside the `RECOVERY` record under
+`recovery.risk_continuity`.
+
+**What an operator may do about it today: nothing in this document, and that is
+deliberate.** The campaign fails closed and stays there. Editing `risk.json` by
+hand is not a supported recovery and never becomes one — section 16 — and R1's
+own acceptance criterion is "zero manual state edits". Restoring the state
+directory from a backup taken *after* the log's last restatement is the only
+thing that clears a `RISK_STATE_ABSENT` or `RISK_STATE_UNREADABLE` finding
+without a new command, and a backup older than that will be refused again, for
+the same reason it is refused for `carry_ledger.json` in section 6. A clearing
+path with a mandatory note — one per dispute kind, reachable from the CLI — is
+**canonical R1-i's** item and is not in this build. If you meet one of these
+findings, record it as an incident (section 15) and stop.
+
 ### Two halt reasons you can now meet at startup
 
 On a restart the persisted equity is **reconciled** against `carry_ledger.json`,
@@ -359,6 +548,7 @@ files. Neither is overwritten to make them agree:
 | --- | --- |
 | `equity_dispute:` | `risk.json` and `carry_ledger.json` state different equities. The reason names both numbers. |
 | `equity_reconciliation:` | `carry_ledger.json` could not be read at all, so the claim in `risk.json` cannot be checked. |
+| `risk_continuity:` | `risk.json` does not continue the campaign's decision log. The four findings are in the previous subsection; the reason names which one. |
 
 **Where to read the reason.** `status` reports `risk_halted` and the ledger's
 `last_equity`, and both are useful here — but its `halt_reason` field is the
@@ -905,6 +1095,11 @@ someone's memory is a campaign whose gaps are unexplained.
   Every one of them is inside `config_hash`, so changing one mid-campaign splits
   the campaign into two campaigns and neither of them is the one that was
   preregistered.
+* **Edit `risk.json`, delete it, or copy one in from another host or another
+  day.** It is compared with the decision log on every start and a document that
+  does not continue the log halts the campaign; hand-editing one to get past that
+  is forbidden here for the same reason editing the log is, and R1's acceptance
+  criterion is "zero manual state edits".
 * **Edit, truncate, reorder, delete or tidy a decision-log file**, or its
   `.ndjson.truncated` companion. The chain verifier starts its walk at the very
   first record precisely so that removing the head of the evidence is visible.

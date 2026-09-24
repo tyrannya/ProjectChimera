@@ -61,7 +61,19 @@ from chimera.demo.feed import (
     settlement_from_row,
 )
 from chimera.demo.inspection import DemoInspection
-from chimera.demo.risk_wiring import is_equity_reconciliation_halt, ledger_equity
+from chimera.demo.risk_continuity import (
+    RISK_CONTINUITY_SEALED_FIELD,
+    RiskContinuity,
+    RiskContinuityFault,
+    assess_risk_continuity,
+    risk_state_hash,
+)
+from chimera.demo.risk_wiring import (
+    is_equity_reconciliation_halt,
+    ledger_equity,
+    risk_limits,
+    seed_or_reconcile_equity,
+)
 from chimera.demo.rules import HedgeTarget, RuleDecision, RuleError, RuleRegistry
 from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.domain import PositionSide
@@ -175,12 +187,54 @@ class RecoveryCause(str, Enum):
     ``LOG_FORGED``
         A complete record that does not verify. Never recovered from, never
         repaired, and here only so that a refusal has a name.
+
+    The last three are canonical **R1-c**'s, and they are added rather than
+    borrowed. Every name above is about WHICH OF TWO FILES IS BEHIND after a
+    crash, and none of that applies to a ``risk.json`` that is absent, corrupt or
+    foreign: no crash produces one, and reporting it as ``LOG_BEHIND_STATE`` or
+    ``LOG_AHEAD_OF_STATE`` would state a direction that is not the case -- the
+    mistake PR-10R had to undo once already. Their meanings are
+    :class:`chimera.demo.risk_continuity.RiskContinuityFault`'s, and the values
+    are taken from it so that one vocabulary cannot drift from the other:
+
+    ``RISK_STATE_ABSENT``
+        There is no ``risk.json`` and the verified decision log holds records.
+
+    ``RISK_STATE_UNREADABLE``
+        There is one, it could not be believed, and the log holds records.
+
+    ``RISK_STATE_PRE_SCHEMA``
+        There is one, it is the pre-schema halt record, and the log holds
+        records.
+
+    ``RISK_STATE_MISMATCH``
+        There is a readable, current-schema one and it is not the state the log
+        last recorded.
     """
 
     TORN_TAIL = "TORN_TAIL"
     LOG_BEHIND_STATE = "LOG_BEHIND_STATE"
     LOG_AHEAD_OF_STATE = "LOG_AHEAD_OF_STATE"
     LOG_FORGED = "LOG_FORGED"
+    RISK_STATE_ABSENT = RiskContinuityFault.RISK_STATE_ABSENT.value
+    RISK_STATE_UNREADABLE = RiskContinuityFault.RISK_STATE_UNREADABLE.value
+    RISK_STATE_PRE_SCHEMA = RiskContinuityFault.RISK_STATE_PRE_SCHEMA.value
+    RISK_STATE_MISMATCH = RiskContinuityFault.RISK_STATE_MISMATCH.value
+
+
+#: The causes that are not a claim about any MINUTE. R1-c's findings are about a
+#: FILE: no minute was left part-recorded, nothing was lost from the campaign's
+#: evidence, and writing an ``evidence_excluded_minute`` for one would exclude a
+#: minute the parity tool goes on reading -- two files disagreeing about what
+#: this campaign excluded, which is exactly what `_write_recovery`'s null for
+#: ``LOG_AHEAD_OF_STATE`` exists to avoid.
+#:
+#: `tools/replay_parity.py::EXCLUDING_RECOVERY_CAUSES` leaves them out for the
+#: same reason, and `tests/test_r1c_risk_json_continuity.py` holds the two sets
+#: apart so neither can grow into the other unnoticed.
+CAUSES_WITHOUT_AN_AFFECTED_MINUTE: frozenset[RecoveryCause] = frozenset(
+    RecoveryCause(fault.value) for fault in RiskContinuityFault
+)
 
 
 @dataclass(frozen=True)
@@ -209,6 +263,12 @@ class _Recovery:
     #: So a tail of one of those means the minute was STARTED and never decided,
     #: which is a different crash from one that ends on the minute's DECISION.
     committed_minute_kind: str = ""
+    #: Canonical R1-c's finding, when this recovery is one. `record_block()` on
+    #: `chimera.demo.risk_continuity.RiskContinuity` builds it, and it rides
+    #: INSIDE the `recovery` block rather than in a `risk` one: section 9.1's
+    #: `risk.state_hash` is what the next start compares against, so putting the
+    #: disputed hash there would make the dispute its own evidence.
+    risk_continuity: Mapping[str, Any] | None = None
 
 
 @dataclass
@@ -310,6 +370,26 @@ class DemoRunner:
         #: changed. Startup may add a refusal if the file degrades between
         #: inspection and activation; it may never clear this load-time one.
         self._ledger_regression = self._ledger_regressed_against_the_log()
+        #: Canonical R1-c (AEG-4): whether the persisted Aegis state continues
+        #: this campaign's decision log. Decided HERE, from the same read-only
+        #: snapshot and for the same reason the ledger verdict above is: by the
+        #: time `start()` builds the active engine, a first start has already
+        #: seeded its capital and an unreadable file has already failed closed,
+        #: so a verdict taken afterwards would be about a state this process had
+        #: changed. `build_risk_engine` reaches the same verdict from the
+        #: engine's own load-time snapshot, which is how the seeding is stopped
+        #: before it happens; this copy is what writes the RECOVERY record.
+        #: The limits and the ledger's equity are what the equity crash-window
+        #: proof needs (`chimera.demo.risk_continuity._crash_transition`); the
+        #: equity is read through R1-b's own `ledger_equity`, so the proof and
+        #: R1-b's reconciliation compare the same two numbers the same way.
+        self._risk_continuity = assess_risk_continuity(
+            load=self._inspection.risk_outcome,
+            snapshot=self._inspection.risk_state.snapshot(),
+            state_dir=self.state_dir,
+            limits=risk_limits(config.limits),
+            ledger_equity=ledger_equity(self.state_dir, capital=self.capital),
+        )
         self._inspection_ledger_unreadable = (
             self._inspection.ledger.outcome is LoadOutcome.UNREADABLE
         )
@@ -493,6 +573,32 @@ class DemoRunner:
         if triage is not None and not triage.recoverable:
             return self._halt(triage.reason)
 
+        # Canonical R1-c, and before the first append for a reason of its own:
+        # from here on startup WRITES -- `reconstruct()` adopts venue positions
+        # through `RiskEngine.update_position`, and a kill-switch look mirrors a
+        # file -- and every one of those writes would land on the very
+        # `risk.json` this finding is about. Sealing first is what makes
+        # "preserved exactly as it is" true rather than nearly true.
+        #
+        # `build_risk_engine` has already sealed the three faults no crash can
+        # produce; this covers the fourth, which had to wait for the triage
+        # above to say whether a crash explains it.
+        continuity_stands = self._risk_continuity_stands(triage)
+        if continuity_stands:
+            self.risk.halt_for_continuity_dispute(self._risk_continuity.halt_reason)
+        elif self.risk.continuity_pending:
+            # The other verdict on a `RISK_STATE_MISMATCH` `build_risk_engine`
+            # held: a crash explains it, so the file is this campaign's own state
+            # one window ahead of the log. Only NOW may anything write to it, and
+            # the first writer is the one the hold deferred -- R1-b's
+            # reconciliation against the carry ledger, which every loaded
+            # restart owes and which ran BEFORE this verdict until it was found
+            # to persist its `equity_dispute:` halt over bytes this very check
+            # might have had to preserve. The kill switch is looked at below, as
+            # it always was for this case.
+            self.risk.release_continuity_hold()
+            seed_or_reconcile_equity(self.risk, capital=self.capital, state_dir=self.state_dir)
+
         self._append(
             RecordKind.STARTUP,
             self._minute_ns(),
@@ -513,6 +619,14 @@ class DemoRunner:
                 ),
                 "allow_dirty": bool(allow_dirty),
                 "rules": list(self.rules.ids),
+                # Canonical R1-c: whether THIS run's Aegis is sealed by a
+                # continuity dispute. Settled above (and by `build_risk_engine`)
+                # and never changed for the rest of the run, so it is per-run
+                # provenance: a sealed engine persists nothing, and the next
+                # start must not read this run's HALT/RESUME/OPERATOR records as
+                # statements about `risk.json`. See
+                # `chimera.demo.risk_continuity.read_log_risk_history`.
+                RISK_CONTINUITY_SEALED_FIELD: self.risk.continuity_disputed,
             },
         )
 
@@ -524,11 +638,35 @@ class DemoRunner:
         self._enter(RunnerState.RECOVER)
         if triage is not None:
             self._write_recovery(triage)
+        # Canonical R1-c's record, beside section 9.3's rather than instead of
+        # it. A crash and a risk state that does not continue the log are two
+        # independent findings -- a torn tail says nothing about `risk.json`,
+        # and a missing `risk.json` says nothing about the tail -- so each gets
+        # its own RECOVERY record rather than one of them displacing the other
+        # out of the single `cause` a `_Recovery` can carry. The campaign then
+        # stops on the halt raised above, below.
+        #
+        # Also written when a crash-window proof is what deferred the finding:
+        # unlike the triage-covered deferral above, `_triage_log` wrote nothing
+        # for those shapes (they touch Aegis alone), so this is the only record
+        # the window gets. It is not double-reporting one crash under two names,
+        # because there is no other name for it. Such a run is NOT sealed, and
+        # its STARTUP record above says so.
+        if continuity_stands or self._risk_continuity.crash_transition:
+            self._write_risk_continuity_recovery()
         outcome = self.position.reconstruct()
         if outcome.state is HedgeState.DISPUTED:
             return self._halt(f"dispute: {outcome.detail}")
-        if self.risk.check_kill_switch():
-            return self._halt("kill_switch")
+        # Checked for its effect, not its return: `RiskEngine.halt` keeps the
+        # FIRST reason, so an engine already halted here -- by
+        # `build_risk_engine`'s own `check_kill_switch` call, or by R1-c's
+        # continuity seal above -- is untouched by a fresh switch, and
+        # `self.risk.state` already carries whichever reason came first.
+        # Reporting `"kill_switch"` unconditionally here, as this used to,
+        # relabelled a continuity dispute -- which never re-engages the switch,
+        # since `_persist` refuses the write -- as an ordinary kill-switch halt
+        # on the very same restart.
+        self.risk.check_kill_switch()
         if self.risk.state.halted:
             return self._halt(self.risk.state.halt_reason or "risk halted")
 
@@ -973,15 +1111,27 @@ class DemoRunner:
                     # that cause out. Writing a minute here that the parity tool
                     # then declines to read would be two files disagreeing about
                     # what this campaign excluded.
+                    #
+                    # Null for every R1-c cause too, and for the same reason
+                    # read the other way round: those findings are about the
+                    # state FILE and no minute was left part-recorded, so there
+                    # is no minute to exclude. See
+                    # `CAUSES_WITHOUT_AN_AFFECTED_MINUTE`.
                     "evidence_excluded_minute": (
                         None
-                        if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE and finished
+                        if triage.cause in CAUSES_WITHOUT_AN_AFFECTED_MINUTE
+                        or (triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE and finished)
                         else iso_minute(minute_ns)
                     ),
                     # Null above means "nothing was lost". This says which of the
                     # two LOG_AHEAD_OF_STATE shapes it was, so a reader never has
                     # to infer it from the absence of a field.
                     "minute_finished": finished,
+                    **(
+                        {"risk_continuity": dict(triage.risk_continuity)}
+                        if triage.risk_continuity is not None
+                        else {}
+                    ),
                 },
                 "veto_or_rejection": {
                     "stage": "recovery",
@@ -992,6 +1142,102 @@ class DemoRunner:
         )
         self.save_state()
         logger.warning("Runner RECOVERED: %s: %s", triage.cause.value, triage.reason)
+
+    def _risk_continuity_stands(self, triage: "_Recovery | None") -> bool:
+        """Whether R1-c's load-time finding is this start's to act on.
+
+        False for every ordinary start, because there is no finding.
+
+        False also for the one finding section 9.3 can explain. A
+        ``RISK_STATE_MISMATCH`` is the hash the log last restated against the
+        hash the file holds, and a process killed between an Aegis mutation and
+        the record that would have restated it leaves exactly that -- a
+        `risk.json` genuinely AHEAD of the log, which
+        `chimera.demo.risk_continuity.RiskContinuity.crash_could_explain` sets
+        out. When `_triage_log` has found that crash the runner already has a
+        name for it, a RECOVERY record for it and a way forward from it; adding
+        an unclearable continuity halt on top would take a recovery section 9.3
+        grants away, and would report one crash as two findings. The more
+        specific cause wins, which is the same rule `_triage_log` applies
+        between TORN_TAIL and LOG_AHEAD_OF_STATE.
+
+        The deferral is narrow on purpose. It applies to that one fault, and
+        only when a crash was really found: a swapped or stale `risk.json` on a
+        campaign whose log and state agree about where it is has no crash to
+        hide behind, and is reported. And the three faults a crash cannot
+        produce -- an absent file, an unreadable one, a pre-schema one -- are
+        never deferred, whatever the triage found.
+
+        False also for the crash windows `_triage_log` structurally cannot see:
+        a kill between an Aegis-only persist and the record that would restate
+        it moves nothing `_triage_log` compares -- no store, no ledger
+        accumulator, no chain head -- so triage returns `None` and the check
+        above never fires. `RiskContinuity.crash_transition` is the proof for
+        those instead of a trace of some OTHER file, and it is deliberately
+        narrow: a bare halt, a kill-switch halt or mirror, or a same-day
+        `update_equity` (with or without the halt it raises) persisted before
+        its `HALT` or `DECISION`. It is non-empty only when reverting exactly
+        the fields that window writes reproduces the log's own FULL hash, and,
+        for the equity window, the real `update_equity` replayed on that prior
+        reproduces the file and the carry ledger holds the same equity. A day
+        roll or a new peak is NOT proved -- the prior baseline and peak are not
+        restated by the record the crash preceded, and reconstructing them from
+        the campaign's history is replay-shaped work, canonical R1-i -- so
+        those windows stay sealed. See
+        `chimera.demo.risk_continuity._crash_transition`.
+        """
+        verdict = self._risk_continuity
+        if not verdict.disputed:
+            return False
+        if verdict.crash_transition:
+            return False
+        return not (verdict.crash_could_explain and triage is not None)
+
+    def _write_risk_continuity_recovery(self) -> None:
+        """Canonical R1-c's RECOVERY record, written once per finding.
+
+        Nothing to write when the load-time verdict found no dispute, which is
+        every ordinary start.
+
+        **Once per finding, not once per restart.** A disputed campaign cannot
+        run, so it is restarted -- by an operator looking at it, by a service
+        manager, by a `resolve` that has to `start()` first -- and a record per
+        restart would bury the finding in copies of itself. The verdict carries
+        `already_recorded`, which is true when the verified log already holds
+        this same finding and nothing has restated the risk state since; see
+        `chimera.demo.risk_continuity._already_recorded` for why both halves are
+        needed. The HALT record each of those restarts writes is unchanged: that
+        is the existing treatment of every repeated halt, R1-b's equity dispute
+        included, and R1-c does not quietly alter it.
+
+        Not written when the verdict is not trustworthy enough to be this
+        campaign's: `_triage_log` refuses a forged log before this line is
+        reached (`start()` returns on the unrecoverable triage), so a log whose
+        complete records do not verify halts on `LOG_FORGED` and does not also
+        get an R1-c record derived from it.
+        """
+        verdict = self._risk_continuity
+        if verdict.already_recorded or verdict.fault is None:
+            return
+        self._write_recovery(
+            _Recovery(
+                cause=RecoveryCause(verdict.fault.value),
+                reason=verdict.detail,
+                recoverable=True,
+                records_verified=verdict.history.records,
+                risk_continuity=verdict.record_block(),
+            )
+        )
+
+    @property
+    def risk_continuity(self) -> RiskContinuity:
+        """R1-c's load-time verdict. Fixed for this runner's life, like the read.
+
+        Available WITHOUT `start()`, because the command that tells an operator
+        what is wrong must not be one that first has to run: the CLI's `status`
+        reports it from here, exactly as it reports the ledger complaint.
+        """
+        return self._risk_continuity
 
     def _state_ahead_of_log(self) -> str:
         """What the persisted state holds that the log's last record does not.
@@ -2117,6 +2363,16 @@ class DemoRunner:
             raise RunnerError("resume requires an operator note stating what was checked")
         if self.state is not RunnerState.HALT:
             raise RunnerError("the runner is not halted; there is nothing to resume from")
+        # Canonical R1-c: a continuity-sealed Aegis may not be resumed, and
+        # `RiskEngine.resume` refuses it too. Checked here first so the refusal
+        # is the operator-facing one and comes before anything is appended.
+        if self.risk.continuity_disputed:
+            raise RunnerError(
+                "cannot resume: Aegis is sealed by an R1-c continuity dispute "
+                f"({self.risk.state.halt_reason}). Nothing it would clear can be "
+                "persisted, and this build has no clearing path for the finding; see "
+                "the RECOVERY record and docs/demo_runbook.md"
+            )
         # A halt whose cause is still true is not resumable. `resume` used to go
         # straight to RECOVER, so a ledger that may not speak could have its halt
         # cleared without the file being repaired: the mute correctly kept it
@@ -2315,6 +2571,20 @@ class DemoRunner:
             )
         self._require_active("resolve-equity")
         reason = self.risk.state.halt_reason
+        # Before the halt reason is even read as an equity dispute. A sealed
+        # engine persists nothing, so an adoption here would be a READY that
+        # the next start contradicts -- and `RiskEngine.adopt_reconciled_equity`
+        # refuses it anyway, as an exception the CLI would show as a traceback.
+        # The engine can carry an `equity_dispute:` reason under the seal when
+        # the disputed file was itself halted on one: the seal keeps the first.
+        if self.risk.continuity_disputed:
+            raise RunnerError(
+                "cannot settle the equity dispute: Aegis is sealed by an R1-c continuity "
+                f"dispute and is halted on {reason!r}. The persisted risk state is not "
+                "known to be this campaign's, so no equity adopted into it could be "
+                "written; nothing was changed. See the RECOVERY record and "
+                "docs/demo_runbook.md"
+            )
         if not self.risk.state.halted or not is_equity_reconciliation_halt(reason):
             held = f"halted on {reason!r}" if self.risk.state.halted else "not halted"
             raise RunnerError(
@@ -2735,33 +3005,17 @@ def _inputs_hash(state: MarketState) -> str:
     return canonical_hash(state.canonical())
 
 
-#: Risk-state fields that are WALL CLOCK or HOST DATE rather than decision
-#: semantics, and are therefore outside `risk.state_hash`.
-#:
-#: `order_times` is the rate limiter's record of when orders were placed and
-#: `cooldown_until` is a deadline computed from one; `day` is the date the host
-#: happened to be running on. All three move between a live run and a replay of
-#: the same files, and none of them is a fact about the decision -- so hashing
-#: them would make section 10's byte comparison fail for a reason that has
-#: nothing to do with whether the two runs decided alike.
-#:
-#: Everything that governs permission and IS reproducible stays in: `halted`,
-#: `halt_reason`, `kill_switch`, the equity series, the streaks, and the
-#: reconciliation disputes.
-_RISK_HASH_EXCLUDED = frozenset({"order_times", "cooldown_until", "day"})
-
-
 def _risk_hash(risk: RiskEngine) -> str:
-    from chimera.demo.rules import canonical_hash
+    """Section 9.1's `risk.state_hash` for the LIVE engine.
 
-    snapshot = risk.snapshot()
-    return canonical_hash(
-        {
-            key: value
-            for key, value in snapshot.items()
-            if isinstance(key, str) and key not in _RISK_HASH_EXCLUDED
-        }
-    )
+    The field list and the hashing are
+    `chimera.demo.risk_continuity.risk_state_hash`'s, because canonical R1-c
+    computes the same hash for a state it read off disk and never started. Two
+    spellings of it would let the record the runner writes and the comparison
+    the next start makes drift apart -- which is the one way a continuity check
+    can fail silently.
+    """
+    return risk_state_hash(risk.snapshot())
 
 
 def _config_hash(config: DemoConfig) -> str:
