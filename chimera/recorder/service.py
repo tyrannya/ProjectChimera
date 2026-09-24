@@ -671,7 +671,14 @@ class RecorderService:
         """Raise the published funding watermark to a polled horizon (R1-g)."""
         try:
             self.normalizer.publish_funding_watermark("um", int(observed_through_ms))
-        except OSError as exc:
+        except (OSError, RecorderSinkError, RecorderNormalizeError) as exc:
+            # `write_json_atomic` raises `RecorderSinkError`, which is a
+            # `RuntimeError` and not an `OSError`: catching only the latter let a
+            # full or read-only disk escape the funding-poll task, and
+            # `asyncio.wait(FIRST_EXCEPTION)` then shut the whole recorder down
+            # over a file that is an engineering aid. A watermark that cannot be
+            # written is a watermark the runner does not have, which it already
+            # handles by waiting.
             self._note(f"funding watermark not published: {exc}")
 
     # --- the run ----------------------------------------------------------

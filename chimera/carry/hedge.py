@@ -44,7 +44,7 @@ in the pull request:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Mapping, Protocol, runtime_checkable
@@ -268,13 +268,6 @@ class HedgeOutcome:
     filled: tuple[str, ...] = ()
     unfilled: tuple[str, ...] = ()
     detail: str = ""
-    #: The result of a round trip this call CLOSED, or ``None`` (R1-k). Carried
-    #: on the outcome rather than reported from here because the runner owns
-    #: sequencing: this package executes and accounts, and telling Aegis that a
-    #: trade finished is an ordering decision like every other one the runner
-    #: makes. ``None`` covers every call that did not close a position and every
-    #: close whose opening equity was never recorded.
-    cycle_result: Decimal | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -297,6 +290,20 @@ class CarryMark:
     perp_pnl: Decimal
     equity: Decimal
     identity_residual: Decimal
+    #: The result of a round trip that had closed by this mark, or ``None``
+    #: (R1-k). Carried here rather than on ``HedgeOutcome`` because the MARK is
+    #: the only place that sees every close: ``apply`` is one of four paths that
+    #: can flatten a position -- ``flatten_for_correction``, ``emergency_reduce``
+    #: and ``reconstruct`` are the others -- and a result taken only from
+    #: ``apply`` would leave the opening equity of a position closed by any of
+    #: them standing, so the NEXT round trip would be measured from it. The mark
+    #: runs every minute, after execution, so it also sees the closing legs'
+    #: fees and slippage, which an equity read before execution does not.
+    #:
+    #: Deliberately outside ``to_dict``: it is a message to Aegis about a trade
+    #: that finished, not a property of this minute's mark, and putting it in the
+    #: decision record would make one minute's evidence carry another's outcome.
+    cycle_result: Decimal | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -535,10 +542,11 @@ class HedgedPosition:
             self._reconcile_ledger(frictions)
 
         outcome = self._settle(filled=tuple(filled), unfilled=tuple(unfilled))
-        flat = outcome.state is HedgeState.FLAT
-        self.ledger.note_open_instant(flat=flat, instant_ns=state.minute_ns + _MINUTE_NS)
-        result = self.ledger.note_cycle(flat=flat, equity=Decimal(str(equity)))
-        return replace(outcome, cycle_result=result)
+        self.ledger.note_open_instant(
+            flat=outcome.state is HedgeState.FLAT,
+            instant_ns=state.minute_ns + _MINUTE_NS,
+        )
+        return outcome
 
     def _execute(
         self,
@@ -893,6 +901,12 @@ class HedgedPosition:
         self.ledger.mark(
             spot_close=state.spot_close, perp_close=state.perp_close, equity=equity
         )
+        # R1-k, and deliberately here rather than in `apply`: this runs every
+        # minute and after execution, so it sees a close made by ANY path and it
+        # sees the closing legs' frictions.
+        cycle_result = self.ledger.note_cycle(
+            flat=self.state is HedgeState.FLAT, equity=equity
+        )
         residual = self.ledger.check_identity(
             spot_close=state.spot_close, perp_close=state.perp_close
         )
@@ -907,6 +921,7 @@ class HedgedPosition:
             perp_pnl=perp_pnl,
             equity=equity,
             identity_residual=residual,
+            cycle_result=cycle_result,
         )
 
     # -- liquidation -------------------------------------------------------

@@ -1079,8 +1079,16 @@ class MinuteNormalizer:
                 # websocket already delivered still proves the recorder was
                 # looking at the funding stream at that instant, which is the
                 # only thing this number claims.
-                if observed_ns is None or event.canonical_ns > observed_ns:
-                    observed_ns = int(event.canonical_ns)
+                #
+                # `receipt_wall_ns`, NOT `canonical_ns`. A funding event's
+                # canonical instant IS the settlement instant, so a watermark
+                # built from it can never exceed the last settlement -- it would
+                # say "observed through 08:00" at 15:00 and defer the 08:00
+                # minute for ever if that settlement's row were the one missing.
+                # The receipt clock is when this recorder actually held the
+                # observation, which is the claim the watermark makes.
+                if observed_ns is None or event.receipt_wall_ns > observed_ns:
+                    observed_ns = int(event.receipt_wall_ns)
 
         lines = [
             canonical_json(

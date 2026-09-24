@@ -82,9 +82,14 @@ be operated end to end are unchanged, and the first of them is that no
 `CAMPAIGN` configuration can build a runner at all — see the fourth entry in
 section 1.
 
-**0.3 `tools.demo_run run` is one bounded catch-up pass, not a daemon.** It
-processes at most `max_catchup_minutes` minutes — 3 by default — closes the log
-and exits 0. Supervision is what re-invokes it: `deploy/systemd/chimera-demo.service`
+**0.3 `tools.demo_run run` is one catch-up pass, not a daemon.** It decides
+every closed minute since the last decided one, closes the log and exits 0.
+R1-g removed the `max_catchup_minutes` cap that used to bound the pass at three
+minutes and write `SKIPPED_STALE` for the rest; a configuration still carrying
+that key is now refused by name. A pass can therefore be long after an outage —
+it decides every pending minute rather than abandoning the backlog — and it
+stops early on a minute deferred for an unarrived funding settlement, which the
+next pass picks up. Supervision is what re-invokes it: `deploy/systemd/chimera-demo.service`
 uses `Restart=always` with `RestartSec=30s` as the interval between passes, and
 the compose service restarts for the same reason. Two consequences an operator
 must not mistake for faults:

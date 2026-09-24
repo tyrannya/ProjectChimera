@@ -222,6 +222,43 @@ def test_live_and_replay_book_the_same_settlement_in_the_same_minute(tmp_path):
     assert late_run, "the fixture booked no settlement at all; the test proves nothing"
 
 
+def test_run_minutes_stops_at_a_deferral_like_catch_up_does(tmp_path):
+    """A deferral must stop every driver, not only ``catch_up``.
+
+    ``run_minutes`` is handed an explicit list, and carrying on past a deferred
+    minute would decide later minutes ahead of it and drop it from the log with
+    no record at all -- a divergence a replay could never account for, because
+    the replay has the row and defers nothing.
+    """
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    instant = first + SETTLEMENT_MINUTE_INDEX * MINUTE_MS + MINUTE_MS
+    _drop_settlement_at(harness.root, instant)
+
+    minutes = [first + i * MINUTE_MS for i in range(SETTLEMENT_MINUTE_INDEX + 3)]
+    outcomes = harness.runner.run_minutes(minutes)
+
+    assert outcomes[-1].kind is None, "the run did not end on the deferral"
+    assert len(outcomes) == SETTLEMENT_MINUTE_INDEX + 1, "it decided past the deferral"
+
+
+def test_the_watermark_is_taken_from_when_the_recorder_LOOKED(tmp_path):
+    """Not from the settlement instant, which can never exceed itself.
+
+    A funding event's canonical instant IS its settlement instant, so a
+    watermark built from it would say "observed through 08:00" at 15:00 -- and
+    would defer the 08:00 minute for ever if that settlement's row were the one
+    missing. The receipt clock is when the recorder actually held the
+    observation, which is the claim the watermark makes.
+    """
+    source = (
+        Path(__file__).resolve().parents[1] / "chimera" / "recorder" / "normalize.py"
+    ).read_text(encoding="utf-8")
+
+    assert "observed_ns = int(event.receipt_wall_ns)" in source
+    assert "observed_ns = int(event.canonical_ns)" not in source
+
+
 # ---------------------------------------------------------------------------
 # the watermark itself
 # ---------------------------------------------------------------------------

@@ -1474,25 +1474,6 @@ class DemoRunner:
                     intents, state, equity=float(portfolio["equity"])
                 )
                 executed = True
-                # R1-k: a round trip finished, so Aegis is told what it was
-                # worth. Nothing called `record_trade_result` before, which left
-                # `loss_streak_limit` and `cooldown_seconds` configured and
-                # enforced nowhere -- `consecutive_losses` could never leave
-                # zero, so the cooldown was never opened and the gate that vetoes
-                # entries while it is open could never close.
-                #
-                # Reported HERE rather than from `HedgedPosition`, because the
-                # runner owns sequencing: the position executes and accounts,
-                # and telling the risk engine that a trade completed is an
-                # ordering decision like every other one this loop makes.
-                #
-                # `None` means no round trip closed on this call, or that one
-                # closed whose opening equity was never recorded. Neither is
-                # reported as zero: a zero is a trade that did not lose, and
-                # saying that about a cycle nobody measured would reset a loss
-                # streak on a fiction.
-                if outcome.cycle_result is not None:
-                    self.risk.record_trade_result(float(outcome.cycle_result))
             except ReconciliationRequired as exc:
                 # Persisted BEFORE the halt, and that order is the whole point.
                 # `HedgedPosition.apply` books this cycle into the ledger from a
@@ -1579,6 +1560,22 @@ class DemoRunner:
         # ledger-persist call and not two spellings of it three lines apart.
         self._save_ledger()
         self.risk.update_equity(float(mark.equity))
+        # R1-k: a round trip finished, so Aegis is told what it was worth.
+        # Nothing called `record_trade_result` before, which left
+        # `loss_streak_limit` and `cooldown_seconds` configured and enforced
+        # nowhere -- `consecutive_losses` could never leave zero, so the cooldown
+        # was never opened and the gate that vetoes while it is open could never
+        # close.
+        #
+        # After `update_equity`, because that is the order the two facts
+        # happened in: the mark moved the account, and the trade that closed is
+        # what moved it. `None` means no cycle closed by this mark, or that one
+        # closed whose opening equity was never recorded -- and neither is
+        # reported as zero, because a zero is a trade that did not lose and
+        # saying that about an unmeasured cycle would reset a streak on a
+        # fiction.
+        if mark.cycle_result is not None:
+            self.risk.record_trade_result(float(mark.cycle_result))
         self.cursor.mark_processed(minute_ms)
 
         record_hash = self._append(
@@ -2701,7 +2698,16 @@ class DemoRunner:
         for minute in minutes:
             if self.state is RunnerState.HALT:
                 break
-            outcomes.append(self.tick(minute))
+            outcome = self.tick(minute)
+            outcomes.append(outcome)
+            if outcome.kind is None:
+                # R1-g: the minute is DEFERRED, not done. Its cursor has not
+                # moved, so carrying on would decide later minutes ahead of it
+                # and drop this one from the log with no record -- a divergence
+                # a replay could never account for. `catch_up` stops here for
+                # the same reason; this path is not exempt because it was handed
+                # an explicit list.
+                break
         return outcomes
 
     def replay(self, start_ms: int, end_ms: int) -> list[TickOutcome]:
@@ -2879,8 +2885,18 @@ class DemoRunner:
         wall-clock dependence the log is built to exclude. A replay, where the
         row is already present, defers nothing and its log is identical.
 
-        Nothing else moves either: no clock observation, no state save, no
-        position, no Aegis call. The next pass re-reads the same minute.
+        Nothing else moves that this method could move: no state save, no
+        position, no Aegis call, and the cursor stays where it is so the next
+        pass re-reads the same minute.
+
+        The decision CLOCK is the exception, and it is deliberately not unwound.
+        :meth:`tick` observes ``minute close`` before this check, and
+        :class:`~chimera.demo.clock.RunnerClock` takes a maximum: observing the
+        same instant again when the minute is finally decided is idempotent, and
+        a replay -- where the settlement row is present from the start and
+        nothing defers -- observes exactly the same instants in the same order.
+        Unwinding it would mean making the clock non-monotone, which is the one
+        property every staleness veto rests on.
         """
         logger.info("minute %s deferred: %s", minute_ms, reason)
         return TickOutcome(minute_ms, self.state, None, detail=reason)

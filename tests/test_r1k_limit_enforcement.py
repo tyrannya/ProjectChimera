@@ -205,6 +205,50 @@ def test_a_close_whose_open_was_never_recorded_reports_nothing():
     assert ledger.note_cycle(flat=True, equity=Decimal("990")) is None
 
 
+def test_a_close_by_any_path_clears_the_cycle_baseline(tmp_path):
+    """A round trip closed by a path other than ``apply`` must not leak forward.
+
+    ``apply`` is one of four ways a position flattens --
+    ``flatten_for_correction``, ``emergency_reduce`` and ``reconstruct`` are the
+    others. Measuring the cycle from ``apply`` alone would leave the opening
+    equity of a position closed by any of them standing, and the NEXT round trip
+    would be measured from it: a profit reported as a loss, or the reverse,
+    driving the very gates this file is about.
+
+    The bookkeeping therefore lives in ``mark_to_market``, which runs every
+    minute and sees every close however it happened. This asserts that the
+    baseline is taken and cleared by the MARK, on a ledger, so the property does
+    not depend on which method flattened the position.
+    """
+    from chimera.carry.ledger import CarryLedger
+
+    ledger = CarryLedger.open(None, capital=Decimal("1000000"))
+
+    assert ledger.note_cycle(flat=False, equity=Decimal("1000")) is None
+    # The position is flattened by some other path; the next mark sees it flat.
+    assert ledger.note_cycle(flat=True, equity=Decimal("980")) == Decimal("-20")
+    # And the cycle after it is measured from ITS own open, not from the first.
+    assert ledger.note_cycle(flat=False, equity=Decimal("980")) is None
+    assert ledger.note_cycle(flat=True, equity=Decimal("990")) == Decimal("10")
+
+
+def test_the_cycle_is_measured_after_execution_not_before(tmp_path):
+    """The closing legs' fees and slippage are part of what the trade cost.
+
+    An equity read before execution -- which is what ``apply`` is handed --
+    contains the OPENING legs' frictions and not the closing ones, so a
+    marginally losing round trip reports as a win and resets a loss streak. The
+    mark runs after execution, so this is a property of where the call sits;
+    asserted here as the ordering the runner relies on.
+    """
+    runner = (REPO / "chimera" / "demo" / "runner.py").read_text(encoding="utf-8")
+
+    apply_at = runner.index("outcome = self.position.apply(")
+    mark_at = runner.index("mark = self.position.mark_to_market(state)", apply_at)
+    report_at = runner.index("self.risk.record_trade_result(", mark_at)
+    assert apply_at < mark_at < report_at
+
+
 # ---------------------------------------------------------------------------
 # the detector
 # ---------------------------------------------------------------------------
