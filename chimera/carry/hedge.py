@@ -124,6 +124,9 @@ class CarryMarketState(Protocol):
     @property
     def mark_high(self) -> Decimal | None: ...
 
+    @property
+    def funding_rate_last(self) -> Decimal | None: ...
+
 
 @dataclass(frozen=True)
 class PerpSettlement:
@@ -287,6 +290,20 @@ class CarryMark:
     perp_pnl: Decimal
     equity: Decimal
     identity_residual: Decimal
+    #: The result of a round trip that had closed by this mark, or ``None``
+    #: (R1-k). Carried here rather than on ``HedgeOutcome`` because the MARK is
+    #: the only place that sees every close: ``apply`` is one of four paths that
+    #: can flatten a position -- ``flatten_for_correction``, ``emergency_reduce``
+    #: and ``reconstruct`` are the others -- and a result taken only from
+    #: ``apply`` would leave the opening equity of a position closed by any of
+    #: them standing, so the NEXT round trip would be measured from it. The mark
+    #: runs every minute, after execution, so it also sees the closing legs'
+    #: fees and slippage, which an equity read before execution does not.
+    #:
+    #: Deliberately outside ``to_dict``: it is a message to Aegis about a trade
+    #: that finished, not a property of this minute's mark, and putting it in the
+    #: decision record would make one minute's evidence carry another's outcome.
+    cycle_result: Decimal | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -344,6 +361,34 @@ class HedgedPosition:
             quantity=position.quantity,
             entry_price=position.entry_price,
         )
+
+    @staticmethod
+    def _funding_rate_for(leg: str, state: CarryMarketState) -> float | None:
+        """The rate Aegis judges this leg's funding cost against, or ``None`` (R1-k).
+
+        **Only the perpetual leg has one.** Spot inventory pays and receives no
+        funding, and :meth:`chimera.risk.RiskEngine.evaluate_entry` reads the
+        rate side-awarely as ``sign(side) * rate``: handing it a rate for the
+        LONG spot leg would have Aegis veto spot entries whenever the perpetual
+        funding rate was positive -- a veto on a cost that leg does not pay.
+        Passing ``None`` is not a gap; it is the true statement that this leg
+        has no funding exposure.
+
+        **Which rate.** ``funding_rate_last`` is the rate carried on the venue's
+        mark-price stream, which is the CURRENT rate for the settlement ahead
+        rather than the last realised one, so it is the forward cost the veto is
+        about. A minute with no mark observation carries ``None`` and the branch
+        is skipped -- the same as before R1-k, and the right answer: a veto that
+        invented a rate would judge on a number nobody published.
+
+        This closes the reachability gap `chimera/demo/risk_wiring.py` records:
+        ``max_funding_cost_rate`` was mapped into Aegis and enforced nowhere,
+        because every call arrived without a rate.
+        """
+        if leg != PERP:
+            return None
+        rate = getattr(state, "funding_rate_last", None)
+        return None if rate is None else float(rate)
 
     def _executor(self, name: str) -> tuple[FuturesExecutor, str]:
         if name == SPOT:
@@ -525,6 +570,7 @@ class HedgedPosition:
                 TargetPosition(symbol=symbol, side=intent.side, quantity=intent.quantity),
                 reference,
                 equity=equity,
+                funding_rate=self._funding_rate_for(intent.leg, state),
             )
             self.ledger.note_leg_mark(intent.leg, state.minute_ns)
             # Frictions are taken from whatever came back, filled or not. A
@@ -855,6 +901,12 @@ class HedgedPosition:
         self.ledger.mark(
             spot_close=state.spot_close, perp_close=state.perp_close, equity=equity
         )
+        # R1-k, and deliberately here rather than in `apply`: this runs every
+        # minute and after execution, so it sees a close made by ANY path and it
+        # sees the closing legs' frictions.
+        cycle_result = self.ledger.note_cycle(
+            flat=self.state is HedgeState.FLAT, equity=equity
+        )
         residual = self.ledger.check_identity(
             spot_close=state.spot_close, perp_close=state.perp_close
         )
@@ -869,6 +921,7 @@ class HedgedPosition:
             perp_pnl=perp_pnl,
             equity=equity,
             identity_residual=residual,
+            cycle_result=cycle_result,
         )
 
     # -- liquidation -------------------------------------------------------

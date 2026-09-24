@@ -47,6 +47,7 @@ import asyncio
 import inspect
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +72,7 @@ from chimera.recorder.events import (
 from chimera.recorder.health import (
     HEARTBEAT_INTERVAL_S,
     HeartbeatWriter,
+    LifecycleLog,
     RecorderHealth,
     initial_health,
 )
@@ -105,6 +107,19 @@ SYNC_INTERVAL_S = 1.0
 #: meaningful on a running recorder; rarely enough that a 1440-row Parquet is not
 #: rewritten every minute.
 NORMALIZE_INTERVAL_S = 300.0
+
+#: How often the day's newly closed minutes are folded in and published (R1-g).
+#:
+#: :data:`NORMALIZE_INTERVAL_S` paces the *maintenance* pass, whose cost grows
+#: with the day. Publication is a different job with a different cost: the
+#: incremental normalizer folds only the events that arrived since its cursor,
+#: so a pass that adds one minute costs one minute's events however late in the
+#: day it runs. A consumer that had to wait up to 300 s for a minute that closed
+#: seconds ago is reading a feed that is stale by construction, and the runner's
+#: staleness gate cannot tell that apart from a recorder that has stopped. So
+#: the closed minute is published on its own short cadence, and the maintenance
+#: pass keeps the day rotation, the freeze and the authoritative full rebuild.
+PUBLISH_INTERVAL_S = 5.0
 
 #: The largest share of wall time the service will spend re-normalizing the open
 #: day. Re-normalizing re-reads every raw event of the day, so its cost grows
@@ -224,6 +239,7 @@ class RecorderService:
         sync_interval_s: float = SYNC_INTERVAL_S,
         heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S,
         normalize_interval_s: float = NORMALIZE_INTERVAL_S,
+        publish_interval_s: float = PUBLISH_INTERVAL_S,
         premium_index_interval_s: float = PREMIUM_INDEX_INTERVAL_S,
         funding_catchup_interval_s: float = FUNDING_CATCHUP_INTERVAL_S,
         rotation_grace_s: float = ROTATION_GRACE_S,
@@ -236,6 +252,7 @@ class RecorderService:
         self.sync_interval_s = sync_interval_s
         self.heartbeat_interval_s = heartbeat_interval_s
         self.normalize_interval_s = normalize_interval_s
+        self.publish_interval_s = publish_interval_s
         self.premium_index_interval_s = premium_index_interval_s
         self.funding_catchup_interval_s = funding_catchup_interval_s
         self.rotation_grace_s = rotation_grace_s
@@ -254,8 +271,22 @@ class RecorderService:
         self.incremental = IncrementalNormalizer(
             self.root, contract, normalizer=self.normalizer
         )
+        #: One renderer, two callers. The publish loop (R1-g) and the
+        #: maintenance pass both fold the open day, each on its own thread
+        #: through ``asyncio.to_thread``, and the incremental renderer carries a
+        #: cursor per (market, day). Two passes folding the same day at once
+        #: would advance that cursor from under each other. Rendering is
+        #: therefore serialised here rather than made re-entrant: a publish that
+        #: arrives during a maintenance pass waits for it and then finds nothing
+        #: left to fold, which is the correct answer and not a missed minute.
+        self._render_lock = threading.Lock()
         self.health: RecorderHealth = initial_health(contract, source_revision=source_revision)
         self.heartbeat = HeartbeatWriter(self.root, wall_ns=wall_ns)
+        #: R1-h. The heartbeat says what the recorder is doing now and is
+        #: replaced in place; this says when it started and stopped, and is
+        #: appended. A kill leaves an ``up`` with no ``down``, which is the only
+        #: durable evidence that the gap in the data was the recorder's.
+        self.lifecycle = LifecycleLog(self.root, wall_ns=wall_ns)
         self.clients: tuple[StreamClient, ...] = (
             tuple(clients)
             if clients is not None
@@ -581,6 +612,16 @@ class RecorderService:
             recorded += 1
         if recorded:
             self._rebuild_settlements()
+        # The poll's own evidence, and it is worth being exact about what it
+        # proves (R1-g). The venue answered for the window ending at `now_ms`
+        # and returned the rows above. So for every instant at or before
+        # `now_ms`, this recorder has now looked: a settlement it did not return
+        # is one the venue's funding history did not hold when asked. That is an
+        # observation of the source, not an assumption about the venue, and it
+        # is the only thing that lets a consumer distinguish "no settlement" from
+        # "no row yet". It is recorded whether or not anything was returned --
+        # an empty answer is exactly the case the watermark exists for.
+        self._advance_funding_watermark(now_ms)
         self.recovery.settlements += recorded
         return recorded
 
@@ -626,6 +667,20 @@ class RecorderService:
         except RecorderNormalizeError as exc:
             self._note(f"settlements rebuild refused: {exc}")
 
+    def _advance_funding_watermark(self, observed_through_ms: int) -> None:
+        """Raise the published funding watermark to a polled horizon (R1-g)."""
+        try:
+            self.normalizer.publish_funding_watermark("um", int(observed_through_ms))
+        except (OSError, RecorderSinkError, RecorderNormalizeError) as exc:
+            # `write_json_atomic` raises `RecorderSinkError`, which is a
+            # `RuntimeError` and not an `OSError`: catching only the latter let a
+            # full or read-only disk escape the funding-poll task, and
+            # `asyncio.wait(FIRST_EXCEPTION)` then shut the whole recorder down
+            # over a file that is an engineering aid. A watermark that cannot be
+            # written is a watermark the runner does not have, which it already
+            # handles by waiting.
+            self._note(f"funding watermark not published: {exc}")
+
     # --- the run ----------------------------------------------------------
     async def run(self, stop: asyncio.Event | None = None) -> ServiceResult:
         """Recover, connect, and run until ``stop`` is set.
@@ -639,6 +694,14 @@ class RecorderService:
         self._stop = stop
         started_ns = self._wall_ns()
         self.health.started_ns = started_ns
+        # Before `recover()`, deliberately: recovery reads and rewrites the
+        # recorder's own files, so a crash inside it must already be preceded by
+        # the line saying this process had started.
+        self.lifecycle.up(
+            source_revision=self.health.source_revision,
+            contract_id=self.contract.contract_id,
+            contract_hash=self.contract.contract_hash,
+        )
         self.recover()
         if self.gapfill:
             for market in self.contract.market_keys():
@@ -656,6 +719,7 @@ class RecorderService:
         for client in self.clients:
             tasks.append(asyncio.create_task(client.run(stop), name=client.name))
         tasks.append(self._loop(stop, self.sync_interval_s, self._sync, "sync"))
+        tasks.append(self._loop(stop, self.publish_interval_s, self._publish, "publish"))
         tasks.append(self._loop(stop, self.heartbeat_interval_s, self._beat, "heartbeat"))
         tasks.append(self._maintenance_task(stop))
         tasks.append(
@@ -679,7 +743,7 @@ class RecorderService:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            self._shutdown()
+            self._shutdown("task_failed" if failure is not None else "stopped")
 
         result = self._result(started_ns)
         if failure is not None:
@@ -845,6 +909,31 @@ class RecorderService:
             await asyncio.to_thread(self._normalize, market, today)
         self.health.normalized_day = today
 
+    async def _publish(self) -> None:
+        """Fold and publish the minutes that closed since the last pass (R1-g).
+
+        The whole of R1-g's recorder half. It does exactly what the maintenance
+        pass does to the open day and nothing else: no rotation, no freeze, no
+        gap-fill, no REST call. What makes it cheap enough to run every few
+        seconds is that :class:`~chimera.recorder.incremental.IncrementalNormalizer`
+        folds from a cursor, so a pass that finds one new minute reads one
+        minute's events whether it is 00:05 or 23:55.
+
+        **Raw first, always**, for the reason the maintenance pass gives: a
+        cursor may only ever claim material the raw files already hold durably.
+        The dedicated sync loop runs at its own cadence and this pass cannot
+        assume it ran, so the fsync happens here too, immediately before the
+        fold.
+
+        A failure to render one market is noted and the others still publish:
+        the alternative is one storage fault stopping publication for every
+        market, and :meth:`_normalize` already records the reason.
+        """
+        self._sync()
+        day = utc_day(self._wall_ns())
+        for market in self.contract.market_keys():
+            await asyncio.to_thread(self._normalize, market, day)
+
     def _normalize(self, market: str, day: str) -> bool:
         """Render one day, incrementally where the cache allows it.
 
@@ -854,7 +943,8 @@ class RecorderService:
         rendered. Returns whether the day was written.
         """
         try:
-            report = self.incremental.build_day(market, day, provenance=self._provenance())
+            with self._render_lock:
+                report = self.incremental.build_day(market, day, provenance=self._provenance())
         except RecorderNormalizeError as exc:
             self._note(f"{market} {day} not normalized: {exc}")
             return False
@@ -892,7 +982,7 @@ class RecorderService:
         }
 
     # --- shutdown ---------------------------------------------------------
-    def _shutdown(self) -> None:
+    def _shutdown(self, reason: str = "stopped") -> None:
         """Sync, normalize what is open, write a last heartbeat, close the files."""
         self._sync()
         today = utc_day(self._wall_ns())
@@ -910,6 +1000,12 @@ class RecorderService:
                 sink.close()
             except (RecorderSinkError, OSError) as exc:
                 self._note(f"could not close {stream}: {exc}")
+        # LAST, and after the sinks are closed (R1-h). The line asserts that this
+        # process stopped having finished its own shutdown; writing it earlier
+        # would have it claim a clean stop for a run that then failed to close a
+        # file, and the whole value of the record is that its absence means the
+        # stop was not clean.
+        self.lifecycle.down(reason, errors=len(self._errors) or None)
 
     def _result(self, started_ns: int) -> ServiceResult:
         streams = self.health.streams.values()

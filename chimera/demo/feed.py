@@ -487,6 +487,24 @@ class FeedCursor:
         self._settlements_stamp = stamp
         return self._settlements
 
+    def funding_watermark_ms(self) -> int | None:
+        """How far the recorder says it has observed the funding stream (R1-g).
+
+        Read through the recorder's own accessor rather than parsed here, so the
+        file's shape has one reader. ``None`` means the recorder vouches for no
+        instant: no watermark published, or one holding no observation, or one
+        that will not parse. All three are the same fact to the runner -- it
+        cannot tell whether a settlement is absent or merely late -- and the
+        runner's job is then to wait rather than to decide, which is what
+        :meth:`chimera.demo.runner.DemoRunner._funding_defer_reason` does with
+        it.
+
+        Deliberately NOT cached. The whole point of the number is that it moves
+        while the runner is waiting on it, and a cached one would have the runner
+        wait for a watermark that has already advanced.
+        """
+        return self._normalizer.read_funding_watermark(PERP_MARKET)
+
     def last_settlement_at_or_before(self, minute_open_ms: int) -> Mapping[str, Any] | None:
         seen = None
         for row in self.settlements():

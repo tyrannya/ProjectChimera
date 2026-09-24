@@ -16,6 +16,7 @@ import pytest
 
 from chimera.carry.hedge import HedgeState
 from chimera.carry.ledger import LedgerError, LoadOutcome
+from chimera.demo.config import DemoConfigError
 from chimera.demo.decision_log import RecordKind, iso_minute
 from chimera.demo.fixtures import MinuteShape, SyntheticFeed
 from chimera.demo.rules import HedgeTarget, RuleError, RuleRegistry
@@ -732,82 +733,112 @@ def test_an_unreadable_runner_state_is_refused_rather_than_reset(tmp_path):
 # ---------------------------------------------------------------------------
 # catch-up
 # ---------------------------------------------------------------------------
-def test_catch_up_decides_at_most_max_catchup_minutes(tmp_path):
-    """Section 2.2 line 120's first clause: only the recent minutes are decided.
+def test_catch_up_decides_every_pending_minute(tmp_path):
+    """R1-g's core claim: no minute is passed over for being old.
 
-    ``now_ms`` bounds the pending window. Without one the drain runs to the end
-    of the fixture's day, and since PR-10R accounts for every pending minute
-    rather than abandoning the surplus, that is 1437 SKIPPED_STALE records with
-    an fsync each -- minutes of wall clock to assert something about three.
+    Ten minutes are pending and ten are decided. Before R1-g the newest three
+    were decided and the oldest seven were written off as ``SKIPPED_STALE``,
+    which is the behaviour whose acceptance criterion is now "zero
+    ``SKIPPED_STALE`` minutes while the recorder is healthy".
+
+    ``now_ms`` still bounds the pending window; without one the drain runs to the
+    end of the fixture's day.
     """
     harness = build(tmp_path, config=None)
-    limit = int(harness.runner.config.runner_setting("max_catchup_minutes"))
     first = harness.first_minute_ms()
-    outcomes = harness.runner.catch_up(now_ms=first + 9 * 60_000)
-    decided = [o for o in outcomes if o.kind is not RecordKind.SKIPPED_STALE]
-    assert len(decided) == limit
-
-
-def test_catch_up_honours_a_configured_limit(tmp_path):
-    state_dir = tmp_path / "state"
-    config = campaign_config(state_dir, runner={"max_catchup_minutes": 2})
-    harness = build(tmp_path, config=config)
-    first = harness.first_minute_ms()
-    outcomes = harness.runner.catch_up(now_ms=first + 9 * 60_000)
-    assert len([o for o in outcomes if o.kind is not RecordKind.SKIPPED_STALE]) == 2
-
-
-def test_catch_up_accounts_for_every_pending_minute(tmp_path):
-    """Section 2.2 line 120's second clause: older minutes are LOGGED as skipped.
-
-    The property is that the campaign's log has no hole. Before PR-10R the
-    minutes beyond the limit were abandoned with no record at all, so a restart
-    after an outage left a gap nothing in the log named -- and it abandoned the
-    NEWEST minutes rather than the stalest, deciding the oldest ones at the
-    oldest book.
-    """
-    state_dir = tmp_path / "state"
-    config = campaign_config(state_dir, runner={"max_catchup_minutes": 3})
-    harness = build(tmp_path, config=config)
-    first = harness.first_minute_ms()
-    # Ten pending minutes: the newest three are decided, the oldest seven are not.
     outcomes = harness.runner.catch_up(now_ms=first + 9 * 60_000)
 
     assert [o.minute_ms for o in outcomes] == [first + i * 60_000 for i in range(10)]
-    stale = [o for o in outcomes if o.kind is RecordKind.SKIPPED_STALE]
-    decided = [o for o in outcomes if o.kind is not RecordKind.SKIPPED_STALE]
-    assert len(stale) == 7 and len(decided) == 3
-    assert [o.minute_ms for o in decided] == [first + i * 60_000 for i in (7, 8, 9)]
+    assert all(o.kind is not RecordKind.SKIPPED_STALE for o in outcomes)
+    assert all(o.kind is not None for o in outcomes)
 
-    records = {r["minute"]: r for r in harness.records()}
-    skipped = [r for r in harness.records() if r["kind"] == RecordKind.SKIPPED_STALE.value]
-    assert len(skipped) == 7
-    assert skipped[0]["catch_up"] is True
-    assert skipped[0]["stale"]["max_catchup_minutes"] == 3
-    assert skipped[0]["stale"]["age_minutes"] == 9
-    assert records  # every processed minute reached the log
+    records = [r for r in harness.records() if r["kind"] == RecordKind.SKIPPED_STALE.value]
+    assert records == []
 
 
-def test_a_skipped_stale_minute_changes_no_position(tmp_path):
-    """ "No position change is executed" -- asserted, not assumed."""
-    state_dir = tmp_path / "state"
-    config = campaign_config(state_dir, runner={"max_catchup_minutes": 1})
-    harness = build(tmp_path, config=config)
+def test_every_caught_up_minute_reaches_the_log_with_a_kind(tmp_path):
+    """The no-hole property R1-g keeps from the behaviour it replaces.
+
+    Deciding every minute is only half of it. The other half is that each one
+    still lands in the log exactly once and carries a kind naming what happened,
+    so a restart after an outage leaves a chronology rather than a gap.
+    """
+    harness = build(tmp_path, config=None)
     first = harness.first_minute_ms()
-    before = harness.runner._position_block()
-    harness.runner.catch_up(now_ms=first + 4 * 60_000)
-    stale = [r for r in harness.records() if r["kind"] == RecordKind.SKIPPED_STALE.value]
-    assert len(stale) == 4
-    # The four stale minutes ran before the one decided minute, so the position
-    # at the end of them is still the one the run started with.
-    assert before == {
-        "hedge_state": "FLAT",
-        "spot_qty": "0",
-        "perp_qty": "0",
-        "imbalance": "0",
+    harness.runner.catch_up(now_ms=first + 9 * 60_000)
+
+    # Every pending minute is represented, and none is missing. Counted as a
+    # SET of minutes rather than a count of records: a minute may legitimately
+    # carry more than one record -- the first one here also carries the run's
+    # startup-time record at the same instant -- and the no-hole property is
+    # about which minutes appear, not how many lines they take.
+    expected = {iso_minute((first + i * 60_000) * 1_000_000) for i in range(10)}
+    minutes = {
+        r["minute"] for r in harness.records() if r["kind"] not in ("STARTUP", "SHUTDOWN")
     }
-    assert all("execution" not in r for r in stale)
-    assert all("signal" not in r for r in stale)
+    assert minutes == expected
+    assert all(r["kind"] for r in harness.records())
+
+
+def test_no_record_carries_the_retired_catch_up_flag(tmp_path):
+    """Its only writer was the skip path, and a replay would disagree with it.
+
+    In a replay every minute is caught up, so a flag written on a live drain and
+    not on the replay of the same files would be a field recording when the
+    runner looked. Section 10 compares records; this keeps that field out of
+    them rather than out of the comparison.
+    """
+    harness = build(tmp_path, config=None)
+    first = harness.first_minute_ms()
+    harness.runner.catch_up(now_ms=first + 9 * 60_000)
+    assert all("catch_up" not in r for r in harness.records())
+
+
+def test_a_configuration_still_naming_the_retired_cap_is_refused(tmp_path):
+    """The removed setting is refused by name, never accepted and ignored.
+
+    A bound that no code path enforces is the defect class R1-k hunts, and this
+    one had entered the config hash, so a campaign could have been identified by
+    a limit that did nothing. The parser names what happened to it.
+    """
+    state_dir = tmp_path / "state"
+    with pytest.raises(DemoConfigError, match="retired setting"):
+        campaign_config(state_dir, runner={"max_catchup_minutes": 2})
+
+
+def test_an_old_minute_is_decided_at_its_own_recorded_state(tmp_path):
+    """Why deciding a late minute is sound: it is not decided at a later price.
+
+    The objection to lifting the cap is that an old minute would be acted on at
+    a market that has moved. It cannot be here -- every input comes from the
+    minute's own recorded row -- and this is the witness for that rather than an
+    argument for it: the records the drain writes for minutes 0..9 are identical
+    to the records the same minutes produce when each is ticked as the newest
+    minute there is.
+    """
+
+    def records_for(where, *, drained):
+        harness = build(where, config=None)
+        first = harness.first_minute_ms()
+        if drained:
+            harness.runner.catch_up(now_ms=first + 9 * 60_000)
+        else:
+            for index in range(10):
+                harness.runner.tick(first + index * 60_000)
+        harness.runner.shutdown("done")
+        return [
+            {
+                k: v
+                for k, v in r.items()
+                if k not in ("record_hash", "prev_hash", "seq", "catch_up")
+            }
+            for r in harness.records()
+            if r["kind"] not in ("STARTUP", "SHUTDOWN")
+        ]
+
+    assert records_for(tmp_path / "drained", drained=True) == records_for(
+        tmp_path / "onebyone", drained=False
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -78,6 +78,35 @@ CONTRACTS_DIR = Path(__file__).resolve().parent / "contracts"
 #: change of identity rather than a silent reinterpretation of old hashes.
 CONTRACT_SCHEMA = "chimera.recorder-contract/1"
 
+#: The schema of an ENGINEERING acquisition contract, which has no prospective
+#: boundary and structurally cannot acquire one.
+#:
+#: **Why a second schema rather than a flag.** A prospective contract carries
+#: ``prospective_from`` as a REQUIRED key whose value may be ``null``: the key
+#: is the contract saying "here is where my boundary will go", and ``null`` is
+#: it saying "not yet". That is the right shape for an acquisition that intends
+#: to become evidence. It is the wrong shape for one that must never become
+#: evidence at all, because a ``null`` is one reviewed commit away from an
+#: instant, and the only thing standing between an engineering recording and a
+#: scientific claim would be everybody's continued good sense.
+#:
+#: Under this schema the field is **absent, and refused if present**. There is
+#: no value to edit, ``with_prospective_from`` refuses, and
+#: :func:`canonical_material` has no boundary term at all, so an engineering
+#: recording cannot be relabelled prospective by any edit short of rewriting the
+#: contract into the other schema -- which is a new contract id, a new hash, a
+#: new storage root, and visible in review as exactly what it is.
+#:
+#: What it is FOR: measuring the cost and validity of an acquisition before
+#: freezing one. R2's gen4 preflight is the first user -- ~20 USD-M perpetuals
+#: for 30 days, to find out what a year of them costs and which of their streams
+#: can be verified at all. Everything recorded under it is DIAGNOSTIC: a design
+#: input, never a result.
+ENGINEERING_CONTRACT_SCHEMA = "chimera.recorder-engineering-contract/1"
+
+#: Every acquisition schema this build parses.
+CONTRACT_SCHEMAS: frozenset[str] = frozenset({CONTRACT_SCHEMA, ENGINEERING_CONTRACT_SCHEMA})
+
 #: The prospective generation the demo records. The only committed contract.
 GEN3_CONTRACT_ID = "btcusdt-prospective-gen3"
 
@@ -128,6 +157,17 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "coverage_rule",
     "reconciliation_rule",
     "recorder_version_policy",
+)
+
+#: The two keys that exist only because a contract intends to become evidence.
+#: Required under :data:`CONTRACT_SCHEMA`, refused under
+#: :data:`ENGINEERING_CONTRACT_SCHEMA`.
+BOUNDARY_FIELDS: tuple[str, ...] = ("prospective_from", "boundary_rule")
+
+#: Keys an ENGINEERING contract file must carry: the acquisition-defining fields
+#: and nothing about a boundary.
+ENGINEERING_REQUIRED_FIELDS: tuple[str, ...] = tuple(
+    name for name in REQUIRED_FIELDS if name not in BOUNDARY_FIELDS
 )
 
 #: Keys a contract file may also carry, and which say nothing about what is
@@ -197,6 +237,11 @@ class RecorderContract:
     reconciliation_rule: str
     recorder_version_policy: str
     description: str = ""
+    #: Which acquisition schema this contract was written under. Part of the
+    #: identity: two contracts that acquire the same streams under different
+    #: schemas are not the same contract, because one of them can become
+    #: evidence and the other cannot.
+    schema: str = CONTRACT_SCHEMA
     #: Where this contract was read from, for error messages. Deliberately
     #: outside equality and outside the hash: the same contract is the same
     #: contract from any checkout, and a path is a fact about a machine.
@@ -226,6 +271,17 @@ class RecorderContract:
         the contract is committed in, and the state PR-04 leaves it in.
         """
         return self.prospective_from is not None
+
+    @property
+    def is_engineering(self) -> bool:
+        """Whether this contract can never carry a prospective boundary.
+
+        Not the negation of :attr:`activated`. A prospective contract with a
+        ``null`` boundary is also unactivated, and the difference between the
+        two is the whole point: that one is *waiting* for a reviewed commit to
+        write its boundary, and this one has nowhere to write it.
+        """
+        return self.schema == ENGINEERING_CONTRACT_SCHEMA
 
     def market(self, key: str) -> Market:
         """The market a stream prefix names. An unknown key is refused."""
@@ -283,6 +339,15 @@ class RecorderContract:
         pre-activation engineering data under its own identity instead of being
         relabelled by a later activation.
         """
+        if self.is_engineering:
+            # Never under `prospective/`. The directory name is the first thing
+            # a reader sees, and a path claiming a standing the data does not
+            # have is how an engineering recording gets cited as evidence by
+            # somebody who never opened the contract. Keyed by contract id
+            # rather than generation, because several engineering acquisitions
+            # of one generation can legitimately coexist -- that is what
+            # measuring before freezing means.
+            return Path(base) / "engineering" / self.contract_id
         return Path(base) / "prospective" / f"gen{self.generation}"
 
     def with_prospective_from(self, instant: datetime) -> "RecorderContract":
@@ -299,6 +364,16 @@ class RecorderContract:
         supplies the instant, and committing the resulting file is what makes it
         real.
         """
+        if self.is_engineering:
+            raise ProspectiveBoundaryError(
+                f"recorder contract {self.label} is written under "
+                f"{ENGINEERING_CONTRACT_SCHEMA!r} and has no prospective boundary to fix. "
+                "Engineering acquisitions measure; they do not accrue evidence, and giving "
+                "one a boundary would relabel data that was recorded while nobody was "
+                "holding it to a preregistration. A prospective acquisition is a NEW "
+                "contract under the prospective schema, with its own id, its own hash and "
+                "its own storage root"
+            )
         if self.prospective_from is not None:
             raise ProspectiveBoundaryError(
                 f"recorder contract {self.label} already fixes prospective_from at "
@@ -310,8 +385,8 @@ class RecorderContract:
 
     def to_dict(self) -> dict[str, Any]:
         """The contract as a JSON document, in the shape the committed file has."""
-        return {
-            "contract_schema": CONTRACT_SCHEMA,
+        document = {
+            "contract_schema": self.schema,
             "contract_id": self.contract_id,
             "generation": self.generation,
             "exchange": self.exchange,
@@ -320,8 +395,6 @@ class RecorderContract:
             "required_for_coverage": list(self.required_for_coverage),
             "timezone": CONTRACT_TIMEZONE,
             "minute_key": self.minute_key,
-            "prospective_from": self._boundary_text(),
-            "boundary_rule": self.boundary_rule,
             "sealed_regions_inherited": dict(self.sealed_regions_inherited),
             "storage_layout_version": self.storage_layout_version,
             "checksum_scheme": self.checksum_scheme,
@@ -330,6 +403,10 @@ class RecorderContract:
             "recorder_version_policy": self.recorder_version_policy,
             "description": self.description,
         }
+        if not self.is_engineering:
+            document["prospective_from"] = self._boundary_text()
+            document["boundary_rule"] = self.boundary_rule
+        return document
 
     def provenance(self) -> dict[str, Any]:
         """The block every day manifest records so it can name the exact contract.
@@ -338,14 +415,22 @@ class RecorderContract:
         change — so the hash travels with it, together with the boundary state
         the day was recorded under.
         """
-        return {
-            "contract_schema": CONTRACT_SCHEMA,
+        block: dict[str, Any] = {
+            "contract_schema": self.schema,
             "contract_id": self.contract_id,
             "contract_hash": self.contract_hash,
             "generation": self.generation,
             "storage_layout_version": self.storage_layout_version,
-            "prospective_from": self._boundary_text(),
         }
+        if self.is_engineering:
+            # Not `"prospective_from": null`, which is what a prospective
+            # contract awaiting activation writes. A reader of a day manifest
+            # has to be able to tell "no boundary yet" from "no boundary ever",
+            # and the two would be the same JSON if this key were present.
+            block["evidence_class"] = "DIAGNOSTIC"
+        else:
+            block["prospective_from"] = self._boundary_text()
+        return block
 
     def _boundary_text(self) -> str | None:
         if self.prospective_from is None:
@@ -366,8 +451,8 @@ def canonical_material(contract: RecorderContract) -> str:
     bytes hashed are the same on a machine whose default encoding is cp1251 as
     on one whose default is UTF-8.
     """
-    material = {
-        "contract_schema": CONTRACT_SCHEMA,
+    material: dict[str, Any] = {
+        "contract_schema": contract.schema,
         "contract_id": contract.contract_id,
         "generation": contract.generation,
         "exchange": contract.exchange,
@@ -376,8 +461,6 @@ def canonical_material(contract: RecorderContract) -> str:
         "required_for_coverage": list(contract.required_for_coverage),
         "timezone": CONTRACT_TIMEZONE,
         "minute_key": contract.minute_key,
-        "prospective_from": contract._boundary_text(),
-        "boundary_rule": contract.boundary_rule,
         "sealed_regions_inherited": dict(contract.sealed_regions_inherited),
         "storage_layout_version": contract.storage_layout_version,
         "checksum_scheme": contract.checksum_scheme,
@@ -385,6 +468,14 @@ def canonical_material(contract: RecorderContract) -> str:
         "reconciliation_rule": contract.reconciliation_rule,
         "recorder_version_policy": contract.recorder_version_policy,
     }
+    if not contract.is_engineering:
+        # Absent, not null, under the engineering schema. The boundary terms are
+        # what a prospective contract promises to fill in; a contract that has
+        # no such promise must not hash as though it had one with the promise
+        # unkept, because that is the same material a prospective contract has
+        # before activation -- and the two must never collide.
+        material["prospective_from"] = contract._boundary_text()
+        material["boundary_rule"] = contract.boundary_rule
     return json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -526,23 +617,51 @@ def parse_recorder_contract(
     if not isinstance(payload, Mapping):
         raise RecorderContractError(f"{where}a recorder contract must be a JSON object")
 
-    missing = [name for name in REQUIRED_FIELDS if name not in payload]
+    # The schema is read before anything else, because it decides WHICH set of
+    # fields is required. Its absence is still reported as a missing required
+    # field rather than as a bad schema: the key is not wrong, it is not there,
+    # and an author who left it out is owed the same message as one who left out
+    # any other mandatory key.
+    if "contract_schema" not in payload:
+        raise RecorderContractError(f"{where}missing required field(s): ['contract_schema']")
+    schema = payload["contract_schema"]
+    if schema not in CONTRACT_SCHEMAS:
+        raise RecorderContractError(
+            f"{where}contract_schema is {schema!r}, and this build parses "
+            f"{sorted(CONTRACT_SCHEMAS)}. A contract written under another schema is "
+            "refused rather than best-effort parsed"
+        )
+    engineering = schema == ENGINEERING_CONTRACT_SCHEMA
+    required = ENGINEERING_REQUIRED_FIELDS if engineering else REQUIRED_FIELDS
+
+    missing = [name for name in required if name not in payload]
     if missing:
         raise RecorderContractError(f"{where}missing required field(s): {sorted(missing)}")
-    unknown = sorted(set(payload) - set(REQUIRED_FIELDS) - set(DOCUMENTARY_FIELDS))
+
+    if engineering:
+        # Refused by NAME, not as an unknown key. An author reaching for
+        # `prospective_from` here is trying to give an engineering acquisition a
+        # boundary, and the answer to that is not "unrecognised field" -- it is
+        # that this schema has no boundary, on purpose, and that what they want
+        # is a different contract.
+        forbidden = sorted(set(payload) & set(BOUNDARY_FIELDS))
+        if forbidden:
+            raise RecorderContractError(
+                f"{where}an engineering contract carries no {forbidden}. Under "
+                f"{ENGINEERING_CONTRACT_SCHEMA!r} the boundary fields are absent by schema "
+                "rather than null: there is no value to edit, and nothing recorded under "
+                "this contract can become prospective evidence later. An acquisition that "
+                "is meant to accrue evidence is a separate contract under "
+                f"{CONTRACT_SCHEMA!r}, with its own id, hash and storage root"
+            )
+
+    unknown = sorted(set(payload) - set(required) - set(DOCUMENTARY_FIELDS))
     if unknown:
         raise RecorderContractError(
-            f"{where}unknown field(s) {unknown}. A recorder contract carries exactly "
-            f"{sorted(REQUIRED_FIELDS)} plus {sorted(DOCUMENTARY_FIELDS)}; an unrecognised "
+            f"{where}unknown field(s) {unknown}. This contract carries exactly "
+            f"{sorted(required)} plus {sorted(DOCUMENTARY_FIELDS)}; an unrecognised "
             "key is refused rather than ignored, because an ignored key can be a "
             "misspelling of one that defines the acquisition"
-        )
-
-    schema = payload["contract_schema"]
-    if schema != CONTRACT_SCHEMA:
-        raise RecorderContractError(
-            f"{where}contract_schema is {schema!r}, not {CONTRACT_SCHEMA!r}. A contract "
-            "written under another schema is refused rather than best-effort parsed"
         )
 
     zone = payload["timezone"]
@@ -600,8 +719,8 @@ def parse_recorder_contract(
         streams=streams,
         required_for_coverage=required,
         minute_key=_text(payload, "minute_key", where),
-        prospective_from=_parse_boundary(payload, where),
-        boundary_rule=_text(payload, "boundary_rule", where),
+        prospective_from=None if engineering else _parse_boundary(payload, where),
+        boundary_rule="" if engineering else _text(payload, "boundary_rule", where),
         sealed_regions_inherited=tuple(sorted((str(k), str(v)) for k, v in sealed.items())),
         storage_layout_version=layout,
         checksum_scheme=_text(payload, "checksum_scheme", where),
@@ -609,6 +728,7 @@ def parse_recorder_contract(
         reconciliation_rule=_text(payload, "reconciliation_rule", where),
         recorder_version_policy=_text(payload, "recorder_version_policy", where),
         description=description,
+        schema=str(schema),
         source=source,
     )
 

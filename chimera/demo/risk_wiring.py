@@ -65,18 +65,19 @@ class RiskWiringError(ValueError):
 #:     raises ``funding_halt`` at the Nth consecutive paid settlement, and
 #:     ``evaluate_entry`` vetoes every increase while it is up.
 #: ``loss_streak_limit`` -> ``record_trade_result`` opens a cooldown at the Nth
-#:     consecutive loss. (NOT REACHABLE on the demo path today: nothing in
-#:     ``chimera/`` or ``tools/`` calls ``record_trade_result``, so
-#:     ``consecutive_losses`` never leaves zero. Mapped anyway, so that the
-#:     campaign's value is already in force on the day something does.)
+#:     consecutive loss. (REACHABLE since R1-k: ``DemoRunner`` reports the result
+#:     of every round trip the hedged position closes, measured as the change in
+#:     EQUITY across the cycle -- the one number that already carries the
+#:     position's funding, fees and slippage as well as its price PnL. A cycle
+#:     whose opening equity was never recorded reports nothing rather than zero.)
 #: ``max_open_positions`` -> ``evaluate_entry`` vetoes a new pair once this many
 #:     are open. Two, because the hedge is two legs.
 #: ``max_orders_per_minute`` -> ``record_order`` HALTS above this many approvals
 #:     in the rolling 60-second window.
 #: ``cooldown_seconds`` -> the length of the cooldown ``record_trade_result``
-#:     opens; ``evaluate_entry`` vetoes until it expires. (NOT REACHABLE on the
-#:     demo path today, for the same reason as ``loss_streak_limit``: the
-#:     cooldown is never opened, so the gate never closes.)
+#:     opens; ``evaluate_entry`` vetoes until it expires. (REACHABLE since R1-k,
+#:     for the same reason as ``loss_streak_limit``: the cooldown is opened, so
+#:     the gate can close.)
 #: ``max_daily_loss_pct`` -> ``update_equity`` halts on this loss from the day's
 #:     starting equity.
 #: ``max_data_delay_s`` -> ``note_feed`` marks the feed stale past this delay and
@@ -87,12 +88,14 @@ class RiskWiringError(ValueError):
 #: ``max_exposure_per_asset_pct`` -> ``evaluate_entry`` vetoes when this pair's
 #:     CUMULATIVE exposure plus the new stake would pass the fraction of equity.
 #: ``max_funding_cost_rate`` -> ``evaluate_entry``'s side-aware funding veto,
-#:     ``sign(side) * rate`` (amendment A10). (NOT REACHABLE on the demo path
-#:     today: ``chimera/carry/hedge.py`` calls ``execute_target`` without a
-#:     ``funding_rate``, so ``evaluate_entry`` skips the whole funding branch.
-#:     What the demo DOES enforce against adverse funding is
-#:     ``funding_adverse_streak_limit``, whose settlements the runner really
-#:     does report.)
+#:     ``sign(side) * rate`` (amendment A10). (REACHABLE since R1-k:
+#:     ``HedgedPosition`` passes the minute's published funding rate to the
+#:     PERPETUAL leg's ``execute_target``, and deliberately not to the spot leg,
+#:     which pays no funding -- giving spot a rate would veto its entries on a
+#:     cost it does not bear. A minute with no published rate passes ``None`` and
+#:     the branch is skipped, which is the honest answer rather than a veto on a
+#:     fabricated number. ``funding_adverse_streak_limit`` remains the other
+#:     half of the cover, on settlements actually paid.)
 #: ``max_leverage`` -> ``evaluate_entry`` vetoes above it, and ``position_size``
 #:     caps the leverage it divides by.
 #: ``max_total_exposure_pct`` -> ``evaluate_entry`` vetoes when the sum of all
@@ -137,9 +140,12 @@ DIRECT_LIMITS: Mapping[str, str] = {
 #:     equal or the sign-blind one is tighter, so it has to move with the
 #:     campaign's ``max_funding_cost_rate`` rather than sit on a default that a
 #:     tightened campaign would leave behind. Like the side-aware ceiling it
-#:     shadows, this is NOT REACHABLE on the demo path today -- no caller passes
-#:     a ``funding_rate`` at all, let alone one without a side -- so the
-#:     invariant is maintained here for the day one does, not for today.
+#:     shadows, this is NOT REACHABLE on the demo path, and since R1-k for a
+#:     narrower reason than before: a rate now arrives, but every demo caller
+#:     names a side, so ``evaluate_entry`` always takes the side-aware branch.
+#:     The invariant is maintained here for the day a caller does not, not for
+#:     today. ``tests/test_r1k_limit_enforcement.py`` records it as unreachable
+#:     rather than as enforced, so the claim cannot quietly become false.
 DERIVED_LIMITS: Mapping[str, str] = {
     "max_position_pct": "max_exposure_per_asset_pct",
     "max_funding_rate": "max_funding_cost_rate",

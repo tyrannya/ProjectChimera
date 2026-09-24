@@ -57,6 +57,7 @@ This module opens no socket, makes no request and reads no clock.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -88,6 +89,7 @@ from chimera.recorder.sink import (
     available_days,
     read_raw_events,
     require_day,
+    publish_atomically,
     write_bytes_atomic,
     write_json_atomic,
 )
@@ -109,6 +111,32 @@ NORMALIZED_DIRECTORY = "normalized"
 FUNDING_DIRECTORY = "funding"
 SETTLEMENTS_FILE = "settlements.ndjson"
 SETTLEMENTS_DIGEST_FILE = "settlements.sha256"
+
+#: Where a market records how far its funding stream has been OBSERVED (R1-g).
+#:
+#: The settlements file answers "which settlements were published". It cannot
+#: answer "was there a settlement at instant T", because the absence of a row
+#: means *this recorder has not seen one*, which is not the same claim: a row
+#: that has not arrived yet and a settlement that never happened are identical
+#: on disk. A consumer that read absence as "no settlement" would be asserting
+#: something about the venue from its own ignorance -- exactly the substitution
+#: the recorder refuses everywhere else.
+#:
+#: This file adds the missing half, and it is deliberately a statement about the
+#: RECORDER and never about the exchange: the latest canonical instant at which
+#: this recorder held an observation of the funding stream. A consumer may then
+#: reason soundly: for a funding instant at or before the watermark, the
+#: settlements file is complete by this recorder's lights -- a row is a
+#: settlement, and no row is no observed settlement; beyond the watermark it
+#: knows nothing and must wait rather than assume.
+#:
+#: It is an engineering artefact, not evidence: rebuildable from the raw files,
+#: outside the contract, outside every value digest, and read by no
+#: reconciliation and no scientific report.
+FUNDING_WATERMARK_FILE = "funding_watermark.json"
+
+#: The watermark document's schema string.
+FUNDING_WATERMARK_SCHEMA = "chimera.recorder-funding-watermark/1"
 
 #: The one clock the recorder normalizes to. Every other clock the project uses
 #: is cut from a minute source by :mod:`nn.multiclock`, and there is exactly one
@@ -362,6 +390,10 @@ class SettlementsReport:
     first_funding_time_ms: int | None
     last_funding_time_ms: int | None
     sha256: str
+    #: The latest canonical instant this recorder holds an observation of the
+    #: funding stream at, in milliseconds, or ``None`` when it holds none at
+    #: all. See :data:`FUNDING_WATERMARK_FILE`.
+    observed_through_ms: int | None = None
 
 
 # --- value conversion -------------------------------------------------------
@@ -804,6 +836,61 @@ class MinuteNormalizer:
         self.contract.market(market)
         return self.root / FUNDING_DIRECTORY / market / SETTLEMENTS_FILE
 
+    def funding_watermark_path(self, market: str) -> Path:
+        """Where :data:`FUNDING_WATERMARK_FILE` lives for one market."""
+        return self.settlements_path(market).with_name(FUNDING_WATERMARK_FILE)
+
+    def read_funding_watermark(self, market: str) -> int | None:
+        """How far the funding stream has been observed, or ``None`` if unknown.
+
+        ``None`` covers both "no watermark has been published" and "one has, and
+        it holds no observation". Both mean the same thing to a consumer -- this
+        recorder cannot vouch for any instant -- so they are not distinguished
+        here. An unreadable or malformed file is also ``None``: a watermark that
+        cannot be read is not a watermark, and guessing at one would be the
+        substitution this file exists to avoid.
+        """
+        path = self.funding_watermark_path(market)
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        value = document.get("observed_through_ms") if isinstance(document, Mapping) else None
+        return int(value) if isinstance(value, int) else None
+
+    def publish_funding_watermark(
+        self, market: str, observed_through_ms: int | None, *, settlements: int | None = None
+    ) -> int | None:
+        """Raise the watermark to ``observed_through_ms``. Never lower it.
+
+        **Monotone, because its two writers know different things.** A rebuild
+        from the raw files knows the latest instant an observation was *stored*
+        at; a successful funding poll knows the venue answered for a window
+        ending now and reported nothing later than what it returned, which is a
+        later instant and an equally direct observation. Whichever ran last, the
+        recorder's knowledge is the greater of the two, so a write that would
+        move the number backwards is dropped rather than applied. Without that a
+        rebuild running after a poll would retract a fact the recorder holds.
+
+        Returns the watermark in force after the call.
+        """
+        current = self.read_funding_watermark(market)
+        if observed_through_ms is None:
+            value = current
+        elif current is None:
+            value = int(observed_through_ms)
+        else:
+            value = max(current, int(observed_through_ms))
+        document: dict[str, Any] = {
+            "schema": FUNDING_WATERMARK_SCHEMA,
+            "market": market,
+            "observed_through_ms": value,
+        }
+        if settlements is not None:
+            document["settlements"] = int(settlements)
+        write_json_atomic(self.funding_watermark_path(market), document)
+        return value
+
     def settlements_digest_path(self, market: str) -> Path:
         return self.settlements_path(market).with_name(SETTLEMENTS_DIGEST_FILE)
 
@@ -895,7 +982,15 @@ class MinuteNormalizer:
 
         parquet = self.parquet_path(market, day)
         parquet.parent.mkdir(parents=True, exist_ok=True)
-        frame.to_parquet(parquet, index=False, compression="zstd", compression_level=19)
+        # R1-h: published, not written in place. The open day is rewritten while
+        # the runner's feed is reading it, so a truncate-and-fill would hand a
+        # reader a day with minutes missing from the middle of the rewrite.
+        publish_atomically(
+            parquet,
+            lambda target: frame.to_parquet(
+                target, index=False, compression="zstd", compression_level=19
+            ),
+        )
         parquet_sha = hashlib.sha256(parquet.read_bytes()).hexdigest()
 
         document = meta(
@@ -962,6 +1057,7 @@ class MinuteNormalizer:
             )
         settlements: dict[int, FundingSettlement] = {}
         receipts: dict[int, int] = {}
+        observed_ns: int | None = None
         for day in available_days(self.root, stream):
             for event in read_raw_events(self.root, stream, day):
                 record = FundingSettlement.from_payload(event.payload, stream=stream)
@@ -976,6 +1072,23 @@ class MinuteNormalizer:
                 if existing is None:
                     settlements[record.settlement_id] = record
                     receipts[record.settlement_id] = event.receipt_wall_ns
+                # The watermark counts OBSERVATIONS, not settlements, so it is
+                # taken over every funding event this loop sees -- including a
+                # duplicate and including one whose settlement was already
+                # known. A REST catch-up that re-reports a settlement the
+                # websocket already delivered still proves the recorder was
+                # looking at the funding stream at that instant, which is the
+                # only thing this number claims.
+                #
+                # `receipt_wall_ns`, NOT `canonical_ns`. A funding event's
+                # canonical instant IS the settlement instant, so a watermark
+                # built from it can never exceed the last settlement -- it would
+                # say "observed through 08:00" at 15:00 and defer the 08:00
+                # minute for ever if that settlement's row were the one missing.
+                # The receipt clock is when this recorder actually held the
+                # observation, which is the claim the watermark makes.
+                if observed_ns is None or event.receipt_wall_ns > observed_ns:
+                    observed_ns = int(event.receipt_wall_ns)
 
         lines = [
             canonical_json(
@@ -992,6 +1105,18 @@ class MinuteNormalizer:
         digest_path = self.settlements_digest_path(market)
         write_bytes_atomic(digest_path, f"{checksum}  {SETTLEMENTS_FILE}\n".encode("utf-8"))
         keys = sorted(settlements)
+        observed_through_ms = (
+            None if observed_ns is None else int(observed_ns) // NS_PER_MILLISECOND
+        )
+        # Written even when nothing was observed, and written with `null` then.
+        # A missing file and a file saying "nothing yet" are different facts: the
+        # first is a recorder that has not published a watermark at all, which a
+        # consumer must treat as unknown, and the second is a recorder that has
+        # published one and holds no funding observation. Leaving the file out
+        # would collapse the two.
+        observed_through_ms = self.publish_funding_watermark(
+            market, observed_through_ms, settlements=len(keys)
+        )
         return SettlementsReport(
             market=market,
             path=path,
@@ -1000,6 +1125,7 @@ class MinuteNormalizer:
             first_funding_time_ms=keys[0] if keys else None,
             last_funding_time_ms=keys[-1] if keys else None,
             sha256=checksum,
+            observed_through_ms=observed_through_ms,
         )
 
     # --- internals --------------------------------------------------------
