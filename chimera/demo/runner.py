@@ -2669,7 +2669,9 @@ class DemoRunner:
         minutes = list(range(int(start_ms), int(end_ms) + 1, 60_000))
         return self.run_minutes(minutes)
 
-    def catch_up(self, *, now_ms: int | None = None) -> list[TickOutcome]:
+    def catch_up(
+        self, *, now_ms: int | None = None, stop: Callable[[], bool] | None = None
+    ) -> list[TickOutcome]:
         """Process every pending minute in order; decide only the recent ones.
 
         Section 2.2 line 120, in full: "minutes between the persisted cursor and
@@ -2702,6 +2704,12 @@ class DemoRunner:
         10's parity comparison lists the fields that must match without naming
         this one, so a flag both live and replay produce identically cannot break
         parity. Recorded in the PR.
+
+        `stop` is R1-d's shutdown request, asked only BETWEEN minutes. A tick is
+        never interrupted -- its PERSISTENCE always completes -- so a service
+        told to stop in the middle of a long catch-up finishes the minute in
+        hand and leaves the rest for the next start, instead of making the
+        supervisor wait out the whole backlog.
         """
         self._require_active("catch_up")
         limit = int(self.config.runner_setting("max_catchup_minutes"))
@@ -2719,7 +2727,7 @@ class DemoRunner:
             return []
         outcomes: list[TickOutcome] = []
         while True:
-            if self.state is RunnerState.HALT:
+            if self.state is RunnerState.HALT or (stop is not None and stop()):
                 break
             # Bounded by `newest`, never by `now_ms` alone: with no `now_ms` the
             # cursor's own `next_minute_ms` hands back cursor + one minute for

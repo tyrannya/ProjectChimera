@@ -557,7 +557,8 @@ def test_every_telemetry_observation_method_returns_none():
         for child in ast.walk(node):
             if isinstance(child, ast.Return):
                 assert child.value is None, f"{node.name} returns a value"
-    assert seen == 16, f"expected eight methods on each of the two classes, saw {seen}"
+    # Nine each since R1-d added `on_heartbeat`, the wait loop's beat.
+    assert seen == 18, f"expected nine methods on each of the two classes, saw {seen}"
 
 
 def test_the_telemetry_module_calls_no_mutating_method():
