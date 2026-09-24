@@ -193,6 +193,32 @@ def test_pathological_input_finishes_far_inside_the_timeout(command):
     assert time.monotonic() - started < 5.0
 
 
+@needs_node
+@pytest.mark.parametrize("builtin", ["declare", "typeset"])
+@pytest.mark.parametrize(
+    ("tail", "rule"), [("echo done", None), ("git push --force", "git-force-push")]
+)
+def test_env_dump_scan_stays_linear_up_to_the_size_cap(builtin, tail, rule):
+    """`-/declare` is a command (after `-c`) and also a flag, so rescanning the
+    rest of the segment from each command position was quadratic: about 4 s at
+    0.25 MB and minutes near the 2 MB cap, a timeout that lets the call through.
+    A non-flag final word makes every such scan run to the end."""
+    head = f"sh -c bash -c -/{builtin} "
+    unit = f"-c -/{builtin} -lc -/{builtin} "
+    command = head + unit * ((1_999_000 - len(head) - len(tail)) // len(unit)) + tail
+    started = time.monotonic()
+    result = run_hook(
+        json.dumps(
+            {**FIXTURES["envelope"], "tool_name": "Bash", "tool_input": {"command": command}}
+        )
+    )
+    assert time.monotonic() - started < 5.0
+    if rule:
+        assert_deny_json(result, rule)
+    else:
+        assert (result.returncode, result.stdout) == (0, "")
+
+
 # --- the native floor ----------------------------------------------------------
 
 

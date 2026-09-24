@@ -157,6 +157,13 @@ function lex(src, ps) {
     if (seg.words.length) segments.push(seg);
     seg = { words: [], redirects: [] };
   };
+  // A number glued to a redirect operator is its fd (`2>&1`, `1>out.txt`), and so
+  // is PowerShell's `*` (`*>&1`); it is part of the redirect, not an argument.
+  // `echo 2 >f` keeps its `2`: the space makes it a word.
+  const endWordAtRedirect = () => {
+    if (w !== null && (/^\d+$/.test(w) || (ps && w === "*"))) w = null;
+    else endWord();
+  };
   const push = (closer) => {
     frames.push({ seg, w, redir, mode, close });
     seg = { words: [], redirects: [] };
@@ -284,16 +291,17 @@ function lex(src, ps) {
       endWord();
       i++;
     } else if (c === "&") {
-      if (src[i - 1] === ">" || src[i - 1] === "<") redir = false; // 2>&1, >&2: fd dup
+      // `2>&1`, `>&2`: fd dup, and its target is still a redirect word.
+      if (src[i - 1] === ">" || src[i - 1] === "<") redir = true;
       else if (next === ">") endWord(); // &> file
       else endSeg();
       i++;
     } else if (c === ">") {
-      endWord();
+      endWordAtRedirect();
       redir = true;
       i += next === ">" || next === "|" ? 2 : 1;
     } else if (c === "<" && next === "<" && src[i + 2] !== "<") {
-      endWord();
+      endWordAtRedirect();
       let j = i + 2;
       if (src[j] === "-") j++;
       while (src[j] === " " || src[j] === "\t") j++;
@@ -303,7 +311,7 @@ function lex(src, ps) {
       if (delim) heredocs.push({ delim, from: segments.length });
       i = j;
     } else if (c === "<") {
-      endWord();
+      endWordAtRedirect();
       i += next === "<" ? 3 : 1; // `<<<` here-string: the next word is plain data
     } else {
       add(c);
@@ -493,12 +501,11 @@ function isEnvDump(words, redirects) {
   const cmd = names.indexOf("cmd");
   const lastAssign = lower.findLastIndex((x) => x.includes("="));
   const lastListFlag = lower.findLastIndex((x) => x === "-e" || x === "-v");
-  // Every word after k passes. Runs stop at the next such command, so each word
-  // is scanned at most once per rule.
-  const only = (k, test) => {
-    for (let j = k + 1; j <= last; j++) if (!test(lower[j])) return false;
-    return true;
-  };
+  // "Only flags after k" is "the last non-flag is at or before k". Computed once:
+  // a word can be both a command and a flag (`-/declare`), so rescanning the tail
+  // from each command position was quadratic, and a timeout lets the call through.
+  const lastNonFlag = lower.findLastIndex((x) => !x.startsWith("-"));
+  const lastNonP = lower.findLastIndex((x) => x !== "-p");
   return [...at].some((k) => {
     switch (names[k]) {
       case "printenv":
@@ -506,10 +513,10 @@ function isEnvDump(words, redirects) {
       case "set": // cmd's `set PREFIX` lists every variable starting with PREFIX
         return k === last || (cmd !== -1 && cmd < k && lastAssign < k);
       case "export":
-        return only(k, (x) => x === "-p");
+        return lastNonP <= k;
       case "declare":
       case "typeset":
-        return only(k, (x) => x.startsWith("-"));
+        return lastNonFlag <= k;
       case "compgen":
         return lastListFlag > k;
       default:
