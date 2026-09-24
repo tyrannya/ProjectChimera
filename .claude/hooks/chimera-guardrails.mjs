@@ -147,8 +147,10 @@ function lex(src, ps) {
   };
   const endWord = () => {
     if (w === null) return;
+    // A redirect target is recorded by its position, not its text: in `env > env`
+    // only the second `env` is the target.
+    if (redir) seg.redirects.push(seg.words.length);
     seg.words.push(w);
-    if (redir) seg.redirects.push(w);
     w = null;
     redir = false;
   };
@@ -492,7 +494,7 @@ function commandPositions(lower, names) {
 // Redirect targets are not arguments: `env > out.txt` is still a bare `env`.
 function isEnvDump(words, redirects) {
   const targets = new Set(redirects);
-  const plain = words.filter((x) => !targets.has(x));
+  const plain = words.filter((_, k) => !targets.has(k));
   const names = plain.map(exe);
   const lower = plain.map((x) => x.toLowerCase());
   const { at, bare } = commandPositions(lower, names);
@@ -543,7 +545,7 @@ function checkSegment({ words, redirects }) {
   ) {
     return "env-dump";
   }
-  if (redirects.some(isGitMeta)) return "git-metadata-write";
+  if (redirects.some((k) => isGitMeta(words[k]))) return "git-metadata-write";
   const inPlace = lower.some((x) => /^-[a-z]*i/.test(x) || x.startsWith("--in-place"));
   const writes = names.some((n) => WRITERS.has(n) || ((n === "sed" || n === "perl") && inPlace));
   if (writes && words.some(isGitMeta)) return "git-metadata-write";
