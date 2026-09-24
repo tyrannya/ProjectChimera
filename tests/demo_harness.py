@@ -8,6 +8,7 @@ No market data is read and no economic claim is available from any of it.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -22,7 +23,8 @@ from chimera.demo.risk_wiring import build_risk_engine
 from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
 from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, ShadowParams
-from chimera.demo.runner import DemoRunner
+from chimera.demo.runner import _STATE_NAMES, DemoRunner
+from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.fills import RecordedQuoteFillModel
 from chimera.recorder.contract import load_recorder_contract
 from chimera.risk import RiskEngine
@@ -214,7 +216,16 @@ def build(
         rules=rules,
         capital=CAPITAL,
         software={"revision": "synthetic", "dirty": False, "python": "3.11"},
-        telemetry=telemetry,
+        # The runner no longer builds its own emitter (R1-e), so the harness
+        # composes the default one, on host wall time -- a TEST-ONLY
+        # operational clock. Tests about the operational clock inject their own.
+        telemetry=(
+            telemetry
+            if telemetry is not None
+            else RunnerTelemetry(
+                state_dir=state_dir, states=_STATE_NAMES, rules=rules.ids, wall_ns=time.time_ns
+            )
+        ),
     )
     if start:
         runner.start()

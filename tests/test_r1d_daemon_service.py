@@ -134,10 +134,16 @@ def cli_argv(tmp_path: Path, harness) -> list[str]:
 
 
 def patch_daemon(monkeypatch, fake: FakeTime) -> None:
-    """Drive `main`'s service loop on simulated time."""
-    original = demo_run._daemon
+    """Drive `main`'s service loop on simulated time.
+
+    Injected at `main`, the one place the operational clock enters the process
+    (R1-e), so the schedule and the telemetry both run on ``fake``.
+    """
+    original = demo_run.main
     monkeypatch.setattr(
-        demo_run, "_daemon", functools.partial(original, clock=fake.clock, sleep=fake.sleep)
+        demo_run,
+        "main",
+        functools.partial(original, operational_clock=fake.clock, sleep=fake.sleep),
     )
 
 
