@@ -47,7 +47,6 @@ from tests.test_demo_cli import written_config
 from tests.test_r1d_daemon_service import (
     EPS,
     FakeTime,
-    count_calls,
     installed_sigterm,
     present_minutes,
     publish,
@@ -65,6 +64,8 @@ HOST_PAST = 400 * 86_400.0
 #: Two operational clocks three hundred million seconds (about 9.5 years) apart.
 WALL_A = 1_790_000_017.25
 WALL_B = WALL_A + 300_000_000.0
+#: More passes than either service test drives; reaching it means a busy loop.
+MAX_PASSES = 20
 DEMO_PACKAGES = (REPO / "chimera" / "demo", REPO / "chimera" / "carry")
 DEMO_CLI = REPO / "tools" / "demo_run.py"
 
@@ -262,7 +263,16 @@ def _service(where: Path, profile: str, *, host: float, wall: float, lurch: floa
         assert harness.runner.start() is RunnerState.READY
         stop: dict[str, int] = {}
         passes: list[float] = []
-        count_calls(harness.runner, "catch_up", passes, fake)
+        catch_up = harness.runner.catch_up
+
+        def counted(*args: Any, **kwargs: Any) -> Any:
+            # A loop that never waits (one reading a host frozen PAST its wake)
+            # never reaches the fake sleep, so no hook could stop it: fail here.
+            assert len(passes) < MAX_PASSES, "the service passed again without waiting"
+            passes.append(fake.t)
+            return catch_up(*args, **kwargs)
+
+        harness.runner.catch_up = counted  # type: ignore[method-assign]
         acted: set[int] = set()
 
         def world(f: FakeTime) -> None:
@@ -371,6 +381,7 @@ def test_main_hands_one_operational_clock_to_the_schedule_and_the_telemetry(
     original = DemoRunner.catch_up
 
     def counting(self, *args, **kwargs):
+        assert passes["n"] < MAX_PASSES, "the service passed again without waiting"
         passes["n"] += 1
         return original(self, *args, **kwargs)
 
