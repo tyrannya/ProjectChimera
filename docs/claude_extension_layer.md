@@ -137,7 +137,7 @@ Rules, by id (every deny message carries the id):
 | `git-metadata-write` | Write/Edit/NotebookEdit into any `.git`; shell redirects into `.git`; `cp/mv/rm/tee/Set-Content/Remove-Item/…`, `sed -i` or a PowerShell `[IO.File]::Write…/Delete…/Move…` naming a `.git` path | Read/Grep/`cat`/`ls`/`Get-Content`/`[IO.File]::ReadAllText` of `.git`; `.gitignore`, `.github/` |
 | `encoded-command` | `powershell`/`pwsh -EncodedCommand` (any prefix, `-ec`) | `-Command`, `-ea` |
 | `secret-path` | every `.env*` name except `.env.example` (`.envrc`, `.env-prod`, …); `*.pem`, `*.key`, `id_{rsa,dsa,ecdsa,ed25519}*`; any `.ssh` or `.aws` directory; `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `.git-credentials`, `.credentials.json`; GitHub CLI `hosts.yml`. Matching is case-insensitive, also in `--env-file=.env`, `host:.ssh/…`, `.env::$DATA`, `.env.` | `.env.example`, `test_keys.py`, prose words with no path separator (`"id_rsa rotation runbook"`) |
-| `env-dump` | at a command position (see below): `printenv`; `env` with only options (`-u NAME`, `-C DIR`, flags) and `NAME=value` assignments, so nothing left to run; bare `set`, and `set PREFIX` without `=` under `cmd`; `export [-p]`; `declare`/`typeset` with only flags; `compgen -e/-v`. Redirect targets are not arguments (`env > out.txt`). Also listing the PowerShell `env:` drive; `GetEnvironmentVariables()`; `/proc/*/environ` | `echo env`, `printf "set"`, `bash -c "echo env"`, `grep printenv`, `git log \| grep -c set`, `"env: …"` commit scopes, `Get-Item Env:PATH`, `echo $env:PATH`, `set -euo pipefail`, `cmd /c set FOO=bar`, `env X=1 pytest …` (the utility after the assignments is judged instead) |
+| `env-dump` | at a command position (see below): `printenv`; `env` with only options (`-u NAME`, `-C DIR`, flags) and `NAME=value` assignments, so nothing left to run; bare `set`, and `set PREFIX` without `=` under `cmd`; `export [-p]`; `declare`/`typeset` with only flags; `compgen -e/-v`. Output redirects are not arguments: not the target (`env > out.txt`), not an fd number glued to the operator (`env 2>/dev/null`, `env 1>out.txt`, PowerShell `env *>&1`), and not a dup target (`env 2>&1`, `env >&2`). An input redirect still is (`env < in.txt`, §5). Also listing the PowerShell `env:` drive; `GetEnvironmentVariables()`; `/proc/*/environ` | `echo env`, `printf "set"`, `bash -c "echo env"`, `grep printenv`, `git log \| grep -c set`, `"env: …"` commit scopes, `Get-Item Env:PATH`, `echo $env:PATH`, `set -euo pipefail`, `cmd /c set FOO=bar`, `env X=1 pytest …` (the utility after the assignments is judged instead), `python tool.py 2`, `echo hello 2>&1`, `env 2 >f` (spaced, so `2` is the command) |
 | `secret-token` | `gh auth token`; `gh auth status -t/--show-token`; `gh config … get … oauth_token`, with `-h/--host` anywhere, including before `get`; `git credential …`, `git credential-*` | `gh auth status`, `gh config get git_protocol`, `gh config list`, `git config --get credential.helper` |
 | `internal-error` | stdin that is not a JSON object; a command over 2 MB; more than 64 `git` words in one segment; any exception inside the hook | — |
 
@@ -169,6 +169,7 @@ Launcher strings are dissolved and re-inspected as described above, so `bash -c 
 So the hook fails closed *inside a run*, but the layer as a whole does not. The canonical destructive forms and the secret files stay denied without the hook. The alternate forms of §2.2 do not. Tests characterise this:
 - `test_a_hook_that_cannot_start_is_not_a_block`;
 - `test_pathological_input_finishes_far_inside_the_timeout`, which checks that each case finishes in under 5 s against the 10 s budget: 1 MB of words, 30k `git` words, 20k git segments, 5k launchers, deep nesting, long heredocs, and the command-position, redirect, brace and `Get-Command` paths of §4.2;
+- `test_env_dump_scan_stays_linear_up_to_the_size_cap`, the same 5 s bound for a `declare`/`typeset` launcher chain just under the 2 MB cap, with a harmless tail and with a guarded one;
 - `test_native_floor_covers_canonical_forms` and `test_native_floor_leaves_ordinary_work_alone`.
 
 ## 3. Why the layer is built this way
@@ -228,7 +229,7 @@ The author's own review added: bash `$'…'` quoting; `[IO.File]::` writes into 
 
 ### 4.2 Independent review round (PR #101 at `5dbd576`)
 
-A fresh independent review returned REQUEST CHANGES with three merge-blocking bypasses. Each was reproduced against the hook at `5dbd576` before it was fixed. The fixtures added for each one fail on `5dbd576`, and a targeted mutation of each fix makes them fail again.
+A fresh independent review returned REQUEST CHANGES with three merge-blocking bypasses. Each was reproduced against the hook at `5dbd576` before it was fixed. The fixtures added as evidence for each fix fail on `5dbd576`, and a targeted mutation of each fix makes them fail again. `ps-if-block-multiline` is the exception: it already passed on `5dbd576`, so it is regression coverage, not evidence of the fix.
 
 | finding | disposition |
 |---|---|
@@ -238,7 +239,11 @@ A fresh independent review returned REQUEST CHANGES with three merge-blocking by
 
 The gh syntax was checked on gh 2.67.0 against an isolated `GH_CONFIG_DIR` that held a dummy sentinel for a fake host, with the token environment variables unset. No real credential was read. gh returned the sentinel for `-h H`, `--host H`, `--host=H` and `-hH`, with the host before or after the key, after `--`, and even before `get` (`gh config -h H get oauth_token`). The key is case-sensitive. `gh config list` does not print the token. The new native rule was checked against the documented rule semantics in the test model, not live-probed.
 
-The author's first B1 draft rescanned the words after each command position. On a crafted 1 MB command (`bash -c env -c env …`) that took about 90 s, which is a timeout, and a timeout lets the call through. The shipped version visits each word once. Timing cases for these paths were added.
+The author's first B1 draft rescanned the words after each command position. On a crafted 1 MB command (`bash -c env -c env …`) that took about 90 s, which is a timeout, and a timeout lets the call through. Timing cases for these paths were added.
+
+The delta review of `09469a5` found two more B1 defects, both reproduced before they were fixed:
+- The `declare`/`typeset`/`export` test still rescanned the rest of the segment from each command position. `bash -c -/declare -c -/declare … echo` makes every `-/declare` both a command and a flag, and the final word forces every scan to the end. That took 16 s at 0.5 MB and 47 s at 1 MB, and a guarded tail (`… git push --force`) took 23 s at 1 MB before its deny. Now the finding of command positions is one pass that visits each word once, and each rule after it is O(1) against facts computed once per segment ("the last word that is not a flag"). The same command at 1.9 MB now takes under 1 s. `test_env_dump_scan_stays_linear_up_to_the_size_cap` runs it near the 2 MB cap and fails if the rescan is restored.
+- `env 2>&1`, `env 2>/dev/null`, `env 1>out.txt`, `env >&2`, `set 2>&1`, `export -p 2>&1` and `declare -p 2>&1` were allowed, because the fd number and the dup target were read as arguments. Now a digit-only word glued to `>`/`<` (and PowerShell's `*`) is part of the redirect, and so is the word after `>&`/`<&`. Numbers that are arguments stay words: `python tool.py 2` and the spaced `env 2 >f`.
 
 ## 5. Threat model and residual limits
 
@@ -254,7 +259,7 @@ sandbox against a determined adversary. Known gaps:
   - strings piped into `xargs`;
   - `cd .git && rm refs/…`;
   - `git fetch +src:dst` into local branches;
-  - an environment dump behind a wrapper that takes an argument (`timeout 5 printenv`, `sudo -u root env`, `nice -n 5 env`);
+  - an environment dump behind a wrapper that takes an argument (`timeout 5 printenv`, `sudo -u root env`, `nice -n 5 env`), or with its input redirected (`env < in.txt`: the file is read as an argument);
   - a PowerShell command resolved other than as a literal `(Get-Command <name>)`: a wildcard or computed name, or a variable (`$g = Get-Command git; & $g …`);
   - 8.3 short names and symlinks;
   - a heredoc whose delimiter is chosen to swallow later lines.
