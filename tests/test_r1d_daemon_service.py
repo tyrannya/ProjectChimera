@@ -56,6 +56,9 @@ MINUTE_MS = 60_000
 #: clock and the recorded minutes are different clocks; nothing ties them.
 T0 = 1_790_000_017.25
 GRACE = 5.0  # conf/demo/pvc1.json and section 8.1: `ready_grace_seconds`
+#: An ABSOLUTE tolerance for simulated instants. `pytest.approx`'s default is
+#: relative, and at T0's magnitude relative means roughly 1800 seconds.
+EPS = 1e-3
 
 
 # --------------------------------------------------------------------------- #
@@ -306,7 +309,16 @@ def test_with_nothing_new_the_service_sleeps_to_each_close_plus_grace(tmp_path):
     harness = build(tmp_path, shapes=present_minutes(5))
     runner, fake, stop = harness.runner, FakeTime(), {}
     passes: list[float] = []
-    count_calls(runner, "catch_up", passes, fake)
+    original = runner.catch_up
+
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        # A spinning loop never reaches the fake sleep, so no hook could stop
+        # it: refuse the second pass at the same instant instead of hanging.
+        assert not passes or fake.t > passes[-1], "a pass ran again without waiting"
+        passes.append(fake.t)
+        return original(*args, **kwargs)
+
+    runner.catch_up = guarded
     fake.hooks.append(
         lambda f: stop.update(signal=int(signal.SIGTERM)) if f.t >= T0 + 600 else None
     )
@@ -316,8 +328,8 @@ def test_with_nothing_new_the_service_sleeps_to_each_close_plus_grace(tmp_path):
     assert passes[0] == T0
     later = passes[1:]
     assert len(later) == 10
-    assert all((t - GRACE) % 60 == pytest.approx(0, abs=1e-6) for t in later), later
-    assert all(b - a == pytest.approx(60) for a, b in zip(later, later[1:]))
+    assert all((t - GRACE) % 60 == pytest.approx(0, abs=EPS) for t in later), later
+    assert all(b - a == pytest.approx(60, abs=EPS) for a, b in zip(later, later[1:]))
     assert max(fake.sleeps) <= demo_run.WAIT_SLICE_SECONDS
     assert sum(fake.sleeps) == pytest.approx(fake.t - T0)
 
@@ -341,8 +353,8 @@ def test_a_pass_that_overruns_a_close_wakes_at_the_next_slot_not_in_a_burst(tmp_
     demo_run._daemon(runner, stop, clock=fake.clock, sleep=fake.sleep)
 
     second_end = passes[1] + 150.0
-    assert passes[2] == pytest.approx(demo_run._next_wake(second_end, GRACE))
-    assert passes[3] - passes[2] == pytest.approx(60)
+    assert passes[2] == pytest.approx(demo_run._next_wake(second_end, GRACE), abs=EPS)
+    assert passes[3] - passes[2] == pytest.approx(60, abs=EPS)
 
 
 # --------------------------------------------------------------------------- #
@@ -499,10 +511,13 @@ def test_the_heartbeat_beats_at_most_30s_apart_while_the_service_waits(tmp_path,
 
     demo_run._daemon(harness.runner, stop, clock=fake.clock, sleep=fake.sleep)
 
-    waiting = [b for b in beats if b >= T0]
-    assert waiting[0] == pytest.approx(T0), "the wait beats as it begins"
-    assert _max_gap(waiting) <= demo_run.HEARTBEAT_SECONDS + 1e-6
-    assert waiting[-1] >= fake.t - demo_run.HEARTBEAT_SECONDS - 1e-6
+    # Absolute tolerances throughout: at T0's magnitude pytest.approx's default
+    # RELATIVE tolerance is about half an hour, which would pass anything.
+    waiting = [b for b in beats if b >= T0 - EPS]
+    assert waiting[0] == pytest.approx(T0, abs=EPS), "the wait beats as it begins"
+    assert len({round(b) for b in waiting}) >= 5 * 60 / demo_run.HEARTBEAT_SECONDS
+    assert _max_gap(waiting) <= demo_run.HEARTBEAT_SECONDS + EPS
+    assert waiting[-1] >= fake.t - demo_run.HEARTBEAT_SECONDS - EPS
     # And it stops with the service: no thread goes on beating after the loop.
     count = len(beats)
     fake.t += 3600
@@ -543,7 +558,7 @@ def test_the_heartbeat_stays_within_30s_through_a_pass_that_works_for_many_minut
     assert fake.t - T0 > 30 * 60, "the pass alone worked for half an hour of simulated time"
     assert fake.sleeps == [] or fake.sleeps[0] <= demo_run.WAIT_SLICE_SECONDS
     assert kinds(harness.state_dir).count("SKIPPED_STALE") == 197
-    assert _max_gap([T0, *beats]) <= demo_run.HEARTBEAT_SECONDS
+    assert _max_gap([T0, *beats]) <= demo_run.HEARTBEAT_SECONDS + EPS
 
 
 # --------------------------------------------------------------------------- #
