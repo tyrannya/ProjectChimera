@@ -113,11 +113,25 @@ What R1-d does not change, and must not be read into it:
   is visible only for a moment and `RunnerDown` fires two minutes later. Leaving
   `HALT` is still section 7's procedure; the halt and dispute lifecycle is
   R1-i's.
-* the wait reads the host clock. Nothing it reads reaches a record, but it is
-  not R1-e's injected operational clock.
+* the wait runs on the host's wall clock -- since R1-e, the injected
+  OPERATIONAL clock described just below. Nothing it reads reaches a record.
 * `flatten`, `resume` and `resolve` refuse, exit 2, while the service holds the
   state directory's lock: a second writer beside a running service would fork
   the decision log's hash chain. Stop the service first (section 7).
+
+**Two clocks (R1-e).** The runner decides on the DECISION clock only:
+`RunnerClock`, advanced by the recorded instants it reads, so the same files
+replayed decide the same way. Aegis and both executors cannot be built without
+it on any profile -- CAMPAIGN, SOAK or TEST -- because `build_risk_engine` and
+`build_hedged_position` refuse to build without it. The service's wake-ups, the
+heartbeat and the `*_age_seconds` gauges run on the OPERATIONAL clock: host wall
+time, which enters the process in one place, `tools/demo_run.main`, and reaches
+the service loop and the telemetry as the same single clock. It never reaches a
+record: `tests/test_r1e_clock_hardening.py` runs one recorded day under hosts set
+to 2100 and to 1971, with operational clocks about nine and a half years apart
+that leap forward and step backwards, and requires every persisted byte to be
+identical. A stale feed is still not detected: R1-f will compare the
+operational clock with the newest minute close, and until it does, nothing does.
 
 A third, worth reading before you trust a funding number. The runner does now
 settle funding: it books each recorded settlement in
