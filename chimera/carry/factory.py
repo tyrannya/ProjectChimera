@@ -135,13 +135,20 @@ def build_hedged_position(
     config: HedgeConfig | None = None,
     fill_model: RecordedQuoteFillModel | None = None,
     constraints: Mapping[str, Mapping[str, Any]] | None = None,
-    clock: Callable[[], float] | None = None,
+    clock: Callable[[], float],
 ) -> HedgedPosition:
     """Build both legs, their stores and the ledger. The only demo venue path.
 
     ``state_dir`` of ``None`` builds an in-memory position, which is what the
     tests and the replay protocol use; a path gives each leg its own store file
     and the ledger its own, all under that directory.
+
+    ``clock`` is required and reaches BOTH executors (R1-e). It stamps every
+    persisted order and flatten action, so it has to be the runner's decision
+    clock. ``FuturesExecutor`` defaults to ``time.time`` for its callers off the
+    demo path, and this factory used to pass nothing when it was ``None``, which
+    put host time into a campaign's stores without a word. Omitting it is now a
+    ``TypeError`` and a non-callable is refused before any file is opened.
 
     **Each leg gets its own** :class:`RecordedQuoteFillModel`. The model holds
     one book and one clock, and :mod:`chimera.futures.fills` states the pairing
@@ -162,6 +169,11 @@ def build_hedged_position(
     model per leg, so a caller that wants different slippage still gets it on
     both legs while neither leg can see the other's book or clock.
     """
+    if not callable(clock):
+        raise TypeError(
+            f"build_hedged_position needs the runner's decision clock; got {clock!r}. "
+            "FuturesExecutor would otherwise stamp the campaign's orders with host time"
+        )
     source = StaticConstraintSource.from_mapping(constraints or demo_constraints_table())
     prototype = fill_model if fill_model is not None else RecordedQuoteFillModel()
     # A fresh book and clock per leg: cloning the prototype's settings would
@@ -176,23 +188,19 @@ def build_hedged_position(
 
     execution = FuturesExecutionConfig(dry_run=True, leverage=Decimal("1"))
 
-    kwargs: dict[str, Any] = {}
-    if clock is not None:
-        kwargs["clock"] = clock
-
     spot = FuturesExecutor(
         venue=_venue(source, spot_model, spot_store),
         risk=risk,
         store=spot_store,
         config=execution,
-        **kwargs,
+        clock=clock,
     )
     perp = FuturesExecutor(
         venue=_venue(source, perp_model, perp_store),
         risk=risk,
         store=perp_store,
         config=execution,
-        **kwargs,
+        clock=clock,
     )
     return HedgedPosition(
         spot=spot,

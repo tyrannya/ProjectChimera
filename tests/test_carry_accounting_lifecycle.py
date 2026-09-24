@@ -14,6 +14,7 @@ any number here.
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass
 from decimal import Decimal as D
 
@@ -182,7 +183,11 @@ def make_world(tmp_path) -> World:
     risk = RiskEngine(RiskLimits(max_position_pct=1.0, risk_per_trade_pct=0.5))
     risk.update_equity(EQUITY)
     position = build_hedged_position(
-        risk=risk, capital=CAPITAL, state_dir=tmp_path, fill_model=RecordedQuoteFillModel()
+        risk=risk,
+        capital=CAPITAL,
+        state_dir=tmp_path,
+        fill_model=RecordedQuoteFillModel(),
+        clock=time.time,
     )
     position.spot.recover({})
     position.perp.recover({})

@@ -82,6 +82,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+from chimera.demo.clock import no_authoritative_time
 from chimera.demo.decision_log import (
     LOG_DIR_NAME,
     RecordKind,
@@ -298,8 +299,13 @@ def _equity_transition(
         if risk_state_hash(prior) != history.state_hash:
             continue
         # A detached engine -- no state file, no switch -- so the replay writes
-        # nothing anywhere. Same day as the found file, so no day roll.
-        replay = RiskEngine(limits, check_kill_switch_at_construction=False)
+        # nothing anywhere. Same day as the found file, so no day roll. Its day
+        # comes from `now=` and it persists nothing, so it never needs a clock;
+        # the raising one makes that a fact rather than the `time.time` default
+        # quietly standing by on the demo path (R1-e).
+        replay = RiskEngine(
+            limits, clock=no_authoritative_time, check_kill_switch_at_construction=False
+        )
         replay.state = RiskState.from_dict(prior)
         replay.update_equity(float(found["equity"]), now=day)
         if risk_state_hash(replay.snapshot()) == target:

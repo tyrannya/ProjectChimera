@@ -10,6 +10,7 @@ hold the same BTC quantity.**
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass
 from decimal import Decimal as D
 
@@ -99,7 +100,7 @@ def position(tmp_path):
     risk.update_equity(EQUITY)
     model = RecordedQuoteFillModel()
     hedged = build_hedged_position(
-        risk=risk, capital=CAPITAL, state_dir=tmp_path, fill_model=model
+        risk=risk, capital=CAPITAL, state_dir=tmp_path, fill_model=model, clock=time.time
     )
     hedged.spot.recover({})
     hedged.perp.recover({})
@@ -440,7 +441,9 @@ def test_reconstruct_disputes_on_a_corrupt_ledger(tmp_path):
     risk = RiskEngine(RiskLimits(max_position_pct=1.0, risk_per_trade_pct=0.5))
     risk.update_equity(EQUITY)
     (tmp_path / "carry_ledger.json").write_text("{ not json", encoding="utf-8")
-    hedged = build_hedged_position(risk=risk, capital=CAPITAL, state_dir=tmp_path)
+    hedged = build_hedged_position(
+        risk=risk, capital=CAPITAL, state_dir=tmp_path, clock=time.time
+    )
     hedged.spot.recover({})
     hedged.perp.recover({})
 
@@ -475,7 +478,11 @@ def test_hedged_always_means_zero_imbalance_under_random_fill_and_fault_sequence
     risk.update_equity(EQUITY)
     model = RecordedQuoteFillModel()
     hedged = build_hedged_position(
-        risk=risk, capital=CAPITAL, state_dir=tmp_path / f"s{seed}", fill_model=model
+        risk=risk,
+        capital=CAPITAL,
+        state_dir=tmp_path / f"s{seed}",
+        fill_model=model,
+        clock=time.time,
     )
     hedged.spot.recover({})
     hedged.perp.recover({})
