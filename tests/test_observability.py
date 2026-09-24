@@ -315,7 +315,13 @@ DEMO_ALERT_EXPRESSIONS: dict[str, tuple[str, str]] = {
     "RecorderDown": ("time() - chimera_recorder_heartbeat_timestamp > 120", "0m"),
     "DataGapToday": ("chimera_recorder_missing_minutes_total > 7", "0m"),
     "ClockSkew": ("abs(chimera_recorder_clock_skew_ms) > 5000", "5m"),
-    "RunnerDown": ("time() - chimera_demo_heartbeat_timestamp > 120", "0m"),
+    # R1-d: the absence disjunct is what fires for a DEAD runner. A failed scrape
+    # marks the series stale, so the heartbeat-age half alone returns nothing.
+    "RunnerDown": (
+        "time() - chimera_demo_heartbeat_timestamp > 120"
+        " or absent_over_time(chimera_demo_heartbeat_timestamp[2m])",
+        "0m",
+    ),
     # `job="demo"` is load-bearing: chimera_risk_halted is written by the retired
     # Freqtrade path too, and without the matcher an alert named for the runner
     # can be satisfied by a series the legacy container wrote.

@@ -157,7 +157,7 @@ demo-replay-parity:  ## Section 10: replay the recorded minutes and compare the 
 	$(PYTHON) -m tools.replay_parity --config $(DEMO_CONFIG) --root $(RECORDER_BASE_DIR) \
 		--live-log $(DEMO_STATE_DIR)/decision_log --days $(DEMO_DAYS)
 
-demo-run:  ## Run the demo runner over recorded minutes (dry-run venue; no live route)
+demo-run:  ## Run the demo runner as a service until Ctrl-C (dry-run venue; no live route)
 	$(PYTHON) -m tools.demo_run --config $(DEMO_CONFIG) --root $(RECORDER_BASE_DIR) run
 
 demo-status:  ## Print the demo runner's state as JSON
