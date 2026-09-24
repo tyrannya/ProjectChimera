@@ -163,6 +163,13 @@ services:
     image: chimera/demo:local
     container_name: chimera_demo
     restart: unless-stopped
+    # R1-d: `run` is a long-running service that honours SIGTERM only between
+    # minutes, so the minute in hand always finishes persisting. Docker's
+    # default grace before SIGKILL is 10 s; this is the systemd unit's
+    # TimeoutStopSec. Compose has no RestartPreventExitStatus, so a HALT (exit
+    # 3) is restarted here and halts again at start -- the systemd unit is the
+    # supervised deployment.
+    stop_grace_period: 120s
     command:
       - "--config"
       - "/chimera/conf/demo/pvc1.json"

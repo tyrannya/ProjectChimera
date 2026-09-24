@@ -774,7 +774,7 @@ def test_resolve_equity_settles_the_dispute_and_the_campaign_runs_again(tmp_path
     assert settled["resolved"] == "equity"
     assert settled["record"]
 
-    assert demo_run.main(argv + ["run"]) == demo_run.EXIT_OK
+    assert demo_run.main(argv + ["run", "--once"]) == demo_run.EXIT_OK
     assert json.loads(capsys.readouterr().out)["state"] != RunnerState.HALT.value
 
 

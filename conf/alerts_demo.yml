@@ -83,14 +83,22 @@ groups:
 
   - name: chimera-demo-runner
     rules:
+      # Liveness since R1-d, and it takes both halves. The runner beats the
+      # heartbeat at least every 30 s for its whole life (while waiting between
+      # minutes too), so the first half fires for a process that is scraped but
+      # wedged. A process that is GONE fails its scrape, and Prometheus then
+      # marks every one of its series stale, so the first half returns nothing
+      # at all and could never fire; the absence test is what fires then. A
+      # runner that is deliberately stopped is also down: silence the alert for
+      # a planned stop.
       - alert: RunnerDown
-        expr: time() - chimera_demo_heartbeat_timestamp > 120
+        expr: time() - chimera_demo_heartbeat_timestamp > 120 or absent_over_time(chimera_demo_heartbeat_timestamp[2m])
         for: 0m
         labels:
           severity: critical
         annotations:
-          summary: "The demo runner has changed state in neither of the last two minutes"
-          description: "The heartbeat is stamped from wall time at each state change, so this is a liveness question. How far behind the feed the runner is has its own series, chimera_demo_last_minute_age_seconds."
+          summary: "The demo runner has not beaten its heartbeat for two minutes, or is not running"
+          description: "The heartbeat is wall time, beaten at least every 30 s by the running service, so this is a liveness question: the process is wedged or gone. How far behind the feed the runner is has its own series, chimera_demo_last_minute_age_seconds; whether it is halted is RunnerHalted."
 
       - alert: RunnerHalted
         expr: chimera_risk_halted{job="demo"} == 1 or chimera_demo_state{state="HALT"} == 1

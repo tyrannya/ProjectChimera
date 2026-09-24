@@ -233,6 +233,15 @@ class MarketState:
         }
 
 
+def _file_stamp(path: Path) -> tuple[int, int] | None:
+    """``(st_size, st_mtime_ns)``, or ``None`` for a file that is not there."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_size, stat.st_mtime_ns)
+
+
 def _settlement_ms(row: Mapping[str, Any]) -> int:
     """One settlement row's instant, in milliseconds. Refuses a row without one.
 
@@ -377,7 +386,8 @@ class FeedCursor:
         self.root = Path(root)
         self.contract = contract
         self._normalizer = MinuteNormalizer(self.root, contract)
-        self._days: dict[tuple[str, str], _Day | None] = {}
+        #: Each day as last read, keyed by the stamps of its two files. See `_day`.
+        self._days: dict[tuple[str, str], tuple[tuple[Any, Any], _Day | None]] = {}
         self._settlements: list[Mapping[str, Any]] | None = None
         #: ``(size, mtime_ns)`` of the settlements file when it was last read.
         self._settlements_stamp: tuple[int, int] | None = None
@@ -405,11 +415,28 @@ class FeedCursor:
         return pd.Timestamp(int(minute_open_ms), unit="ms", tz="UTC").strftime("%Y-%m-%d")
 
     def _day(self, market: str, day: str) -> _Day | None:
+        """One market-day as the recorder has it NOW, re-read only when it changed.
+
+        Cached against the ``(st_size, st_mtime_ns)`` of the parquet and of its
+        metadata, the same rule :meth:`settlements` uses and for the same reason:
+        it used to be cached for the life of the cursor, and the cursor lives as
+        long as the runner. A process that outlives one catch-up pass (R1-d's
+        daemon) would then never see a minute the recorder published after the
+        first read -- neither a minute added to a day it had already read, nor a
+        day whose file did not yet exist, because the ABSENCE was cached too. It
+        would look alive and decide nothing.
+
+        The stamp decides only WHEN a file is re-read, never what a minute says:
+        a minute's row is the file's row, so a replay over the finished files
+        reads the same rows. An unchanged file is not read again.
+        """
         key = (market, day)
-        if key in self._days:
-            return self._days[key]
         parquet = self._normalizer.parquet_path(market, day)
         meta_path = self._normalizer.meta_path(market, day)
+        stamp = (_file_stamp(parquet), _file_stamp(meta_path))
+        cached = self._days.get(key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
         loaded: _Day | None = None
         if parquet.is_file():
             frame = pd.read_parquet(parquet)
@@ -423,7 +450,7 @@ class FeedCursor:
             if meta_path.is_file():
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
             loaded = _Day(market, day, frame, meta)
-        self._days[key] = loaded
+        self._days[key] = (stamp, loaded)
         return loaded
 
     def record(self, market: str, minute_open_ms: int) -> MinuteRecord | None:

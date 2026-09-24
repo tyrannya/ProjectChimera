@@ -149,6 +149,8 @@ class NullTelemetry:
 
     def on_shutdown(self) -> None: ...
 
+    def on_heartbeat(self) -> None: ...
+
 
 class RunnerTelemetry:
     """Section 11.1's series, written from values the runner has already decided.
@@ -208,16 +210,21 @@ class RunnerTelemetry:
     # the runner's state machine
     # ------------------------------------------------------------------
     def on_state(self, state: str) -> None:
-        """One section 8.1 state change.
-
-        The heartbeat is wall time, not the runner's clock. It answers "is the
-        process alive", which a data-derived instant cannot: replaying a
-        historical day, a heartbeat carrying the replayed minute would read as
-        years stale and the liveness alert would fire for ever. How far behind
-        the *feed* is has its own series, ``chimera_demo_last_minute_age_seconds``.
-        """
+        """One section 8.1 state change, and a heartbeat (see `_beat`)."""
         set_demo_state(state, states=self._states)
-        DEMO_HEARTBEAT.set(self._wall_ns() / NS_PER_SECOND)
+        self._beat()
+
+    def on_heartbeat(self) -> None:
+        """R1-d's periodic beat, from the daemon's wait between minutes.
+
+        The runner changes state only while it works, and a service spends most
+        of each minute waiting for the next close. Without this the heartbeat
+        would age by up to a minute between passes and ``RunnerDown`` could not
+        tell a healthy wait from a dead process. It is called from the main
+        loop, never from a thread of its own: a heartbeat that kept beating
+        while the loop was wedged would be a liveness signal that cannot fail.
+        """
+        self._beat()
 
     def on_minute(self, *, minute_ns: int, missing: Sequence[str]) -> None:
         """One attempted minute, counted before anything is decided about it.
@@ -254,8 +261,15 @@ class RunnerTelemetry:
     # the log
     # ------------------------------------------------------------------
     def on_record(self, kind: str) -> None:
-        """One record, counted only once it is on disk. See `DemoRunner._append`."""
+        """One record, counted only once it is on disk. See `DemoRunner._append`.
+
+        Also a heartbeat. A committed record is main-loop progress, and it is the
+        one checkpoint every processed minute passes: a `SKIPPED_STALE` or
+        `INCOMPLETE_STATE` minute appends without changing state, so a long
+        backlog of them would otherwise run with no beat at all.
+        """
         DEMO_LOG_RECORDS.labels(kind=kind).inc()
+        self._beat()
 
     def on_log_write_error(self) -> None:
         """An append that raised. The runner re-raises; this only counts it."""
@@ -341,6 +355,16 @@ class RunnerTelemetry:
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+    def _beat(self) -> None:
+        """Stamp the heartbeat from wall time. It answers "is the loop alive".
+
+        Wall time, not the runner's clock: replaying a historical day, a
+        heartbeat carrying the replayed minute would read as years stale and the
+        liveness alert would fire for ever. How far behind the *feed* the runner
+        is has its own series, ``chimera_demo_last_minute_age_seconds``.
+        """
+        DEMO_HEARTBEAT.set(self._wall_ns() / NS_PER_SECOND)
+
     def _publish_funding(self, ledger: Any) -> None:
         """The two funding directions as increments, and never as a net figure.
 

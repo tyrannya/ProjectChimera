@@ -16,28 +16,34 @@
 # with a virtualenv at /opt/chimera/.venv, and a recorder writing to
 # /var/lib/chimera/data as deploy/systemd/chimera-recorder.service does.
 #
-# READ THIS BEFORE ENABLING IT. `tools.demo_run run` is ONE BOUNDED CATCH-UP
-# PASS, not a daemon: it processes at most `max_catchup_minutes` minutes (3 by
-# default), shuts the log down and exits 0. So RestartSec below is not a
-# crash-recovery delay, it is the interval between passes, and two things follow
-# that an operator must not mistake for faults:
+# A LONG-RUNNING SERVICE (R1-d). `tools.demo_run run` starts the runner once and
+# then stays up: it catches up every closed minute, waits for the next minute
+# close plus the configured READY grace (`ready_grace_seconds`, 5 s), and repeats
+# until it is told to stop. systemd is therefore NOT the scheduler any more --
+# before R1-d it was, through `Restart=always` + `RestartSec=30s` around a
+# process that did one bounded pass and exited 0. What follows from the change:
 #
-#   * the metrics endpoint on 9103 exists only while a pass is in flight, so
-#     `up{job="demo"}` is 0 most of the time and the RunnerDown alert in
-#     conf/alerts_demo.yml cannot be read as liveness on this build;
-#   * `systemctl status` shows the unit as activating/inactive between passes.
+#   * `systemctl status` shows the unit active for as long as the campaign runs;
+#   * the metrics endpoint on 9103 lives as long as the process, so
+#     `up{job="demo"}` and chimera_demo_heartbeat_timestamp (beaten at least
+#     every 30 s, including while waiting) are liveness, and RunnerDown in
+#     conf/alerts_demo.yml is a liveness alert;
+#   * `tools.demo_run flatten/resume/resolve` refuse while this unit runs (they
+#     would be a second writer on the same state directory): stop it first.
 #
-# Section 8.1 describes a continuous READY loop and the runner has the state for
-# one, but tools/demo_run.py does not run it. That is a runner gap, recorded as
-# a blocker in docs/demo_runbook.md section 0; this unit does not paper over it
-# by pretending a bounded pass is a service.
+# The process exits in exactly three ways, and each is handled below: 0 after a
+# SIGTERM/SIGINT (a stop), 3 on HALT (never restarted), and non-zero on anything
+# unexpected (restarted after RestartSec, a bounded number of times).
 
 [Unit]
-# A [Unit] directive, not a [Service] one: systemd has read it from [Unit]
-# since v229 and logs "Unknown key name" for it anywhere else. It was in
-# [Service], where it did nothing, and the default 5-starts-in-10s limit
-# still applied -- which is what the Restart comment below exists to avoid.
-StartLimitIntervalSec=0
+# [Unit] directives, not [Service] ones: systemd has read them from [Unit] since
+# v229 and logs "Unknown key name" for them anywhere else. The limit used to be
+# 0 (off), because a bounded pass every thirty seconds tripped any limit within
+# minutes. A service restarts only when it FAILED, so the limit is back: five
+# failures in thirty minutes leaves the unit `failed` rather than restarting a
+# crash loop for ever, and RunnerDown says so.
+StartLimitIntervalSec=30min
+StartLimitBurst=5
 Description=Chimera demo runner (dry-run venue, no credentials, no live route)
 Documentation=file:/opt/chimera/docs/demo_runbook.md
 # The runner reads what the recorder has already written, so it is useless
@@ -65,25 +71,27 @@ ExecStart=/opt/chimera/.venv/bin/python -m tools.demo_run \
     --root /var/lib/chimera/data \
     run --metrics-port 9103
 
-# SIGTERM is what a clean stop looks like. Section 9.3's recoverable case is a
-# stop between the state write and the log write; a stop mid-record is not
-# reachable, because DecisionLog.append fsyncs each record before returning.
+# SIGTERM is what a clean stop looks like, and it is DEFERRED past persistence:
+# the handler only records the request, the minute in hand runs to completion
+# (its ledger, DECISION record and runner state all written), and the process
+# then writes SHUTDOWN and exits 0 -- during the wait between minutes, within a
+# second. 120 s is the ceiling on "the minute in hand", not a normal stop time;
+# past it systemd sends SIGKILL, which section 9.3's triage recovers on the next
+# start.
 KillSignal=SIGTERM
 TimeoutStopSec=120
 
-# Restart=always because exit 0 is the normal end of a pass, and the next pass
-# is how the campaign continues. RestartPreventExitStatus=3 is the important
-# half: tools/demo_run.py exits 3 when the runner starts into HALT, and a
-# supervisor that restarted a halted campaign every thirty seconds would be
-# performing an automatic resume with no operator note -- exactly what
+# Restart=on-failure: exit 0 is a requested stop and is left stopped; an
+# unexpected failure is restarted after RestartSec. RestartPreventExitStatus=3
+# is the important half: tools/demo_run.py exits 3 when the runner halts (at
+# start or during a pass), and a supervisor that restarted a halted campaign
+# would be performing an automatic resume with no operator note -- exactly what
 # DemoRunner.resume refuses to be. Leaving HALT stays a human action:
 #   python -m tools.demo_run --config ... --root ... resume --note "..."
 # followed by `systemctl start chimera-demo`.
-Restart=always
+Restart=on-failure
 RestartSec=30s
 RestartPreventExitStatus=3
-# Do not give up after repeated restarts: at one pass per thirty seconds a
-# healthy campaign trips any default start limit within minutes.
 
 # The runner needs its checkout, its own state directory and read access to the
 # recorder's data. Nothing else, so nothing else is reachable. ProtectSystem=

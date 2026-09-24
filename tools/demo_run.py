@@ -2,7 +2,7 @@
 
 Exactly six subcommands, as the plan lists them:
 
-    run --config PATH [--replay FROM TO] [--allow-dirty] [--metrics-port PORT]
+    run --config PATH [--replay FROM TO | --once] [--allow-dirty] [--metrics-port PORT]
     status
     flatten --note TEXT
     resume --note TEXT
@@ -24,6 +24,20 @@ empty or only whitespace is refused. That matches
 action with no stated reason is an unexplained change to a position, and the
 decision log is the only place that reason will ever exist.
 
+**`run` is the service (R1-d).** Without ``--replay`` or ``--once`` it starts the
+runner ONCE and then loops: catch up every closed minute, wait for the next
+minute close plus section 8.1's READY grace, repeat -- until SIGTERM or SIGINT,
+which is honoured only between minutes, so a minute's PERSISTENCE always
+completes. It exits 0 on that request, 3 on HALT (so a supervisor's
+``RestartPreventExitStatus=3`` never turns a halt into an automatic resume), and
+with a traceback on anything it did not expect. ``--replay`` and ``--once`` are
+the bounded forms, for replays and diagnostics, and behave as `run` always did.
+
+`run`, `flatten`, `resume` and `resolve` each hold an exclusive lock on the state
+directory while they run. A service keeps the decision log's chain head in
+memory, so a second writer beside it would fork the chain; the second one is
+refused instead (exit 2). `status` and `report` only read and take no lock.
+
 This tool builds a dry-run venue through `chimera.carry.factory` -- the one
 place section 7.6 permits -- and reads the recorder's files read-only. It reads
 no credential, and the only socket it can open is the Prometheus scrape endpoint
@@ -34,27 +48,44 @@ from nothing the runner reads back.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import logging
+import math
+import signal
 import sys
+import time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from chimera.carry.factory import build_hedged_position
-from chimera.demo.config import ConfigProfile, parse_demo_config
+from chimera.demo.config import ConfigProfile, DemoConfig, parse_demo_config
 from chimera.demo.inspection import inspect_demo_state
 from chimera.demo.risk_wiring import build_risk_engine
 from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
 from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, ShadowParams
-from chimera.demo.runner import DemoRunner, RunnerError
+from chimera.demo.runner import DemoRunner, RunnerError, RunnerState
 from chimera.demo.telemetry import NullTelemetry
 from chimera.futures.fills import RecordedQuoteFillModel
 from chimera.recorder.contract import load_recorder_contract
 
+logger = logging.getLogger(__name__)
+
 EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_HALTED = 3
+
+#: R1-d's heartbeat cadence while the service waits for the next minute close.
+HEARTBEAT_SECONDS = 30.0
+#: The longest single sleep. A stop request is noticed within this, because the
+#: signal handler only sets a flag (see `_install_stop_handlers`).
+WAIT_SLICE_SECONDS = 1.0
+#: The commands that write under the state directory, and therefore lock it.
+WRITING_COMMANDS: frozenset[str] = frozenset({"run", "flatten", "resume", "resolve"})
+#: The lock file, under the state directory.
+LOCK_NAME = "runner.lock"
 
 
 def _require_note(value: str, command: str) -> str:
@@ -82,8 +113,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run = sub.add_parser("run", help="run the tick loop")
+    run = sub.add_parser(
+        "run", help="run the service: every closed minute, until SIGTERM or SIGINT"
+    )
     run.add_argument("--replay", nargs=2, metavar=("FROM", "TO"), type=int)
+    run.add_argument(
+        "--once",
+        action="store_true",
+        help="one bounded catch-up pass, then exit (diagnostics; not the service)",
+    )
     run.add_argument(
         "--allow-dirty",
         action="store_true",
@@ -120,11 +158,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load(args: argparse.Namespace) -> DemoRunner:
+def _config(args: argparse.Namespace) -> DemoConfig:
     if args.config is None or args.root is None:
         raise SystemExit("--config and --root are required")
     payload = json.loads(Path(args.config).read_text(encoding="utf-8"))
-    config = parse_demo_config(payload, expected_profile=ConfigProfile(args.profile))
+    return parse_demo_config(payload, expected_profile=ConfigProfile(args.profile))
+
+
+def _load(args: argparse.Namespace) -> DemoRunner:
+    config = _config(args)
 
     contract = load_recorder_contract("btcusdt-prospective-gen3")
     state_dir = Path(config.runner_setting("state_dir"))
@@ -226,12 +268,151 @@ def _software(root: Path | None = None) -> dict[str, Any]:
     }
 
 
+class StateDirectoryBusy(RuntimeError):
+    """Another process holds the state directory's writer lock."""
+
+
+@contextlib.contextmanager
+def _single_writer(state_dir: Path) -> Iterator[None]:
+    """Hold an exclusive, non-blocking lock on ``state_dir`` for the command.
+
+    Advisory, and the OS drops it when the holder dies -- SIGKILL included -- so
+    a crash never leaves a lock an operator has to delete by hand. Taken BEFORE
+    the runner is built: a snapshot read while another writer was still active
+    would be stale the moment that writer appended again.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(state_dir / LOCK_NAME, "a+b")
+    locked = False
+    try:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise StateDirectoryBusy(
+                f"another demo_run process holds {state_dir / LOCK_NAME}: the service is "
+                "probably running. Stop it first (systemctl stop chimera-demo); two "
+                "writers on one state directory would fork the decision log's chain"
+            ) from exc
+        locked = True
+        yield
+    finally:
+        if locked and sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        handle.close()
+
+
+def _next_wake(now_s: float, grace_s: float) -> float:
+    """The next minute close plus ``grace_s``, strictly after ``now_s``.
+
+    Absolute, so the schedule does not drift with how long a pass took. After an
+    overrun it is simply the next such instant: the minutes missed meanwhile are
+    not separate wakes, because one `catch_up` takes every pending minute.
+    """
+    return (math.floor((now_s - grace_s) / 60.0) + 1) * 60.0 + grace_s
+
+
+def _install_stop_handlers(stop: dict[str, int]) -> dict[int, Any]:
+    """SIGTERM and SIGINT only RECORD a stop request; the loop acts on it.
+
+    The handler writes one dict entry and returns. It does no I/O, takes no lock
+    and changes no runner state, so wherever the signal lands -- a PERSISTENCE
+    write included -- that code runs on to completion. A `threading.Event` is
+    deliberately not used: `set()` from a handler that interrupted the same
+    Event's `wait()` can block on the lock that `wait()` still holds.
+    """
+
+    def request(signum: int, _frame: Any) -> None:
+        stop["signal"] = signum
+
+    previous: dict[int, Any] = {}
+    for name in ("SIGTERM", "SIGINT"):
+        number = getattr(signal, name)
+        previous[number] = signal.signal(number, request)
+    return previous
+
+
+def _daemon(
+    runner: DemoRunner,
+    stop: dict[str, int],
+    *,
+    clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """R1-d's continuous READY loop, over a runner `start()` has already started.
+
+    Each pass is `catch_up`, the existing unit of work, and nothing else: no
+    restart check runs again, because none of them is repeated in-process. The
+    wait between passes ends at the next minute close plus section 8.1's READY
+    grace, sleeps in slices of at most `WAIT_SLICE_SECONDS`, and beats the
+    heartbeat at most `HEARTBEAT_SECONDS` apart -- on this thread, so a wedged
+    loop stops beating.
+
+    ``clock`` and ``sleep`` are a test seam for the SCHEDULE only. Nothing they
+    return reaches a record: every decision instant is still the runner's own
+    recorded clock. This is not R1-e's injected operational clock.
+    """
+    grace = float(runner.config.runner_setting("ready_grace_seconds"))
+
+    def requested() -> bool:
+        return "signal" in stop
+
+    next_beat = clock()
+    while not requested():
+        runner.catch_up(stop=requested)
+        if runner.state is RunnerState.HALT:
+            reason = runner.halt_reason
+            outcome = runner.shutdown(f"halted: {reason}")
+            print(
+                json.dumps(
+                    {"state": "HALT", "reason": reason, "last_record": outcome.record_hash}
+                )
+            )
+            return EXIT_HALTED
+        wake = _next_wake(clock(), grace)
+        while not requested():
+            now = clock()
+            if now >= wake:
+                break
+            if now >= next_beat:
+                runner.telemetry.on_heartbeat()
+                next_beat = now + HEARTBEAT_SECONDS
+            sleep(min(WAIT_SLICE_SECONDS, wake - now, next_beat - now))
+
+    name = signal.Signals(stop["signal"]).name
+    logger.info("stop requested by %s; the minute in hand has finished", name)
+    outcome = runner.shutdown(f"stopped by {name}")
+    print(json.dumps({"state": runner.state.value, "last_record": outcome.record_hash}))
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "report":
         return _report(args)
 
+    if args.command not in WRITING_COMMANDS:
+        return _command(args)
+    try:
+        with _single_writer(Path(_config(args).runner_setting("state_dir"))):
+            return _command(args)
+    except StateDirectoryBusy as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
+
+
+def _command(args: argparse.Namespace) -> int:
     runner = _load(args)
 
     if args.command == "run":
@@ -246,17 +427,32 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             serve_metrics(args.metrics_port)
 
-        state = runner.start(allow_dirty=args.allow_dirty)
-        if state.value == "HALT":
-            print(json.dumps({"state": "HALT", "reason": runner.halt_reason}))
-            return EXIT_HALTED
-        if args.replay:
-            runner.replay(args.replay[0], args.replay[1])
-        else:
-            runner.catch_up()
-        outcome = runner.shutdown("cli run complete")
-        print(json.dumps({"state": runner.state.value, "last_record": outcome.record_hash}))
-        return EXIT_OK
+        # Once per process, for the process's whole life: the endpoint above,
+        # the handlers below and `start()` -- which is where the restart checks
+        # (R1-b's equity reconciliation, R1-c's continuity verdict, section 9.3's
+        # triage) run. The service loop only ever repeats `catch_up`.
+        service = not (args.once or args.replay)
+        stop: dict[str, int] = {}
+        previous = _install_stop_handlers(stop) if service else {}
+        try:
+            state = runner.start(allow_dirty=args.allow_dirty)
+            if state.value == "HALT":
+                print(json.dumps({"state": "HALT", "reason": runner.halt_reason}))
+                return EXIT_HALTED
+            if service:
+                return _daemon(runner, stop)
+            if args.replay:
+                runner.replay(args.replay[0], args.replay[1])
+            else:
+                runner.catch_up()
+            outcome = runner.shutdown("cli run complete")
+            print(
+                json.dumps({"state": runner.state.value, "last_record": outcome.record_hash})
+            )
+            return EXIT_OK
+        finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
 
     if args.command == "status":
         print(json.dumps(_status(runner), indent=2, sort_keys=True))
