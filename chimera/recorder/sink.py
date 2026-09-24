@@ -65,7 +65,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Mapping
+from typing import Any, BinaryIO, Callable, Iterable, Mapping
 
 from chimera.recorder.contract import STORAGE_LAYOUT_VERSION, RecorderContract
 from chimera.recorder.events import (
@@ -287,6 +287,43 @@ def write_bytes_atomic(path: Path, body: bytes) -> None:
         os.replace(temporary, path)
     except OSError as exc:
         raise RecorderSinkError(f"could not write {path}: {exc}") from exc
+
+
+def publish_atomically(path: Path, write_body: Callable[[Path], None]) -> None:
+    """Publish a file some other library writes, without a half-written window.
+
+    :func:`write_bytes_atomic` covers everything this package serialises itself.
+    It cannot cover a file a third-party writer produces from a handle of its
+    own -- a Parquet container, for instance -- so this is the same discipline
+    with the write delegated: ``write_body`` is handed a temporary path in the
+    destination's own directory, the result is ``fsync``-ed, and only then does
+    ``os.replace`` make it visible under the real name.
+
+    Why it matters here rather than being tidiness (R1-h): the normalised day is
+    read WHILE it is being rewritten. The runner's feed opens it every minute,
+    and since R1-g the recorder republishes it every few seconds. A writer that
+    truncates the destination and fills it in place gives every one of those
+    readers a window in which the day is a valid file with fewer minutes in it
+    -- or not a Parquet file at all -- and a reader that happened to look then
+    would see a minute vanish and come back. ``os.replace`` has no such window:
+    a reader holds either the whole previous day or the whole new one.
+
+    The temporary file is removed on failure, so a crashed write leaves the
+    previous day intact rather than a ``.tmp`` nobody cleans up.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        write_body(temporary)
+        with open(temporary, "rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise RecorderSinkError(f"could not publish {path}: {exc}") from exc
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:

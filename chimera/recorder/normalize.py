@@ -89,6 +89,7 @@ from chimera.recorder.sink import (
     available_days,
     read_raw_events,
     require_day,
+    publish_atomically,
     write_bytes_atomic,
     write_json_atomic,
 )
@@ -981,7 +982,15 @@ class MinuteNormalizer:
 
         parquet = self.parquet_path(market, day)
         parquet.parent.mkdir(parents=True, exist_ok=True)
-        frame.to_parquet(parquet, index=False, compression="zstd", compression_level=19)
+        # R1-h: published, not written in place. The open day is rewritten while
+        # the runner's feed is reading it, so a truncate-and-fill would hand a
+        # reader a day with minutes missing from the middle of the rewrite.
+        publish_atomically(
+            parquet,
+            lambda target: frame.to_parquet(
+                target, index=False, compression="zstd", compression_level=19
+            ),
+        )
         parquet_sha = hashlib.sha256(parquet.read_bytes()).hexdigest()
 
         document = meta(

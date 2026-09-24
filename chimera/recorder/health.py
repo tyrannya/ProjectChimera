@@ -28,6 +28,7 @@ exactly the moments it is busiest.
 from __future__ import annotations
 
 import json
+import os
 import logging
 import shutil
 import time
@@ -53,6 +54,39 @@ HEARTBEAT_SCHEMA = "chimera.recorder-heartbeat/1"
 
 #: Where it is written, under the storage root.
 HEALTH_DIRECTORY = "health"
+
+#: The recorder's own append-only log of starting and stopping (R1-h).
+#:
+#: **Why the heartbeat is not enough.** ``heartbeat.json`` is replaced in place
+#: and says what the recorder is doing now. It therefore cannot say that the
+#: recorder ever stopped: a process that dies leaves its last heartbeat behind,
+#: and a reader coming back later sees a stale timestamp and has to guess
+#: whether the recorder died, the host clock moved, or the file was copied from
+#: somewhere else. The gap in the data is real, and nothing in the recording
+#: names it.
+#:
+#: This file names it. One line per lifecycle transition, appended and never
+#: rewritten, so a stop leaves a record even when the stop was not the
+#: recorder's idea: a ``recorder.up`` with no matching ``recorder.down`` after
+#: it is exactly the signature of a kill, and the next start says so in its own
+#: line rather than leaving a reader to infer it.
+#:
+#: Engineering evidence about the RECORDER, never about the market. No price, no
+#: economic quantity, nothing a coverage gate or a reconciliation reads, and
+#: outside every value digest: deleting it loses operational history and changes
+#: no recorded value.
+LIFECYCLE_FILE = "lifecycle.ndjson"
+
+#: The lifecycle events, and what each one asserts.
+LIFECYCLE_UP = "recorder.up"
+LIFECYCLE_DOWN = "recorder.down"
+#: Written by a START that found the previous line was an ``up``. It asserts
+#: only what can be established from the file -- the previous run wrote no
+#: ``down`` -- and never why, because this process was not there.
+LIFECYCLE_UNCLEAN = "recorder.unclean_stop"
+
+#: The lifecycle document's schema string.
+LIFECYCLE_SCHEMA = "chimera.recorder-lifecycle/1"
 HEARTBEAT_FILE = "heartbeat.json"
 
 #: The adopted cadence, section 4.3's storage layout: "rewritten every 30 s".
@@ -335,6 +369,11 @@ def heartbeat_path(root: str | Path) -> Path:
     return Path(root) / HEALTH_DIRECTORY / HEARTBEAT_FILE
 
 
+def lifecycle_path(root: str | Path) -> Path:
+    """``<root>/health/lifecycle.ndjson``."""
+    return Path(root) / HEALTH_DIRECTORY / LIFECYCLE_FILE
+
+
 def disk_free_bytes(root: str | Path) -> int | None:
     """Free bytes on the filesystem holding ``root``, or ``None`` if unknowable."""
     try:
@@ -427,4 +466,132 @@ class HeartbeatWriter:
         self._totals = publish(health, now_ns=stamp, previous=self._totals)
         write_json_atomic(self.path, document)
         self.writes += 1
+        return document
+
+
+class LifecycleLog:
+    """The recorder's own append-only record of going up and coming down (R1-h).
+
+    Three methods and no policy: :meth:`up` on start, :meth:`down` on a stop
+    this process performed, and :meth:`last_event` so a start can see how the
+    previous run ended. Nothing here is read by the sink, the parsers, the
+    normalizer or any control flow, and nothing it records can change a recorded
+    value.
+
+    **Appended, fsynced, never rewritten.** The file's whole purpose is to hold
+    a line the process that wrote it did not live to follow up, so a writer that
+    buffered would lose exactly the record worth having. Each line is flushed
+    and ``fsync``-ed before the call returns.
+
+    **A failure to write is logged and swallowed.** This is the one place in the
+    recorder where that is right: the log is evidence about the recorder, not
+    part of the recording, and a full disk must not stop the recorder from
+    starting -- or, worse, raise out of a shutdown path and lose the clean stop
+    it was trying to record. The heartbeat's ``disk_free_bytes`` is what
+    surfaces the underlying fault.
+    """
+
+    def __init__(self, root: str | Path, *, wall_ns: Any = time.time_ns) -> None:
+        self.root = Path(root)
+        self.path = lifecycle_path(self.root)
+        self._wall_ns = wall_ns
+
+    def up(
+        self, *, source_revision: str | None = None, **fields: Any
+    ) -> dict[str, Any] | None:
+        """Record this process starting, and any unclean stop before it.
+
+        The unclean-stop line is written FIRST and as its own record, so the
+        chronology reads in the order the facts were established: the previous
+        run's end was unwitnessed, and then this run began. Folding it into the
+        ``up`` record instead would make one line assert two things, one of them
+        about a process this one never saw.
+        """
+        previous = self.last_event()
+        if previous is not None and previous.get("event") == LIFECYCLE_UP:
+            self._append(
+                LIFECYCLE_UNCLEAN,
+                previous_up_ns=previous.get("wall_ns"),
+                detail=(
+                    "the previous run wrote no recorder.down; it was killed, the host "
+                    "stopped, or the write failed. This line records that the stop was "
+                    "unwitnessed and asserts nothing about its cause"
+                ),
+            )
+        return self._append(LIFECYCLE_UP, source_revision=source_revision, **fields)
+
+    def down(self, reason: str, **fields: Any) -> dict[str, Any] | None:
+        """Record a stop this process carried out, with the reason it had."""
+        return self._append(LIFECYCLE_DOWN, reason=str(reason), **fields)
+
+    def last_event(self) -> dict[str, Any] | None:
+        """The last well-formed line, or ``None`` if there is none.
+
+        A torn last line -- the tail of a write interrupted by the kill this
+        file exists to witness -- is skipped rather than raising: the earlier
+        lines are still evidence, and refusing the whole file because its last
+        byte is missing would discard the history to protect the guess.
+        """
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                document = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(document, dict):
+                return document
+        return None
+
+    def _needs_newline(self) -> bool:
+        """Whether the file ends mid-line, which a killed write can leave it doing."""
+        try:
+            with open(self.path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    return False
+                handle.seek(-1, os.SEEK_END)
+                return handle.read(1) != b"\n"
+        except OSError:
+            return False
+
+    def _append(self, event: str, **fields: Any) -> dict[str, Any] | None:
+        stamp = int(self._wall_ns())
+        document: dict[str, Any] = {
+            "schema": LIFECYCLE_SCHEMA,
+            "event": event,
+            "wall_ns": stamp,
+            "wall_utc": iso_utc(stamp),
+        }
+        document.update({key: value for key, value in fields.items() if value is not None})
+        line = json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "a", encoding="utf-8") as handle:
+                # Close an unterminated line before appending to it.
+                #
+                # The interruption this file exists to record is also what can
+                # leave its last line half-written, and appending straight onto
+                # that fragment concatenates the two into one unparseable line --
+                # destroying the new record as well as the old one. The record
+                # lost that way is the worst possible one: the `recorder.unclean_stop`
+                # a start writes on finding an unmatched `up`, which is precisely
+                # the evidence the torn line is a symptom of.
+                #
+                # The newline isolates the fragment. It stays on disk as its own
+                # unreadable line -- a reader skips it and keeps the history --
+                # and every record after it is well formed.
+                if self._needs_newline():
+                    handle.write("\n")
+                handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            logger.warning("could not record %s in %s: %s", event, self.path, exc)
+            return None
         return document

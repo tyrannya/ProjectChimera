@@ -128,6 +128,30 @@ DEFAULT_BACKOFF_MAX_S = 60.0
 DEFAULT_BACKOFF_FACTOR = 2.0
 PROACTIVE_RECONNECT_S = 23 * 3600 + 50 * 60
 
+#: How long a connected socket may deliver no frame at all before the client
+#: treats it as dead and reconnects (R1-h's silence watchdog).
+#:
+#: **What this catches that the ping does not.** ``ping_interval`` /
+#: ``ping_timeout`` detect a connection that has stopped carrying traffic in
+#: either direction. They cannot detect the failure that actually costs a
+#: recording: a socket that is open, answers every ping, and delivers no market
+#: data. To this process that is indistinguishable from a quiet market, and it
+#: stays indistinguishable for as long as nobody asserts what "quiet" can mean.
+#:
+#: 90 seconds is that assertion, and it is safe because of what these sockets
+#: carry. Every websocket client this contract builds subscribes to a
+#: ``kline_1m`` stream, which the venue pushes every second or two while a
+#: candle is forming, and to ``bookTicker``, which on BTCUSDT moves many times a
+#: second. ``um.funding`` -- the one genuinely sparse stream, at eight-hour
+#: settlements -- has no websocket source at all and is polled over REST, so no
+#: socket here is ever legitimately silent for a minute, let alone for three
+#: kline pushes in a row.
+#:
+#: A silence is a RECONNECT, not a halt: the recorder's job is to get the stream
+#: back and to record that it was gone, and the gap itself is already evidence
+#: the normalizer will not fill.
+SILENCE_TIMEOUT_S = 90.0
+
 #: How many skew samples the rolling median is taken over. Bounded so that a
 #: process running for months does not accumulate one sample per frame.
 SKEW_WINDOW = 512
@@ -323,6 +347,11 @@ class StreamCounters:
     decode_errors: int = 0
     out_of_order: int = 0
     ignored_frames: int = 0
+    #: Sessions ended by the silence watchdog (R1-h). Separate from
+    #: ``reconnects``, which counts every session end: a socket that drops is an
+    #: ordinary network fact, and a socket that stays up while the data stops is
+    #: a different one worth being able to see on its own.
+    silent_reconnects: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -332,6 +361,7 @@ class StreamCounters:
             "decode_errors": self.decode_errors,
             "out_of_order": self.out_of_order,
             "ignored_frames": self.ignored_frames,
+            "silent_reconnects": self.silent_reconnects,
         }
 
 
@@ -389,6 +419,7 @@ class StreamClient:
         open_timeout: float = 15.0,
         ping_interval: float = 20.0,
         ping_timeout: float = 20.0,
+        silence_timeout_s: float = SILENCE_TIMEOUT_S,
     ) -> None:
         if not url:
             raise RecorderStreamError("a stream client needs a url")
@@ -423,6 +454,13 @@ class StreamClient:
         self._open_timeout = open_timeout
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
+        if silence_timeout_s <= 0:
+            raise RecorderStreamError(
+                f"silence_timeout_s must be positive, got {silence_timeout_s}. A "
+                "non-positive value would not disable the watchdog, it would make "
+                "every session end on its first wait"
+            )
+        self._silence_timeout_s = float(silence_timeout_s)
         self.counters = StreamCounters()
         self.skew = SkewMeter()
         self._last_update_id: dict[str, int] = {}
@@ -514,28 +552,47 @@ class StreamClient:
     async def _read(self, socket: Any, stop: asyncio.Event, deadline: int) -> None:
         """Read frames until the session deadline, ``stop``, or the peer."""
         stop_task = asyncio.ensure_future(stop.wait())
+        silent_since = self._mono_ns()
         try:
             while not stop.is_set():
                 remaining = (deadline - self._mono_ns()) / 1e9
                 if remaining <= 0:
                     logger.info("%s closing before the exchange's 24h limit", self.name)
                     return
+                # R1-h: the wait is bounded by whichever comes first, the session
+                # deadline or the silence budget, so a socket that has gone quiet
+                # is noticed at the budget rather than at the 24-hour limit.
+                quiet_for = (self._mono_ns() - silent_since) / 1e9
+                silence_left = self._silence_timeout_s - quiet_for
+                if silence_left <= 0:
+                    self.counters.silent_reconnects += 1
+                    logger.warning(
+                        "%s delivered no frame for %.0fs while connected; reconnecting",
+                        self.name,
+                        quiet_for,
+                    )
+                    return
                 receive = asyncio.ensure_future(_recv(socket))
                 done, _ = await asyncio.wait(
                     {receive, stop_task},
-                    timeout=remaining,
+                    timeout=min(remaining, silence_left),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if receive not in done:
                     receive.cancel()
-                    # Either ``stop`` fired or the session deadline expired; the
-                    # loop head decides which, and both end the session.
+                    # ``stop`` fired, the session deadline expired, or the silence
+                    # budget ran out; the loop head decides which, and the first
+                    # two end the session here.
                     if stop.is_set():
                         return
                     continue
                 message = receive.result()
                 if message is None:
                     return
+                # A frame arrived. The budget is measured from the last one that
+                # DID, not from the last wait, so a stream trickling one frame
+                # every 89 seconds never trips it and one that stops does.
+                silent_since = self._mono_ns()
                 self._handle(message)
         finally:
             stop_task.cancel()

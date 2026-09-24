@@ -72,6 +72,7 @@ from chimera.recorder.events import (
 from chimera.recorder.health import (
     HEARTBEAT_INTERVAL_S,
     HeartbeatWriter,
+    LifecycleLog,
     RecorderHealth,
     initial_health,
 )
@@ -281,6 +282,11 @@ class RecorderService:
         self._render_lock = threading.Lock()
         self.health: RecorderHealth = initial_health(contract, source_revision=source_revision)
         self.heartbeat = HeartbeatWriter(self.root, wall_ns=wall_ns)
+        #: R1-h. The heartbeat says what the recorder is doing now and is
+        #: replaced in place; this says when it started and stopped, and is
+        #: appended. A kill leaves an ``up`` with no ``down``, which is the only
+        #: durable evidence that the gap in the data was the recorder's.
+        self.lifecycle = LifecycleLog(self.root, wall_ns=wall_ns)
         self.clients: tuple[StreamClient, ...] = (
             tuple(clients)
             if clients is not None
@@ -681,6 +687,14 @@ class RecorderService:
         self._stop = stop
         started_ns = self._wall_ns()
         self.health.started_ns = started_ns
+        # Before `recover()`, deliberately: recovery reads and rewrites the
+        # recorder's own files, so a crash inside it must already be preceded by
+        # the line saying this process had started.
+        self.lifecycle.up(
+            source_revision=self.health.source_revision,
+            contract_id=self.contract.contract_id,
+            contract_hash=self.contract.contract_hash,
+        )
         self.recover()
         if self.gapfill:
             for market in self.contract.market_keys():
@@ -722,7 +736,7 @@ class RecorderService:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            self._shutdown()
+            self._shutdown("task_failed" if failure is not None else "stopped")
 
         result = self._result(started_ns)
         if failure is not None:
@@ -961,7 +975,7 @@ class RecorderService:
         }
 
     # --- shutdown ---------------------------------------------------------
-    def _shutdown(self) -> None:
+    def _shutdown(self, reason: str = "stopped") -> None:
         """Sync, normalize what is open, write a last heartbeat, close the files."""
         self._sync()
         today = utc_day(self._wall_ns())
@@ -979,6 +993,12 @@ class RecorderService:
                 sink.close()
             except (RecorderSinkError, OSError) as exc:
                 self._note(f"could not close {stream}: {exc}")
+        # LAST, and after the sinks are closed (R1-h). The line asserts that this
+        # process stopped having finished its own shutdown; writing it earlier
+        # would have it claim a clean stop for a run that then failed to close a
+        # file, and the whole value of the record is that its absence means the
+        # stop was not clean.
+        self.lifecycle.down(reason, errors=len(self._errors) or None)
 
     def _result(self, started_ns: int) -> ServiceResult:
         streams = self.health.streams.values()
