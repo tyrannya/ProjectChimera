@@ -375,7 +375,11 @@ def test_main_hands_one_operational_clock_to_the_schedule_and_the_telemetry(
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(DemoRunner, "catch_up", counting)
-    fake.hooks.append(lambda f: installed_sigterm() if passes["n"] >= 2 else None)
+    # The sleep bound turns a loop that never wakes -- one reading a frozen host
+    # instead of `fake` -- into a failure below rather than a hung suite.
+    fake.hooks.append(
+        lambda f: installed_sigterm() if passes["n"] >= 2 or len(f.sleeps) > 20_000 else None
+    )
     # The harness above built its own emitter on the (hostile) host clock just to
     # write the fixture -- and it duly beat 1971. Only the CLI's beats count.
     beats.clear()
