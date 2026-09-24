@@ -82,17 +82,42 @@ be operated end to end are unchanged, and the first of them is that no
 `CAMPAIGN` configuration can build a runner at all — see the fourth entry in
 section 1.
 
-**0.3 `tools.demo_run run` is one bounded catch-up pass, not a daemon.** It
-processes at most `max_catchup_minutes` minutes — 3 by default — closes the log
-and exits 0. Supervision is what re-invokes it: `deploy/systemd/chimera-demo.service`
-uses `Restart=always` with `RestartSec=30s` as the interval between passes, and
-the compose service restarts for the same reason. Two consequences an operator
-must not mistake for faults:
+**0.3 `tools.demo_run run` is a long-running service (R1-d).** It starts the
+runner once — `STARTUP`, `SELF_CHECK`, `RECOVER`, which is where every restart
+check runs — and then loops: it catches up the minutes the recorder has
+published, waits for the next minute close plus `ready_grace_seconds` (5 s,
+section 8.1's READY grace), and repeats. It stops on `SIGTERM` or `SIGINT`, and
+only between minutes: the signal handler records the request, the minute in hand
+finishes — its `PERSISTENCE` included — and the process writes `SHUTDOWN` and
+exits 0. While it is waiting that takes under a second. It exits 3 on `HALT`, at
+start or during a pass, and does not loop past a halt; anything unexpected ends
+it with a traceback and a non-zero exit, which the unit restarts a bounded number
+of times. `run --once` is the old single bounded pass and `run --replay FROM TO`
+is bounded too; neither is the service.
 
-* the metrics endpoint on 9103 exists only while a pass is in flight, so
-  `up{job="demo"}` is 0 between passes and the `RunnerDown` alert in
-  `conf/alerts_demo.yml` cannot be read as liveness on this build;
-* `systemctl status chimera-demo` shows the unit inactive between passes.
+Until R1-d, `run` was one bounded pass and systemd's `Restart=always` with
+`RestartSec=30s` was the scheduler. That is gone, and so are its consequences:
+the metrics endpoint on 9103 lives as long as the process, `systemctl status
+chimera-demo` shows the unit active, and `RunnerDown` is a liveness alert
+(section 11).
+
+What R1-d does not change, and must not be read into it:
+
+* the catch-up rule is still section 2.2's: at most `max_catchup_minutes` (3)
+  pending minutes are decided and older ones are recorded as `SKIPPED_STALE`.
+  Each wake decides what the recorder has published by then, and the recorder
+  publishes on its own cadence, so a wake can find nothing new. Deciding every
+  closed minute is R1-g's.
+* a stale feed is not detected (R1-f).
+* a halted service exits 3 rather than staying up in `HALT`, so `RunnerHalted`
+  is visible only for a moment and `RunnerDown` fires two minutes later. Leaving
+  `HALT` is still section 7's procedure; the halt and dispute lifecycle is
+  R1-i's.
+* the wait reads the host clock. Nothing it reads reaches a record, but it is
+  not R1-e's injected operational clock.
+* `flatten`, `resume` and `resolve` refuse, exit 2, while the service holds the
+  state directory's lock: a second writer beside a running service would fork
+  the decision log's hash chain. Stop the service first (section 7).
 
 A third, worth reading before you trust a funding number. The runner does now
 settle funding: it books each recorded settlement in
@@ -114,11 +139,6 @@ nothing in this build does that for you.
 The per-settlement detail -- settlement id, rate, mark price, quantity, notional,
 signed cash flow and direction -- is in the **`FUNDING` records of the decision
 log**, one per settlement, not in the daily report.
-
-Section 8.1 of the adopted plan describes a continuous `READY` loop and the
-runner has the state machine for one; the CLI does not run it. That is a runner
-gap, recorded here rather than hidden behind a restart policy that makes a
-bounded pass look like a service.
 
 A fourth, about which profile can reach any of this. **This entry was written
 when `_software` declared every tree dirty; R1-a repaired that (section 0.2), and
@@ -285,8 +305,10 @@ Containerised:
 docker compose up -d recorder demo prometheus grafana alertmanager
 ```
 
-Confirm on `http://127.0.0.1:9103/metrics` that `chimera_demo_up` is 1 and that
-`chimera_demo_state{state="READY"}` is 1 while a pass is in flight, and on
+Confirm on `http://127.0.0.1:9103/metrics` that `chimera_demo_up` is 1, that
+`chimera_demo_state{state="READY"}` is 1 while the service waits between
+minutes, and that `chimera_demo_heartbeat_timestamp` moves at least every 30
+seconds; and on
 `http://127.0.0.1:9102/metrics` that `chimera_recorder_up` is 1 for every
 stream. Both ports are bound on all interfaces by the Prometheus client and must
 be firewalled to the Prometheus host; the compose file publishes them on
@@ -299,10 +321,14 @@ sudo systemctl stop chimera-demo
 docker compose stop demo
 ```
 
-The unit sends `SIGTERM`. A stop between the state write and the log write is
-the recoverable case the runner's `SELF_CHECK` is built for; a stop in the
-middle of a record is not reachable, because `DecisionLog.append` fsyncs each
-record before it returns.
+The unit sends `SIGTERM`, and the runner defers it past persistence: the minute
+in hand runs to completion — its ledger, its `DECISION` record and its runner
+state are all written — and only then is `SHUTDOWN` written and the process
+exits 0. During the wait between minutes that is under a second; the unit allows
+`TimeoutStopSec=120` for the minute in hand and sends `SIGKILL` after it. A
+`SIGKILL` is the crash case section 9.3's triage recovers on the next start; a
+stop in the middle of a record is not reachable, because `DecisionLog.append`
+fsyncs each record before it returns.
 
 ## 4. Clean restart
 
@@ -870,7 +896,18 @@ path. `tools/demo_run.py` constructs the demo's `RiskEngine` with
 runner's own state directory. Mechanical correction, recorded here rather than
 left as a trap.
 
-Confirm `RunnerHalted` fires. If the position has to come down:
+The service halts on the switch at the next complete minute it decides, writes
+`HALT` and `SHUTDOWN`, and exits 3, which the unit does not restart. **Every
+command below writes, so the service must not be running:** `flatten`, `resume`
+and `resolve` take the state directory's lock and refuse with exit 2 while the
+service holds it. Confirm the unit has stopped, and stop it yourself if the
+switch has not yet been seen:
+
+```
+sudo systemctl stop chimera-demo
+```
+
+If the position has to come down:
 
 ```
 python -m tools.demo_run --config conf/demo/pvc1.json --root data flatten \
@@ -883,6 +920,7 @@ To come back, in this order:
 rm state/demo/KILL_SWITCH
 python -m tools.demo_run --config conf/demo/pvc1.json --root data resume \
     --note "venue incident closed; both stores reconciled; feed ages under 30s"
+sudo systemctl start chimera-demo
 ```
 
 The kill-switch check is level-triggered: while the file is there every check
@@ -999,17 +1037,27 @@ Three different questions, three different series, and they are routinely
 confused:
 
 * `chimera_recorder_heartbeat_timestamp` and `chimera_demo_heartbeat_timestamp`
-  are wall clock at the last state change. They answer "is the process alive".
-  The recorder also writes `health/heartbeat.json` under its storage root every
-  30 seconds, which survives the process and is what to read after a crash.
+  answer "is the process alive". The runner's is wall clock, stamped at every
+  state change, at every record it commits, and at least every 30 seconds while
+  it waits for the next minute close — always from the main loop, never from a
+  thread of its own, so a loop that wedges stops beating. The recorder also
+  writes `health/heartbeat.json` under its storage root every 30 seconds, which
+  survives the process and is what to read after a crash.
 * `chimera_demo_last_minute_age_seconds` answers "how far behind the data is the
   runner", which is what rises during a catch-up and is not a liveness problem.
 * `chimera_demo_feed_age_seconds{market=...}` answers "how old is the newest
   minute available for this market", which is the recorder's problem, not the
   runner's.
 
-Read section 0.3 before concluding that a demo heartbeat gap means the runner
-died.
+`RunnerDown` is the liveness alert. It fires when the heartbeat is more than
+two minutes old while the process is still scraped — wedged — and when there has
+been no heartbeat sample at all for two minutes — gone, because a failed scrape
+makes Prometheus mark the series stale, so the age test alone would return
+nothing for a dead process. A deliberately stopped runner, and one that halted
+and exited 3, is also down: silence the alert for a planned stop. Healthy
+waiting looks like `chimera_demo_state{state="READY"} == 1` with a heartbeat
+under 30 seconds old; whether the runner is halted is `RunnerHalted`, and how far
+behind the data it is, is `chimera_demo_last_minute_age_seconds`.
 
 ## 12. Daily reporting
 
