@@ -1474,6 +1474,25 @@ class DemoRunner:
                     intents, state, equity=float(portfolio["equity"])
                 )
                 executed = True
+                # R1-k: a round trip finished, so Aegis is told what it was
+                # worth. Nothing called `record_trade_result` before, which left
+                # `loss_streak_limit` and `cooldown_seconds` configured and
+                # enforced nowhere -- `consecutive_losses` could never leave
+                # zero, so the cooldown was never opened and the gate that vetoes
+                # entries while it is open could never close.
+                #
+                # Reported HERE rather than from `HedgedPosition`, because the
+                # runner owns sequencing: the position executes and accounts,
+                # and telling the risk engine that a trade completed is an
+                # ordering decision like every other one this loop makes.
+                #
+                # `None` means no round trip closed on this call, or that one
+                # closed whose opening equity was never recorded. Neither is
+                # reported as zero: a zero is a trade that did not lose, and
+                # saying that about a cycle nobody measured would reset a loss
+                # streak on a fiction.
+                if outcome.cycle_result is not None:
+                    self.risk.record_trade_result(float(outcome.cycle_result))
             except ReconciliationRequired as exc:
                 # Persisted BEFORE the halt, and that order is the whole point.
                 # `HedgedPosition.apply` books this cycle into the ledger from a

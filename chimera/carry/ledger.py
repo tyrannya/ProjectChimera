@@ -204,6 +204,24 @@ class CarryLedgerState:
     #: written before it existed still loads under the same schema id, and the
     #: absence means exactly what it says.
     open_instant_ns: int | None = None
+    #: Equity at the instant the position now held was OPENED, so the result of
+    #: one completed round trip can be stated when it closes (R1-k).
+    #:
+    #: Aegis's ``loss_streak_limit`` and ``cooldown_seconds`` are driven by
+    #: :meth:`chimera.risk.RiskEngine.record_trade_result`, and nothing called
+    #: it, so ``consecutive_losses`` never left zero and both limits were
+    #: configured and enforced nowhere. What a carry position's "result" IS,
+    #: though, is not its realised price PnL: the whole point of the position is
+    #: funding, and the fees and slippage of both legs are part of what it cost.
+    #: The change in EQUITY across the cycle is the one number that already
+    #: carries all of them.
+    #:
+    #: ``None`` means the cycle's opening equity is unknown -- the position is
+    #: flat, or the file was written by a build without this field -- and an
+    #: unknown result is REPORTED AS NOTHING rather than as zero. A zero would
+    #: be a profitable-enough trade that resets a loss streak, which is a claim
+    #: about a cycle nobody measured. Additive, like ``open_instant_ns``.
+    equity_at_open: Decimal | None = None
     #: The most recent identity residual, kept so a report can show how close the
     #: position runs to its tolerance rather than only whether it broke it.
     identity_gap: Decimal | None = None
@@ -255,6 +273,7 @@ class CarryLedgerState:
             "worst_equity": _text(self.worst_equity),
             "settled": list(self.settled),
             "open_instant_ns": self.open_instant_ns,
+            "equity_at_open": _text(self.equity_at_open),
             "identity_gap": _text(self.identity_gap),
             "disputed": self.disputed,
             "resolutions": [dict(r) for r in self.resolutions],
@@ -316,6 +335,7 @@ class CarryLedgerState:
             worst_equity=_optional_decimal(data.get("worst_equity"), "worst_equity"),
             settled=settled,
             open_instant_ns=opened,
+            equity_at_open=_optional_decimal(data.get("equity_at_open"), "equity_at_open"),
             identity_gap=_optional_decimal(data.get("identity_gap"), "identity_gap"),
             disputed=None if disputed is None else str(disputed),
             resolutions=[
@@ -717,6 +737,34 @@ class CarryLedger:
             self.state.open_instant_ns = None
         elif self.state.open_instant_ns is None:
             self.state.open_instant_ns = int(instant_ns)
+
+    def note_cycle(self, *, flat: bool, equity: Decimal) -> Decimal | None:
+        """Track one round trip's equity, and state its result when it closes (R1-k).
+
+        Called with the same ``flat`` as :meth:`note_open_instant` and from the
+        same place, but kept separate because it answers a different question:
+        that method owns the funding WINDOW, this one owns what the cycle was
+        WORTH. Folding them together would have one method returning a number
+        the other's callers have no use for.
+
+        Returns the completed cycle's result -- equity now minus equity when the
+        position was opened -- on the call that closes it, and ``None`` on every
+        other call, including a close whose opening equity was never recorded.
+        An unknown result is reported as nothing rather than as zero: a zero is
+        a trade that did not lose, and saying that about a cycle nobody measured
+        would reset a loss streak on a fiction.
+
+        Equity rather than realised PnL, because a carry position earns funding
+        and pays fees and slippage on both legs, and the equity change is the
+        one number that already contains all of it.
+        """
+        if not flat:
+            if self.state.equity_at_open is None:
+                self.state.equity_at_open = Decimal(equity)
+            return None
+        opened = self.state.equity_at_open
+        self.state.equity_at_open = None
+        return None if opened is None else Decimal(equity) - opened
 
     def note_leg_mark(self, leg: str, instant_ns: int) -> None:
         """Record when a leg was last observed, for the stale-leg rule."""

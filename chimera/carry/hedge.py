@@ -44,7 +44,7 @@ in the pull request:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Mapping, Protocol, runtime_checkable
@@ -123,6 +123,9 @@ class CarryMarketState(Protocol):
 
     @property
     def mark_high(self) -> Decimal | None: ...
+
+    @property
+    def funding_rate_last(self) -> Decimal | None: ...
 
 
 @dataclass(frozen=True)
@@ -265,6 +268,13 @@ class HedgeOutcome:
     filled: tuple[str, ...] = ()
     unfilled: tuple[str, ...] = ()
     detail: str = ""
+    #: The result of a round trip this call CLOSED, or ``None`` (R1-k). Carried
+    #: on the outcome rather than reported from here because the runner owns
+    #: sequencing: this package executes and accounts, and telling Aegis that a
+    #: trade finished is an ordering decision like every other one the runner
+    #: makes. ``None`` covers every call that did not close a position and every
+    #: close whose opening equity was never recorded.
+    cycle_result: Decimal | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -344,6 +354,34 @@ class HedgedPosition:
             quantity=position.quantity,
             entry_price=position.entry_price,
         )
+
+    @staticmethod
+    def _funding_rate_for(leg: str, state: CarryMarketState) -> float | None:
+        """The rate Aegis judges this leg's funding cost against, or ``None`` (R1-k).
+
+        **Only the perpetual leg has one.** Spot inventory pays and receives no
+        funding, and :meth:`chimera.risk.RiskEngine.evaluate_entry` reads the
+        rate side-awarely as ``sign(side) * rate``: handing it a rate for the
+        LONG spot leg would have Aegis veto spot entries whenever the perpetual
+        funding rate was positive -- a veto on a cost that leg does not pay.
+        Passing ``None`` is not a gap; it is the true statement that this leg
+        has no funding exposure.
+
+        **Which rate.** ``funding_rate_last`` is the rate carried on the venue's
+        mark-price stream, which is the CURRENT rate for the settlement ahead
+        rather than the last realised one, so it is the forward cost the veto is
+        about. A minute with no mark observation carries ``None`` and the branch
+        is skipped -- the same as before R1-k, and the right answer: a veto that
+        invented a rate would judge on a number nobody published.
+
+        This closes the reachability gap `chimera/demo/risk_wiring.py` records:
+        ``max_funding_cost_rate`` was mapped into Aegis and enforced nowhere,
+        because every call arrived without a rate.
+        """
+        if leg != PERP:
+            return None
+        rate = getattr(state, "funding_rate_last", None)
+        return None if rate is None else float(rate)
 
     def _executor(self, name: str) -> tuple[FuturesExecutor, str]:
         if name == SPOT:
@@ -497,11 +535,10 @@ class HedgedPosition:
             self._reconcile_ledger(frictions)
 
         outcome = self._settle(filled=tuple(filled), unfilled=tuple(unfilled))
-        self.ledger.note_open_instant(
-            flat=outcome.state is HedgeState.FLAT,
-            instant_ns=state.minute_ns + _MINUTE_NS,
-        )
-        return outcome
+        flat = outcome.state is HedgeState.FLAT
+        self.ledger.note_open_instant(flat=flat, instant_ns=state.minute_ns + _MINUTE_NS)
+        result = self.ledger.note_cycle(flat=flat, equity=Decimal(str(equity)))
+        return replace(outcome, cycle_result=result)
 
     def _execute(
         self,
@@ -525,6 +562,7 @@ class HedgedPosition:
                 TargetPosition(symbol=symbol, side=intent.side, quantity=intent.quantity),
                 reference,
                 equity=equity,
+                funding_rate=self._funding_rate_for(intent.leg, state),
             )
             self.ledger.note_leg_mark(intent.leg, state.minute_ns)
             # Frictions are taken from whatever came back, filled or not. A
