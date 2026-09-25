@@ -81,8 +81,10 @@ class RiskWiringError(ValueError):
 #:     starting equity.
 #: ``max_data_delay_s`` -> since R1-f, the service's READY gate
 #:     (``DemoRunner.check_feed``) reads it from here and halts the feed as
-#:     FEED_STALLED when the operational clock is more than this past the newest
-#:     published minute's close. That gate is the demo's only enforcement of the
+#:     FEED_STALLED when the operational clock is more than this past the instant
+#:     the recorder's heartbeat vouches for (the earlier of its own stamp and
+#:     the perpetual kline stream's last event; until R1-g, not the newest
+#:     normalized minute). That gate is the demo's only enforcement of the
 #:     limit. ``note_feed``'s mark is no longer fed by the demo: its one caller
 #:     compared a minute's close with a decision clock just set to that close,
 #:     a delay of zero by construction, and it was removed rather than left as a

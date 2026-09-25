@@ -12,7 +12,9 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
+
+import pandas as pd
 
 from chimera.carry.factory import build_hedged_position
 from chimera.demo.config import ConfigProfile, DemoConfig, parse_demo_config
@@ -26,7 +28,10 @@ from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, Sha
 from chimera.demo.runner import _STATE_NAMES, DemoRunner
 from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.fills import RecordedQuoteFillModel
-from chimera.recorder.contract import load_recorder_contract
+from chimera.recorder.contract import RecorderContract, load_recorder_contract
+from chimera.recorder.events import UM_KLINE_1M
+from chimera.recorder.health import heartbeat_path, initial_health
+from chimera.recorder.sink import write_json_atomic
 from chimera.risk import RiskEngine
 
 REPO = Path(__file__).resolve().parents[1]
@@ -155,6 +160,43 @@ class Harness:
         return out
 
 
+MINUTE_NS = 60_000_000_000
+
+
+def write_heartbeat(
+    root: Path,
+    contract: RecorderContract,
+    *,
+    at_ns: int,
+    kline_last_ns: int | None = None,
+    down: Iterable[str] = (),
+    halted: Iterable[str] = (),
+) -> None:
+    """``health/heartbeat.json`` as the recorder writes it, stamped ``at_ns``.
+
+    Built from the recorder's own `initial_health` and `RecorderHealth.to_document`
+    and written with its `write_json_atomic`, so the shape is the production one;
+    no metric is published. Every stream is connected with a last event at
+    ``at_ns``, except: `UM_KLINE_1M`'s last event is ``kline_last_ns`` (default:
+    the OPEN of the minute ``at_ns`` falls in, which is how the recorder stamps a
+    forming candle's partial frames), ``down`` streams are disconnected, and
+    ``halted`` streams carry the recorder's latched storage halt.
+    """
+    health = initial_health(contract)
+    down = set(down)
+    for stream in health.streams.values():
+        stream.connected = stream.stream not in down
+        stream.events = 1
+        stream.last_event_ns = int(at_ns)
+    health.stream(UM_KLINE_1M).last_event_ns = int(
+        at_ns // MINUTE_NS * MINUTE_NS if kline_last_ns is None else kline_last_ns
+    )
+    for name in halted:
+        health.stream(name).halt("synthetic storage failure", now_ns=int(at_ns))
+    health.heartbeat_ns = int(at_ns)
+    write_json_atomic(heartbeat_path(root), health.to_document(int(at_ns)))
+
+
 def build(
     tmp_path: Path,
     *,
@@ -172,6 +214,16 @@ def build(
     feed = SyntheticFeed(root, contract)
     feed.write_days(list(days), shapes=shapes)
     feed.write_settlements(list(days))
+    # A live recorder beside the files (R1-f's READY gate reads its heartbeat),
+    # stamped at the first day's midnight: never ahead of a test's operational
+    # clock. Suites that do not test staleness hold `max_data_delay_s` out of
+    # reach; `tests/test_r1f_real_staleness.py` drives its own heartbeat.
+    write_heartbeat(
+        root,
+        contract,
+        at_ns=int(pd.Timestamp(days[0] if days else DAY, tz="UTC").timestamp())
+        * 1_000_000_000,
+    )
 
     cfg = config or campaign_config(state_dir)
     rules = RuleRegistry([CarryRule(CarryParams.from_config(cfg.rule_params("R1_carry")))])

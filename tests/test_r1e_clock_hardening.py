@@ -13,8 +13,9 @@ The two clocks:
 * OPERATIONAL -- host wall time, composed once in `tools/demo_run.main` and handed
   to the service loop and the telemetry. It schedules and it reports ages and
   heartbeats; it may not decide anything a record says. Since R1-f it also
-  decides WHETHER the feed is stale -- the READY gate compares it with the newest
-  published minute's close -- and that is the one thing it may decide.
+  decides WHETHER the feed is stale -- the READY gate compares it with the
+  instant the recorder's heartbeat vouches for -- and that is the one thing it
+  may decide.
 
 Every runner here holds R1-f's `max_data_delay_s` out of reach
 (`STALENESS_OUT_OF_REACH`). The operational clocks below sit years from the

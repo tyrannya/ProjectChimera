@@ -60,6 +60,7 @@ from chimera.demo.feed import (
     SETTLEMENT_INSTANT_FIELD,
     FeedCursor,
     MarketState,
+    fresh_through_ns,
     plain_json,
     settlement_from_row,
 )
@@ -84,6 +85,7 @@ from chimera.futures.executor import (
     ReconciliationOutcome,
     ReconciliationRequired,
 )
+from chimera.recorder.health import RecorderHealthError, read_heartbeat
 from chimera.recorder.sink import write_json_atomic
 from chimera.risk import RiskEngine
 
@@ -2878,43 +2880,62 @@ class DemoRunner:
         """Canonical R1-f's READY gate: is the feed fresh enough to catch up?
 
         ``now_ns`` is the OPERATIONAL clock (R1-e), handed in by the service
-        loop; the runner reads no clock of its own. The age is ``now_ns`` minus
-        the CLOSE of the newest minute the recorder has published -- the minute
-        `catch_up` is bounded by -- and never the decision clock against itself,
-        which is all `tick`'s old `note_feed` call ever measured. Stale is an age
-        ABOVE `max_data_delay_s`; exactly at it is fresh, the comparison
-        `RiskEngine.note_feed` documents. A NEGATIVE age is stale too, for
-        `note_feed`'s reason: a close after the present means the clocks
-        disagree and the feed's age is unknown. So is a feed with no minute.
+        loop; the runner reads no clock of its own. Until R1-g the authority is
+        the recorder's heartbeat (the roadmap's "or as the recorder heartbeat
+        age"), not the newest normalized minute: today's recorder re-renders the
+        open day every 300 s or slower, longer than the committed limit, so a
+        newest-close age stalled a healthy recorder between publications. The
+        age is ``now_ns`` minus `fresh_through_ns` -- the earlier of the
+        heartbeat's own stamp and the required kline stream's last event -- and
+        never the decision clock against itself, which is all `tick`'s old
+        `note_feed` call ever measured.
+
+        Stale is an age ABOVE `max_data_delay_s`; exactly at it is fresh, the
+        comparison `RiskEngine.note_feed` documents. A NEGATIVE age is stale
+        too, for `note_feed`'s reason: an instant after the present means the
+        clocks disagree and the feed's age is unknown. So is a heartbeat that is
+        missing or unreadable, and a required stream that is absent, not up
+        (disconnected or halted), or has never delivered an event. The newest
+        normalized minute decides nothing here; it is only written into the
+        records as a recorded fact.
 
         Two transitions, and only between READY and FEED_STALLED. From any other
-        state -- HALT above all -- this changes nothing, so a fresh minute can
+        state -- HALT above all -- this changes nothing, so a fresh feed can
         never clear a halt:
 
         * READY and stale -> one FEED_STALLED record, then FEED_STALLED;
         * FEED_STALLED and fresh -> one FEED_RESUMED record, then READY.
 
         ``now_ns`` decides WHETHER a record is written and is never written
-        itself: both records carry the newest minute and the configured limit,
-        which are recorded facts, and their minute and ``runner_now_ns`` are the
-        decision clock's as always. Aegis is not told. A stale feed is not a risk
-        halt, and nothing is set that an operator would have to clear.
+        itself, and neither is anything read from the heartbeat: both records
+        carry the newest minute and the configured limit, which are recorded
+        facts, and their minute and ``runner_now_ns`` are the decision clock's as
+        always. Aegis is not told. A stale feed is not a risk halt, and nothing
+        is set that an operator would have to clear.
 
-        Returns the operational instant after which the newest minute turns
-        stale if nothing newer is published, or None when there is no minute.
-        The service wakes then, so a dead feed is caught within the limit plus
-        the READY grace whatever the limit is.
+        Returns the operational instant after which the feed turns stale if the
+        heartbeat does not advance, or None when the heartbeat vouches for
+        nothing. The service wakes then, so a dead feed is caught within the
+        limit plus the READY grace whatever the limit is.
         """
         self._require_active("check_feed")
-        newest = self.cursor.latest_minute_ms()
         limit_s = float(self.risk.limits.max_data_delay_s)
         limit_ns = int(round(limit_s * 1e9))
-        close_ns = None if newest is None else int(newest) * _MS_TO_NS + MINUTE_NS
+        try:
+            heartbeat = read_heartbeat(self.root)
+        except RecorderHealthError as exc:
+            logger.warning(
+                "the recorder heartbeat is unreadable, so the feed is stale: %s", exc
+            )
+            heartbeat = None
+        through = fresh_through_ns(heartbeat)
+        stale_after = None if through is None else through + limit_ns
         if self.state not in (RunnerState.READY, RunnerState.FEED_STALLED):
-            return None if close_ns is None else close_ns + limit_ns
-        age_ns = None if close_ns is None else int(now_ns) - close_ns
+            return stale_after
+        age_ns = None if through is None else int(now_ns) - through
         stale = age_ns is None or age_ns < 0 or age_ns > limit_ns
         if stale and self.state is RunnerState.READY:
+            newest = self.cursor.latest_minute_ms()
             self._append(
                 RecordKind.FEED_STALLED,
                 self._minute_ns(),
@@ -2923,13 +2944,14 @@ class DemoRunner:
             self.save_state()
             self._enter(RunnerState.FEED_STALLED)
             logger.warning(
-                "FEED_STALLED: newest minute %s is %s s past its close, limit %.0f s; "
-                "positions are held and the stall tick runs",
-                newest,
+                "FEED_STALLED: the recorder heartbeat vouches for the feed up to %s s "
+                "ago (None: not at all), limit %.0f s; positions are held and the "
+                "stall tick runs",
                 None if age_ns is None else f"{age_ns / 1e9:.1f}",
                 limit_s,
             )
         elif not stale and self.state is RunnerState.FEED_STALLED:
+            newest = self.cursor.latest_minute_ms()
             self._append(
                 RecordKind.FEED_RESUMED,
                 self._minute_ns(),
@@ -2937,8 +2959,8 @@ class DemoRunner:
             )
             self.save_state()
             self._enter(RunnerState.READY)
-            logger.warning("FEED_RESUMED: newest minute %s is fresh again", newest)
-        return None if close_ns is None else close_ns + limit_ns
+            logger.warning("FEED_RESUMED: the recorder heartbeat vouches for a fresh feed")
+        return stale_after
 
     def _feed_payload(
         self, newest: int | None, limit_s: float, *, stalled: bool
@@ -2958,12 +2980,15 @@ class DemoRunner:
                     "stage": "feed",
                     "label": "feed_stalled",
                     "detail": (
-                        "no minute newer than newest_minute has been published "
-                        f"within max_data_delay_s ({limit_s:g} s) of the operational "
-                        "clock, or its close lies ahead of that clock. Nothing is "
-                        "decided until one is; the position is held, and the kill "
+                        "the recorder heartbeat does not vouch for the um.kline_1m "
+                        f"stream within max_data_delay_s ({limit_s:g} s) of the "
+                        "operational clock: the heartbeat or the stream's last event "
+                        "is older than that or lies ahead of the clock, or the "
+                        "heartbeat is missing or the stream is not up. Nothing is "
+                        "decided until it does; the position is held, and the kill "
                         "switch, funding and liquidation are still checked on the "
-                        "last processed minute"
+                        "last processed minute. newest_minute is the newest "
+                        "normalized minute, recorded as a fact, not the authority"
                     ),
                 }
                 if stalled

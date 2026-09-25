@@ -399,13 +399,16 @@ def _daemon(
     reaches a record.
 
     R1-f's READY gate runs first in every pass, on this same clock, whether or
-    not a minute arrived: `check_feed` compares it with the newest published
-    minute's close. A stale feed turns the pass into a stall tick, which checks
-    the held position on the last recorded minute and decides nothing; a fresh
-    one catches up as before. While the feed is fresh the wait also ends at the
-    instant it would turn stale plus the same grace, so a dead feed is declared
-    within ``max_data_delay_s + ready_grace_seconds`` of its last close for any
-    limit, not only one that falls on a minute.
+    not a minute arrived: `check_feed` compares it with the instant the
+    recorder's heartbeat vouches for the required kline stream up to (until
+    R1-g, not the newest normalized minute, which today's recorder publishes
+    only every 300 s or slower). A stale feed turns the pass into a stall tick,
+    which checks the held position on the last recorded minute and decides
+    nothing; a fresh one catches up as before. While the feed is fresh the wait
+    also ends at the instant it would turn stale plus the same grace, so a dead
+    stream or recorder is declared within ``max_data_delay_s +
+    ready_grace_seconds`` of the last instant vouched for, for any limit, not
+    only one that falls on a minute.
     """
     grace = float(runner.config.runner_setting("ready_grace_seconds"))
 
