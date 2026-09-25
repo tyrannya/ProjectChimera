@@ -137,24 +137,65 @@ stall and requires every persisted byte to be identical.
 
 **0.4 Real staleness: the READY gate and `FEED_STALLED` (R1-f).** Before every
 pass, including one where no minute arrived, the service asks whether the feed
-is fresh:
+is fresh. Until R1-g the answer comes from the **recorder's heartbeat**
+(`<root>/health/heartbeat.json`, rewritten every 30 s), not from the recorder's
+normalized minutes:
 
-    age = operational now - (newest published minute's open + 60 s)
+    through = min(heartbeat_ns, streams["um.kline_1m"].last_event_ns)
+    age     = operational now - through
 
-This is measured from the minute's CLOSE, never from its open. The newest
-published minute is the perpetual's newest row in the recorder's normalized
-files, the same minute `catch_up` stops at. The feed is **stale** when:
+Both terms count:
+
+* `heartbeat_ns` is when the recorder last wrote the file, on the host's wall
+  clock.
+* `last_event_ns` is the newest perpetual kline frame it has received. It is
+  stamped with that frame's minute **open**, which is how the recorder stamps a
+  candle, partial frames included. The open is used as-is: it is a lower bound
+  on when the exchange last spoke. The close of a forming candle lies in the
+  future.
+
+Taking the earlier of the two means neither fact can vouch for the other:
+
+* a recorder process that keeps beating cannot make a dead kline stream fresh;
+* a kline stamp cannot make a heartbeat file fresh once the file has stopped
+  being rewritten;
+* no other stream, however busy (mark price, book, spot), can stand in for the
+  perpetual's klines.
+
+The age is recomputed from the service's own operational clock on every pass.
+It keeps growing after the recorder dies, rather than freezing at the age its
+last heartbeat reported. The feed is **stale** when:
 
 * `age` is above `max_data_delay_s` (180 s in `conf/demo/pvc1.json`;
   exactly 180 s is still fresh);
-* `age` is negative (a close ahead of the host's clock means the clocks
-  disagree, so the age is unknown); or
-* there is no minute at all.
+* `age` is negative (an instant ahead of the host's clock means the clocks
+  disagree, so the age is unknown);
+* the heartbeat file is missing, unreadable, or of another schema;
+* the `um.kline_1m` entry is absent, has never delivered an event, or is not
+  `up`. `up` is the recorder's own `connected and not halted`, so a latched
+  storage halt is stale on the first pass that reads it, even though its last
+  event is seconds old.
 
-Nothing about the process's own startup ever counts as freshness. While the feed
-is fresh, the service also wakes at `newest close + max_data_delay_s +
-ready_grace_seconds`. So a recorder that stops publishing is declared stalled
-within the limit plus the 5 s grace, for any limit.
+On a healthy recorder the age stays well under the limit. The heartbeat is at
+most 30 s old, and the kline stamp is at most a minute older than the heartbeat
+(at most two minutes and a delivery delay if only closed frames arrive). That
+is about 90 s, and at worst about 152 s.
+
+The recorder and the service must share a host clock, as they do when both run
+with `--root data` on one machine.
+
+The newest normalized minute no longer decides anything here. It is still
+written into the stall records (`feed.newest_minute`) as a recorded fact, and
+the `chimera_demo_last_minute_age_seconds` gauge still shows its age, but it is
+diagnostic only. A live recorder whose first normalization pass has not run yet
+has no minute at all, and that is not a stall: the service is READY with
+nothing to decide.
+
+Nothing about the process's own startup ever counts as freshness. While the
+feed is fresh, the service also wakes at `through + max_data_delay_s +
+ready_grace_seconds`. So a dead kline stream or a dead recorder is declared
+stalled within the limit plus the 5 s grace of the last instant vouched for,
+for any limit.
 
 A stale feed does three things:
 
@@ -178,14 +219,14 @@ It evaluates no rule, places no order, and does not move the decision clock.
 liquidation touch on the last recorded mark flattens and halts exactly as it
 would in a tick, and its records say `liquidation_touch`, not a stall.
 
-When the recorder publishes a minute that is fresh by the same test, the gate
+When the heartbeat vouches for a fresh feed again by the same test, the gate
 writes one `FEED_RESUMED` record and returns to READY by itself. No `resume` and
 no note are needed, because nothing was halted: Aegis is not told about a stall
 and holds no flag for it. The pending minutes are then processed as usual, under
 section 2.2's catch-up rule, which is unchanged (older ones become
 `SKIPPED_STALE`). An open stall survives a restart: the service comes back
 `FEED_STALLED`, read from the log, and leaves it only when the gate sees a fresh
-minute.
+heartbeat.
 
 `FEED_STALLED` is not `HALT`. A `HALT` (Aegis, a dispute, the kill switch, a
 liquidation) exits 3 and needs an operator. `FEED_STALLED` keeps the process up,
@@ -201,18 +242,45 @@ now the only staleness authority. Aegis's own `note_feed` mark is no longer fed
 by the demo.
 
 **What R1-f does not change: the recorder publishes no faster.** Today's
-recorder re-renders the open day at most every 300 s, and later in the day even
-less often. That is longer than the 180 s limit, so on a perfectly healthy
-recorder the newest close does grow older than the limit between two
-publications. The service then records a `FEED_STALLED` / `FEED_RESUMED` pair
-around each gap. These pairs change no decision:
-`test_todays_300s_producer_stalls_between_publications_and_decides_the_same`
-shows every other record is the one an ungated run writes. They are noise in
-the log, though, and each extra record shifts the global `seq` of every record
-after it, as a restart already does. How `seq` is compared is R1-j's question.
-Publishing each closed minute within seconds is R1-g's, and until it lands, a
-`FEED_STALLED` on this build means "no fresh minute within 180 s", which today's
-recorder produces by design.
+recorder re-renders the open day every 300 s (`NORMALIZE_INTERVAL_S`), and later
+in the day less often: a 66 s pass stretches the interval to 660 s under
+`NORMALIZE_DUTY_CYCLE`. Both are longer than the 180 s limit. That is why the
+gate reads the heartbeat and not the newest normalized minute.
+
+The first R1-f head did read the newest minute. The independent review (F1)
+found that it recorded a `FEED_STALLED` / `FEED_RESUMED` pair around almost
+every publication gap on a perfectly healthy recorder, and that those pairs
+turned a healthy day's replay parity from PARITY to DIVERGED on `seq` alone.
+
+On this build a healthy recorder writes **no** stall records, at 300 s or at
+660 s. `tests/test_r1f_real_staleness.py` runs two hours of each and requires
+zero, and a healthy gated day is byte-for-byte the ungated one, `seq` included.
+
+A genuine outage still writes a pair, and still shifts the global `seq` of every
+later record, as a restart does. A genuine outage is any of:
+
+* a dead kline stream;
+* a dead recorder;
+* a halted stream;
+* a heartbeat that happens to catch the stream in the middle of the venue's
+  24-hour forced reconnect (`up` false for one beat).
+
+How `seq` is compared across those is R1-j's question. Publishing each closed
+minute within seconds is R1-g's, and R1-g may move the authority back to the
+normalized minutes once they can meet the limit. Until then a `FEED_STALLED`
+means "the recorder's heartbeat has not vouched for the perpetual kline stream
+within 180 s".
+
+Follow-ups the independent review recorded and R1-f leaves alone:
+
+* F3: Aegis's `update_equity` can halt without a runner HALT, in a tick and in a
+  stall tick alike. Inherited; R1-i.
+* F4: `chimera/demo/reports.py` names a `DemoRunner._feed_record` that does not
+  exist; the gate is `check_feed`.
+* F5: the classification vocabulary differs between the log's kind sets and the
+  parity tool's.
+* F6: a test name and its content disagree.
+* F7: the negative-age rule under a small clock skew.
 
 A third, worth reading before you trust a funding number. The runner does now
 settle funding: it books each recorded settlement in
@@ -1125,20 +1193,22 @@ Two different signals:
   `chimera_recorder_reconnects_total` to tell a reconnecting stream from a dead
   one.
 * `chimera_demo_state{state="FEED_STALLED"} == 1` means the runner's READY gate
-  has found no published minute within `max_data_delay_s` of the operational
-  clock (section 0.4). This also catches a recorder whose streams are fine but
-  which has stopped publishing minutes. It has no alert rule of its own:
-  section 11.2's table is unchanged.
+  has found that the recorder's heartbeat does not vouch for the perpetual kline
+  stream within `max_data_delay_s` of the operational clock (section 0.4): the
+  stream is silent or not `up`, or the heartbeat file has stopped being
+  rewritten. Read `health/heartbeat.json` (or `python -m tools.recorder status`)
+  to tell which. It has no alert rule of its own: section 11.2's table is
+  unchanged.
 
 A stale feed is not a halt. The runner decides nothing and holds its position.
 The stall tick keeps checking the kill switch, funding and liquidation on the
 last recorded minute, and the runner resumes by itself on the first fresh
-minute. The decision log shows the stall as a `FEED_STALLED` record and its end
+heartbeat. The decision log shows the stall as a `FEED_STALLED` record and its end
 as a `FEED_RESUMED` record. Nothing needs an operator unless the recorder process
 itself is down (`RecorderDown`) or the stall does not end. Do not `resume` a
-stall: there is no halt to leave, and `resume` refuses outside `HALT`. On
-today's recorder, short stalls between its 300 s publications are expected
-(section 0.4).
+stall: there is no halt to leave, and `resume` refuses outside `HALT`. A
+healthy recorder, whose normalized minutes arrive only every 300 s or slower,
+does not stall the runner (section 0.4). A stall is a real outage.
 
 ## 11. Process heartbeat
 
