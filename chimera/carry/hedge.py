@@ -282,6 +282,12 @@ class CarryMark:
     quantity: Decimal
     spot_close: Decimal
     perp_close: Decimal
+    #: The price the PERPETUAL leg was valued at (R1-l). Reported beside
+    #: ``perp_close`` rather than instead of it, because the two are different
+    #: facts about the minute and the close is still what the basis and section
+    #: 6.5's identity are defined on. A reader of a mark can tell which number
+    #: the equity beside it was computed from; before this field it could not.
+    perp_mark: Decimal
     basis: Decimal
     spot_pnl: Decimal
     perp_pnl: Decimal
@@ -293,6 +299,7 @@ class CarryMark:
             "quantity": str(self.quantity),
             "spot_close": str(self.spot_close),
             "perp_close": str(self.perp_close),
+            "perp_mark": str(self.perp_mark),
             "basis": str(self.basis),
             "spot_pnl": str(self.spot_pnl),
             "perp_pnl": str(self.perp_pnl),
@@ -821,7 +828,36 @@ class HedgedPosition:
     # -- marking and the identity -----------------------------------------
 
     def mark_to_market(self, state: CarryMarketState) -> CarryMark:
-        """Mark both legs at the minute's closes and check the running identity.
+        """Mark both legs and check the running identity. The perpetual at MARK.
+
+        **R1-l: one valuation price, and for a perpetual it is the mark.** The
+        unrealised term used to be measured at ``perp_close`` -- the price one
+        trade printed at -- while the liquidation test standing beside it
+        measured its threshold on ``mark_high`` and asked the executor for a
+        liquidation price at ``state.mark``. Section 6.7's test is
+        ``equity < Q * mark_high * maintenance_margin_rate``, and with the two
+        sides priced differently it compared an equity the venue does not
+        compute against a requirement the venue does. When the mark sat above
+        the close, this position -- SHORT the perpetual -- carried a larger
+        unrealised loss than the equity line admitted, so the test ran on an
+        equity that was too high and a touch could read as "not touched". The
+        call site of that test already took care that both sides describe the
+        same MINUTE; this is the other half, that they describe the same PRICE.
+        The same number reaches ``RiskEngine.update_equity``, so the drawdown
+        and daily-loss halts move onto the mark with it.
+
+        **The spot leg stays at its close, and that is not the same mismatch.**
+        Spot has no mark price: there is no second number to be inconsistent
+        with, and the close is what the inventory is worth. Stated here so that
+        the one remaining price difference in this method is a documented fact
+        about the two instruments rather than a leftover.
+
+        **Basis and the section 6.5 identity do not move.** Both are defined on
+        the closes, and both are spreads rather than valuations -- ``basis`` is
+        what the rule reads and what ``check_identity`` reconciles the two legs
+        against. Repricing them here would change a frozen accounting
+        definition, which R1-l does not ask for and which is not this PR's to
+        change.
 
         Section 6.6's identity, per leg. ``perp_margin`` is the margin posted for
         the quantity the PERPETUAL leg holds, so the unrealised term that sits
@@ -836,15 +872,14 @@ class HedgedPosition:
         """
         spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
         quantity = min(spot_leg.quantity, perp_leg.quantity)
+        mark = self._valuation_mark(perp_leg.quantity, state)
         spot_pnl = (
             spot_leg.quantity * (state.spot_close - spot_leg.entry_price)
             if spot_leg.quantity
             else ZERO
         )
         perp_pnl = (
-            perp_leg.quantity * (perp_leg.entry_price - state.perp_close)
-            if perp_leg.quantity
-            else ZERO
+            perp_leg.quantity * (perp_leg.entry_price - mark) if perp_leg.quantity else ZERO
         )
         equity = (
             self.ledger.state.free_cash
@@ -864,11 +899,46 @@ class HedgedPosition:
             quantity=quantity,
             spot_close=state.spot_close,
             perp_close=state.perp_close,
+            perp_mark=mark,
             basis=state.perp_close - state.spot_close,
             spot_pnl=spot_pnl,
             perp_pnl=perp_pnl,
             equity=equity,
             identity_residual=residual,
+        )
+
+    @staticmethod
+    def _valuation_mark(perp_quantity: Decimal, state: CarryMarketState) -> Decimal:
+        """The mark the perpetual leg is valued at, or a refusal (R1-l).
+
+        A FLAT perpetual leg has no unrealised term, so it needs no mark and a
+        minute without one values it at zero either way; returning the close
+        there keeps the reported price a real number without letting it reach
+        any arithmetic.
+
+        A NON-FLAT leg with no mark is refused rather than valued at the close.
+        Falling back would reinstate exactly the inconsistency this change
+        removes, and silently: the equity would be priced at one number while
+        the liquidation test beside it priced its threshold at another, on the
+        one kind of minute where nobody would think to look. It is the same
+        answer section 7.2's liquidation rule already gives -- unknown
+        information on a non-flat position is refused, never read as "far away"
+        -- and the runner turns the refusal into a recorded HALT.
+
+        In practice this does not fire on the decision path: ``um_mark`` is one
+        of the fields whose absence makes a minute INCOMPLETE, and an incomplete
+        minute never reaches a mark. The guard is for every other caller.
+        """
+        mark = getattr(state, "mark", None)
+        if mark is not None:
+            return mark
+        if perp_quantity == ZERO:
+            return state.perp_close
+        raise CarryError(
+            "the minute carries no mark price and the perpetual leg is not flat, so this "
+            "position cannot be valued. Section 6.7 tests equity against a threshold priced "
+            "at the mark; pricing the equity at the close instead would compare two "
+            "different numbers and call it a margin check"
         )
 
     # -- liquidation -------------------------------------------------------
