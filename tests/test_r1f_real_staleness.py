@@ -760,7 +760,13 @@ def test_the_service_restarted_mid_stall_does_not_declare_it_twice(tmp_path, mon
             return original(self, now_ns)
 
         monkeypatch.setattr(demo_run.DemoRunner, "check_feed", counted)
-        fake.hooks.append(lambda f: installed_sigterm() if seen["n"] >= passes else None)
+        # The sleep bound makes a service that never reaches its gate fail
+        # here, on the assertions below, instead of never stopping.
+        fake.hooks.append(
+            lambda f: (
+                installed_sigterm() if seen["n"] >= passes or len(f.sleeps) > 20_000 else None
+            )
+        )
         return demo_run.main(
             argv + ["run", "--allow-dirty"], operational_clock=fake.clock, sleep=fake.sleep
         )
@@ -797,6 +803,11 @@ def test_sigterm_during_a_stall_tick_stops_cleanly(tmp_path):
 
     runner.stall_tick = interrupted  # type: ignore[method-assign]
     fake.hooks.append(recorder)
+    # A service that never stalls never calls the stall tick: stop it anyway,
+    # so that failing is an assertion below and not a loop that never ends.
+    fake.hooks.append(
+        lambda f: stop.update(signal=int(signal.SIGTERM)) if len(f.sleeps) > 20_000 else None
+    )
     code = demo_run._daemon(runner, stop, clock=fake.clock, sleep=fake.sleep)
 
     assert code == demo_run.EXIT_OK
@@ -826,6 +837,36 @@ def test_the_heartbeat_and_the_ages_keep_moving_through_a_stall(tmp_path, monkey
     assert all(b - a <= 30.0 + EPS for a, b in zip(beats, beats[1:])), "a gap in the beat"
     assert ages[-1] >= 19 * 60, "the age froze during the stall"
     assert ages[-1] == pytest.approx(fake.t - close_s(FIRST - 1), abs=31.0)
+
+
+def test_a_process_restarted_into_a_stall_reports_the_real_age(tmp_path, monkeypatch):
+    """A fresh process has read no minute, so its age gauge would read Prometheus's
+    default, zero, for the whole stall. The stall tick reports the minute it holds
+    on, without counting it as attempted, and the heartbeat then ages it."""
+    harness = harness_for(tmp_path)
+    config = harness.runner.config
+    harness.runner.catch_up()
+    harness.runner.check_feed(int(WALL_2036 * NS))
+    harness.runner.shutdown("restart into a stall")
+
+    ages: list[float] = []
+    ticks: list[int] = []
+    monkeypatch.setattr(metrics.DEMO_LAST_MINUTE_AGE, "set", ages.append)
+    monkeypatch.setattr(metrics.DEMO_TICKS, "inc", lambda *a: ticks.append(1))
+    fake = FakeTime(WALL_2036)
+    resumed = build(
+        tmp_path,
+        config=config,
+        shapes=present_minutes(FIRST),
+        start=False,
+        telemetry=telemetry_on(fake, tmp_path),
+    )
+    assert resumed.runner.start() is RunnerState.FEED_STALLED
+    resumed.runner.stall_tick()
+    fake.t += 30
+    resumed.runner.telemetry.on_heartbeat()
+    assert ages and ages[-1] == pytest.approx(fake.t - close_s(FIRST - 1), abs=EPS)
+    assert ticks == [], "the stall tick counted a minute it did not attempt"
 
 
 # --------------------------------------------------------------------------- #

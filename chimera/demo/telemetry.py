@@ -130,7 +130,9 @@ class NullTelemetry:
 
     def on_state(self, state: str) -> None: ...
 
-    def on_minute(self, *, minute_ns: int, missing: Sequence[str]) -> None: ...
+    def on_minute(
+        self, *, minute_ns: int, missing: Sequence[str], attempted: bool = True
+    ) -> None: ...
 
     def on_record(self, kind: str) -> None: ...
 
@@ -236,7 +238,9 @@ class RunnerTelemetry:
         self._beat()
         self._publish_ages(self._wall_ns())
 
-    def on_minute(self, *, minute_ns: int, missing: Sequence[str]) -> None:
+    def on_minute(
+        self, *, minute_ns: int, missing: Sequence[str], attempted: bool = True
+    ) -> None:
         """One attempted minute, counted before anything is decided about it.
 
         Deliberately upstream of rule evaluation, and deliberately carrying no
@@ -249,6 +253,12 @@ class RunnerTelemetry:
         market actually produced, so an incomplete minute leaves the missing
         market's age rising while the other's resets -- which is the fact
         distinguishing "the whole feed stopped" from "one stream stopped".
+
+        ``attempted=False`` is R1-f's stall tick: it reads the last processed
+        minute again and attempts nothing, so it is not counted. It is still
+        reported, because a process restarted into a stall has seen no minute
+        at all, and its ages would otherwise read zero, the healthiest value,
+        for the whole stall.
         """
         close_ns = int(minute_ns) + MINUTE_NS
         absent = set(missing)
@@ -257,7 +267,8 @@ class RunnerTelemetry:
                 self._market_close_ns[market] = close_ns
         self._last_close_ns = close_ns
         self._publish_ages(self._wall_ns())
-        DEMO_TICKS.inc()
+        if attempted:
+            DEMO_TICKS.inc()
 
     def _publish_ages(self, now_ns: int) -> None:
         """Both ages, from the closes already seen. Nothing seen, nothing set."""

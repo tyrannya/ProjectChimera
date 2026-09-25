@@ -619,7 +619,7 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
     tree = runner_tree()
     statements = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Expr)}
     calls = telemetry_calls(tree)
-    # Nine, named: on_state, on_log_write_error, on_record, on_minute,
+    # Named: on_state, on_log_write_error, on_record, on_minute (twice),
     # on_reporting, on_halt, on_position (twice), on_shutdown. The count is
     # written out so that an emission added without a reader thinking about where
     # it sits in the tick is a failing test rather than a silent extra call.
@@ -632,7 +632,12 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
     # flat. The operator `flatten` command already carried the same emission for
     # the same reason; the liquidation path is the second place the hedge moves
     # with no tick to follow it.
-    assert len(calls) == 9, f"expected nine emission points, found {len(calls)}"
+    #
+    # Ten since R1-f: a second `on_minute`, in the stall tick, with
+    # `attempted=False`. It reports the minute a stall holds on, so a process
+    # restarted into a stall does not show an age of zero for the whole stall,
+    # and it counts no tick.
+    assert len(calls) == 10, f"expected ten emission points, found {len(calls)}"
     assert {call.func.attr for call in calls} == {
         "on_state",
         "on_log_write_error",

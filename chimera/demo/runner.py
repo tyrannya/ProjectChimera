@@ -3005,6 +3005,11 @@ class DemoRunner:
                 reason = f"feed_unreadable: {exc}"
                 self._halt(reason)
                 return TickOutcome(minute, self.state, RecordKind.HALT, detail=reason)
+            # The minute the stall holds on, not a minute attempted: seeds the
+            # age gauges in a process restarted into a stall, which has read none.
+            self.telemetry.on_minute(
+                minute_ns=int(minute) * _MS_TO_NS, missing=state.missing, attempted=False
+            )
         if state is None or not state.complete:
             # Nothing recorded to check a position against. The switch still is.
             if self.risk.check_kill_switch():
