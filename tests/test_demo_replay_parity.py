@@ -8,11 +8,15 @@ evidence rather than an anecdote.
 
 from __future__ import annotations
 
+import json
 
 import pytest
 
+from chimera import metrics
 from chimera.demo.faults import Fault, FaultSchedule, ScheduledFault
 from tests.demo_harness import DAY, NEXT_DAY, build
+from tests.test_demo_cli import written_config
+from tools import replay_parity
 from tools.replay_parity import (
     ENVIRONMENT_PARITY,
     MUST_MATCH,
@@ -440,3 +444,53 @@ def test_a_run_with_nothing_to_explain_excludes_nothing():
     live = [_record(minute, "DECISION", 1, ledger_effect={"equity": "1"})]
     report = compare_logs(live, list(live))
     assert report.ok and report.explained_exclusions == []
+
+
+# ---------------------------------------------------------------------------
+# the tool itself, end to end
+# ---------------------------------------------------------------------------
+#: An operational clock in 2100, nowhere near the recorded day.
+OPERATIONAL_2100 = 4_102_444_800.0
+
+
+@pytest.mark.parametrize("clock", ["host", "hostile"])
+def test_the_tool_replays_a_recorded_day_to_parity_end_to_end(
+    tmp_path, monkeypatch, capsys, clock
+):
+    """`replay_parity.main`, through `tools.demo_run._load`, to a verdict.
+
+    Everything above hands `compare_logs` two logs the harness produced; none of
+    it ran the tool. So when R1-e made `_load` require an operational clock, the
+    tool raised before it built its runner and nothing here noticed. This drives
+    the real composition path from the command line to the printed report.
+
+    ``host`` is the tool as an operator runs it. ``hostile`` injects an
+    operational clock in 2100: the replay's heartbeats must read it -- the clock
+    really reaches its consumer -- while ``runner_now_ns``, compared with
+    tolerance zero, still matches the live run's, so it moved no decision.
+    """
+    live = build(tmp_path / "live")
+    live.run(30)
+    live.runner.shutdown("done")
+    argv = [
+        "--config", str(written_config(tmp_path, live)),
+        "--root", str(live.root),
+        "--live-log", str(live.state_dir / "decision_log"),
+        "--days", DAY,
+        "--profile", live.runner.config.profile.value,
+        "--scratch", str(tmp_path / "scratch"),
+        "--json",
+    ]  # fmt: skip
+    beats: list[float] = []
+    monkeypatch.setattr(metrics.DEMO_HEARTBEAT, "set", beats.append)
+    kwargs = {"operational_clock": lambda: OPERATIONAL_2100} if clock == "hostile" else {}
+
+    code = replay_parity.main(argv, **kwargs)
+
+    report = json.loads(capsys.readouterr().out)
+    assert code == replay_parity.EXIT_PARITY and report["parity"] is True, report
+    assert report["records_compared"] >= 30, "the comparison must not be vacuous"
+    assert not report["live_only"] and not report["replay_only"]
+    assert beats, "the replay's telemetry never read its operational clock"
+    if clock == "hostile":
+        assert set(beats) == {OPERATIONAL_2100}
