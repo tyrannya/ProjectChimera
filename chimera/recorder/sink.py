@@ -315,7 +315,15 @@ def publish_atomically(path: Path, write_body: Callable[[Path], None]) -> None:
     temporary = path.with_name(path.name + ".tmp")
     try:
         write_body(temporary)
-        with open(temporary, "rb") as handle:
+        # Opened for UPDATE, not for reading, and that is not a detail: on
+        # Windows `os.fsync` is `FlushFileBuffers`, which needs a handle with
+        # write access and fails `[Errno 9] Bad file descriptor` on a read-only
+        # one. POSIX accepts the read-only descriptor, so this passes on Linux
+        # and fails on Windows -- which is exactly what CI found and a local run
+        # never could. `r+b` also truncates nothing, so the bytes `write_body`
+        # produced are the bytes that get flushed.
+        with open(temporary, "r+b") as handle:
+            handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     except OSError as exc:
