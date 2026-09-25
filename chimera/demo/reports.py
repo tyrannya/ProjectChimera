@@ -57,7 +57,9 @@ folding them into ``operational``. It computes no total aggregated by class, so
 nothing in a daily report can be read as a score. The other half — whether a
 campaign's halts are scored — is refused rather than assumed: a monthly report
 over a month holding any of the three is refused unless the protocol names a
-treatment for all three by name.
+treatment for all three by name. R1-f's ``FEED_STALLED`` and ``FEED_RESUMED`` are
+unclassified by the same rule, and the monthly gate covers every unclassified
+kind, derived from the log's own sets, so it now asks for five.
 
 **Two kind-sets exist in this repository and they are not interchangeable.**
 ``chimera.demo.decision_log``'s ``EVIDENCE_KINDS`` / ``OPERATIONAL_KINDS`` /
@@ -83,6 +85,7 @@ from chimera.demo.decision_log import (
     EVIDENCE_KINDS,
     LOG_DIR_NAME,
     OPERATIONAL_KINDS,
+    UNCLASSIFIED_KINDS,
     DecisionLogError,
     RecordKind,
     day_files,
@@ -150,6 +153,9 @@ RUNNER_WRITTEN_KINDS: tuple[str, ...] = (
     "SHUTDOWN",
     "SKIPPED_STALE",
     "STARTUP",
+    # Canonical R1-f's READY gate, `DemoRunner._feed_record`.
+    "FEED_STALLED",
+    "FEED_RESUMED",
 )
 
 #: Why every daily report carries ``input_coverage``. Written into the payload,
@@ -781,9 +787,10 @@ def _ledger_and_funding(
 #: Why the daily report counts the three unclassified kinds without classifying
 #: them. Carried in the payload so the boundary travels with the number.
 HALT_CLASSIFICATION_NOTE = (
-    "HALT, RESUME and RECOVERY are the three kinds section 9.4 puts in neither the "
-    "evidence set nor the operational set (chimera/demo/decision_log.py). This "
-    "report counts them and their causes and classifies them as 'unclassified'. "
+    "HALT, RESUME and RECOVERY are three of the kinds section 9.4 puts in neither "
+    "the evidence set nor the operational set (chimera/demo/decision_log.py); R1-f's "
+    "FEED_STALLED and FEED_RESUMED are the other two. This block counts the three "
+    "and their causes and classifies them as 'unclassified'. "
     "Whether a campaign's halts are scored is the PVC-1 protocol's answer, and "
     "this report neither gives it nor persists one."
 )
@@ -1304,9 +1311,11 @@ class ProtocolBinding:
     unclassified_treatment: Mapping[str, str]
 
 
-#: The three kinds a protocol must rule on before a month holding any of them can
-#: be computed. Sorted, because the refusal compares a sorted list.
-_UNCLASSIFIED_NAMES: tuple[str, ...] = ("HALT", "RECOVERY", "RESUME")
+#: The kinds a protocol must rule on before a month holding any of them can be
+#: computed: every unclassified kind, derived rather than listed, so a kind added
+#: to the log later (R1-f added two) cannot slip past the gate unruled. Sorted,
+#: because the refusal compares a sorted list.
+_UNCLASSIFIED_NAMES: tuple[str, ...] = tuple(sorted(k.value for k in UNCLASSIFIED_KINDS))
 
 _NOTHING_WRITTEN = "Nothing was written."
 
@@ -1459,9 +1468,10 @@ def monthly_report(
     if present and named != list(_UNCLASSIFIED_NAMES):
         raise ReportRefused(
             f"the month holds {present} records, and section 9.4 classifies none of "
-            "HALT, RESUME or RECOVERY. The protocol must say whether each of the three "
-            "is scored -- all three by name, so that a silence about one cannot be read "
-            f"as a treatment -- and this report will not decide it. {_NOTHING_WRITTEN}"
+            f"{', '.join(_UNCLASSIFIED_NAMES)}. The protocol must say whether each of "
+            "them is scored -- all of them by name, so that a silence about one cannot "
+            f"be read as a treatment -- and this report will not decide it. "
+            f"{_NOTHING_WRITTEN}"
         )
 
     quantities = _monthly_quantities(in_month, binding.quantities)

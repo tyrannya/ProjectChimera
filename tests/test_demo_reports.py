@@ -77,10 +77,10 @@ SOFTWARE = {
     "python": "3.11",
 }
 
-#: The twelve record kinds of section 9.1, written out. Compared against the
+#: The record kinds of section 9.1, and R1-f's two, written out. Compared against the
 #: report's own key set, so a kind renamed in the enum fails here rather than
 #: agreeing with itself.
-TWELVE_KINDS = (
+ALL_KINDS = (
     "DECISION",
     "FUNDING",
     "HALT",
@@ -93,6 +93,9 @@ TWELVE_KINDS = (
     "SHUTDOWN",
     "SKIPPED_STALE",
     "STARTUP",
+    # R1-f's READY gate.
+    "FEED_STALLED",
+    "FEED_RESUMED",
 )
 
 #: Section 9.4's classes for five kinds, written out from the adopted plan rather
@@ -332,12 +335,12 @@ def test_a_day_with_no_file_of_its_own_is_reported_and_flagged(tmp_path):
     assert daily_report(harness.state_dir, DAY)["generated_from"]["day_file_present"] is True
 
 
-def test_all_twelve_kinds_are_present_and_zero_filled(tmp_path):
+def test_every_kind_is_present_and_zero_filled(tmp_path):
     harness = _campaign(tmp_path)
     report = daily_report(harness.state_dir, DAY)
-    assert sorted(report["records_by_kind"]) == sorted(TWELVE_KINDS)
-    assert sorted(report["record_class_by_kind"]) == sorted(TWELVE_KINDS)
-    assert sorted(report["input_coverage"]["by_kind"]) == sorted(TWELVE_KINDS)
+    assert sorted(report["records_by_kind"]) == sorted(ALL_KINDS)
+    assert sorted(report["record_class_by_kind"]) == sorted(ALL_KINDS)
+    assert sorted(report["input_coverage"]["by_kind"]) == sorted(ALL_KINDS)
 
 
 def test_the_daily_report_field_names_are_the_ones_it_promises(tmp_path):
@@ -424,7 +427,7 @@ def test_the_runner_written_kinds_are_the_runners_own_append_sites(tmp_path):
     # The second, independent oracle. Every one of section 9.1's kinds now has a
     # writer: PR-10R closed the D1 gap, and this equality is what says so from
     # the runner's own source rather than from a constant beside it.
-    assert set(TWELVE_KINDS) - written == set()
+    assert set(ALL_KINDS) - written == set()
 
 
 def test_input_coverage_separates_absent_from_unwritable(tmp_path):
@@ -585,6 +588,8 @@ def test_the_report_module_imports_no_tool_and_no_second_kind_set(tmp_path):
         "RECOVERY",
         "HALT",
         "RESUME",
+        "FEED_STALLED",
+        "FEED_RESUMED",
     }
     assert reports.kind_class("HALT") == "unclassified"
     assert reports.kind_class("INCOMPLETE_STATE") == "operational"
@@ -1338,6 +1343,8 @@ SYNTHETIC_BINDING = ProtocolBinding(
         "HALT": "operational",
         "RESUME": "operational",
         "RECOVERY": "operational",
+        "FEED_STALLED": "operational",
+        "FEED_RESUMED": "operational",
     },
 )
 
@@ -1688,7 +1695,9 @@ def test_a_treatment_this_report_does_not_recognise_still_passes(tmp_path):
 
     binding = replace(
         SYNTHETIC_BINDING,
-        unclassified_treatment={k: "banana" for k in ("HALT", "RESUME", "RECOVERY")},
+        unclassified_treatment={
+            k: "banana" for k in ("HALT", "RESUME", "RECOVERY", "FEED_STALLED", "FEED_RESUMED")
+        },
     )
     halt = {
         **_base("HALT", "2026-09-19T00:03:00+00:00"),
@@ -1699,7 +1708,36 @@ def test_a_treatment_this_report_does_not_recognise_still_passes(tmp_path):
         "HALT": "banana",
         "RESUME": "banana",
         "RECOVERY": "banana",
+        "FEED_STALLED": "banana",
+        "FEED_RESUMED": "banana",
     }
+
+
+def test_a_feed_stall_is_unclassified_and_the_gate_asks_for_it_by_name(tmp_path):
+    """R1-f's two kinds, and no HALT at all in the month.
+
+    The gate used to list its three names literally, so a month holding only a
+    FEED_STALLED record passed a binding that had never ruled on it: an
+    unclassified kind treated by silence. It is now derived from the log's own
+    sets, so the old three-name binding is refused and the five-name one computes.
+    """
+    from dataclasses import replace
+
+    stall = {
+        **_base("FEED_STALLED", "2026-09-19T00:03:00+00:00"),
+        "feed": {"newest_minute": "2026-09-19T00:02:00+00:00", "max_data_delay_s": 180.0},
+    }
+    state_dir = _month_log(tmp_path, extra=[stall])
+    assert reports.kind_class("FEED_STALLED") == "unclassified"
+    assert reports.kind_class("FEED_RESUMED") == "unclassified"
+    three = {k: "operational" for k in ("HALT", "RESUME", "RECOVERY")}
+    with pytest.raises(ReportRefused, match="FEED_STALLED"):
+        monthly_report(
+            state_dir,
+            "2026-09",
+            binding=replace(SYNTHETIC_BINDING, unclassified_treatment=three),
+        )
+    assert monthly_report(state_dir, "2026-09", binding=SYNTHETIC_BINDING)["quantities"]
 
 
 def test_an_excluded_minute_in_a_spelling_the_log_never_writes_is_refused(tmp_path):

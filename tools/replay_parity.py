@@ -82,8 +82,14 @@ MUST_MATCH: tuple[str, ...] = (
 
 #: Aligned by minute and kind, and otherwise not compared field by field.
 #: Section 10: "the replay may have fewer restarts".
+#:
+#: R1-f's two feed-stall kinds are here for section 10's own reason: they record
+#: when the LIVE process found the feed stale, which is a fact about the running
+#: of the campaign. A replay reads finished files and is never stale, so it
+#: writes neither. (A live stall still shifts the global ``seq`` of every later
+#: record, as a live restart already does; how ``seq`` is compared is R1-j's.)
 OPERATIONAL_KINDS: frozenset[str] = frozenset(
-    {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME"}
+    {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME", "FEED_STALLED", "FEED_RESUMED"}
 )
 
 #: Kinds whose presence in the LIVE log can exclude their minute from the

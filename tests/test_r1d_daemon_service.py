@@ -45,7 +45,8 @@ from chimera.demo.feed import PERP_MARKET, FeedCursor
 from chimera.demo.fixtures import MinuteShape
 from chimera.demo.runner import _STATE_NAMES, RunnerState
 from chimera.demo.telemetry import RunnerTelemetry
-from tests.demo_harness import DAY, NEXT_DAY, build
+from tests.demo_harness import DAY, NEXT_DAY, campaign_config
+from tests.demo_harness import build as _build
 from tests.test_demo_cli import written_config
 from tools import demo_run
 
@@ -59,6 +60,24 @@ GRACE = 5.0  # conf/demo/pvc1.json and section 8.1: `ready_grace_seconds`
 #: An ABSOLUTE tolerance for simulated instants. `pytest.approx`'s default is
 #: relative, and at T0's magnitude relative means roughly 1800 seconds.
 EPS = 1e-3
+
+
+#: R1-f. Every service here runs an operational clock that has nothing to do
+#: with the recorded day -- T0 is two days after it -- and under R1-f's READY gate
+#: that is a stale feed. These tests are about the loop's schedule, its signals
+#: and its heartbeat, not about staleness, so every harness in this module holds
+#: `max_data_delay_s` out of reach (about 31.7 years). Staleness has its own
+#: two-sided tests, and the same service properties during a stall, in
+#: `tests/test_r1f_real_staleness.py`.
+STALENESS_OUT_OF_REACH = {"max_data_delay_s": 1e9}
+
+
+def build(tmp_path: Path, **kwargs: Any):
+    """`tests.demo_harness.build`, with the READY gate's limit out of reach."""
+    kwargs.setdefault(
+        "config", campaign_config(tmp_path / "state", limits=STALENESS_OUT_OF_REACH)
+    )
+    return _build(tmp_path, **kwargs)
 
 
 # --------------------------------------------------------------------------- #

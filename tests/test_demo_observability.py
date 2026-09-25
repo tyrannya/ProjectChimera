@@ -132,7 +132,7 @@ DEMO_LABEL_NAMES: frozenset[str] = frozenset(
     {"state", "rule", "kind", "market", "direction", "leg"}
 )
 
-#: Section 8.1's states, typed out. Thirteen.
+#: Section 8.1's states, typed out, plus R1-f's FEED_STALLED. Fourteen.
 RUNNER_STATE_VALUES: tuple[str, ...] = (
     "STARTUP",
     "SELF_CHECK",
@@ -145,6 +145,7 @@ RUNNER_STATE_VALUES: tuple[str, ...] = (
     "RECONCILIATION",
     "PERSISTENCE",
     "REPORTING",
+    "FEED_STALLED",
     "HALT",
     "SHUTDOWN",
 )
@@ -158,7 +159,7 @@ HEDGE_STATE_VALUES: tuple[str, ...] = (
     "CLOSING",
     "DISPUTED",
 )
-#: Section 9.1's record kinds, typed out. Twelve.
+#: Section 9.1's record kinds, typed out, plus R1-f's two. Fourteen.
 RECORD_KIND_VALUES: tuple[str, ...] = (
     "DECISION",
     "FUNDING",
@@ -172,6 +173,8 @@ RECORD_KIND_VALUES: tuple[str, ...] = (
     "SKIPPED_STALE",
     "LIQUIDATION_TOUCH",
     "RECOVERY",
+    "FEED_STALLED",
+    "FEED_RESUMED",
 )
 
 #: The mode family, by the names `chimera.metrics` gives it. None of these may be

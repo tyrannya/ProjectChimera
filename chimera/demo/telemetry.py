@@ -195,6 +195,7 @@ class RunnerTelemetry:
         # `.inc()` can never be handed a negative number.
         self._funding_seen: dict[str, Any] = {"paid": None, "received": None}
         self._market_close_ns: dict[str, int] = {}
+        self._last_close_ns: int | None = None
 
         DEMO_UP.set(1.0)
         for kind in RecordKind:
@@ -227,8 +228,13 @@ class RunnerTelemetry:
         tell a healthy wait from a dead process. It is called from the main
         loop, never from a thread of its own: a heartbeat that kept beating
         while the loop was wedged would be a liveness signal that cannot fail.
+
+        The two ages are republished here too (R1-f). They used to move only
+        when a minute was attempted, so a feed that stopped left them frozen at
+        a few seconds -- reading healthiest exactly while the feed was dead.
         """
         self._beat()
+        self._publish_ages(self._wall_ns())
 
     def on_minute(self, *, minute_ns: int, missing: Sequence[str]) -> None:
         """One attempted minute, counted before anything is decided about it.
@@ -246,15 +252,21 @@ class RunnerTelemetry:
         """
         close_ns = int(minute_ns) + MINUTE_NS
         absent = set(missing)
-        now_ns = self._wall_ns()
         for market in MARKETS:
             if f"{market}_minute" not in absent:
                 self._market_close_ns[market] = close_ns
+        self._last_close_ns = close_ns
+        self._publish_ages(self._wall_ns())
+        DEMO_TICKS.inc()
+
+    def _publish_ages(self, now_ns: int) -> None:
+        """Both ages, from the closes already seen. Nothing seen, nothing set."""
+        for market in MARKETS:
             seen = self._market_close_ns.get(market)
             if seen is not None:
                 DEMO_FEED_AGE.labels(market=market).set(_age_seconds(now_ns, seen))
-        DEMO_LAST_MINUTE_AGE.set(_age_seconds(now_ns, close_ns))
-        DEMO_TICKS.inc()
+        if self._last_close_ns is not None:
+            DEMO_LAST_MINUTE_AGE.set(_age_seconds(now_ns, self._last_close_ns))
 
     def on_shutdown(self) -> None:
         """The process is going away on purpose, so ``up`` says so rather than
