@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from chimera.carry.factory import PERP_SYMBOL, SPOT_SYMBOL
 from chimera.carry.hedge import HedgeState
 from chimera.carry.ledger import CarryLedger
+from chimera.demo.clock import no_authoritative_time
 from chimera.demo.config import DemoConfig
 from chimera.demo.risk_wiring import risk_limits
 from chimera.futures.store import FuturesStore
@@ -29,14 +30,6 @@ from chimera.risk import RiskEngine, RiskState, RiskStateLoad
 
 if TYPE_CHECKING:  # pragma: no cover - imports used only by the active snapshot
     from chimera.carry.hedge import HedgedPosition
-
-
-def _no_authoritative_time() -> float:
-    """Fail if a supposedly read-only load ever starts asking for decision time."""
-    raise RuntimeError(
-        "read-only demo inspection has no authoritative time; start the runner "
-        "from a recorded instant before performing a timed operation"
-    )
 
 
 @dataclass(frozen=True)
@@ -106,7 +99,7 @@ def inspect_demo_state(
     risk = RiskEngine(
         risk_limits(config.limits),
         state_path=root / "risk.json",
-        clock=_no_authoritative_time,
+        clock=no_authoritative_time,
     )
     spot_store = FuturesStore.open(root / "spot_store.json")
     perp_store = FuturesStore.open(root / "perp_store.json")

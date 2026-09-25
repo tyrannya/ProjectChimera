@@ -472,7 +472,7 @@ def build_risk_engine(
     *,
     capital: Decimal | float,
     state_dir: Path | str | None = None,
-    clock: Callable[[], float] | None = None,
+    clock: Callable[[], float],
 ) -> RiskEngine:
     """The demo's Aegis: campaign limits, the campaign's state files, its equity.
 
@@ -480,6 +480,18 @@ def build_risk_engine(
     setting, which is where the runner keeps everything else. Both entry points
     call this, so the engine a test drives is built exactly as the engine an
     operator runs.
+
+    **``clock`` is required, on every profile (R1-e).** It is the DECISION
+    clock -- :meth:`chimera.demo.runner.DemoRunner.start` passes its
+    :class:`~chimera.demo.clock.RunnerClock` -- and it governs the order-rate
+    window, the cooldown, the UTC day roll and the ``updated_at`` stamp.
+    ``RiskEngine`` itself defaults to ``time.time`` for its callers off the demo
+    path, and this function used to omit the argument when it was ``None``, so a
+    factory that forgot it built a CAMPAIGN or SOAK engine on host time without
+    a word. Leaving it out is now a ``TypeError`` and an explicit ``None`` is a
+    :class:`RiskWiringError`, both before anything is read or written. TEST is
+    held to the same rule rather than a looser one: a TEST run is a demo run,
+    and a fallback reachable on one profile is reachable on all of them.
 
     ``capital`` is what a *first* start is worth and nothing else;
     :func:`seed_or_reconcile_equity` holds the line between that and a restart.
@@ -543,18 +555,20 @@ def build_risk_engine(
     would be an answer about the wrong file. The same holds while the dispute is
     merely pending, and there the answer would also be a write.
     """
+    if not callable(clock):
+        raise RiskWiringError(
+            f"a {config.profile.value} risk engine needs the runner's decision clock; "
+            f"got {clock!r}. RiskEngine would otherwise fall back to the host's "
+            "time.time, and a decision taken on host time cannot be replayed"
+        )
     root = Path(state_dir if state_dir is not None else config.runner_setting("state_dir"))
-
-    kwargs: dict[str, Any] = {}
-    if clock is not None:
-        kwargs["clock"] = clock
 
     engine = RiskEngine(
         risk_limits(config.limits),
         state_path=root / "risk.json",
+        clock=clock,
         kill_switch_path=root / "KILL_SWITCH",
         check_kill_switch_at_construction=False,
-        **kwargs,
     )
     continuity = assess_risk_continuity(
         load=engine.load_outcome, snapshot=engine.loaded_snapshot, state_dir=root

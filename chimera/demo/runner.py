@@ -27,7 +27,8 @@ silently interpreted.
 **No host clock is read on the decision path.** Every decision instant comes
 from `RunnerClock`, which is advanced only by observed record instants, so a
 replay of the same files produces the same records -- which is what section
-10's byte comparison rests on. Wall time is confined to telemetry.
+10's byte comparison rests on. Wall time is confined to telemetry, and the
+runner does not even choose that clock: the emitter is injected (R1-e).
 """
 
 from __future__ import annotations
@@ -75,7 +76,6 @@ from chimera.demo.risk_wiring import (
     seed_or_reconcile_equity,
 )
 from chimera.demo.rules import HedgeTarget, RuleDecision, RuleError, RuleRegistry
-from chimera.demo.telemetry import RunnerTelemetry
 from chimera.futures.domain import PositionSide
 from chimera.futures.executor import (
     FlattenCause,
@@ -156,8 +156,8 @@ class RunnerState(str, Enum):
     SHUTDOWN = "SHUTDOWN"
 
 
-#: Every state name, for the metric sweep. Module-level so `_enter` works from
-#: the first line of `__init__`, before any instance attribute exists.
+#: Every state name, for the metric sweep. Whoever composes the runner's
+#: `RunnerTelemetry` passes it (`tools/demo_run._load`, `tests/demo_harness`).
 _STATE_NAMES: tuple[str, ...] = tuple(state.value for state in RunnerState)
 
 
@@ -304,7 +304,7 @@ class DemoRunner:
         rules: RuleRegistry,
         capital: Decimal,
         software: Mapping[str, Any] | None = None,
-        telemetry: Any | None = None,
+        telemetry: Any,
     ) -> None:
         self.config = config
         self.root = Path(root)
@@ -323,17 +323,15 @@ class DemoRunner:
         self.capital = Decimal(capital)
         self.software = dict(software or {})
 
-        # Built before the first `_enter`, because `_enter` publishes through it.
-        # Injectable so a test can drive the same campaign through a no-op
+        # Set before the first `_enter`, because `_enter` publishes through it.
+        # Injected so a test can drive the same campaign through a no-op
         # emitter and compare the two decision logs byte for byte; the runner
         # never reads anything back off it, so what is injected cannot decide.
-        self.telemetry = (
-            telemetry
-            if telemetry is not None
-            else RunnerTelemetry(
-                state_dir=self.state_dir, states=_STATE_NAMES, rules=self.rules.ids
-            )
-        )
+        # REQUIRED rather than built here (R1-e): the real emitter needs the
+        # operational wall clock, and a default here would be the runner
+        # choosing one -- a second wall clock, beside the one the service loop
+        # is given. `tools/demo_run.main` composes both from the same source.
+        self.telemetry = telemetry
         self.halt_reason: str | None = None
 
         persisted = self._load_state()

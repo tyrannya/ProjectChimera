@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import json
+import time
 from dataclasses import fields, replace
 from decimal import Decimal
 from pathlib import Path
@@ -562,7 +563,7 @@ def test_a_campaign_limit_changes_what_the_running_runner_refuses(tmp_path):
 def test_the_runner_and_the_cli_seed_the_same_equity(tmp_path):
     """`build_risk_engine` seeds equity as both entry points did by hand."""
     config = campaign_config(tmp_path / "state")
-    eng = build_risk_engine(config, capital=Decimal("1000000"))
+    eng = build_risk_engine(config, capital=Decimal("1000000"), clock=time.time)
     assert eng.state.equity == pytest.approx(1_000_000.0)
     assert eng.state.peak_equity == pytest.approx(1_000_000.0)
     assert (tmp_path / "state" / "risk.json").is_file()
@@ -622,13 +623,15 @@ def test_the_cli_and_the_harness_agree_field_for_field(tmp_path):
     # The harness's config: the committed campaign on a TEST profile, which is
     # the only difference a test profile makes to the limits (none).
     from_harness = build_risk_engine(
-        campaign_config(tmp_path / "harness"), capital=Decimal("1000000")
+        campaign_config(tmp_path / "harness"), capital=Decimal("1000000"), clock=time.time
     ).limits
     # The CLI's config: `conf/demo/pvc1.json` itself, parsed as `_load` parses it,
     # with only the state directory pointed somewhere writable.
     payload = json.loads(PVC1.read_text(encoding="utf-8"))
     payload["runner"] = {"state_dir": str(tmp_path / "cli")}
-    from_cli = build_risk_engine(parse_demo_config(payload), capital=Decimal("1000000")).limits
+    from_cli = build_risk_engine(
+        parse_demo_config(payload), capital=Decimal("1000000"), clock=time.time
+    ).limits
 
     assert from_harness == from_cli == risk_limits(committed())
     assert demo_run.build_risk_engine is build_risk_engine

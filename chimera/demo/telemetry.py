@@ -19,14 +19,19 @@ on disk), and behaviourally (three campaigns over the same synthetic day -- one
 with this emitter, one with :class:`NullTelemetry`, one with a wall clock frozen
 three hundred million seconds away -- write byte-identical decision logs).
 
-**The wall clock is read here and nowhere else on the demo path.** The runner's
-own instants come from :class:`~chimera.demo.clock.RunnerClock`, which is advanced
-only by observed record instants, because section 10's replay parity is a byte
-comparison. An age in seconds is nevertheless the question an operator asks --
-"is this process alive, and is its feed current?" -- and that question is about
-wall time. So the two ages and the heartbeat are stamped from ``time.time_ns``
-*here*, where the value cannot reach a record: the frozen-clock run in the tests
-is what proves it, not this paragraph.
+**The wall clock is consumed here and nowhere else in the demo package, and it
+is not chosen here.** The runner's own instants come from
+:class:`~chimera.demo.clock.RunnerClock`, which is advanced only by observed
+record instants, because section 10's replay parity is a byte comparison. An age
+in seconds is nevertheless the question an operator asks -- "is this process
+alive, and is its feed current?" -- and that question is about wall time. So the
+two ages and the heartbeat are stamped from the OPERATIONAL clock *here*, where
+the value cannot reach a record: the frozen-clock run in the tests is what proves
+it, not this paragraph. That clock is ``wall_ns``, and it has no default (R1-e):
+``tools/demo_run.main`` composes one operational clock and hands the same one to
+this emitter and to the service loop's schedule, so the process has one wall
+clock, visible at its entry point, rather than a second one this module picked.
+This module imports no ``time``.
 
 **What is deliberately not emitted.** No ``chimera.modes`` series: this module
 does not import that family and the demo deployment publishes none of it, because
@@ -52,7 +57,6 @@ from __future__ import annotations
 
 import logging
 import math
-import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -170,7 +174,7 @@ class RunnerTelemetry:
         state_dir: str | Path,
         states: Sequence[str],
         rules: Sequence[str],
-        wall_ns: Callable[[], int] = time.time_ns,
+        wall_ns: Callable[[], int],
     ) -> None:
         self._state_dir = Path(state_dir)
         self._states = tuple(states)

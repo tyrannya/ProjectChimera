@@ -44,9 +44,10 @@ import argparse
 import json
 import shutil
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 __all__ = [
     "MUST_MATCH",
@@ -443,7 +444,19 @@ def _last_live_minute_ms(records: Sequence[Mapping[str, Any]]) -> int | None:
     return newest
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    operational_clock: Callable[[], float] = time.time,
+) -> int:
+    """The tool's entry point, and so the one place its operational clock enters.
+
+    Like `tools.demo_run.main`, this is a process's composition boundary (R1-e):
+    host wall time is the operational clock by definition, and it reaches only
+    the replay runner's telemetry. The replay DECIDES on its own `RunnerClock`,
+    fed from the recorded minutes -- which is what the comparison of
+    ``runner_now_ns`` with tolerance zero checks.
+    """
     args = build_parser().parse_args(argv)
 
     live_records = read_log(args.live_log, args.days)
@@ -473,7 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     patched.write_text(json.dumps(payload), encoding="utf-8")
 
     namespace = argparse.Namespace(config=patched, root=scratch, profile=args.profile)
-    runner = _load(namespace)
+    runner = _load(namespace, operational_clock=operational_clock)
     # `--allow-dirty` only where SELF_CHECK admits it. It refuses the flag on a
     # CAMPAIGN profile outright ("allow_dirty is for soak runs, whose records are
     # operational rather than evidence"), so passing it unconditionally made the

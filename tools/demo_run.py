@@ -33,6 +33,16 @@ completes. It exits 0 on that request, 3 on HALT (so a supervisor's
 with a traceback on anything it did not expect. ``--replay`` and ``--once`` are
 the bounded forms, for replays and diagnostics, and behave as `run` always did.
 
+**Two clocks, and this file is where they are kept apart (R1-e).** The DECISION
+clock is the runner's `RunnerClock`, advanced only by recorded instants; it is
+the only clock Aegis and both executors are ever built with, and the factories
+below cannot be called without it. The OPERATIONAL clock is the host's wall time,
+for scheduling the service's wake-ups, the heartbeat and the operator's age
+gauges, and never for a decision. It enters the process in exactly one place --
+`main`'s ``operational_clock`` and ``sleep`` -- and from there reaches the
+service loop and the telemetry as the same one clock; nothing further in reads
+the host's time for itself.
+
 `run`, `flatten`, `resume` and `resolve` each hold an exclusive lock on the state
 directory while they run. A service keeps the decision log's chain head in
 memory, so a second writer beside it would fork the chain; the second one is
@@ -66,10 +76,11 @@ from chimera.demo.risk_wiring import build_risk_engine
 from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
 from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, ShadowParams
-from chimera.demo.runner import DemoRunner, RunnerError, RunnerState
-from chimera.demo.telemetry import NullTelemetry
+from chimera.demo.runner import _STATE_NAMES, DemoRunner, RunnerError, RunnerState
+from chimera.demo.telemetry import NullTelemetry, RunnerTelemetry
 from chimera.futures.fills import RecordedQuoteFillModel
 from chimera.recorder.contract import load_recorder_contract
+from chimera.recorder.events import NS_PER_SECOND
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +176,11 @@ def _config(args: argparse.Namespace) -> DemoConfig:
     return parse_demo_config(payload, expected_profile=ConfigProfile(args.profile))
 
 
-def _load(args: argparse.Namespace) -> DemoRunner:
+def _load(
+    args: argparse.Namespace, *, operational_clock: Callable[[], float] | None = None
+) -> DemoRunner:
+    """Build the runner. ``operational_clock`` is required by every command but
+    `status`, which emits nothing and so reads no clock at all."""
     config = _config(args)
 
     contract = load_recorder_contract("btcusdt-prospective-gen3")
@@ -200,6 +215,26 @@ def _load(args: argparse.Namespace) -> DemoRunner:
     def _inspection_factory():
         return inspect_demo_state(config, capital=capital, state_dir=state_dir)
 
+    # `status` is an inspection, not a process-liveness event. In particular it
+    # must not move Prometheus state merely by being read.
+    command = getattr(args, "command", None)
+    telemetry: Any
+    if command == "status":
+        telemetry = NullTelemetry()
+    elif operational_clock is None:
+        raise ValueError(
+            f"{command} needs the operational clock for its telemetry; `main` composes "
+            "it, and the runner is not allowed to pick a wall clock of its own"
+        )
+    else:
+        clock = operational_clock
+        telemetry = RunnerTelemetry(
+            state_dir=state_dir,
+            states=_STATE_NAMES,
+            rules=rules.ids,
+            wall_ns=lambda: int(clock() * NS_PER_SECOND),
+        )
+
     return DemoRunner(
         config,
         args.root,
@@ -210,9 +245,7 @@ def _load(args: argparse.Namespace) -> DemoRunner:
         rules=rules,
         capital=capital,
         software=_software(),
-        # `status` is an inspection, not a process-liveness event. In
-        # particular it must not move Prometheus state merely by being read.
-        telemetry=NullTelemetry() if getattr(args, "command", None) == "status" else None,
+        telemetry=telemetry,
     )
 
 
@@ -346,8 +379,8 @@ def _daemon(
     runner: DemoRunner,
     stop: dict[str, int],
     *,
-    clock: Callable[[], float] = time.time,
-    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
 ) -> int:
     """R1-d's continuous READY loop, over a runner `start()` has already started.
 
@@ -358,9 +391,13 @@ def _daemon(
     heartbeat at most `HEARTBEAT_SECONDS` apart -- on this thread, so a wedged
     loop stops beating.
 
-    ``clock`` and ``sleep`` are a test seam for the SCHEDULE only. Nothing they
-    return reaches a record: every decision instant is still the runner's own
-    recorded clock. This is not R1-e's injected operational clock.
+    ``clock`` and ``sleep`` are the OPERATIONAL clock (R1-e): host wall seconds
+    and the matching wait, injected by `main`, with no default here so that this
+    loop cannot quietly read the host for itself. They decide WHEN a pass runs
+    and when the heartbeat beats, never WHAT a pass decides: every decision
+    instant is still the runner's own recorded clock, and nothing they return
+    reaches a record. R1-f's staleness check and stall tick will read this same
+    clock; neither exists yet.
     """
     grace = float(runner.config.runner_setting("ready_grace_seconds"))
 
@@ -396,24 +433,44 @@ def _daemon(
     return EXIT_OK
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    operational_clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """The process's entry point, and the one place the host's clock enters it.
+
+    ``operational_clock`` and ``sleep`` default to the host's because this IS
+    the composition boundary: an operational clock is host wall time by
+    definition. Everything below receives them as arguments (R1-e) and none of
+    it may read the host for itself; `tests/test_r1e_clock_hardening.py` holds
+    every other ``time`` reference in this file, and every one in the demo
+    package, to zero. They never reach the decision clock: the runner's Aegis
+    and executors are built on its own `RunnerClock` instead.
+    """
     args = build_parser().parse_args(argv)
 
     if args.command == "report":
         return _report(args)
 
     if args.command not in WRITING_COMMANDS:
-        return _command(args)
+        return _command(args, operational_clock=operational_clock, sleep=sleep)
     try:
         with _single_writer(Path(_config(args).runner_setting("state_dir"))):
-            return _command(args)
+            return _command(args, operational_clock=operational_clock, sleep=sleep)
     except StateDirectoryBusy as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_REFUSED
 
 
-def _command(args: argparse.Namespace) -> int:
-    runner = _load(args)
+def _command(
+    args: argparse.Namespace,
+    *,
+    operational_clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> int:
+    runner = _load(args, operational_clock=operational_clock)
 
     if args.command == "run":
         if args.metrics_port is not None:
@@ -440,7 +497,7 @@ def _command(args: argparse.Namespace) -> int:
                 print(json.dumps({"state": "HALT", "reason": runner.halt_reason}))
                 return EXIT_HALTED
             if service:
-                return _daemon(runner, stop)
+                return _daemon(runner, stop, clock=operational_clock, sleep=sleep)
             if args.replay:
                 runner.replay(args.replay[0], args.replay[1])
             else:

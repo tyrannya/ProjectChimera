@@ -34,6 +34,7 @@ Nothing here is scientific evidence. The prices come from
 from __future__ import annotations
 
 import json
+import time
 import shutil
 from pathlib import Path
 from typing import Any, Callable
@@ -316,7 +317,7 @@ def test_an_unreadable_risk_state_without_a_history_raises_no_continuity_finding
     risk_json(state_dir).write_text("{not json", encoding="utf-8")
 
     engine = risk_wiring.build_risk_engine(
-        campaign_config(state_dir), capital=CAPITAL, state_dir=state_dir
+        campaign_config(state_dir), capital=CAPITAL, state_dir=state_dir, clock=time.time
     )
 
     assert engine.load_outcome is RiskStateLoad.UNREADABLE
@@ -598,7 +599,7 @@ def test_a_legacy_risk_state_without_a_history_keeps_r1bs_treatment(tmp_path):
     )
 
     engine = risk_wiring.build_risk_engine(
-        campaign_config(state_dir), capital=CAPITAL, state_dir=state_dir
+        campaign_config(state_dir), capital=CAPITAL, state_dir=state_dir, clock=time.time
     )
 
     assert engine.load_outcome is RiskStateLoad.LEGACY
@@ -1782,7 +1783,9 @@ def test_a_kill_switch_does_not_create_the_file_a_missing_dispute_is_about(tmp_p
     risk_json(state_dir).unlink()
     (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
 
-    engine = risk_wiring.build_risk_engine(config, capital=CAPITAL, state_dir=state_dir)
+    engine = risk_wiring.build_risk_engine(
+        config, capital=CAPITAL, state_dir=state_dir, clock=time.time
+    )
 
     assert not risk_json(
         state_dir
@@ -1808,7 +1811,9 @@ def test_a_kill_switch_does_not_overwrite_a_disputed_file_before_triage(tmp_path
     disputed_bytes = bytes_of(risk_json(state_dir))
     (state_dir / "KILL_SWITCH").write_text("stop\n", encoding="utf-8")
 
-    engine = risk_wiring.build_risk_engine(config, capital=CAPITAL, state_dir=state_dir)
+    engine = risk_wiring.build_risk_engine(
+        config, capital=CAPITAL, state_dir=state_dir, clock=time.time
+    )
 
     assert bytes_of(risk_json(state_dir)) == disputed_bytes, (
         "the disputed bytes must survive a kill switch present at the same restart, "
@@ -2117,7 +2122,9 @@ def test_b4_r1b_does_not_write_over_a_mismatch_before_the_verdict(tmp_path, monk
     state_dir = harness.state_dir
     found = risk_state_hash(RiskState.from_dict(json.loads(disputed)).snapshot())
 
-    engine = risk_wiring.build_risk_engine(config, capital=CAPITAL, state_dir=state_dir)
+    engine = risk_wiring.build_risk_engine(
+        config, capital=CAPITAL, state_dir=state_dir, clock=time.time
+    )
     assert engine.continuity_pending and not engine.continuity_disputed
     assert not engine.halted, "held, not halted: the verdict is not in yet"
     assert bytes_of(risk_json(state_dir)) == disputed, "and nothing reconciled over it"

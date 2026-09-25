@@ -8,6 +8,7 @@ correctly, refuses correctly, and writes down what it did.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
@@ -1948,7 +1949,10 @@ def test_the_production_entry_point_actually_fills(tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    runner = _load(argparse.Namespace(config=config_path, root=recorder, profile="SOAK"))
+    runner = _load(
+        argparse.Namespace(config=config_path, root=recorder, profile="SOAK"),
+        operational_clock=time.time,
+    )
     runner.start(allow_dirty=True)
     first = runner.cursor.next_minute_ms()
     for index in range(4):

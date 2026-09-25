@@ -135,4 +135,20 @@ class RunnerClock:
         return f"RunnerClock({state})"
 
 
-__all__ = ["RunnerClock", "RunnerClockError"]
+def no_authoritative_time() -> float:
+    """The clock for a demo-path engine that must never be asked the time.
+
+    Injected where a ``RiskEngine`` is built only to READ a state or to REPLAY
+    one (``chimera.demo.inspection``, ``chimera.demo.risk_continuity``). Both
+    classes default to ``time.time``, so leaving the argument out there would
+    not be "no clock": it would be the host's clock, silently, on the demo path
+    (R1-e). This one fails instead, with the ``RuntimeError`` inspection has
+    always raised.
+    """
+    raise RuntimeError(
+        "this demo-path engine has no authoritative time; start the runner from a "
+        "recorded instant before performing a timed operation"
+    )
+
+
+__all__ = ["RunnerClock", "RunnerClockError", "no_authoritative_time"]
