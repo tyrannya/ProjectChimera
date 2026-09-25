@@ -108,7 +108,6 @@ What R1-d does not change, and must not be read into it:
   Each wake decides what the recorder has published by then, and the recorder
   publishes on its own cadence, so a wake can find nothing new. Deciding every
   closed minute is R1-g's.
-* a stale feed is not detected (R1-f).
 * a halted service exits 3 rather than staying up in `HALT`, so `RunnerHalted`
   is visible only for a moment and `RunnerDown` fires two minutes later. Leaving
   `HALT` is still section 7's procedure; the halt and dispute lifecycle is
@@ -130,8 +129,90 @@ the service loop and the telemetry as the same single clock. It never reaches a
 record: `tests/test_r1e_clock_hardening.py` runs one recorded day under hosts set
 to 2100 and to 1971, with operational clocks about nine and a half years apart
 that leap forward and step backwards, and requires every persisted byte to be
-identical. A stale feed is still not detected: R1-f will compare the
-operational clock with the newest minute close, and until it does, nothing does.
+identical. Since R1-f the operational clock also decides one thing more:
+WHETHER the feed is stale (0.4). It decides nothing a record says. The stall
+records carry only recorded facts, and `tests/test_r1f_real_staleness.py` runs
+two services under hostile hosts and different operational clocks through a
+stall and requires every persisted byte to be identical.
+
+**0.4 Real staleness: the READY gate and `FEED_STALLED` (R1-f).** Before every
+pass, including one where no minute arrived, the service asks whether the feed
+is fresh:
+
+    age = operational now - (newest published minute's open + 60 s)
+
+This is measured from the minute's CLOSE, never from its open. The newest
+published minute is the perpetual's newest row in the recorder's normalized
+files, the same minute `catch_up` stops at. The feed is **stale** when:
+
+* `age` is above `max_data_delay_s` (180 s in `conf/demo/pvc1.json`;
+  exactly 180 s is still fresh);
+* `age` is negative (a close ahead of the host's clock means the clocks
+  disagree, so the age is unknown); or
+* there is no minute at all.
+
+Nothing about the process's own startup ever counts as freshness. While the feed
+is fresh, the service also wakes at `newest close + max_data_delay_s +
+ready_grace_seconds`. So a recorder that stops publishing is declared stalled
+within the limit plus the 5 s grace, for any limit.
+
+A stale feed does three things:
+
+* it writes one `FEED_STALLED` record, carrying the newest minute and the limit
+  but no operational instant;
+* the runner enters `FEED_STALLED` (`chimera_demo_state{state="FEED_STALLED"} ==
+  1`); and
+* each wake from then on runs the **stall tick** instead of a catch-up.
+
+The stall tick re-reads the last processed minute from the recorder's files and
+runs the tick's own safety checks on it:
+
+* the **kill switch**;
+* **funding**, within that minute's window, so only a settlement row that
+  arrived late for an instant already passed can be booked, once, and never one
+  the feed has not reached;
+* the **liquidation** check against that minute's recorded mark.
+
+It evaluates no rule, places no order, and does not move the decision clock.
+**Positions are held.** A stale feed alone never flattens anything. A real
+liquidation touch on the last recorded mark flattens and halts exactly as it
+would in a tick, and its records say `liquidation_touch`, not a stall.
+
+When the recorder publishes a minute that is fresh by the same test, the gate
+writes one `FEED_RESUMED` record and returns to READY by itself. No `resume` and
+no note are needed, because nothing was halted: Aegis is not told about a stall
+and holds no flag for it. The pending minutes are then processed as usual, under
+section 2.2's catch-up rule, which is unchanged (older ones become
+`SKIPPED_STALE`). An open stall survives a restart: the service comes back
+`FEED_STALLED`, read from the log, and leaves it only when the gate sees a fresh
+minute.
+
+`FEED_STALLED` is not `HALT`. A `HALT` (Aegis, a dispute, the kill switch, a
+liquidation) exits 3 and needs an operator. `FEED_STALLED` keeps the process up,
+keeps the heartbeat beating, and clears itself. The gate never moves a runner
+out of `HALT`, and a halt that happens during a stall, such as the kill switch,
+stands. SIGTERM during a stall stops the service cleanly, as it does between
+any two minutes.
+
+`max_data_delay_s` was a dead limit before R1-f. The only check fed by it, in
+`tick`, compared a minute's close with a decision clock just set to that close,
+so the age was zero by construction. That call is gone, and the READY gate is
+now the only staleness authority. Aegis's own `note_feed` mark is no longer fed
+by the demo.
+
+**What R1-f does not change: the recorder publishes no faster.** Today's
+recorder re-renders the open day at most every 300 s, and later in the day even
+less often. That is longer than the 180 s limit, so on a perfectly healthy
+recorder the newest close does grow older than the limit between two
+publications. The service then records a `FEED_STALLED` / `FEED_RESUMED` pair
+around each gap. These pairs change no decision:
+`test_todays_300s_producer_stalls_between_publications_and_decides_the_same`
+shows every other record is the one an ungated run writes. They are noise in
+the log, though, and each extra record shifts the global `seq` of every record
+after it, as a restart already does. How `seq` is compared is R1-j's question.
+Publishing each closed minute within seconds is R1-g's, and until it lands, a
+`FEED_STALLED` on this build means "no fresh minute within 180 s", which today's
+recorder produces by design.
 
 A third, worth reading before you trust a funding number. The runner does now
 settle funding: it books each recorded settlement in
@@ -1037,13 +1118,27 @@ recorded as an incident (section 15) before it is done, or it is not done.
 
 ## 10. Stale feed
 
-`RecorderStreamStale` fires. Look at `chimera_recorder_up{stream=...}` and
-`chimera_recorder_reconnects_total` to tell a reconnecting stream from a dead
-one.
+Two different signals:
 
-A stale feed is a veto, not a halt: the runner keeps ticking and refuses to
-increase exposure while the data is old. Nothing needs an operator unless the
-recorder process itself is down, which is `RecorderDown`.
+* `RecorderStreamStale` fires when one of the recorder's streams has delivered
+  nothing for 3 minutes. Look at `chimera_recorder_up{stream=...}` and
+  `chimera_recorder_reconnects_total` to tell a reconnecting stream from a dead
+  one.
+* `chimera_demo_state{state="FEED_STALLED"} == 1` means the runner's READY gate
+  has found no published minute within `max_data_delay_s` of the operational
+  clock (section 0.4). This also catches a recorder whose streams are fine but
+  which has stopped publishing minutes. It has no alert rule of its own:
+  section 11.2's table is unchanged.
+
+A stale feed is not a halt. The runner decides nothing and holds its position.
+The stall tick keeps checking the kill switch, funding and liquidation on the
+last recorded minute, and the runner resumes by itself on the first fresh
+minute. The decision log shows the stall as a `FEED_STALLED` record and its end
+as a `FEED_RESUMED` record. Nothing needs an operator unless the recorder process
+itself is down (`RecorderDown`) or the stall does not end. Do not `resume` a
+stall: there is no halt to leave, and `resume` refuses outside `HALT`. On
+today's recorder, short stalls between its 300 s publications are expected
+(section 0.4).
 
 ## 11. Process heartbeat
 
@@ -1062,6 +1157,9 @@ confused:
 * `chimera_demo_feed_age_seconds{market=...}` answers "how old is the newest
   minute available for this market", which is the recorder's problem, not the
   runner's.
+
+Both ages are republished with every heartbeat (R1-f), so during a stall they
+keep rising instead of freezing at their last healthy value.
 
 `RunnerDown` is the liveness alert. It fires when the heartbeat is more than
 two minutes old while the process is still scraped — wedged — and when there has
