@@ -183,6 +183,28 @@ def watch(runner, name: str, fake: FakeTime) -> list[tuple[float, RunnerState, R
     return seen
 
 
+#: Passes at one simulated instant before the loop counts as spinning. A few
+#: are legitimate (a pass that finds its own deadline already past re-checks at
+#: once); a loop that never sleeps never reaches a `FakeTime` hook, so it has to
+#: be caught here, as a failed assertion rather than a hung suite.
+MAX_PASSES_AT_ONE_INSTANT = 5
+
+
+def refuse_to_spin(runner, fake: FakeTime) -> None:
+    original = runner.check_feed
+    seen = {"t": None, "n": 0}
+
+    def guarded(now_ns: int) -> Any:
+        seen["n"] = seen["n"] + 1 if seen["t"] == fake.t else 1
+        seen["t"] = fake.t
+        assert (
+            seen["n"] <= MAX_PASSES_AT_ONE_INSTANT
+        ), "the service passed again without waiting"
+        return original(now_ns)
+
+    runner.check_feed = guarded
+
+
 def serve(
     harness,
     fake: FakeTime,
@@ -200,6 +222,7 @@ def serve(
             stop["signal"] = int(signal.SIGTERM)
 
     fake.hooks.append(deadline)
+    refuse_to_spin(harness.runner, fake)
     return demo_run._daemon(harness.runner, stop, clock=fake.clock, sleep=fake.sleep)
 
 
@@ -757,6 +780,7 @@ def test_the_service_restarted_mid_stall_does_not_declare_it_twice(tmp_path, mon
 
         def counted(self, now_ns):
             seen["n"] += 1
+            assert seen["n"] <= 200, "the service passed again without waiting"
             return original(self, now_ns)
 
         monkeypatch.setattr(demo_run.DemoRunner, "check_feed", counted)
@@ -802,6 +826,7 @@ def test_sigterm_during_a_stall_tick_stops_cleanly(tmp_path):
         return original()
 
     runner.stall_tick = interrupted  # type: ignore[method-assign]
+    refuse_to_spin(runner, fake)
     fake.hooks.append(recorder)
     # A service that never stalls never calls the stall tick: stop it anyway,
     # so that failing is an assertion below and not a loop that never ends.
