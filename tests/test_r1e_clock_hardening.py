@@ -175,6 +175,50 @@ def test_aegis_and_both_executors_run_on_the_decision_clock_under_a_hostile_host
     assert persisted["day"] == DAY
 
 
+def test_the_production_loader_builds_aegis_and_both_executors_on_the_decision_clock(
+    tmp_path, monkeypatch
+):
+    """The witness above, but with the runner built by `tools.demo_run._load`.
+
+    The test above composes its runner from the harness's own factories, so it
+    cannot see `_load`'s: a `_load` that handed its operational clock to Aegis,
+    or to both executors, passed every committed test (R1-e independent review,
+    F2). Here the production loader is given an operational clock in 2036, the
+    host says 2100 and every class fallback raises. What Aegis and both executors
+    persist must still be the recorded instant, while the heartbeat -- the
+    operational clock's legitimate consumer -- reads 2036, so the operational
+    clock was reachable and simply not used to decide.
+    """
+    import argparse
+
+    hostile_host(monkeypatch, HOST_FUTURE)
+    harness = runner_on(tmp_path, "SOAK")
+    args = argparse.Namespace(
+        config=written_config(tmp_path, harness),
+        root=harness.root,
+        profile="SOAK",
+        command="run",
+    )
+    beats: list[float] = []
+    monkeypatch.setattr(metrics.DEMO_HEARTBEAT, "set", beats.append)
+
+    runner = demo_run._load(args, operational_clock=lambda: WALL_B)
+    assert runner.start(allow_dirty=True) is RunnerState.READY
+    instant_ns = runner.clock.now_ns + 7 * 60 * NS + 123_456_789
+    runner.clock.observe(instant_ns)
+    runner.risk.record_order()
+    for name, executor, symbol in legs(runner):
+        executor.emergency_flatten(symbol, FlattenCause.RISK_HALT, Decimal("1"))
+        assert executor.store.state.flatten_reasons[-1]["at"] == iso(instant_ns / NS), name
+
+    assert runner.risk.state.order_times[-1] == pytest.approx(instant_ns / NS)
+    persisted = json.loads((harness.state_dir / "risk.json").read_text("utf-8"))
+    assert persisted["updated_at"] == iso(instant_ns / NS)
+    assert persisted["day"] == DAY
+    assert beats, "the operational clock never reached its consumer"
+    assert all(abs(beat - WALL_B) <= EPS for beat in beats), beats
+
+
 # --------------------------------------------------------------------------- #
 # B. a missing decision clock is refused, on every profile, before any write
 # --------------------------------------------------------------------------- #
