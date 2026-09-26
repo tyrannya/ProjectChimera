@@ -424,10 +424,10 @@ def test_the_runner_written_kinds_are_the_runners_own_append_sites(tmp_path):
         assert isinstance(first.value, ast.Name) and first.value.id == "RecordKind"
         written.add(first.attr)
     assert sorted(written) == sorted(reports.RUNNER_WRITTEN_KINDS)
-    # The second, independent oracle. Every one of section 9.1's kinds now has a
-    # writer: PR-10R closed the D1 gap, and this equality is what says so from
-    # the runner's own source rather than from a constant beside it.
-    assert set(ALL_KINDS) - written == set()
+    # The second, independent oracle. PR-10R gave every one of section 9.1's
+    # kinds a writer; R1-g retired exactly one of them again, the catch-up
+    # skip. Read off the runner's own source, not off a constant beside it.
+    assert set(ALL_KINDS) - written == {"SKIPPED_STALE"}
 
 
 def test_input_coverage_separates_absent_from_unwritable(tmp_path):
@@ -441,8 +441,14 @@ def test_input_coverage_separates_absent_from_unwritable(tmp_path):
     coverage = daily_report(harness.state_dir, DAY)["input_coverage"]["by_kind"]
 
     assert coverage["FUNDING"] == {"present": False, "records": 0, "runner_can_write": True}
-    for kind in ("RECONCILIATION", "LIQUIDATION_TOUCH", "RECOVERY", "SKIPPED_STALE"):
+    for kind in ("RECONCILIATION", "LIQUIDATION_TOUCH", "RECOVERY"):
         assert coverage[kind]["runner_can_write"] is True, kind
+    # R1-g: the one kind this build cannot write. Its zero is not an observation.
+    assert coverage["SKIPPED_STALE"] == {
+        "present": False,
+        "records": 0,
+        "runner_can_write": False,
+    }
     assert coverage["HALT"] == {"present": False, "records": 0, "runner_can_write": True}
     assert coverage["DECISION"]["present"] is True
     assert coverage["DECISION"]["runner_can_write"] is True
@@ -473,7 +479,8 @@ def test_input_coverage_marks_a_kind_present_when_the_log_holds_one(tmp_path):
     ):
         assert coverage[kind]["present"] is True, kind
         assert coverage[kind]["records"] == 1, kind
-        assert coverage[kind]["runner_can_write"] is True, kind
+        # A log written before R1-g still holds SKIPPED_STALE and still reads.
+        assert coverage[kind]["runner_can_write"] is (kind != "SKIPPED_STALE"), kind
 
 
 def test_a_record_with_no_minute_is_counted_rather_than_dropped(tmp_path):

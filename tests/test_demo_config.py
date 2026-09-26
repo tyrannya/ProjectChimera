@@ -34,6 +34,7 @@ from chimera.demo.config import (
     LIMIT_FIELDS,
     RATIO_LIMITS,
     REQUIRED_FIELDS,
+    RUNNER_DEFAULTS,
     ConfigProfile,
     DemoConfig,
     DemoConfigError,
@@ -608,24 +609,62 @@ def test_the_state_directory_is_not_part_of_the_hashed_identity():
     assert config_hash(build("/srv/a/state")) == config_hash(build("/srv/b/state"))
 
 
-def test_max_catchup_minutes_is_part_of_the_hashed_identity():
+def test_a_runner_cadence_is_part_of_the_hashed_identity():
     """The negative control for the test above: a path is excluded, a rule is not.
 
-    `max_catchup_minutes` decides how many minutes a restart processes, which
-    changes which decisions exist at all, so it belongs in the identity.
+    `reconcile_every_minutes` decides at which minutes a reconciliation record
+    exists at all, so it belongs in the identity.
     """
 
-    def build(limit: int):
+    def build(every: int):
         return parse_demo_config(
             {
                 **_campaign_payload(),
                 "profile": "TEST",
-                "runner": {"max_catchup_minutes": limit},
+                "runner": {"reconcile_every_minutes": every},
             },
             expected_profile=ConfigProfile.TEST,
         )
 
-    assert config_hash(build(3)) != config_hash(build(5))
+    assert config_hash(build(60)) != config_hash(build(30))
+
+
+#: `conf/demo/pvc1.json`'s identity, computed on main at 6f45a6b (before R1-g)
+#: and after it. The committed config has no runner block, so retiring a runner
+#: setting cannot move it -- and this pins that it did not.
+PVC1_CONFIG_HASH = "sha256:cdd81123d9434faeba0d30989c4964c89b8e3b5df63ffb3a80bafb964a007a2f"
+
+
+def test_retiring_the_catch_up_cap_leaves_the_committed_identity_where_it_was():
+    config = parse_demo_config(_campaign_payload(), expected_profile=ConfigProfile.CAMPAIGN)
+    assert config_hash(config) == PVC1_CONFIG_HASH
+
+
+@pytest.mark.parametrize("value", [3, 60, 0])
+def test_the_retired_catch_up_cap_is_refused_by_name_not_ignored(value):
+    """R1-g removed the cap. A config still carrying it is refused with what
+    happened to it -- never parsed, hashed, and then obeyed by nothing."""
+    with pytest.raises(
+        DemoConfigError, match=r"max_catchup_minutes is no longer a setting.*R1-g"
+    ):
+        parse_demo_config(
+            {
+                **_campaign_payload(),
+                "profile": "TEST",
+                "runner": {"max_catchup_minutes": value},
+            },
+            expected_profile=ConfigProfile.TEST,
+        )
+
+
+def test_the_retired_catch_up_cap_is_refused_without_the_parser_too():
+    """The object refuses it as well, so a builder or a `replace` cannot hash it in."""
+    config = parse_demo_config(_campaign_payload())
+    with pytest.raises(DemoConfigError, match="max_catchup_minutes is no longer a setting"):
+        dataclasses.replace(config, runner={"max_catchup_minutes": 3})
+    with pytest.raises(DemoConfigError, match="is not a runner setting"):
+        config.runner_setting("max_catchup_minutes")
+    assert "max_catchup_minutes" not in RUNNER_DEFAULTS
 
 
 def test_an_unknown_runner_setting_is_refused_rather_than_defaulted():
@@ -637,4 +676,4 @@ def test_a_runner_setting_that_is_not_one_is_refused_when_read():
     config = parse_demo_config(_campaign_payload())
     with pytest.raises(DemoConfigError, match="is not a runner setting"):
         config.runner_setting("grace")
-    assert config.runner_setting("max_catchup_minutes") == 3
+    assert config.runner_setting("ready_grace_seconds") == 5

@@ -106,14 +106,23 @@ FAULTS_FIELD = "faults"
 #: which is an operational timing rather than anything a decision depends on.
 RUNNER_FIELD = "runner"
 
-#: Section 2.2 line 119 names ``max_catchup_minutes`` and gives it 3; section
-#: 8.1's READY row gives the grace 5 seconds. These are the runner's pace, not
-#: its judgement -- no threshold here can change what a rule decides.
+#: Section 8.1's READY row gives the grace 5 seconds. These are the runner's
+#: pace, not its judgement -- no threshold here can change what a rule decides.
 RUNNER_DEFAULTS: Mapping[str, Any] = {
-    "max_catchup_minutes": 3,
     "ready_grace_seconds": 5,
     "reconcile_every_minutes": 60,
     "state_dir": "state/demo",
+}
+
+#: Runner settings this schema used to accept and now refuses by name, with
+#: what became of each. Refused rather than accepted and ignored: a configured
+#: bound no code path enforces would still enter `config_hash`, and a campaign
+#: would be identified by a limit that did nothing.
+RETIRED_RUNNER_SETTINGS: Mapping[str, str] = {
+    "max_catchup_minutes": (
+        "retired by R1-g: the runner decides every pending minute in order and writes "
+        "no SKIPPED_STALE, so there is no catch-up cap left to configure"
+    ),
 }
 
 #: The rule-parameter block (PR-10). Carries the values `CarryRule` and the
@@ -137,7 +146,7 @@ PATH_SETTINGS: frozenset[str] = frozenset({"state_dir"})
 #: non-positive value on any of them switches a section 8.1 behaviour off
 #: instead of pacing it; see :meth:`DemoConfig.runner_setting`.
 _POSITIVE_SETTINGS: frozenset[str] = frozenset(
-    {"max_catchup_minutes", "reconcile_every_minutes", "ready_grace_seconds"}
+    {"reconcile_every_minutes", "ready_grace_seconds"}
 )
 
 #: Section 7.4's proposed demo limits, by name. Every one is required: a limit
@@ -326,6 +335,7 @@ class DemoConfig:
         whose evidence was produced under an injected fault schedule would have
         a well-formed ``config_hash`` that nothing flagged.
         """
+        _refuse_retired(self.runner)
         if self.profile is ConfigProfile.CAMPAIGN and self.faults is not None:
             raise DemoConfigError(
                 f"a {ConfigProfile.CAMPAIGN.value} configuration carries no "
@@ -377,9 +387,9 @@ def canonical_material(config: DemoConfig) -> str:
     if config.faults is not None:
         material[FAULTS_FIELD] = dict(config.faults)
     # The rule parameters are decision-relevant in the plainest sense. The runner
-    # block is hashed too -- `max_catchup_minutes` decides how many minutes a
-    # restart processes, which changes which decisions exist at all -- but
-    # WITHOUT `state_dir`, which is a path.
+    # block is hashed too -- `reconcile_every_minutes` decides at which minutes
+    # a reconciliation record exists at all -- but WITHOUT `state_dir`, which is
+    # a path.
     #
     # This function's contract above says "no path anywhere", and the reason is
     # load-bearing rather than tidy: two hosts running the same campaign keep
@@ -404,6 +414,20 @@ def config_hash(config: DemoConfig) -> str:
 
 
 # --- parsing ----------------------------------------------------------------
+def _refuse_retired(runner: Mapping[str, Any] | None, where: str = "") -> None:
+    """Refuse a retired runner setting by name, with what became of it.
+
+    Applied by the parser and by the object itself, so a configuration built
+    without the parser -- a builder, a test, a ``dataclasses.replace`` --
+    cannot carry one into its hash either.
+    """
+    for name in sorted(set(runner or ()) & set(RETIRED_RUNNER_SETTINGS)):
+        raise DemoConfigError(
+            f"{where}{RUNNER_FIELD}.{name} is no longer a setting: "
+            f"{RETIRED_RUNNER_SETTINGS[name]}. Remove it from the configuration"
+        )
+
+
 def _refuse_faults(node: Any, path: str) -> None:
     """Refuse a ``faults`` key at any depth, naming where it was found.
 
@@ -601,6 +625,7 @@ def parse_demo_config(
     if runner is not None and not isinstance(runner, Mapping):
         raise DemoConfigError(f"{where}{RUNNER_FIELD} must be a JSON object")
     if runner is not None:
+        _refuse_retired(runner, where)
         unknown_runner = sorted(set(runner) - set(RUNNER_DEFAULTS))
         if unknown_runner:
             raise DemoConfigError(

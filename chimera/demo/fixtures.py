@@ -34,6 +34,7 @@ from chimera.recorder.normalize import (
     MinuteNormalizer,
     columns_for,
     digest,
+    funding_observation_document,
 )
 
 __all__ = ["SyntheticFeed", "MinuteShape", "DAY_MS", "MINUTE_MS"]
@@ -275,4 +276,16 @@ class SyntheticFeed:
                 if (day, hour) in repeated:
                     lines.append(line)
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def write_funding_observation(
+        self, observed_from_ms: int, observed_through_ms: int
+    ) -> Path:
+        """The recorder's funding observation (R1-g), in the recorder's own shape."""
+        path = self.normalizer.funding_observation_path("um")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        document = funding_observation_document(
+            "um", observed_from_ms=observed_from_ms, observed_through_ms=observed_through_ms
+        )
+        path.write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
         return path
