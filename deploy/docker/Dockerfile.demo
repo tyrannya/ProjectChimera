@@ -7,17 +7,15 @@
 # tests/test_demo_no_live_path.py asserts. There is no credential to give this
 # image and no argument that would accept one.
 #
-# Two things this image cannot do today, stated here rather than discovered at
-# 03:00 -- both are the runner's to repair, not this file's:
+# Two things this image could not do, stated here rather than discovered at
+# 03:00 -- both the runner's to repair, not this file's, and the second now is:
 #
 #   * it has no git metadata, so tools/demo_run.py's `_software()` reports
 #     `dirty: true` and `DemoRunner.self_check` refuses a CAMPAIGN run. Only a
 #     TEST or SOAK profile can start from a container on this build.
-#   * `tools.demo_run run` is one bounded catch-up pass over at most
-#     `max_catchup_minutes` (3) minutes, not a continuous loop, so the container
-#     exits after each pass and the restart policy is what re-invokes it. The
-#     metrics endpoint therefore exists only while a pass is in flight. See
-#     docs/demo_runbook.md section 0.
+#   * (repaired) `tools.demo_run run` is a long-running service since R1-d,
+#     and since R1-g each pass decides every pending minute, with no catch-up
+#     cap. See docs/demo_runbook.md sections 0.3 and 0.5.
 FROM python:3.11-slim
 
 WORKDIR /chimera
