@@ -378,7 +378,9 @@ def settlement_instants(service: RecorderService) -> list[int]:
     if not path.exists():
         return []
     return [
-        json.loads(line)["funding_time_ms"] for line in path.read_text().splitlines() if line
+        json.loads(line)["funding_time_ms"]
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
     ]
 
 
@@ -397,7 +399,9 @@ def test_a_complete_poll_observes_exactly_its_query_window(tmp_path):
     assert asyncio.run(service.poll_funding()) == 2
     assert observed(service) == (LOOKBACK_START, NOW)
     assert settlement_instants(service) == [minute_ms(0), minute_ms(480)]
-    document = json.loads(service.normalizer.funding_observation_path("um").read_text())
+    document = json.loads(
+        service.normalizer.funding_observation_path("um").read_text(encoding="utf-8")
+    )
     assert document["schema"] == FUNDING_OBSERVATION_SCHEMA
 
 
@@ -509,7 +513,9 @@ def test_a_stop_in_the_middle_of_a_backlog_resumes_at_the_next_minute(tmp_path):
     outcomes = harness.runner.catch_up(now_ms=m(99), stop=stop)
     assert len(outcomes) == 37
     assert harness.runner.cursor.last_minute_processed == m(36)
-    persisted = json.loads((harness.state_dir / "runner_state.json").read_text())
+    persisted = json.loads(
+        (harness.state_dir / "runner_state.json").read_text(encoding="utf-8")
+    )
     assert persisted["last_minute_processed"] == m(36)
     config = harness.runner.config
     harness.runner.shutdown("stop requested")
@@ -736,7 +742,7 @@ def test_no_observation_short_of_covering_the_instant_counts_as_no_settlement(
         path.write_text("{ not json", encoding="utf-8")
     elif observation == "another-market":
         harness.feed.write_funding_observation(INSTANT - MINUTE, INSTANT + 10 * MINUTE)
-        document = json.loads(path.read_text())
+        document = json.loads(path.read_text(encoding="utf-8"))
         path.write_text(json.dumps({**document, "market": "spot"}), encoding="utf-8")
     outcomes = harness.runner.catch_up(now_ms=m(LAST))
     assert outcomes[-1].minute_ms == m(DUE) and outcomes[-1].kind is None
@@ -752,7 +758,7 @@ def test_a_venue_row_stamped_off_the_schedule_still_answers_it(tmp_path):
     window it falls in -- the next minute's, in live and replay alike."""
     harness = funding_world(tmp_path, hours=(0, 16))
     path = harness.feed.normalizer.settlements_path("um")
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     row = {**json.loads(lines[0]), "funding_time_ms": INSTANT + 3}
     path.write_text(
         "\n".join([lines[0], json.dumps(row), *lines[1:]]) + "\n", encoding="utf-8"
