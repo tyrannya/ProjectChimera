@@ -291,9 +291,9 @@ class RunnerTelemetry:
         """One record, counted only once it is on disk. See `DemoRunner._append`.
 
         Also a heartbeat. A committed record is main-loop progress, and it is the
-        one checkpoint every processed minute passes: a `SKIPPED_STALE` or
-        `INCOMPLETE_STATE` minute appends without changing state, so a long
-        backlog of them would otherwise run with no beat at all.
+        one checkpoint every processed minute passes: an `INCOMPLETE_STATE`
+        minute appends without changing state (as `SKIPPED_STALE` did before
+        R1-g), so a long backlog of them would otherwise run with no beat at all.
         """
         DEMO_LOG_RECORDS.labels(kind=kind).inc()
         self._beat()

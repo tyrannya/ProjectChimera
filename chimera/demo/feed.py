@@ -47,11 +47,13 @@ from chimera.recorder.normalize import (
     MinuteNormalizer,
     columns_for,
     digest,
+    read_funding_observation,
 )
 
 __all__ = [
     "FeedCursor",
     "FeedError",
+    "FeedNotReady",
     "MarketState",
     "MinuteRecord",
     "fresh_through_ns",
@@ -61,6 +63,7 @@ __all__ = [
     "PERP_MARKET",
     "REQUIRED_STREAM",
     "SETTLEMENT_INSTANT_FIELD",
+    "SETTLEMENT_QUERY_ALLOWANCE_MS",
     "SPOT_MARKET",
 ]
 
@@ -89,6 +92,30 @@ SETTLEMENT_INSTANT_FIELD = "funding_time_ms"
 
 class FeedError(RuntimeError):
     """The feed cannot answer, and guessing would be worse than stopping."""
+
+
+class FeedNotReady(FeedError):
+    """The feed cannot answer YET: ask again after the recorder has written more.
+
+    R1-g. Raised for a normalized day that failed to read while it was changing
+    on disk. The recorder rewrites a day's parquet in place, not by atomic
+    replacement (that is R1-h's), so a read that lands inside a rewrite sees a
+    truncated file; with minutes published within seconds and a backlog taken
+    whole, a long catch-up is almost certain to land in one. The runner waits on
+    this -- it decides nothing from a file it could not read -- and a file that
+    fails again unchanged is a :class:`FeedError` and a halt, as it always was.
+    """
+
+
+#: R1-g: how long after a scheduled funding instant a funding query must have
+#: been made before its silence may count as "no settlement". The recorder's
+#: own scheduled poll comes `chimera.recorder.rest.FUNDING_POLL_DELAY_S` (60 s)
+#: after each instant, because a settlement's row is not published at the
+#: instant itself; half of that lets the scheduled poll clear it even when its
+#: timer fires a little early, and keeps a query made at the instant -- when the
+#: row cannot exist yet -- from ever counting. A literal rather than an import:
+#: this package imports nothing that can reach a network.
+SETTLEMENT_QUERY_ALLOWANCE_MS = 30_000
 
 
 #: The one recorder stream R1-f's READY gate reads liveness from: the
@@ -437,6 +464,8 @@ class FeedCursor:
         self._settlements: list[Mapping[str, Any]] | None = None
         #: ``(size, mtime_ns)`` of the settlements file when it was last read.
         self._settlements_stamp: tuple[int, int] | None = None
+        #: The stamps of a day that last failed to read. See `_day`.
+        self._unreadable: dict[tuple[str, str], tuple[Any, Any]] = {}
         state = dict(state or {})
         last = state.get("last_minute_processed")
         self._last_minute_ms: int | None = int(last) if last is not None else None
@@ -475,6 +504,11 @@ class FeedCursor:
         The stamp decides only WHEN a file is re-read, never what a minute says:
         a minute's row is the file's row, so a replay over the finished files
         reads the same rows. An unchanged file is not read again.
+
+        A parquet that fails to read raises :class:`FeedNotReady` the first time
+        (R1-g: it is most likely mid-rewrite), and :class:`FeedError` if it
+        fails again with the stamps unchanged -- nothing is rewriting it, so it
+        is broken rather than busy. Nothing from a failed read is cached.
         """
         key = (market, day)
         parquet = self._normalizer.parquet_path(market, day)
@@ -485,7 +519,19 @@ class FeedCursor:
             return cached[1]
         loaded: _Day | None = None
         if parquet.is_file():
-            frame = pd.read_parquet(parquet)
+            try:
+                frame = pd.read_parquet(parquet)
+            except Exception as exc:
+                if self._unreadable.get(key) == stamp:
+                    raise FeedError(
+                        f"{parquet} cannot be read and has not changed since it last "
+                        f"failed: {exc}"
+                    ) from exc
+                self._unreadable[key] = stamp
+                raise FeedNotReady(
+                    f"{parquet} could not be read, most likely mid-rewrite: {exc}"
+                ) from exc
+            self._unreadable.pop(key, None)
             names = [spec.name for spec in columns_for(market)]
             if list(frame.columns) != names:
                 raise FeedError(
@@ -568,6 +614,76 @@ class FeedCursor:
             else:
                 break
         return seen
+
+    def funding_observation(self) -> tuple[int, int] | None:
+        """The recorder's funding observation ``(from_ms, through_ms)``, or None.
+
+        The query windows the recorder's successful, complete funding polls
+        covered -- what it ASKED, not what happened. See
+        :func:`chimera.recorder.normalize.funding_observation_document`.
+        """
+        return read_funding_observation(
+            self._normalizer.funding_observation_path(PERP_MARKET), PERP_MARKET
+        )
+
+    def funding_pending(self, minute_open_ms: int) -> int | None:
+        """The funding instant this minute must wait for, or None (R1-g).
+
+        A minute depends on every settlement at or before its close: it books
+        those in its window, and the next one reads the last of them as its
+        ``funding_rate_last``. A row that lands after the minute was decided
+        would therefore be booked at a LATER minute live, and at this one by a
+        replay of the finished files. So a minute waits while the latest funding
+        instant the venue scheduled at or before its close is unresolved.
+
+        *Scheduled*: the perpetual's recorded ``next_funding_time_ms`` -- the
+        venue's own announcement -- on this minute's row and every earlier one
+        of this day and the day before, so a minute whose own row cannot say
+        (its mark missing, or the row itself) still sees the instant an earlier
+        row announced.
+
+        *Resolved*, by recorder facts only: the instant's own settlement row
+        exists -- stamped within a minute after it, so a venue that stamps its
+        row a few milliseconds off the schedule still answers it, and a LATER
+        settlement never does -- or the recorder's funding observation covers
+        the instant with `SETTLEMENT_QUERY_ALLOWANCE_MS` to spare: it asked late
+        enough that a row would have been there, and none was. An absent,
+        unreadable, too-early or gapped observation resolves nothing: absence of
+        a row is never read as absence of a settlement.
+        """
+        close_ms = int(minute_open_ms) + 60_000
+        scheduled = self._scheduled_through(int(minute_open_ms), close_ms)
+        if scheduled is None:
+            return None
+        if any(
+            scheduled <= _settlement_ms(row) < scheduled + 60_000 for row in self.settlements()
+        ):
+            return None
+        observed = self.funding_observation()
+        if (
+            observed is not None
+            and observed[0] <= scheduled
+            and scheduled + SETTLEMENT_QUERY_ALLOWANCE_MS <= observed[1]
+        ):
+            return None
+        return scheduled
+
+    def _scheduled_through(self, minute_open_ms: int, close_ms: int) -> int | None:
+        """The latest instant announced on perpetual rows up to this minute, <= close."""
+        latest: int | None = None
+        for back in (0, 1):
+            day = self._day(PERP_MARKET, self.day_of(minute_open_ms - back * 86_400_000))
+            if day is None:
+                continue
+            frame = day.frame
+            announced = frame.loc[
+                frame["minute_open_ms"] <= minute_open_ms, "next_funding_time_ms"
+            ].dropna()
+            announced = announced[announced <= close_ms]
+            if len(announced):
+                value = int(announced.max())
+                latest = value if latest is None else max(latest, value)
+        return latest
 
     # --- walking ----------------------------------------------------------
     def next_minute_ms(self, *, now_ms: int | None = None) -> int | None:

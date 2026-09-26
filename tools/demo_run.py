@@ -400,11 +400,12 @@ def _daemon(
 
     R1-f's READY gate runs first in every pass, on this same clock, whether or
     not a minute arrived: `check_feed` compares it with the instant the
-    recorder's heartbeat vouches for the required kline stream up to (until
-    R1-g, not the newest normalized minute, which today's recorder publishes
-    only every 300 s or slower). A stale feed turns the pass into a stall tick,
-    which checks the held position on the last recorded minute and decides
-    nothing; a fresh one catches up as before. While the feed is fresh the wait
+    recorder's heartbeat vouches for the required kline stream up to, not the
+    newest normalized minute (R1-g kept it so; `DemoRunner.check_feed` says
+    why). A stale feed turns the pass into a stall tick, which checks the held
+    position on the last recorded minute and decides nothing; a fresh one
+    catches up -- every pending minute, since R1-g, up to any whose funding
+    settlement has not been recorded yet. While the feed is fresh the wait
     also ends at the instant it would turn stale plus the same grace, so a dead
     stream or recorder is declared within ``max_data_delay_s +
     ready_grace_seconds`` of the last instant vouched for, for any limit, not

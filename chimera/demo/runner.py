@@ -59,6 +59,7 @@ from chimera.demo.feed import (
     PERP_MARKET,
     SETTLEMENT_INSTANT_FIELD,
     FeedCursor,
+    FeedNotReady,
     MarketState,
     fresh_through_ns,
     plain_json,
@@ -287,7 +288,11 @@ class TickOutcome:
 
     minute_ms: int
     state: RunnerState
-    kind: RecordKind
+    #: The record the minute wrote, or None when it was DEFERRED (R1-g): not
+    #: decidable yet, nothing written, the cursor where it was. A deferral is
+    #: not an outcome for the minute -- the minute has not been reached -- so it
+    #: has no record kind. See `DemoRunner._deferred`.
+    kind: RecordKind | None
     decisions: list[RuleDecision] = field(default_factory=list)
     vetoed: bool = False
     executed: bool = False
@@ -1370,12 +1375,39 @@ class DemoRunner:
                 "tick refused: the runner is FEED_STALLED, and no minute is decided "
                 "until the READY gate has seen a fresh one"
             )
+        # R1-g: a minute that cannot be decided yet is left exactly as it was
+        # found -- checked before the clock observes its close, before any state
+        # is entered and before anything is counted -- so the retry is simply
+        # the first attempt, whenever it comes. A feed that fails for any other
+        # reason is not a reason to wait: it halts below, where it always has.
+        try:
+            pending = self.cursor.funding_pending(minute_ms)
+        except FeedNotReady as exc:
+            return self._deferred(minute_ms, str(exc))
+        except Exception:
+            pending = None
+        if pending is not None:
+            return self._deferred(
+                minute_ms,
+                f"the funding instant {pending} (epoch ms) is scheduled at or before "
+                "this minute's close and the recorder has neither its settlement "
+                "row nor an observation that covers it",
+            )
+
         minute_ns = int(minute_ms) * _MS_TO_NS
         self.clock.observe(minute_ns + MINUTE_NS)
 
         self._enter(RunnerState.DATA_READY)
         try:
             state = self.cursor.state_for(minute_ms, now_ns=self.clock.now_ns)
+        except FeedNotReady as exc:
+            # A day rewritten between the check above and this read. The clock
+            # has observed this minute's close, and that is not unwound: it is
+            # a maximum, the retry observes the same instant, and the minute is
+            # the next one decided, so no later instant moves. Unwinding would
+            # make it non-monotone, which every staleness veto rests on.
+            self._enter(RunnerState.READY)
+            return self._deferred(minute_ms, str(exc))
         except Exception as exc:
             # A feed the runner cannot read is a halt, never a traceback out of
             # the tick loop. `state_for` reads the funding settlements too (for
@@ -2731,13 +2763,21 @@ class DemoRunner:
     # driving
     # ------------------------------------------------------------------
     def run_minutes(self, minutes: Iterable[int]) -> list[TickOutcome]:
-        """Process the given minutes in order, stopping at HALT."""
+        """Process the given minutes in order, stopping at HALT or at a deferral.
+
+        A deferred minute (R1-g) ends the run exactly as a halt does: the minutes
+        after it may not be decided ahead of it, and a replay that stepped past
+        it would log them in an order no live run can produce.
+        """
         self._require_active("run_minutes")
         outcomes = []
         for minute in minutes:
             if self.state in (RunnerState.HALT, RunnerState.FEED_STALLED):
                 break
-            outcomes.append(self.tick(minute))
+            outcome = self.tick(minute)
+            outcomes.append(outcome)
+            if outcome.kind is None:
+                break
         return outcomes
 
     def replay(self, start_ms: int, end_ms: int) -> list[TickOutcome]:
@@ -2748,52 +2788,51 @@ class DemoRunner:
     def catch_up(
         self, *, now_ms: int | None = None, stop: Callable[[], bool] | None = None
     ) -> list[TickOutcome]:
-        """Process every pending minute in order; decide only the recent ones.
+        """Decide every pending minute, in order, since the last decided one.
 
-        Section 2.2 line 120, in full: "minutes between the persisted cursor and
-        now are processed in order with `catch_up=True` in the log, and no
-        position change is executed for catch-up minutes older than the
-        configured `max_catchup_minutes` (default 3): older minutes are logged as
-        `SKIPPED_STALE`."
+        **R1-g retired the age cap.** Section 2.2 line 120 had the runner decide
+        only the newest `max_catchup_minutes` (3) pending minutes and write
+        `SKIPPED_STALE` for every older one; the master roadmap's R1-g replaces
+        that with "the runner decides every closed minute since its last decided
+        minute (no three-minute cap)", accepted on zero `SKIPPED_STALE` minutes
+        while the recorder is healthy. This build writes no `SKIPPED_STALE` at
+        all; the kind stays readable because logs written before it hold them.
 
-        Two clauses, and before PR-10R only half of the first was implemented:
-        the runner ticked the OLDEST `max_catchup_minutes` pending minutes and
-        abandoned the rest with no record. That is the wrong end of the queue --
-        a restart after a two-hour outage decided the two-hour-old minutes at the
-        two-hour-old book and left the current ones unread -- and it left the
-        campaign's log with a hole where the abandoned minutes should be, because
-        nothing in the log said they had been passed over.
+        Deciding an old minute is sound here because nothing about it is read
+        from the present: its inputs are its own recorded row, its fills are
+        priced off the book recorded in it, and `RunnerClock` moves only to its
+        close. A minute decided late is decided exactly as it would have been on
+        time -- which is also why a replay reproduces it. Whether the feed is
+        live enough to be trading at all is the READY gate's question (R1-f).
 
-        What runs now: every minute from the cursor up to `now_ms` is accounted
-        for, in order. The last `max_catchup_minutes` of them are ticked
-        normally. Every older one advances the cursor and writes one
-        `SKIPPED_STALE` record naming its age -- no rule evaluates, no Aegis
-        check runs and no position changes, which is exactly "no position change
-        is executed".
+        Nothing is written for a catch-up that is not written on time: no
+        `catch_up` flag, no age. In a replay every minute is caught up, so such a
+        field would record when the runner looked, not what it decided.
+
+        A minute that is not decidable yet (R1-g's funding deferral, or a day
+        caught mid-rewrite) ends the pass with the cursor on the minute before
+        it; the service comes round again at its next wake.
 
         `now_ms` is the instant catching up is happening at. Without one the
         newest minute the feed holds is used, because that is the newest minute
         that could be decided; a caller that means something else says so.
 
-        Section 9.1's schema has no `catch_up` key, so it is written at the TOP
-        LEVEL of the record -- the log's writer permits extra keys, and section
-        10's parity comparison lists the fields that must match without naming
-        this one, so a flag both live and replay produce identically cannot break
-        parity. Recorded in the PR.
-
         `stop` is R1-d's shutdown request, asked only BETWEEN minutes. A tick is
         never interrupted -- its PERSISTENCE always completes -- so a service
         told to stop in the middle of a long catch-up finishes the minute in
         hand and leaves the rest for the next start, instead of making the
-        supervisor wait out the whole backlog.
+        supervisor wait out the whole backlog -- which, without a cap, may be
+        every minute since an outage began.
         """
         self._require_active("catch_up")
-        limit = int(self.config.runner_setting("max_catchup_minutes"))
         # Read once. The window is what it was when catching up began; letting it
         # move as minutes are processed would make the answer depend on how long
         # the catch-up itself took, which is a wall-clock dependency by another
         # name and would not replay.
-        newest = self._newest_minute_ms(now_ms=now_ms)
+        try:
+            newest = self._newest_minute_ms(now_ms=now_ms)
+        except FeedNotReady:
+            return []
         if newest is None:
             # No minute exists to catch up TO. The cursor's `next_minute_ms`
             # answers "cursor + one minute" for ever whether or not a file holds
@@ -2811,14 +2850,16 @@ class DemoRunner:
             # cursor's own `next_minute_ms` hands back cursor + one minute for
             # ever, whether or not a file holds it, so the loop's end has to be
             # the newest minute that EXISTS.
-            minute = self.cursor.next_minute_ms(now_ms=newest)
+            try:
+                minute = self.cursor.next_minute_ms(now_ms=newest)
+            except FeedNotReady:
+                break
             if minute is None:
                 break
-            age = 0 if newest is None else (int(newest) - int(minute)) // 60_000
-            if age >= limit:
-                outcomes.append(self._skipped_stale(minute, age=age, limit=limit))
-            else:
-                outcomes.append(self.tick(minute))
+            outcome = self.tick(minute)
+            outcomes.append(outcome)
+            if outcome.kind is None:
+                break  # deferred: nothing after it may be decided first
         return outcomes
 
     def _newest_minute_ms(self, *, now_ms: int | None = None) -> int | None:
@@ -2833,45 +2874,16 @@ class DemoRunner:
             return int(now_ms)
         return self.cursor.latest_minute_ms()
 
-    def _skipped_stale(self, minute_ms: int, *, age: int, limit: int) -> TickOutcome:
-        """One catch-up minute too old to act on. Recorded, never silently dropped.
+    def _deferred(self, minute_ms: int, reason: str) -> TickOutcome:
+        """R1-g: the minute waits. Nothing is written and the cursor does not move.
 
-        The cursor advances because the minute HAS been dealt with: the answer
-        for it is "too old to decide", which is a fact about the campaign and not
-        a gap in it. Nothing else about the position, the ledger or Aegis moves,
-        so a SKIPPED_STALE minute cannot change what a later minute decides.
+        No record, deliberately. A deferral is the absence of an outcome yet,
+        and writing it would put into the campaign log an event that depends on
+        when the runner looked -- a replay over the finished files defers
+        nothing, so its log would differ. The next pass meets the same minute.
         """
-        minute_ns = int(minute_ms) * _MS_TO_NS
-        self.clock.observe(minute_ns + MINUTE_NS)
-        record_hash = self._append(
-            RecordKind.SKIPPED_STALE,
-            minute_ns,
-            {
-                "catch_up": True,
-                "stale": {
-                    "age_minutes": int(age),
-                    "max_catchup_minutes": int(limit),
-                },
-                "veto_or_rejection": {
-                    "stage": "feed",
-                    "label": "skipped_stale",
-                    "detail": (
-                        f"the minute is {age} minute(s) behind the newest available one "
-                        f"and max_catchup_minutes is {limit}; no rule evaluated and no "
-                        "position changed"
-                    ),
-                },
-            },
-        )
-        self.cursor.mark_processed(minute_ms)
-        self.save_state()
-        return TickOutcome(
-            minute_ms,
-            self.state,
-            RecordKind.SKIPPED_STALE,
-            detail=f"stale by {age} minute(s)",
-            record_hash=record_hash,
-        )
+        logger.warning("minute %s deferred: %s", minute_ms, reason)
+        return TickOutcome(minute_ms, self.state, None, detail=reason)
 
     # ------------------------------------------------------------------
     # R1-f: the READY gate and the stall tick
@@ -2880,11 +2892,13 @@ class DemoRunner:
         """Canonical R1-f's READY gate: is the feed fresh enough to catch up?
 
         ``now_ns`` is the OPERATIONAL clock (R1-e), handed in by the service
-        loop; the runner reads no clock of its own. Until R1-g the authority is
-        the recorder's heartbeat (the roadmap's "or as the recorder heartbeat
-        age"), not the newest normalized minute: today's recorder re-renders the
-        open day every 300 s or slower, longer than the committed limit, so a
-        newest-close age stalled a healthy recorder between publications. The
+        loop; the runner reads no clock of its own. The authority is the
+        recorder's heartbeat (the roadmap's "or as the recorder heartbeat age"),
+        not the newest normalized minute. R1-f chose it because the recorder then
+        re-rendered the open day every 300 s or slower; R1-g, which publishes
+        each minute within seconds of it settling, keeps it, because a minute
+        still waits to settle (up to the recorder's cap on a quiet stream) and
+        the heartbeat says directly what the newest file only implies. The
         age is ``now_ns`` minus `fresh_through_ns` -- the earlier of the
         heartbeat's own stamp and the required kline stream's last event -- and
         never the decision clock against itself, which is all `tick`'s old
@@ -2934,8 +2948,16 @@ class DemoRunner:
             return stale_after
         age_ns = None if through is None else int(now_ns) - through
         stale = age_ns is None or age_ns < 0 or age_ns > limit_ns
-        if stale and self.state is RunnerState.READY:
-            newest = self.cursor.latest_minute_ms()
+        stalling = stale and self.state is RunnerState.READY
+        resuming = not stale and self.state is RunnerState.FEED_STALLED
+        if stalling or resuming:
+            try:
+                newest = self.cursor.latest_minute_ms()
+            except FeedNotReady:
+                # A day mid-rewrite (R1-g): the transition waits for the next
+                # pass rather than record a newest minute it could not read.
+                return stale_after
+        if stalling:
             self._append(
                 RecordKind.FEED_STALLED,
                 self._minute_ns(),
@@ -2950,8 +2972,7 @@ class DemoRunner:
                 None if age_ns is None else f"{age_ns / 1e9:.1f}",
                 limit_s,
             )
-        elif not stale and self.state is RunnerState.FEED_STALLED:
-            newest = self.cursor.latest_minute_ms()
+        elif resuming:
             self._append(
                 RecordKind.FEED_RESUMED,
                 self._minute_ns(),
@@ -3026,6 +3047,8 @@ class DemoRunner:
         if minute is not None:
             try:
                 state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
+            except FeedNotReady:
+                return None  # a day mid-rewrite (R1-g): the next stall tick reads it
             except Exception as exc:
                 reason = f"feed_unreadable: {exc}"
                 self._halt(reason)

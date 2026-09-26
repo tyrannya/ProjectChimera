@@ -458,8 +458,9 @@ def test_sigterm_during_persistence_lets_the_minute_complete_then_stops(tmp_path
     assert seen.get("fired")
     _assert_the_minute_in_hand_completed(harness.state_dir)
     first = day_start_ms()
-    # 7 SKIPPED_STALE, then the first of the three decidable minutes, and stop.
-    assert runner_state(harness.state_dir)["last_minute_processed"] == first + 7 * MINUTE_MS
+    # The first pending minute -- R1-g decides every one, so it is the first --
+    # completes, and the nine behind it wait for the next start.
+    assert runner_state(harness.state_dir)["last_minute_processed"] == first
     assert fake.sleeps == [], "a stop requested mid-pass does not wait for the next close"
 
     before = len(records(harness.state_dir))
@@ -555,9 +556,9 @@ def test_the_heartbeat_stays_within_30s_through_a_pass_that_works_for_many_minut
 ):
     """Correction 2's witness: progress, not only waiting, keeps it fresh.
 
-    One pass over 200 published minutes -- 197 SKIPPED_STALE and three
-    decisions -- where every durable write costs 12 simulated seconds, so the
-    pass alone spans about forty simulated minutes. Every gap between beats stays
+    One pass over 200 published minutes -- every one of them decided since
+    R1-g -- where every durable write costs 12 simulated seconds, so the pass
+    alone spans well over half an hour of simulated time. Every gap between beats stays
     within the cadence, because each processed minute passes a main-thread
     checkpoint: a state change inside `tick`, or the committed record of a
     minute that is not decided. Remove the record-time beat and the backlog runs
@@ -582,7 +583,8 @@ def test_the_heartbeat_stays_within_30s_through_a_pass_that_works_for_many_minut
 
     assert fake.t - T0 > 30 * 60, "the pass alone worked for half an hour of simulated time"
     assert fake.sleeps == [] or fake.sleeps[0] <= demo_run.WAIT_SLICE_SECONDS
-    assert kinds(harness.state_dir).count("SKIPPED_STALE") == 197
+    logged = kinds(harness.state_dir)
+    assert "SKIPPED_STALE" not in logged and logged.count("DECISION") >= 100
     assert _max_gap([T0, *beats]) <= demo_run.HEARTBEAT_SECONDS + EPS
 
 
