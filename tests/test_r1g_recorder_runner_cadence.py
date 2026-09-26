@@ -189,6 +189,10 @@ def test_a_minute_is_published_only_once_every_stream_has_passed_its_close(tmp_p
     service._record(mark_event(minute_ms(0) + 59_000, mark="61000.00"))
     asyncio.run(service._publish())
     assert published(service, "um") == []
+    # Nor does any other render path -- the maintenance pass here, shutdown and
+    # recovery alike -- publish it early: the horizon is applied inside the render.
+    asyncio.run(service._maintain())
+    assert published(service, "um") == [] and published(service, "spot") == []
 
     past_the_close(service)
     asyncio.run(service._publish())
@@ -649,13 +653,21 @@ def test_run_minutes_and_replay_stop_at_a_deferral_too(tmp_path):
     assert [r["minute"] for r in harness.records()][-1] == iso(DUE - 1)
 
 
-def test_a_restart_while_deferred_takes_the_deferred_minute_first(tmp_path):
+@pytest.mark.parametrize("stop", ["shutdown", "crash"])
+def test_a_restart_while_deferred_takes_the_deferred_minute_first(tmp_path, stop):
+    """Clean or not. A crash leaves the files exactly as the deferral left them,
+    so they must already say the deferred minute is the next one -- a shutdown
+    would re-save the cursor and hide a deferral that had persisted a wrong one."""
     harness = funding_world(tmp_path, hours=(0, 16))
     config = harness.runner.config
     harness.runner.catch_up(now_ms=m(LAST))
-    harness.runner.shutdown("restart while deferred")
+    if stop == "shutdown":
+        harness.runner.shutdown("restart while deferred")
+    before = len(harness.records())
 
     again = funding_world(tmp_path, hours=(0, 16), config=config)
+    restarted = [r["kind"] for r in again.records()[before:]]
+    assert "RECOVERY" not in restarted and "HALT" not in restarted, restarted
     first = again.runner.catch_up(now_ms=m(LAST))
     assert [(o.minute_ms, o.kind) for o in first] == [(m(DUE), None)]
     again.feed.write_settlements([DAY], hours=(0, 8, 16))
