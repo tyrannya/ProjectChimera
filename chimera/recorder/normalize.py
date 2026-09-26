@@ -57,6 +57,7 @@ This module opens no socket, makes no request and reads no clock.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -109,6 +110,11 @@ NORMALIZED_DIRECTORY = "normalized"
 FUNDING_DIRECTORY = "funding"
 SETTLEMENTS_FILE = "settlements.ndjson"
 SETTLEMENTS_DIGEST_FILE = "settlements.sha256"
+
+#: R1-g: what the recorder has ASKED the venue about funding, beside what it was
+#: told. See :func:`funding_observation_document`.
+FUNDING_OBSERVATION_FILE = "observed.json"
+FUNDING_OBSERVATION_SCHEMA = "chimera.recorder-funding-observation/1"
 
 #: The one clock the recorder normalizes to. Every other clock the project uses
 #: is cut from a minute source by :mod:`nn.multiclock`, and there is exactly one
@@ -583,6 +589,92 @@ def build_minutes(
     return records, missing, conflicts, tallies
 
 
+def settled(
+    built: tuple[Sequence[MinuteRecord], Sequence[int], Sequence[int], Mapping[str, Any]],
+    through_ms: int | None,
+) -> tuple[list[MinuteRecord], list[int], list[int], Mapping[str, Any]]:
+    """Only the minutes that closed at or before ``through_ms`` (R1-g).
+
+    A minute's row joins three streams, and its closed kline can arrive before
+    the last mark or book event stamped inside it -- they come over different
+    sockets. Published at that moment, the row would change on the next render,
+    and a runner that had already decided it would disagree with a replay of the
+    finished file. So a caller that is publishing while the day fills passes the
+    instant every stream is known to have passed, and a minute past it is held
+    back as not-yet-written: reported missing, exactly as the minutes still to
+    come in the open day already are. ``None`` is the whole day, unchanged.
+
+    Tallies are raw record counts, not minutes, and are left as they are.
+    """
+    records, missing, conflicts, tallies = built
+    if through_ms is None:
+        return list(records), list(missing), list(conflicts), tallies
+
+    def closed(minute_ms: int) -> bool:
+        return minute_ms + MS_PER_MINUTE <= through_ms
+
+    held = [r.minute_open_ms for r in records if not closed(r.minute_open_ms)]
+    return (
+        [r for r in records if closed(r.minute_open_ms)],
+        sorted([*missing, *held]),
+        [m for m in conflicts if closed(m)],
+        tallies,
+    )
+
+
+def funding_observation_document(
+    market: str, *, observed_from_ms: int, observed_through_ms: int
+) -> dict[str, Any]:
+    """The recorder's record of which funding instants it has queried the venue for.
+
+    A statement about the RECORDER, never about the exchange: every instant in
+    ``[observed_from_ms, observed_through_ms]`` fell inside the window of a
+    ``fundingRate`` query that succeeded, came back complete and was recorded
+    in full before this was written. It does not say a settlement did not
+    happen -- a row that has not arrived and a settlement that never occurred
+    are identical in the settlements file -- only that the recorder asked.
+
+    Engineering state: outside the contract, every value digest, every manifest
+    and every report. It cannot be rebuilt from the raw files (an empty answer
+    leaves nothing in them), and it does not have to be: deleting it costs the
+    runner a wait at its next funding minute until the next successful poll.
+    """
+    return {
+        "schema": FUNDING_OBSERVATION_SCHEMA,
+        "market": market,
+        "observed_from_ms": int(observed_from_ms),
+        "observed_through_ms": int(observed_through_ms),
+        "note": (
+            "Engineering state. The query windows of successful, complete funding polls; "
+            "not a statement that any settlement did or did not happen."
+        ),
+    }
+
+
+def read_funding_observation(path: Path, market: str) -> tuple[int, int] | None:
+    """``(observed_from_ms, observed_through_ms)``, or None if it vouches for nothing.
+
+    Absent, unreadable, another schema, another market, or bounds that are not
+    ordered integers: None. A reader must treat None as "the recorder has not
+    said", never as "nothing happened".
+    """
+    try:
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    if (
+        document.get("schema") != FUNDING_OBSERVATION_SCHEMA
+        or document.get("market") != market
+    ):
+        return None
+    bounds = (document.get("observed_from_ms"), document.get("observed_through_ms"))
+    if any(type(value) is not int for value in bounds) or bounds[0] > bounds[1]:
+        return None
+    return bounds[0], bounds[1]
+
+
 def minute_frame(records: Iterable[MinuteRecord], *, market: str) -> pd.DataFrame:
     """The normalized table for one market, with fixed columns and fixed dtypes.
 
@@ -807,6 +899,10 @@ class MinuteNormalizer:
     def settlements_digest_path(self, market: str) -> Path:
         return self.settlements_path(market).with_name(SETTLEMENTS_DIGEST_FILE)
 
+    def funding_observation_path(self, market: str) -> Path:
+        """Beside the settlements, so whatever copies those copies this too."""
+        return self.settlements_path(market).with_name(FUNDING_OBSERVATION_FILE)
+
     def is_frozen(self, market: str, day: str) -> bool:
         """Whether the day has a ``.sha256`` and is therefore immutable."""
         return self.sha256_path(market, day).exists()
@@ -818,7 +914,12 @@ class MinuteNormalizer:
 
     # --- building ---------------------------------------------------------
     def build_day(
-        self, market: str, day: str, *, provenance: Mapping[str, Any] | None = None
+        self,
+        market: str,
+        day: str,
+        *,
+        provenance: Mapping[str, Any] | None = None,
+        through_ms: int | None = None,
     ) -> DayReport:
         """Normalize one UTC day of one market from its raw files.
 
@@ -827,7 +928,7 @@ class MinuteNormalizer:
         metadata, which is what lets the recorder re-derive the current day on
         every restart. Once the day is frozen it is refused, because a frozen
         day is evidence and a correction is a new file with a note rather than a
-        quiet overwrite.
+        quiet overwrite. ``through_ms`` is :func:`settled`'s.
         """
         require_day(day)
         columns_for(market)
@@ -863,7 +964,9 @@ class MinuteNormalizer:
             books=books,
             book_stream=book_stream,
         )
-        return self.write_day(market, day, built, provenance=provenance, sources=sources)
+        return self.write_day(
+            market, day, settled(built, through_ms), provenance=provenance, sources=sources
+        )
 
     def write_day(
         self,

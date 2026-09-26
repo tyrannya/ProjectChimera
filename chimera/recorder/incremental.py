@@ -111,6 +111,7 @@ from chimera.recorder.normalize import (
     RecorderNormalizeError,
     _number,
     columns_for,
+    settled,
 )
 from chimera.recorder.sink import (
     EVENTS_FILE,
@@ -1144,9 +1145,19 @@ class IncrementalNormalizer:
 
     # --- the public shape -------------------------------------------------
     def build_day(
-        self, market: str, day: str, *, provenance: Mapping[str, Any] | None = None
+        self,
+        market: str,
+        day: str,
+        *,
+        provenance: Mapping[str, Any] | None = None,
+        through_ms: int | None = None,
     ) -> DayReport:
         """Normalize one day incrementally, or fall back to the authoritative path.
+
+        ``through_ms`` (R1-g) is :func:`chimera.recorder.normalize.settled`'s,
+        applied to the rendered day on both paths, so a fallback publishes
+        exactly the minutes the fold would have. The cache still folds
+        everything: a held-back minute is not yet published, not forgotten.
 
         Falls back — whole, never partially — when the cache cannot be vouched
         for: a different schema, a broken seal, an aggregate that is not the
@@ -1169,8 +1180,10 @@ class IncrementalNormalizer:
             self.status[(market, day)] = CacheStatus(
                 market=market, day=day, rebuilt=True, reason=str(exc)
             )
-            return self.normalizer.build_day(market, day, provenance=provenance)
-        rendered = self.render(state)
+            return self.normalizer.build_day(
+                market, day, provenance=provenance, through_ms=through_ms
+            )
+        rendered = settled(self.render(state), through_ms)
         try:
             self.save(state)
         except (NormalizeCacheError, RecorderSinkError) as exc:
