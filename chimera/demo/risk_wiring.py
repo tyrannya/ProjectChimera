@@ -79,10 +79,16 @@ class RiskWiringError(ValueError):
 #:     cooldown is never opened, so the gate never closes.)
 #: ``max_daily_loss_pct`` -> ``update_equity`` halts on this loss from the day's
 #:     starting equity.
-#: ``max_data_delay_s`` -> ``note_feed`` marks the feed stale past this delay and
-#:     ``evaluate_entry`` vetoes on the mark. (The runner passes no
-#:     ``data_delay_s`` to ``evaluate_entry``, so the mark is the demo's
-#:     enforcement of this limit, not the direct comparison beside it.)
+#: ``max_data_delay_s`` -> since R1-f, the service's READY gate
+#:     (``DemoRunner.check_feed``) reads it from here and halts the feed as
+#:     FEED_STALLED when the operational clock is more than this past the instant
+#:     the recorder's heartbeat vouches for (the earlier of its own stamp and
+#:     the perpetual kline stream's last event; until R1-g, not the newest
+#:     normalized minute). That gate is the demo's only enforcement of the
+#:     limit. ``note_feed``'s mark is no longer fed by the demo: its one caller
+#:     compared a minute's close with a decision clock just set to that close,
+#:     a delay of zero by construction, and it was removed rather than left as a
+#:     second, differently-clocked authority on staleness.
 #: ``max_drawdown_pct`` -> ``update_equity`` halts on this drawdown from peak.
 #: ``max_exposure_per_asset_pct`` -> ``evaluate_entry`` vetoes when this pair's
 #:     CUMULATIVE exposure plus the new stake would pass the fraction of equity.

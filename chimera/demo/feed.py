@@ -42,6 +42,7 @@ import pandas as pd
 
 from chimera.carry.hedge import PerpSettlement
 from chimera.recorder.contract import RecorderContract
+from chimera.recorder.events import UM_KLINE_1M
 from chimera.recorder.normalize import (
     MinuteNormalizer,
     columns_for,
@@ -53,10 +54,12 @@ __all__ = [
     "FeedError",
     "MarketState",
     "MinuteRecord",
+    "fresh_through_ns",
     "plain_json",
     "settlement_from_row",
     "MINUTE_NS",
     "PERP_MARKET",
+    "REQUIRED_STREAM",
     "SETTLEMENT_INSTANT_FIELD",
     "SPOT_MARKET",
 ]
@@ -86,6 +89,49 @@ SETTLEMENT_INSTANT_FIELD = "funding_time_ms"
 
 class FeedError(RuntimeError):
     """The feed cannot answer, and guessing would be worse than stopping."""
+
+
+#: The one recorder stream R1-f's READY gate reads liveness from: the
+#: perpetual's klines, the market `FeedCursor.latest_minute_ms` walks. No other
+#: stream -- however busy -- can stand in for it.
+REQUIRED_STREAM = UM_KLINE_1M
+
+
+def fresh_through_ns(heartbeat: Mapping[str, Any] | None) -> int | None:
+    """The instant up to which the recorder's heartbeat vouches for the feed.
+
+    ``min(heartbeat_ns, last_event_ns of REQUIRED_STREAM)``, or None when the
+    heartbeat cannot vouch at all: no document, no such stream, a stream that is
+    not ``up`` (the recorder's own ``connected and not halted``), or a missing
+    stamp. The min is what keeps the two facts from masking each other: a
+    process still beating cannot make a dead stream fresh, and a stream's last
+    event cannot make a heartbeat file that stopped being rewritten fresh.
+
+    A kline's ``last_event_ns`` is its minute's OPEN (the recorder stamps a
+    candle by its open, partial frames included), used as-is: a lower bound on
+    when the exchange last spoke. Its close would lie ahead of a forming candle.
+
+    Pure: the caller subtracts this from its own operational clock, so an age
+    keeps growing after the heartbeat stops rather than freezing at the age the
+    last heartbeat reported.
+    """
+    if heartbeat is None:
+        return None
+    beat = heartbeat.get("heartbeat_ns")
+    entry = next(
+        (
+            s
+            for s in heartbeat.get("streams") or ()
+            if isinstance(s, Mapping) and s.get("stream") == REQUIRED_STREAM
+        ),
+        None,
+    )
+    if type(beat) is not int or entry is None or entry.get("up") is not True:
+        return None
+    last = entry.get("last_event_ns")
+    if type(last) is not int:
+        return None
+    return min(beat, last)
 
 
 def _decimal(value: Any) -> Decimal | None:

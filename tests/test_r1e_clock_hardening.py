@@ -12,8 +12,19 @@ The two clocks:
   Aegis and both executors are built with; it may decide things.
 * OPERATIONAL -- host wall time, composed once in `tools/demo_run.main` and handed
   to the service loop and the telemetry. It schedules and it reports ages and
-  heartbeats; it may not decide anything. (R1-f's staleness check and stall tick
-  will read it too; neither exists yet and nothing here builds them.)
+  heartbeats; it may not decide anything a record says. Since R1-f it also
+  decides WHETHER the feed is stale -- the READY gate compares it with the
+  instant the recorder's heartbeat vouches for -- and that is the one thing it
+  may decide.
+
+Every runner here holds R1-f's `max_data_delay_s` out of reach
+(`STALENESS_OUT_OF_REACH`). The operational clocks below sit years from the
+recorded day on purpose, and with the committed limit the gate would -- rightly
+-- call that feed stale and decide nothing, which would make "identical
+evidence" true for the trivial reason that nothing was decided. What this module
+proves is that the operational clock never moves WHAT is decided. That it
+decides only WHETHER, and writes no value of its own into the stall records
+either, is `tests/test_r1f_real_staleness.py`'s, under the same hostile hosts.
 
 Engineering evidence only: every minute is synthetic (`chimera.demo.fixtures`),
 the venue is a dry-run one, and nothing here reads a research artifact.
@@ -66,6 +77,8 @@ WALL_A = 1_790_000_017.25
 WALL_B = WALL_A + 300_000_000.0
 #: More passes than either service test drives; reaching it means a busy loop.
 MAX_PASSES = 20
+#: See the module docstring: about 31.7 years, past every clock distance here.
+STALENESS_OUT_OF_REACH = {"max_data_delay_s": 1e9}
 DEMO_PACKAGES = (REPO / "chimera" / "demo", REPO / "chimera" / "carry")
 DEMO_CLI = REPO / "tools" / "demo_run.py"
 
@@ -122,7 +135,9 @@ def runner_on(tmp_path: Path, profile: str, **kwargs: Any):
     `start()`, so the factories are handed a CAMPAIGN configuration.
     """
     config = campaign_config(
-        tmp_path / "state", profile="TEST" if profile == "CAMPAIGN" else profile
+        tmp_path / "state",
+        profile="TEST" if profile == "CAMPAIGN" else profile,
+        limits=STALENESS_OUT_OF_REACH,
     )
     harness = build(tmp_path, config=config, start=False, **kwargs)
     if profile == "CAMPAIGN":
