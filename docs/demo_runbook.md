@@ -304,11 +304,16 @@ nothing in this build does that for you.
   appears. A minute is settled once every stream folded into its row -- both
   klines, the perpetual's mark and both books -- has delivered an event at or
   after its close, or once the recorder's clock is 10 s past it
-  (`PUBLISH_SETTLE_CAP_S`), so a closed candle is never published beside a mark
-  or book aggregate that is still filling. A quiet stream therefore delays
-  minutes by at most 10 s and then they appear with that stream's columns
-  empty, as before. Every render and every freeze holds one lock, one pass uses
-  one horizon for both markets, and the perpetual is written last.
+  (`PUBLISH_SETTLE_CAP_S`). A minute its streams settled is final. A quiet
+  stream delays minutes by at most 10 s, and then they appear with that
+  stream's columns empty, as before, **but a row the cap published is not
+  final**. If the quiet stream later delivers an event stamped inside the
+  minute (a late candle, a late mark), the row changes, and it is re-rendered
+  at the publisher's next one-second check. A runner that had already decided
+  the earlier row then disagrees with a replay of the finished file.
+  Reconciling such a day is R1-h's, not R1-g's (independent review of PR #108,
+  finding F3). Every render and every freeze holds one lock, one pass uses one
+  horizon for both markets, and the perpetual is written last.
 * **The runner decides every pending minute, in order.** No cap and no
   `SKIPPED_STALE`: `max_catchup_minutes` is retired, and a configuration that
   still carries it is refused by name (remove the key). Old logs holding

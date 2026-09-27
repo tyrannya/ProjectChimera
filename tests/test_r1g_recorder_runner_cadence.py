@@ -224,6 +224,80 @@ def test_a_quiet_stream_holds_a_minute_back_only_until_the_cap(tmp_path):
     assert not bool(rows(service, "spot")["book_present"].iloc[0])
 
 
+def capped(tmp_path: Path) -> tuple[RecorderService, Wall]:
+    """Minute 0 published by the cap, with spot's book silent through it."""
+    wall = Wall(minute_ms(1) + 2_000)
+    service = recorder(tmp_path, wall)
+    minute_zero(service, spot_book=False)
+    past_the_close(service, spot_book=False)
+    wall.at(minute_ms(1) + int(PUBLISH_SETTLE_CAP_S * 1000))
+    asyncio.run(service._publish())
+    assert published(service, "spot") == [minute_ms(0)]
+    assert not bool(rows(service, "spot")["book_present"].iloc[0])
+    return service, wall
+
+
+def test_a_row_published_by_the_cap_is_not_final(tmp_path):
+    """F3, and the limit it states. The cap publishes a minute some stream has
+    not passed, so an event stamped inside it can still arrive, and the next
+    render changes the row -- the reviewer's case: a mark stamped 58 s into the
+    minute, delivered after the cap published it. A runner that decided the
+    first row disagrees with a replay of the finished file; nothing in R1-g
+    makes a capped row final (reconciling a day that changed is R1-h's)."""
+    service, _ = capped(tmp_path)
+    assert float(rows(service, "um")["mark_close"].iloc[0]) == 60060.0
+    service._record(mark_event(minute_ms(0) + 58_000, mark="61234.00"))
+    service._render([RDAY])
+    assert published(service, "um") == [minute_ms(0)]
+    assert float(rows(service, "um")["mark_close"].iloc[0]) == 61234.0
+
+
+def test_a_late_event_inside_a_published_minute_republishes_at_the_next_check(tmp_path):
+    """F4. A closed candle that arrives after the cap published its minute
+    without it is rendered at the publisher's next check -- a second later --
+    not when the horizon next crosses a close, up to a minute later. The
+    control: an event for the minute still forming renders nothing."""
+    wall = Wall(minute_ms(1) + 2_000)
+    service = recorder(tmp_path, wall)
+    opened = minute_ms(0)
+    for event in (
+        mark_event(opened + 5_000),
+        book_event(1, event_ms=opened + 50_000),
+        kline_event(opened, stream=SPOT_KLINE_1M),
+        book_event(
+            2,
+            stream=SPOT_BOOK_TICKER,
+            event_ms=None,
+            receipt_wall_ns=(opened + 40_000) * 1_000_000,
+        ),
+    ):
+        service._record(event)
+    past_the_close(service)
+    wall.at(minute_ms(1) + int(PUBLISH_SETTLE_CAP_S * 1000))
+    asyncio.run(service._publish())
+    assert published(service, "um") == [] and published(service, "spot") == [minute_ms(0)]
+
+    renders: list[list[str]] = []
+    render = service._render
+
+    def spy(days):
+        renders.append(list(days))
+        return render(days)
+
+    service._render = spy
+    wall.at(minute_ms(1) + 12_000)  # the horizon floor is still minute 1's open
+    service._record(kline_event(minute_ms(1), closed=False))
+    asyncio.run(service._publish())
+    assert renders == [], "an event for the forming minute rendered"
+
+    service._record(kline_event(opened))  # minute 0's closed candle, 12 s late
+    asyncio.run(service._publish())
+    assert len(renders) == 1
+    assert published(service, "um") == [minute_ms(0)]
+    asyncio.run(service._publish())
+    assert len(renders) == 1, "rendered again with nothing new"
+
+
 def test_the_running_service_publishes_without_waiting_for_maintenance(tmp_path):
     """End to end: with maintenance five minutes away, the publisher alone makes
     the delivered minutes visible while the service is still running.

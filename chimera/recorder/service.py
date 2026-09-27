@@ -38,11 +38,17 @@ boundary rather than an omission.
 **A minute is published within seconds of settling (R1-g).** The maintenance
 pass keeps its duty-cycled cadence for rotation, freezing and gap-fill; a
 separate publisher renders the open day as soon as a minute has settled -- every
-stream folded into its row has passed its close, or `PUBLISH_SETTLE_CAP_S` has --
-so no reader is shown a row that the next render would change. Every render and
-freeze is serialised by one lock; see `RecorderService._render`. The parquet is
-still rewritten in place (atomic replacement is R1-h's), and the runner treats a
-day it catches mid-rewrite as not ready yet.
+stream folded into its row has passed its close, or `PUBLISH_SETTLE_CAP_S` has.
+A minute settled by its streams is final: nothing stamped inside it can still
+be on the way. A minute published by the cap is NOT final: a stream that had
+gone quiet can still deliver an event stamped inside it, and the next render
+changes the row (independent review of PR #108, finding F3). Such an event is
+republished at the publisher's next check. A runner that decided the earlier
+row then disagrees with a replay of the finished file; reconciling a day that
+changed is R1-h's, not this module's. Every render and freeze is serialised by
+one lock; see `RecorderService._render`. The parquet is still rewritten in place
+(atomic replacement is R1-h's), and the runner treats a day it catches
+mid-rewrite as not ready yet.
 
 **Shutdown is complete or it is a bug.** Every task this service creates is
 owned by it, cancelled by it and awaited by it. A task that fails does not leave
@@ -138,7 +144,8 @@ PUBLISH_INTERVAL_S = 1.0
 #: way), or once the recorder's wall clock is this far past the close, whichever
 #: is first. Without the cap one dead book stream would hold every later minute
 #: back for ever; with it, such a minute is published with the stream's column
-#: empty, as it always has been, ten seconds late.
+#: empty, as it always has been, ten seconds late. A row published by the cap
+#: is not final: see the module docstring.
 PUBLISH_SETTLE_CAP_S = 10.0
 
 #: The streams a minute's row is folded from, by suffix: exactly the ones
@@ -315,6 +322,9 @@ class RecorderService:
         self._through_ms: int | None = None
         #: The close of the newest minute the publisher has rendered. Epoch ms.
         self._published_through_ms: int | None = None
+        #: Set when a folded stream records an event inside a minute already
+        #: published: the publisher renders at its next check. See `_record`.
+        self._republish = False
 
     # --- writing ----------------------------------------------------------
     def _record(self, event: RawEvent) -> None:
@@ -365,6 +375,17 @@ class RecorderService:
             last = stream.last_event_ns
             if last is None or event.canonical_ns > last:
                 stream.last_event_ns = event.canonical_ns
+        published = self._published_through_ms
+        if (
+            result.accepted
+            and published is not None
+            and event.stream.endswith(_FOLDED_SUFFIXES)
+            and event.canonical_ns < published * NS_PER_MILLISECOND
+        ):
+            # R1-g, F4: a closed candle after the cap published its minute
+            # without it, or a late mark. Without this the row waited for the
+            # horizon to cross another close -- up to a minute more.
+            self._republish = True
         if event.source is EventSource.REST_GAPFILL and result.accepted:
             stream.gapfill_rows += 1
 
@@ -902,11 +923,17 @@ class RecorderService:
         settle horizon crosses a minute close, and then one incremental render
         of the day or days that minute is in -- the one before a midnight
         included, which is where the 23:59 minute lives when it closes.
+
+        Also when a folded event has landed inside a minute already published
+        (`_record` sets the flag): the minute is re-rendered at this check, not
+        when the horizon next crosses a close. The flag is cleared before the
+        render, so an event that lands during it is caught by the next check.
         """
         newest = self._publication_horizon_ms() // MS_PER_MINUTE * MS_PER_MINUTE
         published = self._published_through_ms
-        if published is not None and newest <= published:
+        if published is not None and newest <= published and not self._republish:
             return
+        self._republish = False
         days = {utc_day((newest - MS_PER_MINUTE) * NS_PER_MILLISECOND)}
         if published is not None:
             days.add(utc_day(published * NS_PER_MILLISECOND))
