@@ -1691,7 +1691,9 @@ def test_a_kill_switch_on_the_pass_that_opens_the_gate_leaves_the_settlement_owe
     [(OFF_SCHEDULE_MS, []), (0, [(iso(DUE), INSTANT)])],
     ids=["off-schedule-row", "exact-row"],
 )
-def test_the_touch_bound_is_on_disk_before_the_flatten(tmp_path, monkeypatch, offset_ms, booked):
+def test_the_touch_bound_is_on_disk_before_the_flatten(
+    tmp_path, monkeypatch, offset_ms, booked
+):
     """RR-1, crash window B. The process dies after the touch in the due minute
     and before the flatten: the stores still hold the position. The bound was
     saved with the touch, so the start that finds the row books exactly what the
@@ -1888,6 +1890,60 @@ def test_an_entry_whose_perpetual_leg_alone_was_flattened_is_not_handed_over(tmp
     assert [o.kind.value for o in runner.catch_up()] == ["HALT"]
     assert runner.halt_reason.startswith("identity_violation")
     assert owed_on_disk(harness) == owed and fundings(harness) == []
+
+
+def rule_raises_from(harness, index: int) -> None:
+    """The carry rule raises on minute ``index`` and after, in whatever process
+    evaluates it: a defect the replay of the same files meets too."""
+    carry = next(rule for rule in harness.runner.rules if rule.rule_id == "R1_carry")
+    evaluate = carry.evaluate
+
+    def raises(state, portfolio):
+        if state.minute_ns >= m(index) * 1_000_000:
+            raise RuntimeError("drill: the rule fails")
+        return evaluate(state, portfolio)
+
+    carry.evaluate = raises
+
+
+def test_a_halt_after_the_hand_over_leaves_nothing_owed_on_disk(tmp_path):
+    """RR-2, the hand-over's persistence. The row lands 3 ms late, the due
+    minute's pass hands the entry over, and the rule then fails: a halt the
+    replay meets in the same minute, so the replay never reaches 08:00 and books
+    nothing. The process dies without a shutdown. The hand-over is already on
+    disk, so the operator's flatten and the next start book nothing either --
+    an entry left behind would book the late row on the recorded leg."""
+    live = funding_world(tmp_path / "live", hours=(0, 16), through=DUE)
+    assert live.runner.catch_up()[-1].kind is None and len(owed_on_disk(live)) == 1
+    settle_off_schedule(live, PAY, OFF_SCHEDULE_MS)
+    publish_through(live, LAST)
+    rule_raises_from(live, DUE)
+    assert live.runner.catch_up()[-1].kind.value == "HALT"
+    assert live.runner.halt_reason.startswith("rule_exception")
+    assert owed_on_disk(live) == []
+    config = live.runner.config  # and the process dies: no shutdown
+
+    def started():
+        again = funding_world(
+            tmp_path / "live", hours=(0, 16), through=LAST, config=config, start=False
+        )
+        settle_off_schedule(again, PAY, OFF_SCHEDULE_MS)
+        assert again.runner.start() is RunnerState.HALT
+        return again
+
+    held = started()
+    held.runner.flatten("drill: close the carry after the rule failed")
+    held.runner.shutdown("flattened")
+    again = started()
+    assert fundings(again) == [] and owed_on_disk(again) == []
+
+    replay = funding_world(tmp_path / "replay", hours=(0, 16), start=False)
+    settle_off_schedule(replay, PAY, OFF_SCHEDULE_MS)
+    rule_raises_from(replay, DUE)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(LAST))
+    assert replay.runner.halt_reason.startswith("rule_exception")
+    assert fundings(replay) == []
 
 
 # =========================================================================== #
