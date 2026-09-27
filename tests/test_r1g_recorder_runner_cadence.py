@@ -1545,6 +1545,148 @@ def test_a_kill_switch_on_the_first_pass_over_the_due_minute_still_owes_the_sett
 
 
 # =========================================================================== #
+# the runner: an owed entry answers only the exposure it held (RR-1, RR-2)
+# =========================================================================== #
+def touched_while_deferred(where: Path, touch: int):
+    """The carry is held into 08:00, the due minute waits for its row, and the
+    recorded mark of minute ``touch`` touches: the safety pass flattens and halts.
+    Returns the config the restarts need."""
+    harness = held_over_the_instant(where, through=touch)
+    spike_mark(harness, touch)
+    assert [o.kind.value for o in harness.runner.catch_up()] == ["LIQUIDATION_TOUCH"]
+    assert legs(harness.runner) == (0, 0) and fundings(harness) == []
+    assert len(owed_on_disk(harness)) == 1
+    harness.runner.shutdown("halted by the touch")
+    return harness.runner.config
+
+
+def restarted_touched(where: Path, config, touch: int, rate: str, offset_ms: int):
+    """A new process over the live files, the 08:00 row landed ``offset_ms`` after
+    the instant and the recorder two minutes further on."""
+    again = held_over_the_instant(where, through=DUE + 2, config=config, start=False)
+    spike_mark(again, touch)
+    settle_off_schedule(again, rate, offset_ms)
+    assert again.runner.start() is RunnerState.HALT
+    return again
+
+
+def replayed_touched(where: Path, touch: int, rate: str, offset_ms: int):
+    """The finished files: the row is there from the start, and minute ``touch``'s
+    own tick liquidates, after booking what its window holds."""
+    replay = funding_world(where, through=DUE + 2, start=False)
+    settle_off_schedule(replay, rate, offset_ms)
+    spike_mark(replay, touch)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(DUE + 2))
+    assert replay.runner.halt_reason.startswith("liquidation_touch")
+    assert legs(replay.runner) == (0, 0)
+    return replay
+
+
+@pytest.mark.parametrize("rate", [RECEIVE, PAY])
+@pytest.mark.parametrize(
+    ("touch", "offset_ms", "booked"),
+    [
+        (DUE, OFF_SCHEDULE_MS, []),
+        (DUE, 0, [(iso(DUE), INSTANT)]),
+        (DUE + 1, OFF_SCHEDULE_MS, [(iso(DUE + 1), INSTANT + OFF_SCHEDULE_MS)]),
+        (DUE + 2, OFF_SCHEDULE_MS, [(iso(DUE + 1), INSTANT + OFF_SCHEDULE_MS)]),
+    ],
+    ids=[
+        "off-schedule-row-touch-in-due-minute",
+        "exact-row-touch-in-due-minute",
+        "off-schedule-row-touch-at-0800",
+        "off-schedule-row-touch-at-0801",
+    ],
+)
+def test_a_touch_ends_the_exposure_an_owed_entry_may_answer(
+    tmp_path, rate, touch, offset_ms, booked
+):
+    """RR-1. A touch flattens at the close of the minute that touched -- in live,
+    where the safety pass meets it while the due minute waits, as in the replay,
+    whose own tick meets it. The row/window contract charges a settlement on the
+    exposure held at the row's own stamp, so the entry answers only a row stamped
+    at or before that close. A row 3 ms after the instant, with the touch in the
+    due minute itself (07:59, closing at the instant), falls after the flatten:
+    nothing is booked, live as in the replay, and the entry is resolved rather
+    than left behind. Controls: the row at the instant with the same touch (07:59
+    books it before the flatten), and the same late row with the touch at 08:00
+    or 08:01 (08:00 books it, on the leg still held)."""
+    config = touched_while_deferred(tmp_path / "live", touch)
+    again = restarted_touched(tmp_path / "live", config, touch, rate, offset_ms)
+    replay = replayed_touched(tmp_path / "replay", touch, rate, offset_ms)
+
+    assert fundings(again) == fundings(replay) == booked
+    assert funding_cash_flows(again) == funding_cash_flows(replay)
+    assert economics(again.runner) == economics(replay.runner)
+    assert owed_on_disk(again) == [] and legs(again.runner) == (0, 0)
+    assert again.runner.state is RunnerState.HALT
+    after = economics(again.runner)
+    again.runner.shutdown("still halted")
+
+    later = restarted_touched(tmp_path / "live", config, touch, rate, offset_ms)
+    assert fundings(later) == booked and economics(later.runner) == after
+
+
+@pytest.mark.parametrize("rate", [RECEIVE, PAY])
+@pytest.mark.parametrize(
+    ("offset_ms", "booked"),
+    [
+        (0, [(iso(DUE), INSTANT)]),
+        (OFF_SCHEDULE_MS, [(iso(DUE + 1), INSTANT + OFF_SCHEDULE_MS)]),
+    ],
+    ids=["exact-row", "off-schedule-row"],
+)
+def test_a_kill_switch_on_the_pass_that_opens_the_gate_leaves_the_settlement_owed(
+    tmp_path, rate, offset_ms, booked
+):
+    """RR-2. The due minute waits with the carry held; the row lands; the switch
+    is engaged before the next pass. That pass opens the funding gate and halts
+    on the switch before anything is booked. The ordinary path never got the
+    row, so the entry must still be on disk: a start while the leg is still held
+    books nothing and keeps it, an operator flatten follows, and the next start
+    books the settlement once, on the leg held across the instant, at the
+    replay's flow. No later start books it again."""
+    harness = held_over_the_instant(tmp_path / "live")
+    runner = harness.runner
+    settle_off_schedule(harness, rate, offset_ms)
+    publish_through(harness, DUE + 1)
+    engage_kill_switch(runner)
+    assert runner.catch_up()[-1].kind.value == "HALT" and runner.halt_reason == "kill_switch"
+    assert fundings(harness) == [] and len(owed_on_disk(harness)) == 1
+    config = runner.config
+    runner.shutdown("halted by the switch")
+
+    def started():
+        again = held_over_the_instant(
+            tmp_path / "live", through=DUE + 1, config=config, start=False
+        )
+        settle_off_schedule(again, rate, offset_ms)
+        assert again.runner.start() is RunnerState.HALT
+        return again
+
+    held = started()
+    assert fundings(held) == [] and legs(held.runner) != (0, 0)
+    assert len(owed_on_disk(held)) == 1
+    held.runner.flatten("drill: close the held carry")
+    held.runner.shutdown("flattened")
+
+    for _ in range(2):
+        again = started()
+        assert fundings(again) == booked and owed_on_disk(again) == []
+        assert legs(again.runner) == (0, 0)
+        again.runner.shutdown("still halted")
+
+    replay = funding_world(tmp_path / "replay", start=False)
+    settle_off_schedule(replay, rate, offset_ms)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(DUE + 1))
+    assert fundings(replay) == booked
+    assert funding_cash_flows(again) == funding_cash_flows(replay)
+    assert (again.runner.position.ledger.state.funding_paid > 0) is (rate == PAY)
+
+
+# =========================================================================== #
 # the runner: a day caught mid-rewrite
 # =========================================================================== #
 def torn(path: Path) -> bytes:
