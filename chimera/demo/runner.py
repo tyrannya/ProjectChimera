@@ -731,6 +731,13 @@ class DemoRunner:
         except Exception as exc:
             return f"funding_source_unreadable: {exc}"
         for stamp in stamps:
+            # A row stamped after a touch ended the recorded leg resolves the
+            # entry here, unbooked, and is not handed to `_settle_funding`: the
+            # stores may still hold that leg (a crash before the flatten), and
+            # the tick's own booking would charge it as the ordinary exposure.
+            if self.position.drop_funding_owed_after_exposure(stamp * _MS_TO_NS):
+                self._save_ledger()
+                continue
             if newest is None or self.position.owed_to_fallback(stamp * _MS_TO_NS) is None:
                 continue
             for minute in range((stamp - 1) // 60_000 * 60_000, newest + 60_000, 60_000):
@@ -1522,17 +1529,6 @@ class DemoRunner:
         stopped = self._safety_checks(minute_ms, state)
         if stopped is not None:
             return stopped
-        # The hand-over. What was owed while the minute waited stays only if a
-        # flatten since took that exposure away; on the leg still held, the
-        # ordinary path books the row in its own window, as it did before
-        # anything was owed (PR #108, N2R-1). Not before the safety pass: a halt
-        # there -- the switch, a touch, a booking refused -- leaves no ordinary
-        # path to answer the row, and the entry is then the only record of it
-        # (RR-2). From here on the tick is the one a replay of the same files
-        # runs, so a halt below is one the replay meets too. Persisted at once:
-        # a crash before the decision re-ticks this minute and hands over again.
-        if self.position.release_funding_owed():
-            self._save_ledger()
 
         self._enter(RunnerState.RULE_EVALUATION)
         portfolio = self._portfolio(state)
@@ -1590,6 +1586,21 @@ class DemoRunner:
         if problem is not None:
             self._halt(problem)
             return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=problem)
+
+        # The hand-over, on a tick (a stall tick decides nothing, so it hands
+        # nothing over). What was owed while the minute waited stays only if a
+        # flatten since took that exposure away; on the leg still held, the
+        # ordinary path books the row in its own window, as it did before
+        # anything was owed (PR #108, N2R-1). Not before the switch and this
+        # minute's booking: a halt there leaves no ordinary path to answer the
+        # row, and the entry is then the only record of it (RR-2). From here on
+        # every halt is one a replay of the same files meets in the same minute
+        # -- a touch below included, and a touch here ends the exposure at this
+        # minute's close, before any later row. Before the touch's mark, so the
+        # save persists no equity Aegis has not been told (R1-b); a crash before
+        # the decision re-ticks this minute, and nothing is owed any more.
+        if not stalled and self.position.release_funding_owed():
+            self._save_ledger()
 
         # Section 6.7, per minute while HEDGED or PARTIAL, and before the rule
         # for the same reason: a touched position is flattened and halted, and a
