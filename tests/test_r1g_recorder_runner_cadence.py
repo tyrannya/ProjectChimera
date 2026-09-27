@@ -1480,19 +1480,19 @@ def engage_kill_switch(runner) -> None:
     switch.write_text("drill", encoding="utf-8")
 
 
-def test_a_release_at_the_open_gate_is_on_disk_before_the_minute_can_halt(tmp_path):
-    """The release is the ordinary path taking the row back, so it is saved at
-    once. The row lands, then the switch is engaged: the due minute's gate
-    opens, the entry is released, and the tick halts on the switch before
-    booking -- as a minute that never waited would. A halted start then books
-    nothing from a stale entry; the resumed minute books it, the ordinary way,
-    at the replay's flow."""
+def test_a_halt_before_the_hand_over_keeps_the_entry_for_a_resumed_minute(tmp_path):
+    """RR-2's resume side. The row lands, then the switch is engaged: the due
+    minute's gate opens and the tick halts on the switch before its safety pass
+    is through, so nothing is handed over and the entry stays on disk. A halted
+    start with the leg still held books nothing from it; the resumed minute
+    books the row once, the ordinary way, and resolves the entry, at the
+    replay's flow."""
     harness = held_over_the_instant(tmp_path / "live")
     runner = harness.runner
     settle_at(harness, RECEIVE)
     engage_kill_switch(runner)
     assert runner.catch_up()[-1].kind.value == "HALT" and runner.halt_reason == "kill_switch"
-    assert owed_on_disk(harness) == [] and fundings(harness) == []
+    assert len(owed_on_disk(harness)) == 1 and fundings(harness) == []
     config = runner.config
     runner.shutdown("halted by the switch")
 
@@ -1503,7 +1503,7 @@ def test_a_release_at_the_open_gate_is_on_disk_before_the_minute_can_halt(tmp_pa
     Path(again.runner.risk._kill_switch_path).unlink()
     again.runner.resume("drill over: the switch is off")
     again.runner.catch_up()
-    assert fundings(again) == [(iso(DUE), INSTANT)]
+    assert fundings(again) == [(iso(DUE), INSTANT)] and owed_on_disk(again) == []
 
     replay = funding_world(tmp_path / "replay", hours=(0, 16), start=False)
     settle_at(replay, RECEIVE)

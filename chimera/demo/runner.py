@@ -699,7 +699,13 @@ class DemoRunner:
         (`HedgedPosition.note_funding_owed`), so this books it once the row
         exists: `_settle_funding`, the tick's own, on the minute a tick would
         have booked it in -- the row's window, or the first complete minute
-        after it -- on the recorded leg and in its recorded window. Nothing is
+        after it -- on the recorded leg and in its recorded window. Only once
+        that exposure is over (`HedgedPosition.owed_to_fallback`): a flatten
+        took the leg, or a touch ended it, and then only a row stamped before
+        the touch's close is booked (RR-1). An entry whose leg and window are
+        still held is left alone -- a resumed tick answers its row the ordinary
+        way, and an operator flatten makes the next start book it (RR-2,
+        RR-3). Nothing is
         decided, no rule runs, nothing is ordered, the position is not touched
         and the runner stays halted. Aegis is told the equity the booking moved,
         as a stall tick's booking does, since no PERSISTENCE follows here either.
@@ -725,7 +731,7 @@ class DemoRunner:
         except Exception as exc:
             return f"funding_source_unreadable: {exc}"
         for stamp in stamps:
-            if newest is None or ledger.owed_for(stamp * _MS_TO_NS) is None:
+            if newest is None or self.position.owed_to_fallback(stamp * _MS_TO_NS) is None:
                 continue
             for minute in range((stamp - 1) // 60_000 * 60_000, newest + 60_000, 60_000):
                 try:
@@ -1468,15 +1474,6 @@ class DemoRunner:
                 "this minute's close and the recorder has not recorded its settlement "
                 "row yet",
             )
-        # The gate is open, so this minute is decided the ordinary way. What was
-        # owed while it waited stays only if a flatten since took that exposure
-        # away; on the leg still held, the ordinary path books the row in its own
-        # window, as it did before anything was owed (PR #108, N2R-1). Persisted
-        # at once, like the entry: a crash before the decision re-ticks this
-        # minute from the same files and releases it again.
-        if self.position.release_funding_owed():
-            self._save_ledger()
-
         minute_ns = int(minute_ms) * _MS_TO_NS
         self.clock.observe(minute_ns + MINUTE_NS)
 
@@ -1525,6 +1522,17 @@ class DemoRunner:
         stopped = self._safety_checks(minute_ms, state)
         if stopped is not None:
             return stopped
+        # The hand-over. What was owed while the minute waited stays only if a
+        # flatten since took that exposure away; on the leg still held, the
+        # ordinary path books the row in its own window, as it did before
+        # anything was owed (PR #108, N2R-1). Not before the safety pass: a halt
+        # there -- the switch, a touch, a booking refused -- leaves no ordinary
+        # path to answer the row, and the entry is then the only record of it
+        # (RR-2). From here on the tick is the one a replay of the same files
+        # runs, so a halt below is one the replay meets too. Persisted at once:
+        # a crash before the decision re-ticks this minute and hands over again.
+        if self.position.release_funding_owed():
+            self._save_ledger()
 
         self._enter(RunnerState.RULE_EVALUATION)
         portfolio = self._portfolio(state)
@@ -1961,6 +1969,10 @@ class DemoRunner:
                 instant_ns = int(row[_SETTLEMENT_FIELD]) * _MS_TO_NS
             except (KeyError, TypeError, ValueError) as exc:
                 return f"funding_source_unreadable: {exc}"
+            # An owed leg a touch took before this row's stamp answers nothing:
+            # the entry is resolved here, unbooked (RR-1).
+            if self.position.drop_funding_owed_after_exposure(instant_ns):
+                self._save_ledger()
             # The leg held now, or -- for an instant recorded as owed while its
             # row was late -- the leg held across it, which a safety flatten
             # since may have zeroed (PR #108, N2).
@@ -2154,6 +2166,12 @@ class DemoRunner:
         # be planned even if this process dies before the flatten, because the
         # halt is persisted by `RiskEngine.halt` itself.
         self.risk.halt("liquidation_touch")
+        # The flatten below takes the leg at the close of the minute that
+        # touched -- where a replay's own tick takes it -- so an owed entry
+        # answers no row stamped later (RR-1). Saved before the record, so a
+        # crash before the flatten leaves the bound on disk with the touch.
+        if self.position.ledger.end_owed(state.minute_ns + MINUTE_NS):
+            self._save_ledger()
         before = self._position_block()
         self._append(
             RecordKind.LIQUIDATION_TOUCH,

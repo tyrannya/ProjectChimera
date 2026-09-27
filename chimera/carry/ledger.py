@@ -220,7 +220,10 @@ class CarryLedgerState:
     #: :meth:`book_funding` drops the entry in the same save that books its
     #: settlement; an ordinary tick drops it unbooked (:meth:`release_owed`) when
     #: its leg is still held and the ordinary path can answer the row (N2R-1).
-    #: Additive, like ``open_instant_ns``: absent reads as none.
+    #: A liquidation touch adds ``held_until_ns`` (:meth:`end_owed`): the close of
+    #: the minute that touched, after which the recorded leg was not held, so the
+    #: entry answers no row stamped later (RR-1). Additive, like
+    #: ``open_instant_ns``: absent reads as none.
     funding_owed: list[dict[str, Any]] = field(default_factory=list)
     #: The most recent identity residual, kept so a report can show how close the
     #: position runs to its tolerance rather than only whether it broke it.
@@ -322,6 +325,11 @@ class CarryLedgerState:
                     "instant_ns": int(entry["instant_ns"]),
                     "open_instant_ns": int(entry["open_instant_ns"]),
                     "perp": {str(k): str(v) for k, v in dict(entry["perp"]).items()},
+                    **(
+                        {"held_until_ns": int(entry["held_until_ns"])}
+                        if "held_until_ns" in entry
+                        else {}
+                    ),
                 }
                 for entry in owed_raw
             ]
@@ -690,6 +698,16 @@ class CarryLedger:
                 self.state.funding_owed.remove(owed)
                 return True
         return False
+
+    def end_owed(self, until_ns: int) -> bool:
+        """Record that every owed leg stopped being held at ``until_ns``. False if
+        none was owed. An entry already ended keeps the earlier bound."""
+        ended = False
+        for owed in self.state.funding_owed:
+            if "held_until_ns" not in owed:
+                owed["held_until_ns"] = int(until_ns)
+                ended = True
+        return ended
 
     def owed_for(self, settlement_ns: int) -> dict[str, Any] | None:
         """The owed instant a settlement stamped ``settlement_ns`` answers, if any.
