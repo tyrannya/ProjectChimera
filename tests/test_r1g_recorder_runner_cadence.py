@@ -904,6 +904,30 @@ def test_a_touch_on_a_newer_recorded_mark_is_acted_on_while_deferred(tmp_path, m
     assert kinds_of(again).count("LIQUIDATION_TOUCH") == 1
 
 
+def test_a_row_that_lands_during_the_safety_pass_is_booked_by_its_own_minute(
+    tmp_path, monkeypatch
+):
+    """F2: the safety pass books nothing. The recorder writes whenever it likes,
+    so the row can land after the gate looked and while the pass runs; it is
+    then booked by the due minute on the next pass -- never by the safety pass,
+    whose window would reach it from the position's open instant and stamp it on
+    whatever minute the pass was looking at."""
+    harness = held_over_the_instant(tmp_path, through=DUE + 2)
+    runner = harness.runner
+    scan = runner._touch_while_deferred
+
+    def and_the_row_lands(*args, **kwargs):
+        harness.feed.write_settlements([DAY], hours=(0, 8, 16))
+        return scan(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_touch_while_deferred", and_the_row_lands)
+    assert [(o.minute_ms, o.kind) for o in runner.catch_up()] == [(m(DUE), None)]
+    assert fundings(harness) == []
+    monkeypatch.setattr(runner, "_touch_while_deferred", scan)
+    runner.catch_up()
+    assert fundings(harness) == [(iso(DUE), INSTANT)]
+
+
 def test_a_deferral_that_outlasts_max_data_delay_s_halts_by_name_with_the_position_held(
     tmp_path, monkeypatch
 ):
