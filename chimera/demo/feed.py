@@ -47,7 +47,6 @@ from chimera.recorder.normalize import (
     MinuteNormalizer,
     columns_for,
     digest,
-    read_funding_observation,
 )
 
 __all__ = [
@@ -63,7 +62,6 @@ __all__ = [
     "PERP_MARKET",
     "REQUIRED_STREAM",
     "SETTLEMENT_INSTANT_FIELD",
-    "SETTLEMENT_QUERY_ALLOWANCE_MS",
     "SPOT_MARKET",
 ]
 
@@ -105,17 +103,6 @@ class FeedNotReady(FeedError):
     this -- it decides nothing from a file it could not read -- and a file that
     fails again unchanged is a :class:`FeedError` and a halt, as it always was.
     """
-
-
-#: R1-g: how long after a scheduled funding instant a funding query must have
-#: been made before its silence may count as "no settlement". The recorder's
-#: own scheduled poll comes `chimera.recorder.rest.FUNDING_POLL_DELAY_S` (60 s)
-#: after each instant, because a settlement's row is not published at the
-#: instant itself; half of that lets the scheduled poll clear it even when its
-#: timer fires a little early, and keeps a query made at the instant -- when the
-#: row cannot exist yet -- from ever counting. A literal rather than an import:
-#: this package imports nothing that can reach a network.
-SETTLEMENT_QUERY_ALLOWANCE_MS = 30_000
 
 
 #: The one recorder stream R1-f's READY gate reads liveness from: the
@@ -615,17 +602,6 @@ class FeedCursor:
                 break
         return seen
 
-    def funding_observation(self) -> tuple[int, int] | None:
-        """The recorder's funding observation ``(from_ms, through_ms)``, or None.
-
-        The query windows the recorder's successful, complete funding polls
-        covered -- what it ASKED, not what happened. See
-        :func:`chimera.recorder.normalize.funding_observation_document`.
-        """
-        return read_funding_observation(
-            self._normalizer.funding_observation_path(PERP_MARKET), PERP_MARKET
-        )
-
     def funding_pending(self, minute_open_ms: int) -> int | None:
         """The funding instant this minute must wait for, or None (R1-g).
 
@@ -642,14 +618,16 @@ class FeedCursor:
         (its mark missing, or the row itself) still sees the instant an earlier
         row announced.
 
-        *Resolved*, by recorder facts only: the instant's own settlement row
-        exists -- stamped within a minute after it, so a venue that stamps its
-        row a few milliseconds off the schedule still answers it, and a LATER
-        settlement never does -- or the recorder's funding observation covers
-        the instant with `SETTLEMENT_QUERY_ALLOWANCE_MS` to spare: it asked late
-        enough that a row would have been there, and none was. An absent,
-        unreadable, too-early or gapped observation resolves nothing: absence of
-        a row is never read as absence of a settlement.
+        *Resolved* only by the instant's own settlement row, stamped within a
+        minute after it -- so a venue that stamps its row a few milliseconds off
+        the schedule still answers it, and a LATER settlement never does.
+        Nothing else resolves it. There is no documented bound on how long after
+        an instant the venue publishes its row, so a funding query that came back
+        empty, however long after the instant it was made, says only that the
+        row was not there YET; absence of a row is never read as absence of a
+        settlement (owner decision after the independent review of PR #108,
+        finding F1). A minute kept waiting is the runner's to bound: see
+        `DemoRunner._deferral_safety`.
         """
         close_ms = int(minute_open_ms) + 60_000
         scheduled = self._scheduled_through(int(minute_open_ms), close_ms)
@@ -657,13 +635,6 @@ class FeedCursor:
             return None
         if any(
             scheduled <= _settlement_ms(row) < scheduled + 60_000 for row in self.settlements()
-        ):
-            return None
-        observed = self.funding_observation()
-        if (
-            observed is not None
-            and observed[0] <= scheduled
-            and scheduled + SETTLEMENT_QUERY_ALLOWANCE_MS <= observed[1]
         ):
             return None
         return scheduled

@@ -317,20 +317,22 @@ nothing in this build does that for you.
   next start resumes at the one after it.
 * **A funding minute waits for its settlement.** A minute whose close is at or
   after the venue's announced `next_funding_time_ms` is decided only once
-  `funding/um/settlements.ndjson` holds that instant's row, or once
-  `funding/um/observed.json` -- the query windows of the recorder's successful,
-  complete funding polls -- covers the instant with 30 s to spare. Until then the
-  minute is **deferred**: nothing is written, the cursor and the clock do not
-  move, and the service tries again at its next wake. The recorder's scheduled
-  poll 60 s after each instant normally clears it within a minute or two.
+  `funding/um/settlements.ndjson` holds that instant's row. Nothing else
+  resolves it: no documented bound says how late the venue may publish a row, so
+  a funding poll that came back empty -- however long after the instant -- is
+  never read as "no settlement" (owner decision on the independent review of
+  PR #108, finding F1; an earlier head of that PR did infer it from a poll 30 s
+  past the instant, and the reviewer showed live and replay then booking the
+  same settlement in different minutes). Until the row lands the minute is
+  **deferred**: nothing is written, the cursor and the clock do not move, and the
+  service tries again at its next wake. The recorder's scheduled poll 60 s after
+  each instant normally clears it within a minute or two.
 
 A deferral writes **no record** (a replay of the finished files never defers,
-so a record would split the two logs); it is visible only as a `minute ...
+so a record would split the two logs); it is visible as a `minute ...
 deferred:` warning in the runner's log, repeated at every wake. A deferral that
-lasts is the recorder failing to ask: `observed.json` stale or missing, funding
-polls failing in the recorder's log. Do not create or edit `observed.json` by
-hand -- it is the recorder's statement of what it asked, and a hand-written one
-turns "the recorder does not know" into "there was no settlement". The runner
+lasts is the recorder failing to obtain the row: funding polls failing, or
+answering without it, in the recorder's log. The runner
 also defers, rather than halts, on a normalized day it catches mid-rewrite (the
 recorder rewrites a day in place until R1-h); the same file failing again
 unchanged still halts `feed_unreadable`.

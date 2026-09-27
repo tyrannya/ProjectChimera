@@ -1390,8 +1390,8 @@ class DemoRunner:
             return self._deferred(
                 minute_ms,
                 f"the funding instant {pending} (epoch ms) is scheduled at or before "
-                "this minute's close and the recorder has neither its settlement "
-                "row nor an observation that covers it",
+                "this minute's close and the recorder has not recorded its settlement "
+                "row yet",
             )
 
         minute_ns = int(minute_ms) * _MS_TO_NS

@@ -11,15 +11,19 @@ than skipping the booking; two-sided test: live and replay book the same
 settlement in the same minute; acceptance: zero SKIPPED_STALE minutes while the
 recorder is healthy."
 
-Three layers, each tested against its own two-sided control:
+Two layers, each tested against its own two-sided control:
 
 * the recorder -- a minute is published once it has SETTLED (every stream folded
   into its row has passed its close, or a cap has), by a publisher that renders
   when a minute settles, serialised with every other render and freeze;
-* the recorder's funding observation -- the windows of successful, complete,
-  fully recorded polls, and nothing else;
-* the runner -- no cap, a funding deferral that leaves nothing behind, and a
-  day caught mid-rewrite treated as "not yet" rather than as a halt.
+* the runner -- no cap, a funding deferral that leaves nothing behind and ends
+  only when the instant's own settlement row exists, and a day caught
+  mid-rewrite treated as "not yet" rather than as a halt.
+
+The roadmap's second arm ("marked as no-settlement") is not implemented: no
+authoritative source bounds how late the venue may publish a row, so nothing the
+recorder can observe proves a settlement did not happen (owner decision after
+the independent review of PR #108, finding F1).
 
 Engineering evidence only: synthetic minutes, a dry-run venue, no research
 artifact read.
@@ -39,7 +43,6 @@ import pandas as pd
 import pytest
 
 from chimera.demo.decision_log import iso_minute
-from chimera.demo.feed import SETTLEMENT_QUERY_ALLOWANCE_MS
 from chimera.demo.fixtures import MinuteShape
 from chimera.demo.runner import RunnerState
 from chimera.recorder.contract import load_recorder_contract
@@ -47,22 +50,16 @@ from chimera.recorder.events import (
     NS_PER_MILLISECOND,
     SPOT_BOOK_TICKER,
     SPOT_KLINE_1M,
-    UM_FUNDING,
     UM_KLINE_1M,
     UM_MARK_PRICE,
 )
-from chimera.recorder.normalize import (
-    FUNDING_OBSERVATION_SCHEMA,
-    read_funding_observation,
-)
-from chimera.recorder.rest import FUNDING_POLL_DELAY_S, MAX_FUNDING_LIMIT, RestPoller
+from chimera.recorder.rest import RestPoller
 from chimera.recorder.service import (
     NORMALIZE_INTERVAL_S,
     PUBLISH_INTERVAL_S,
     PUBLISH_SETTLE_CAP_S,
     RecorderService,
 )
-from chimera.recorder.sink import RecorderSinkError
 from tests.demo_harness import DAY, build
 from tests.recorder_synthetic import DAY as RDAY
 from tests.recorder_synthetic import NEXT_DAY as RNEXT
@@ -371,12 +368,8 @@ def test_the_last_minute_of_a_day_is_published_across_midnight(tmp_path):
 
 
 # =========================================================================== #
-# the recorder: the funding observation
+# the recorder: a funding poll records rows and nothing else
 # =========================================================================== #
-def observed(service: RecorderService) -> tuple[int, int] | None:
-    return read_funding_observation(service.normalizer.funding_observation_path("um"), "um")
-
-
 def settlement_instants(service: RecorderService) -> list[int]:
     path = service.normalizer.settlements_path("um")
     if not path.exists():
@@ -389,94 +382,22 @@ def settlement_instants(service: RecorderService) -> list[int]:
 
 
 NOW = minute_ms(8 * 60 + 10)  # 08:10, ten minutes after the 08:00 settlement
-LOOKBACK_START = NOW - 3 * 24 * 60 * MINUTE
 
 
-def test_a_complete_poll_observes_exactly_its_query_window(tmp_path):
-    """The bound is what was ASKED -- the request's own endTime -- never a row's
-    instant: a settlement instant is what is being asked about, not the moment
-    the recorder knew it. The rows are on disk before the observation says so."""
-    answer = FakeResponse(
-        payload=[funding_rest_row(minute_ms(0)), funding_rest_row(minute_ms(480))]
-    )
-    service = recorder(tmp_path, Wall(NOW), answers=[answer])
-    assert asyncio.run(service.poll_funding()) == 2
-    assert observed(service) == (LOOKBACK_START, NOW)
-    assert settlement_instants(service) == [minute_ms(0), minute_ms(480)]
-    document = json.loads(
-        service.normalizer.funding_observation_path("um").read_text(encoding="utf-8")
-    )
-    assert document["schema"] == FUNDING_OBSERVATION_SCHEMA
-
-
-def test_an_empty_answer_observes_its_window_and_invents_no_settlement(tmp_path):
-    service = recorder(tmp_path, Wall(NOW), answers=[FakeResponse(payload=[])])
-    assert asyncio.run(service.poll_funding()) == 0
-    assert observed(service) == (LOOKBACK_START, NOW)
-    assert settlement_instants(service) == []
-
-
-@pytest.mark.parametrize(
-    "answer",
-    [
-        FakeResponse(status_code=400, payload={"code": -1, "msg": "no"}),
-        FakeResponse(payload=[funding_rest_row(minute_ms(0))] * MAX_FUNDING_LIMIT),
-        FakeResponse(payload=[funding_rest_row(minute_ms(0)), {"symbol": "BTCUSDT"}]),
-    ],
-    ids=["failed", "cut-off-at-the-limit", "a-row-that-is-not-a-settlement"],
-)
-def test_a_poll_that_is_not_complete_observes_nothing(tmp_path, answer):
-    service = recorder(tmp_path, Wall(NOW), answers=[answer])
-    asyncio.run(service.poll_funding())
-    assert observed(service) is None
-
-
-def test_a_halted_funding_stream_observes_nothing(tmp_path):
-    """Rows the recorder refused to store were not recorded, whatever came back."""
-    service = recorder(tmp_path, Wall(NOW), answers=[FakeResponse(payload=[])])
-    service.health.stream(UM_FUNDING).halt("synthetic storage failure", now_ns=NOW * 1_000_000)
-    asyncio.run(service.poll_funding())
-    assert observed(service) is None
-
-
-def test_the_observation_extends_only_across_windows_that_touch(tmp_path):
-    """One interval, never one with a hole in it. A later window that overlaps
-    extends it; one that starts after it ended replaces it, so the instants in
-    between are covered by nothing."""
-    service = recorder(tmp_path, Wall(NOW))
-    service._observe_funding(1_000, 5_000)
-    service._observe_funding(4_000, 9_000)
-    assert observed(service) == (1_000, 9_000)
-    service._observe_funding(9_001, 12_000)
-    assert observed(service) == (1_000, 12_000), "adjacent windows touch"
-    service._observe_funding(20_000, 30_000)
-    assert observed(service) == (20_000, 30_000), "a gap is never bridged"
-    service._observe_funding(1_000, 2_000)
-    assert observed(service) == (20_000, 30_000), "an older window says nothing new"
-
-
-def test_an_observation_that_cannot_be_written_does_not_stop_the_recorder(
-    tmp_path, monkeypatch
-):
-    """The atomic writer raises RecorderSinkError, a RuntimeError, not OSError.
-    Escaping the funding task would take the whole service down over this file."""
-    from chimera.recorder import service as service_module
-
-    service = recorder(
-        tmp_path, Wall(NOW), answers=[FakeResponse(payload=[funding_rest_row(minute_ms(0))])]
-    )
-    written = service_module.write_json_atomic
-
-    def refuse(path, document):
-        if Path(path).name == "observed.json":
-            raise RecorderSinkError("disk full")
-        return written(path, document)
-
-    monkeypatch.setattr(service_module, "write_json_atomic", refuse)
+def test_a_funding_poll_writes_the_rows_it_was_given_and_no_verdict_on_absence(tmp_path):
+    """F1: nothing the recorder writes may stand for "no settlement". A poll
+    records the rows that came back; an empty answer leaves nothing beside the
+    settlements for a runner to read as an absence."""
+    answer = FakeResponse(payload=[funding_rest_row(minute_ms(0))])
+    service = recorder(tmp_path, Wall(NOW), answers=[answer, FakeResponse(payload=[])])
     assert asyncio.run(service.poll_funding()) == 1
-    assert observed(service) is None
+    assert asyncio.run(service.poll_funding()) == 0
     assert settlement_instants(service) == [minute_ms(0)]
-    assert any("funding observation not written" in e for e in service.health.errors)
+    funding_dir = service.normalizer.settlements_path("um").parent
+    assert sorted(p.name for p in funding_dir.iterdir()) == [
+        "settlements.ndjson",
+        "settlements.sha256",
+    ]
 
 
 # =========================================================================== #
@@ -573,14 +494,23 @@ INSTANT = m(480)
 LAST = 489
 
 
-def funding_world(where: Path, *, hours=(0, 8, 16), config=None, start=True):
-    absent = {s: MinuteShape(present=False) for s in range(1440) if s not in WINDOW}
-    harness = build(
-        where,
-        shapes={f"um:{DAY}": absent, f"spot:{DAY}": absent},
-        config=config,
-        start=False,
-    )
+def window_through(last: int) -> dict[str, dict[int, MinuteShape]]:
+    """The window's minutes up to ``last``, as a recorder that has got that far."""
+    absent = {
+        s: MinuteShape(present=False) for s in range(1440) if not WINDOW.start <= s <= last
+    }
+    return {f"um:{DAY}": absent, f"spot:{DAY}": absent}
+
+
+def publish_through(harness, last: int) -> None:
+    """The recorder publishes the window up to minute ``last``."""
+    harness.feed.write_days([DAY], shapes=window_through(last))
+
+
+def funding_world(
+    where: Path, *, hours=(0, 8, 16), config=None, start=True, through=WINDOW.stop - 1
+):
+    harness = build(where, shapes=window_through(through), config=config, start=False)
     harness.feed.write_settlements([DAY], hours=hours)
     if start:
         harness.runner.start()
@@ -710,58 +640,59 @@ def test_live_and_replay_book_the_late_settlement_in_the_same_minute(tmp_path):
     assert not compare_logs(racing.records(), replay.records()).ok
 
 
-def test_an_observed_instant_with_no_row_is_decided_and_books_nothing(tmp_path):
-    """The no-settlement arm: the recorder asked, late enough, and there was no
-    row. The minute is decided; nothing is booked, and nothing is invented."""
-    harness = funding_world(tmp_path, hours=(0, 16))
-    harness.feed.write_funding_observation(
-        INSTANT - 3 * 24 * 60 * MINUTE, INSTANT + SETTLEMENT_QUERY_ALLOWANCE_MS
+def legacy_observation(harness, *, through_ms: int) -> None:
+    """The funding observation this PR's first head wrote and read, covering the
+    instant with far more than its retired 30 s allowance: a successful poll
+    long after the instant that came back without the instant's row."""
+    path = harness.feed.normalizer.settlements_path("um").with_name("observed.json")
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "chimera.recorder-funding-observation/1",
+                "market": "um",
+                "observed_from_ms": INSTANT - 3 * 24 * 60 * MINUTE,
+                "observed_through_ms": through_ms,
+            }
+        ),
+        encoding="utf-8",
     )
-    outcomes = harness.runner.catch_up(now_ms=m(LAST))
-    assert all(o.kind is not None for o in outcomes)
-    assert fundings(harness) == []
-    assert INSTANT * 1_000_000 not in harness.runner.position.ledger.state.settled
-    assert minutes_of(harness, "DECISION") == [iso(i) for i in range(WINDOW.start, LAST + 1)]
 
 
-@pytest.mark.parametrize(
-    "observation",
-    [
-        None,
-        (INSTANT - MINUTE, INSTANT + SETTLEMENT_QUERY_ALLOWANCE_MS - 1),
-        (INSTANT + 1, INSTANT + 10 * MINUTE),
-        "garbage",
-        "another-market",
-    ],
-    ids=[
-        "absent",
-        "asked-too-soon",
-        "window-starts-after-the-instant",
-        "unreadable",
-        "not-um",
-    ],
-)
-def test_no_observation_short_of_covering_the_instant_counts_as_no_settlement(
-    tmp_path, observation
-):
-    """Absence is never read as "none": each of these is a recorder that has not
-    shown it asked late enough, and the minute keeps waiting for its row."""
-    harness = funding_world(tmp_path, hours=(0, 16))
-    path = harness.feed.normalizer.funding_observation_path("um")
-    if isinstance(observation, tuple):
-        harness.feed.write_funding_observation(*observation)
-    elif observation == "garbage":
-        path.write_text("{ not json", encoding="utf-8")
-    elif observation == "another-market":
-        harness.feed.write_funding_observation(INSTANT - MINUTE, INSTANT + 10 * MINUTE)
-        document = json.loads(path.read_text(encoding="utf-8"))
-        path.write_text(json.dumps({**document, "market": "spot"}), encoding="utf-8")
-    outcomes = harness.runner.catch_up(now_ms=m(LAST))
-    assert outcomes[-1].minute_ms == m(DUE) and outcomes[-1].kind is None
+def test_a_row_later_than_any_poll_threshold_defers_and_is_booked_in_its_minute(tmp_path):
+    """F1, the independent reviewer's arm. The due minute appears; a poll made
+    well after the instant came back with no row; the recorder publishes minute
+    after minute past the instant -- past the retired 30 s allowance, past a
+    60 s one, to the edge of the declared bound -- and the minute still waits.
+    The row lands late: the SAME minute is decided and books it, once, and a
+    replay of the finished files books it in that minute too. No threshold on
+    how long ago the recorder asked, or how far it has published, can stand for
+    "no settlement": the only answer to an instant is its row."""
+    harness = funding_world(tmp_path / "live", hours=(0, 16), through=DUE)
+    runner = harness.runner
+    legacy_observation(harness, through_ms=INSTANT + 10 * MINUTE)
+    assert runner.catch_up()[-1].kind is None  # the due minute, as the instant passes
+    for through in (DUE + 1, DUE + 2, DUE + 3):  # the instant +60, +120, +180 s
+        publish_through(harness, through)
+        outcomes = runner.catch_up()
+        assert [(o.minute_ms, o.kind) for o in outcomes] == [(m(DUE), None)], through
+        assert runner.cursor.last_minute_processed == m(DUE - 1)
+        assert fundings(harness) == []
 
+    harness.feed.write_settlements([DAY], hours=(0, 8, 16))
+    runner.catch_up()
+    assert fundings(harness) == [(iso(DUE), INSTANT)]
+    assert minutes_of(harness, "DECISION") == [iso(i) for i in range(WINDOW.start, DUE + 4)]
+    publish_through(harness, LAST)
+    runner.catch_up()
+    runner.shutdown("live")
+    assert fundings(harness) == [(iso(DUE), INSTANT)]
 
-def test_the_query_allowance_is_inside_the_recorders_own_poll_delay():
-    assert 0 < SETTLEMENT_QUERY_ALLOWANCE_MS < FUNDING_POLL_DELAY_S * 1000
+    replay = funding_world(tmp_path / "replay")
+    replay.runner.replay(m(WINDOW.start), m(LAST))
+    replay.runner.shutdown("replay")
+    assert fundings(replay) == fundings(harness)
+    report = compare_logs(harness.records(), replay.records())
+    assert report.ok and report.label == "PARITY", report.to_dict()
 
 
 def test_a_venue_row_stamped_off_the_schedule_still_answers_it(tmp_path):

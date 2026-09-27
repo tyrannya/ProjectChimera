@@ -85,16 +85,10 @@ from chimera.recorder.health import (
     initial_health,
 )
 from chimera.recorder.incremental import IncrementalNormalizer
-from chimera.recorder.normalize import (
-    MinuteNormalizer,
-    RecorderNormalizeError,
-    funding_observation_document,
-    read_funding_observation,
-)
+from chimera.recorder.normalize import MinuteNormalizer, RecorderNormalizeError
 from chimera.recorder.rest import (
     FUNDING_CATCHUP_INTERVAL_S,
     FUNDING_POLL_DELAY_S,
-    MAX_FUNDING_LIMIT,
     RecorderRestError,
     RestPoller,
     expected_funding_instants_ms,
@@ -321,8 +315,6 @@ class RecorderService:
         self._through_ms: int | None = None
         #: The close of the newest minute the publisher has rendered. Epoch ms.
         self._published_through_ms: int | None = None
-        #: Set while the settlements file may lag the raw funding records.
-        self._settlements_stale = False
 
     # --- writing ----------------------------------------------------------
     def _record(self, event: RawEvent) -> None:
@@ -605,29 +597,19 @@ class RecorderService:
         does not ask and does not assume: the rows are recorded exactly as they
         come back, and PR-06's reconciliation establishes the schedule from the
         archive.
-
-        R1-g: a poll that succeeded, came back complete (fewer rows than the
-        limit, so nothing was cut off), and was recorded in full -- every row
-        parsed and appended, the settlements file rebuilt -- extends the
-        recorder's funding observation over its query window,
-        ``[start_ms, now_ms]``. Those are the bounds the recorder ASKED about,
-        read before the request; nothing the venue returned (a row's settlement
-        instant least of all, which is the instant being asked about and not
-        the moment it was known) can move them. See `_observe_funding`.
         """
         if UM_FUNDING not in self.sinks:
             return 0
         now_ms = self._wall_ns() // NS_PER_MILLISECOND
-        start_ms = max(0, now_ms - FUNDING_LOOKBACK_MS if since_ms is None else since_ms)
+        start_ms = now_ms - FUNDING_LOOKBACK_MS if since_ms is None else since_ms
         symbol = self.contract.market("um").symbol
         try:
             rows = await asyncio.to_thread(
-                self.poller.funding_rate, start_ms, now_ms, symbol=symbol
+                self.poller.funding_rate, max(0, start_ms), now_ms, symbol=symbol
             )
         except RecorderRestError as exc:
             self._note(f"funding poll failed: {exc}")
             return 0
-        complete = len(rows) < MAX_FUNDING_LIMIT
         recorded = 0
         wall = self._wall_ns()
         mono = time.monotonic_ns()
@@ -636,7 +618,6 @@ class RecorderService:
                 settlement = FundingSettlement.from_rest(row, stream=UM_FUNDING)
             except RecorderEventError as exc:
                 self._note(f"a fundingRate row is not a settlement: {exc}")
-                complete = False
                 continue
             self._record(
                 settlement.to_raw_event(
@@ -647,54 +628,10 @@ class RecorderService:
                 )
             )
             recorded += 1
-        if recorded or self._settlements_stale:
-            self._settlements_stale = not self._rebuild_settlements()
+        if recorded:
+            self._rebuild_settlements()
         self.recovery.settlements += recorded
-        if (
-            complete
-            and not self._settlements_stale
-            and not self.health.stream(UM_FUNDING).halted
-        ):
-            self._observe_funding(start_ms, now_ms)
         return recorded
-
-    def _observe_funding(self, start_ms: int, end_ms: int) -> None:
-        """Extend the funding observation over one query window. Never fatal.
-
-        The file holds ONE interval. A window that overlaps or touches it
-        extends it; one that does not replaces it only if it is newer, because
-        an interval with a hole in it would claim instants nobody asked about.
-        So after an outage longer than the look-back, the instants in the gap
-        are simply not covered, and a runner waiting on one of them keeps
-        waiting for its row.
-
-        Engineering state that the runner reads and nothing else does. A write
-        that fails is noted and the recorder carries on: the runner treats a
-        missing or stale observation by waiting, which is exactly what it does
-        when the recorder has not asked yet. ``write_json_atomic`` raises
-        :class:`RecorderSinkError`, a RuntimeError, so that is caught with
-        OSError -- catching OSError alone let the error escape the funding task
-        and take the whole service down over this file.
-        """
-        path = self.normalizer.funding_observation_path("um")
-        low, high = int(start_ms), int(end_ms)
-        current = read_funding_observation(path, "um")
-        if current is not None:
-            if low <= current[1] + 1 and high >= current[0] - 1:
-                low, high = min(low, current[0]), max(high, current[1])
-            elif high < current[0]:
-                return  # an older, disjoint window says nothing new
-        if current == (low, high):
-            return
-        try:
-            write_json_atomic(
-                path,
-                funding_observation_document(
-                    "um", observed_from_ms=low, observed_through_ms=high
-                ),
-            )
-        except (RecorderSinkError, OSError) as exc:
-            self._note(f"funding observation not written: {exc}")
 
     async def poll_premium_index(self) -> bool:
         """Record the exchange's current mark, index and funding state.
@@ -732,13 +669,11 @@ class RecorderService:
         )
         return True
 
-    def _rebuild_settlements(self) -> bool:
+    def _rebuild_settlements(self) -> None:
         try:
             self.normalizer.build_settlements("um")
         except RecorderNormalizeError as exc:
             self._note(f"settlements rebuild refused: {exc}")
-            return False
-        return True
 
     # --- the run ----------------------------------------------------------
     async def run(self, stop: asyncio.Event | None = None) -> ServiceResult:
