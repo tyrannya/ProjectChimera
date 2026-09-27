@@ -70,6 +70,8 @@ from chimera.metrics import (
     DEMO_FEED_AGE,
     DEMO_FUNDING,
     DEMO_FUNDING_ADVERSE_STREAK,
+    DEMO_FUNDING_DEFERRED,
+    DEMO_FUNDING_DEFERRED_INSTANT,
     DEMO_HEARTBEAT,
     DEMO_HEDGE_IMBALANCE,
     DEMO_LAST_MINUTE_AGE,
@@ -157,6 +159,8 @@ class NullTelemetry:
 
     def on_heartbeat(self) -> None: ...
 
+    def on_funding_deferral(self, *, instant_ms: int | None) -> None: ...
+
 
 class RunnerTelemetry:
     """Section 11.1's series, written from values the runner has already decided.
@@ -212,6 +216,7 @@ class RunnerTelemetry:
         for leg in LEGS:
             DEMO_LIQUIDATION_DISTANCE.labels(leg=leg).set(math.nan)
         set_hedge_state(HedgeState.FLAT.value, states=self._hedge_states)
+        self.on_funding_deferral(instant_ms=None)
 
     # ------------------------------------------------------------------
     # the runner's state machine
@@ -283,6 +288,18 @@ class RunnerTelemetry:
         """The process is going away on purpose, so ``up`` says so rather than
         being inferred from a scrape that stopped answering."""
         DEMO_UP.set(0.0)
+
+    def on_funding_deferral(self, *, instant_ms: int | None) -> None:
+        """R1-g: the funding instant the next minute waits on, or None.
+
+        Set by every tick before anything about its minute is decided: the
+        instant while the minute is deferred, None once it is not. The age of a
+        deferral is the scrape's ``time()`` minus the instant, so nothing here
+        reads a clock.
+        """
+        waiting = instant_ms is not None
+        DEMO_FUNDING_DEFERRED.set(1.0 if waiting else 0.0)
+        DEMO_FUNDING_DEFERRED_INSTANT.set(int(instant_ms) / 1000 if waiting else math.nan)
 
     # ------------------------------------------------------------------
     # the log

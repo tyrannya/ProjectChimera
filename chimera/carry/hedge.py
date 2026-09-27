@@ -841,17 +841,8 @@ class HedgedPosition:
             if spot_leg.quantity
             else ZERO
         )
-        perp_pnl = (
-            perp_leg.quantity * (perp_leg.entry_price - state.perp_close)
-            if perp_leg.quantity
-            else ZERO
-        )
-        equity = (
-            self.ledger.state.free_cash
-            + spot_leg.quantity * state.spot_close
-            + self.ledger.state.perp_margin
-            + perp_pnl
-        )
+        perp_pnl = self._perp_pnl(state)
+        equity = self.equity_at(state)
         self.ledger.mark(
             spot_close=state.spot_close, perp_close=state.perp_close, equity=equity
         )
@@ -870,6 +861,29 @@ class HedgedPosition:
             equity=equity,
             identity_residual=residual,
         )
+
+    def equity_at(self, state: CarryMarketState) -> Decimal:
+        """The equity :meth:`mark_to_market` would mark at ``state``, marking nothing.
+
+        For a caller that must ask section 6.7's question about a minute it may
+        not mark the ledger at (R1-g: a runner holding a funding minute undecided
+        watches the newer minutes for a touch). The ledger's mark also moves its
+        worst equity, so marking a later minute and then deciding an earlier one
+        would carry the later minute's low into the earlier minute's records.
+        """
+        spot_leg = self.leg(SPOT)
+        return (
+            self.ledger.state.free_cash
+            + spot_leg.quantity * state.spot_close
+            + self.ledger.state.perp_margin
+            + self._perp_pnl(state)
+        )
+
+    def _perp_pnl(self, state: CarryMarketState) -> Decimal:
+        perp_leg = self.leg(PERP)
+        if not perp_leg.quantity:
+            return ZERO
+        return perp_leg.quantity * (perp_leg.entry_price - state.perp_close)
 
     # -- liquidation -------------------------------------------------------
 

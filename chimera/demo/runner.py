@@ -1393,7 +1393,11 @@ class DemoRunner:
             reason = f"feed_unreadable: {exc}"
             self._halt(reason)
             return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
+        self.telemetry.on_funding_deferral(instant_ms=pending)
         if pending is not None:
+            stopped = self._deferral_safety(minute_ms, pending)
+            if stopped is not None:
+                return stopped
             return self._deferred(
                 minute_ms,
                 f"the funding instant {pending} (epoch ms) is scheduled at or before "
@@ -2002,8 +2006,14 @@ class DemoRunner:
     # ------------------------------------------------------------------
     # liquidation (section 6.7)
     # ------------------------------------------------------------------
-    def _liquidation_check(self, minute_ms: int, state: MarketState) -> TickOutcome | None:
+    def _liquidation_check(
+        self, minute_ms: int, state: MarketState, *, context: str = ""
+    ) -> TickOutcome | None:
         """Section 6.7's per-minute touch. Returns an outcome when it fired.
+
+        ``context`` is appended to the record's detail. R1-g's deferral uses it
+        to say which recorded minute touched, because it stamps the record on the
+        last decided minute rather than that one (`_deferral_safety`).
 
         Evaluated while HEDGED or PARTIAL and not otherwise: a flat position has
         nothing to liquidate, and section 6.7 names those two states. The
@@ -2081,7 +2091,7 @@ class DemoRunner:
                     "detail": (
                         f"equity {equity} against mark {state.mark} at maintenance rate "
                         f"{self.position.config.maintenance_margin_rate}; section 6.7's "
-                        "portfolio and isolated checks"
+                        f"portfolio and isolated checks{context}"
                     ),
                 },
             },
@@ -2891,6 +2901,114 @@ class DemoRunner:
         """
         logger.warning("minute %s deferred: %s", minute_ms, reason)
         return TickOutcome(minute_ms, self.state, None, detail=reason)
+
+    def _deferral_safety(self, minute_ms: int, pending_ms: int) -> TickOutcome | None:
+        """R1-g: what a funding deferral may not suspend. Returns an outcome when
+        it stopped the runner.
+
+        A deferred minute holds the ORDINARY decisions -- it and every minute
+        after it stay undecided, the cursor and the clock stay where they are,
+        no rule runs, nothing is booked and nothing is ordered -- but not the
+        safety of the position already held. While the minute waits the feed
+        runs on, and the independent review of PR #108 (finding F2) showed a
+        runner that stayed READY for hours ignoring its kill switch and a touch
+        on the newer marks. So on every pass that meets the deferral:
+
+        1. the kill switch, as `_safety_checks` checks it;
+        2. section 6.7's touch, on every minute the recorder has published from
+           the deferred one to its newest. Asked with `equity_at`, which marks
+           nothing: marking a later minute's ledger and then deciding an
+           earlier one would carry the later low into the earlier records. A
+           touch is then taken by `_liquidation_check`, exactly as a tick takes
+           it -- Aegis halted, LIQUIDATION_TOUCH, flatten, HALT -- stamped on
+           the last decided minute as R1-f's stall tick stamps it, so restart
+           triage reads it as a decided minute's tail and never moves the cursor
+           past the deferred minute. The equity leaves out the unresolved
+           settlement, which cannot be known yet. A minute without a complete
+           row is passed over, as a tick passes it over;
+        3. the bound. Once the recorder has published market data more than
+           `max_data_delay_s` past the instant and still not its settlement row,
+           the funding feed is stale by the campaign's own data-delay limit,
+           and the runner halts ``funding_unresolved_timeout`` with the position
+           held. The age is read off the recorded files (the newest published
+           minute's close against the instant), not off a timer, so a restart
+           neither resets it nor grants a fresh wait, and a replay of the same
+           files halts at the same minute. Only an operator `resume` leaves the
+           halt, and a runner resumed before the row lands halts again.
+
+        No funding is booked here: that window would have to pass the instant it
+        is waiting on. A feed stall is not declared either: the heartbeat still
+        says whether the feed is live (R1-f), and a missing settlement row is not
+        a stale kline stream. Repeated passes over unchanged files write
+        nothing.
+        """
+        if self.risk.check_kill_switch():
+            self._halt("kill_switch")
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail="kill_switch")
+        try:
+            newest = self.cursor.latest_minute_ms()
+            touched = self._touch_while_deferred(minute_ms, newest)
+        except FeedNotReady:
+            return None  # a day mid-rewrite: the next pass reads it
+        except Exception as exc:
+            reason = f"feed_unreadable: {exc}"
+            self._halt(reason)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
+        instant = iso_minute(int(pending_ms) * _MS_TO_NS)
+        if touched is not None:
+            held = self._minute_ns() // _MS_TO_NS
+            # The observed minute's book, so the flatten fills where that
+            # minute's tick would have.
+            self.position.install_quote(touched)
+            return self._liquidation_check(
+                held,
+                touched,
+                context=(
+                    f"; on the recorded minute {touched.minute} while the funding "
+                    f"instant {instant} was unresolved and the minute "
+                    f"{iso_minute(held * _MS_TO_NS)} the last decided"
+                ),
+            )
+        limit_s = float(self.risk.limits.max_data_delay_s)
+        overdue_s = (
+            (newest if newest is not None else minute_ms) + 60_000 - pending_ms
+        ) / 1000
+        if overdue_s > limit_s:
+            reason = (
+                f"funding_unresolved_timeout: the settlement row for the funding instant "
+                f"{instant} was not recorded within max_data_delay_s ({limit_s:g} s) of "
+                "it; the position is held and no later minute is decided"
+            )
+            logger.critical(
+                "the recorder has published %.0f s past the funding instant %s without "
+                "its settlement row",
+                overdue_s,
+                instant,
+            )
+            self._halt(reason)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
+        return None
+
+    def _touch_while_deferred(
+        self, first_ms: int, newest_ms: int | None
+    ) -> MarketState | None:
+        """The first published minute from ``first_ms`` whose row touches (6.7)."""
+        if newest_ms is None or self.position.state not in (
+            HedgeState.HEDGED,
+            HedgeState.PARTIAL,
+        ):
+            return None
+        for minute in range(int(first_ms), int(newest_ms) + 60_000, 60_000):
+            state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
+            if not state.complete:
+                continue
+            try:
+                equity = self.position.equity_at(state)
+                if self.position.liquidation_touched(state, equity=equity):
+                    return state
+            except Exception:
+                return state  # unknown on a non-flat position: `_liquidation_check` refuses it
+        return None
 
     # ------------------------------------------------------------------
     # R1-f: the READY gate and the stall tick

@@ -329,10 +329,35 @@ nothing in this build does that for you.
   each instant normally clears it within a minute or two.
 
 A deferral writes **no record** (a replay of the finished files never defers,
-so a record would split the two logs); it is visible as a `minute ...
-deferred:` warning in the runner's log, repeated at every wake. A deferral that
-lasts is the recorder failing to obtain the row: funding polls failing, or
-answering without it, in the recorder's log. The runner
+so a record would split the two logs). It is visible as a `minute ...
+deferred:` warning in the runner's log, repeated at every wake, and on two
+gauges: `chimera_demo_funding_deferred` is 1 while a minute waits, and
+`chimera_demo_funding_deferred_instant_timestamp` is the instant it waits on
+(its age is `time() - chimera_demo_funding_deferred_instant_timestamp`). A
+deferral that lasts is the recorder failing to obtain the row: funding polls
+failing, or answering without it, in the recorder's log.
+
+**While a minute is deferred, the held position is still watched** (independent
+review of PR #108, finding F2). Every pass that meets the deferral checks the
+kill switch, and runs section 6.7's liquidation check on every minute the
+recorder has published from the deferred one to its newest. A touch flattens and
+halts as a tick's would; its `LIQUIDATION_TOUCH` is stamped on the last decided
+minute and names the recorded minute that touched. Nothing else happens: no
+rule, no order, no funding booked, and neither the cursor nor the decision clock
+moves.
+
+**A deferral is bounded by `max_data_delay_s`.** Once the recorder has
+published market data more than `max_data_delay_s` past the instant (180 s in
+the committed campaign) and still not its row, the runner halts
+`funding_unresolved_timeout` with the position held. The age is read off the
+published files (the newest minute's close against the instant), so a restart
+does not restart the wait. It is not a feed stall: no `FEED_STALLED` is
+written, because the heartbeat still vouches for the feed. To recover, confirm
+in `funding/um/settlements.ndjson` that the instant's row is now recorded (the
+recorder polls 60 s after each instant, then hourly), then `resume`. A runner
+resumed before the row lands halts again at once. If the venue never settles
+the announced instant, the runner cannot proceed past it in this build: that
+case is outside R1-g. The runner
 also defers, rather than halts, on a normalized day it catches mid-rewrite (the
 recorder rewrites a day in place until R1-h); the same file failing again
 unchanged still halts `feed_unreadable`.
