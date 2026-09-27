@@ -1474,6 +1474,76 @@ def test_an_owed_instant_whose_leg_was_flattened_while_waiting_survives_the_open
     assert funding_cash_flows(harness) == funding_cash_flows(replay)
 
 
+def engage_kill_switch(runner) -> None:
+    switch = Path(runner.risk._kill_switch_path)
+    switch.parent.mkdir(parents=True, exist_ok=True)
+    switch.write_text("drill", encoding="utf-8")
+
+
+def test_a_release_at_the_open_gate_is_on_disk_before_the_minute_can_halt(tmp_path):
+    """The release is the ordinary path taking the row back, so it is saved at
+    once. The row lands, then the switch is engaged: the due minute's gate
+    opens, the entry is released, and the tick halts on the switch before
+    booking -- as a minute that never waited would. A halted start then books
+    nothing from a stale entry; the resumed minute books it, the ordinary way,
+    at the replay's flow."""
+    harness = held_over_the_instant(tmp_path / "live")
+    runner = harness.runner
+    settle_at(harness, RECEIVE)
+    engage_kill_switch(runner)
+    assert runner.catch_up()[-1].kind.value == "HALT" and runner.halt_reason == "kill_switch"
+    assert owed_on_disk(harness) == [] and fundings(harness) == []
+    config = runner.config
+    runner.shutdown("halted by the switch")
+
+    again = held_over_the_instant(tmp_path / "live", config=config, start=False)
+    settle_at(again, RECEIVE)
+    assert again.runner.start() is RunnerState.HALT
+    assert fundings(again) == [] and legs(again.runner) != (0, 0)
+    Path(again.runner.risk._kill_switch_path).unlink()
+    again.runner.resume("drill over: the switch is off")
+    again.runner.catch_up()
+    assert fundings(again) == [(iso(DUE), INSTANT)]
+
+    replay = funding_world(tmp_path / "replay", hours=(0, 16), start=False)
+    settle_at(replay, RECEIVE)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(DUE))
+    assert funding_cash_flows(again) == funding_cash_flows(replay)
+
+
+def test_a_kill_switch_on_the_first_pass_over_the_due_minute_still_owes_the_settlement(
+    tmp_path,
+):
+    """Control B on the first pass. The switch is already engaged when the
+    runner first reaches the due minute, so the pass that halts is the one that
+    records what is owed, and it records it first. An operator flatten follows;
+    the row lands; the start books it once, on the leg held across the instant,
+    at the replay's flow."""
+    harness = funding_world(tmp_path / "live", hours=(0, 16), through=DUE)
+    runner = harness.runner
+    runner.catch_up(now_ms=m(DUE - 1))
+    assert runner.cursor.last_minute_processed == m(DUE - 1) and legs(runner) != (0, 0)
+    engage_kill_switch(runner)
+    assert runner.catch_up()[-1].kind.value == "HALT" and runner.halt_reason == "kill_switch"
+    assert [entry["instant_ns"] for entry in owed_on_disk(harness)] == [INSTANT * 1_000_000]
+    runner.flatten("drill: close the held carry")
+    config = runner.config
+    runner.shutdown("halted by the switch")
+
+    again = held_over_the_instant(tmp_path / "live", config=config, start=False)
+    settle_at(again, PAY)
+    assert again.runner.start() is RunnerState.HALT
+    assert fundings(again) == [(iso(DUE), INSTANT)] and legs(again.runner) == (0, 0)
+    assert owed_on_disk(again) == []
+
+    replay = funding_world(tmp_path / "replay", start=False)
+    settle_at(replay, PAY)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(DUE))
+    assert funding_cash_flows(again) == funding_cash_flows(replay)
+
+
 # =========================================================================== #
 # the runner: a day caught mid-rewrite
 # =========================================================================== #
