@@ -887,9 +887,13 @@ def test_a_touch_on_a_newer_recorded_mark_is_acted_on_while_deferred(tmp_path, m
     touched = pd.Timestamp(m(DUE + 2), unit="ms", tz="UTC").isoformat()
     assert f"on the recorded minute {touched}" in touch["veto_or_rejection"]["detail"]
     assert runner.halt_reason.startswith("liquidation_touch")
+    assert runner.state is RunnerState.HALT
     assert legs(runner) == (0, 0)
     assert runner.cursor.last_minute_processed == m(DUE - 1)
     assert evaluated == [] and fundings(harness) == []
+    after = len(harness.records())
+    assert runner.catch_up() == [], "a pass after the touch acted again"
+    assert len(harness.records()) == after
 
     config = runner.config
     runner.shutdown("after the touch")
