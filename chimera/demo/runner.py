@@ -1378,14 +1378,21 @@ class DemoRunner:
         # R1-g: a minute that cannot be decided yet is left exactly as it was
         # found -- checked before the clock observes its close, before any state
         # is entered and before anything is counted -- so the retry is simply
-        # the first attempt, whenever it comes. A feed that fails for any other
-        # reason is not a reason to wait: it halts below, where it always has.
+        # the first attempt, whenever it comes. Only "not yet" waits. Anything
+        # else the gate raises -- a day that stays unreadable, a malformed
+        # settlements file, a defect -- halts here, exactly as `state_for`'s
+        # does below: swallowing it would decide the minute with its funding
+        # gate silently off, and `state_for` reads neither the day before nor
+        # the announcements the gate reads, so it would not catch it again
+        # (independent review of PR #108, finding F5).
         try:
             pending = self.cursor.funding_pending(minute_ms)
         except FeedNotReady as exc:
             return self._deferred(minute_ms, str(exc))
-        except Exception:
-            pending = None
+        except Exception as exc:
+            reason = f"feed_unreadable: {exc}"
+            self._halt(reason)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
         if pending is not None:
             return self._deferred(
                 minute_ms,

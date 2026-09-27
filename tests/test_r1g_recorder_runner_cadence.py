@@ -741,6 +741,75 @@ def test_a_day_caught_mid_rewrite_is_waited_for_not_halted_on(tmp_path, caplog):
     assert "HALT" not in kinds_of(harness)
 
 
+PREV = (pd.Timestamp(DAY) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def two_days(tmp_path: Path):
+    """The day before carries only its last minute: the gate reads it for every
+    minute of the day after (an instant announced there), `state_for` never."""
+    earlier = {s: MinuteShape(present=False) for s in range(1439)}
+    harness = build(tmp_path, days=(PREV, DAY), shapes={f"um:{PREV}": earlier})
+    harness.runner.catch_up(now_ms=m(9))
+    assert harness.runner.cursor.last_minute_processed == m(9)
+    return harness
+
+
+@pytest.mark.parametrize("then", ["restored", "unchanged"])
+def test_the_funding_gate_waits_on_a_day_before_mid_rewrite_and_halts_on_a_broken_one(
+    tmp_path, then
+):
+    """F5. The day before, caught mid-rewrite, is "not yet": the minute waits, and
+    proceeds once the file is whole. The same file failing again unchanged is
+    broken, and the gate halts on it -- it may not be swallowed, because nothing
+    after the gate reads that day, so the minute would be decided with its
+    funding gate silently off."""
+    harness = two_days(tmp_path)
+    runner = harness.runner
+    whole = torn(harness.feed.normalizer.parquet_path("um", PREV))
+    first = runner.catch_up(now_ms=m(19))
+    assert [(o.minute_ms, o.kind) for o in first] == [(m(10), None)]
+    if then == "restored":
+        harness.feed.normalizer.parquet_path("um", PREV).write_bytes(whole)
+        runner.catch_up(now_ms=m(19))
+        assert runner.cursor.last_minute_processed == m(19)
+        assert "HALT" not in kinds_of(harness)
+    else:
+        second = runner.catch_up(now_ms=m(19))
+        assert runner.state is RunnerState.HALT
+        assert runner.halt_reason.startswith("feed_unreadable")
+        assert "has not changed since it last failed" in runner.halt_reason
+        assert [(o.minute_ms, o.kind.value) for o in second] == [(m(10), "HALT")]
+        assert runner.cursor.last_minute_processed == m(9)
+
+
+@pytest.mark.parametrize("fault", ["disagreeing-settlement-rows", "a-defect-in-the-gate"])
+def test_anything_but_not_yet_from_the_funding_gate_halts(tmp_path, fault):
+    """F5's other two: a settlements file that contradicts itself, and a gate
+    that raises something no reader meant. Neither is a reason to wait, and
+    neither may pass the minute ungated."""
+    harness = build(tmp_path)
+    runner = harness.runner
+    runner.catch_up(now_ms=m(9))
+    if fault == "disagreeing-settlement-rows":
+        harness.feed.write_settlements([DAY], duplicate=[(DAY, 8)], rates={(DAY, 16): "0.0002"})
+        path = harness.feed.normalizer.settlements_path("um")
+        lines = path.read_text(encoding="utf-8").splitlines()
+        row = json.loads(lines[1])
+        lines[2] = json.dumps({**row, "funding_rate": "0.0009"}, sort_keys=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    else:
+
+        def defect(*args, **kwargs):
+            raise RuntimeError("a defect in the gate")
+
+        runner.cursor._scheduled_through = defect
+    outcomes = runner.catch_up(now_ms=m(19))
+    assert [(o.minute_ms, o.kind.value) for o in outcomes] == [(m(10), "HALT")]
+    assert runner.state is RunnerState.HALT
+    assert runner.halt_reason.startswith("feed_unreadable")
+    assert runner.cursor.last_minute_processed == m(9)
+
+
 def test_a_day_that_stays_unreadable_is_still_refused(tmp_path):
     """The other side: the same broken file, unchanged, a second time is not
     being rewritten -- it is broken, and the runner halts on it as it always
