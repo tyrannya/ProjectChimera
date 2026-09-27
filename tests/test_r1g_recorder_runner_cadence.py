@@ -36,6 +36,8 @@ import json
 import logging
 import threading
 import time
+from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -989,6 +991,319 @@ def test_a_restart_does_not_grant_a_fresh_wait(tmp_path, stop):
     assert again.runner.halt_reason.startswith("funding_unresolved_timeout")
     assert again.runner.cursor.last_minute_processed == m(DUE - 1)
     assert fundings(again) == []
+
+
+# =========================================================================== #
+# the runner: a settlement owed across a safety flatten (N2)
+# =========================================================================== #
+#: The short perpetual RECEIVES a positive rate and PAYS a negative one.
+RECEIVE, PAY = "0.0001", "-0.0003"
+TOUCH = DUE + 2
+
+
+def settle_at(harness, rate: str) -> None:
+    """The 08:00 row lands, at ``rate``."""
+    harness.feed.write_settlements([DAY], rates={(DAY, 8): rate})
+
+
+def economics(runner) -> dict[str, Any]:
+    """Every accumulator a settlement moves, on both ledgers and in Aegis."""
+    ledger = runner.position.ledger.state
+    perp = runner.position.perp.ledger
+    return {
+        "funding_paid": ledger.funding_paid,
+        "funding_received": ledger.funding_received,
+        "free_cash": ledger.free_cash,
+        "last_equity": ledger.last_equity,
+        "settled": sorted(ledger.settled),
+        "fees": ledger.fees,
+        "slippage": ledger.slippage,
+        "realised": ledger.realised,
+        "perp_ledger": (
+            perp.funding_paid,
+            perp.funding_received,
+            sorted(perp.applied_funding),
+        ),
+        "funding_streak": runner.risk.state.funding_adverse_streak,
+    }
+
+
+def liquidated_while_deferred(where: Path):
+    """N2's live run, up to the row: the position is held into the 08:00 instant,
+    its row has not come, the due minute waits, and a newer mark touches. The
+    safety pass flattens and halts, with the settlement still unknown."""
+    harness = held_over_the_instant(where, through=TOUCH)
+    spike_mark(harness, TOUCH)
+    assert [o.kind.value for o in harness.runner.catch_up()] == ["LIQUIDATION_TOUCH"]
+    assert legs(harness.runner) == (0, 0) and fundings(harness) == []
+    return harness
+
+
+def restarted(where: Path, config, rate: str | None):
+    """A new process over the same files, the row landed at ``rate`` (or not)."""
+    again = held_over_the_instant(where, through=TOUCH, config=config, start=False)
+    spike_mark(again, TOUCH)
+    if rate is not None:
+        settle_at(again, rate)
+    assert again.runner.start() is RunnerState.HALT
+    return again
+
+
+def replayed(where: Path, rate: str):
+    """The finished files, every row already there: the due minute books the
+    settlement, and the newer mark then touches as a tick's own."""
+    replay = funding_world(where, through=TOUCH, start=False)
+    settle_at(replay, rate)
+    spike_mark(replay, TOUCH)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(TOUCH))
+    assert replay.runner.halt_reason.startswith("liquidation_touch")
+    assert legs(replay.runner) == (0, 0)
+    return replay
+
+
+@pytest.mark.parametrize("rate", [RECEIVE, PAY])
+def test_a_settlement_owed_across_a_safety_flatten_is_booked_once_in_its_own_minute(
+    tmp_path, rate
+):
+    """N2-A/N2-H. The safety pass flattens before the row exists, and the row
+    lands afterwards. The next start books it -- once, on the exposure held
+    across the instant, in the due minute -- and leaves the runner halted and
+    flat, with no rule run. Its economics are then the replay's to the unit, in
+    either direction of the cash flow."""
+    live = liquidated_while_deferred(tmp_path / "live")
+    config = live.runner.config
+    live.runner.shutdown("halted by the touch")
+
+    again = restarted(tmp_path / "live", config, rate)
+    replay = replayed(tmp_path / "replay", rate)
+    assert fundings(again) == fundings(replay) == [(iso(DUE), INSTANT)]
+    assert economics(again.runner) == economics(replay.runner)
+    booked = [r for r in again.records() if r["kind"] == "FUNDING"][0]["funding"]
+    expected = [r for r in replay.records() if r["kind"] == "FUNDING"][0]["funding"]
+    for field_name in ("side", "quantity", "rate", "mark_price", "notional", "cash_flow"):
+        assert booked[field_name] == expected[field_name], field_name
+    assert booked["direction"] == ("received" if rate == RECEIVE else "paid")
+
+    assert again.runner.state is RunnerState.HALT and legs(again.runner) == (0, 0)
+    assert again.runner.cursor.last_minute_processed == m(DUE - 1)
+    assert "DECISION" not in kinds_of(again)[kinds_of(again).index("LIQUIDATION_TOUCH") :]
+    assert owed_on_disk(again) == []
+
+
+def owed_on_disk(harness) -> list[dict[str, Any]]:
+    """What the persisted carry ledger says is owed, read off the file itself."""
+    path = harness.state_dir / "carry_ledger.json"
+    return json.loads(path.read_text(encoding="utf-8"))["funding_owed"]
+
+
+def funding_cash_flows(harness) -> list[str]:
+    return [r["funding"]["cash_flow"] for r in harness.records() if r["kind"] == "FUNDING"]
+
+
+def test_the_owed_instant_is_durable_from_the_deferral_and_resolved_by_its_booking(tmp_path):
+    """N2-F, and the witness for when the fact is written: the leg is held into
+    the instant, the row is absent, the minute defers -- and the carry ledger ON
+    DISK already says which instant was crossed, on which leg, in which window,
+    with nothing booked. The row lands: the due minute books it once and the
+    entry leaves the file in the same save. Live and replay then agree to the
+    unit, and section 10's comparison is PARITY."""
+    harness = funding_world(tmp_path / "live", hours=(0, 16), through=DUE + 1)
+    runner = harness.runner
+    assert runner.catch_up()[-1].kind is None
+    perp = runner.position.leg("perp")
+    assert owed_on_disk(harness) == [
+        {
+            "instant_ns": INSTANT * 1_000_000,
+            "open_instant_ns": runner.position.ledger.state.open_instant_ns,
+            "perp": runner.position.perp.position(perp.symbol).to_dict(),
+        }
+    ]
+    assert perp.side.value == "SHORT" and perp.quantity > 0
+    assert INSTANT * 1_000_000 not in runner.position.ledger.state.settled
+    assert runner.position.ledger.state.funding_received == 0 and fundings(harness) == []
+
+    harness.feed.write_settlements([DAY], hours=(0, 8, 16))
+    publish_through(harness, LAST)
+    runner.catch_up()
+    runner.shutdown("live")
+    assert fundings(harness) == [(iso(DUE), INSTANT)] and owed_on_disk(harness) == []
+
+    replay = funding_world(tmp_path / "replay")
+    replay.runner.replay(m(WINDOW.start), m(LAST))
+    replay.runner.shutdown("replay")
+    assert economics(harness.runner) == economics(replay.runner)
+    report = compare_logs(harness.records(), replay.records())
+    assert report.ok and report.label == "PARITY", report.to_dict()
+
+
+def test_a_position_flat_across_the_instant_owes_nothing(tmp_path):
+    """N2-E, the control. The carry rule stays out (its basis floor is out of
+    reach), so nothing is held into 08:00. The due minute still waits for the
+    row -- the gate is about the instant, not the position -- but no owed entry
+    is written for it, and none is booked when the row lands."""
+    harness = funding_world(tmp_path, hours=(0, 16), through=DUE + 1, start=False)
+    carry = next(rule for rule in harness.runner.rules if rule.rule_id == "R1_carry")
+    carry.params = replace(carry.params, min_basis=Decimal("1e12"))
+    harness.runner.start()
+    assert harness.runner.catch_up()[-1].kind is None
+    assert legs(harness.runner) == (0, 0)
+    assert owed_on_disk(harness) == []
+    harness.feed.write_settlements([DAY], hours=(0, 8, 16))
+    publish_through(harness, LAST)
+    harness.runner.catch_up()
+    assert fundings(harness) == [] and owed_on_disk(harness) == []
+    assert minutes_of(harness, "DECISION")[-1] == iso(LAST)
+
+
+def test_an_owed_settlement_survives_a_restart_before_its_row(tmp_path):
+    """N2-B, with crash windows A and C. Flattened and halted with the row still
+    missing; a start then finds nothing to book, and books nothing, but keeps
+    what is owed. The row lands; the next start books it once, flat and halted,
+    and no later start -- clean or after a crash -- books it again (E)."""
+    live = liquidated_while_deferred(tmp_path / "live")
+    config = live.runner.config
+    owed = owed_on_disk(live)
+    assert [entry["instant_ns"] for entry in owed] == [INSTANT * 1_000_000]
+    live.runner.shutdown("halted by the touch")
+
+    early = restarted(tmp_path / "live", config, None)
+    assert fundings(early) == [] and owed_on_disk(early) == owed
+    early.runner.shutdown("the row is not there yet")
+
+    booked = restarted(tmp_path / "live", config, RECEIVE)  # and then a crash: no shutdown
+    assert fundings(booked) == [(iso(DUE), INSTANT)] and owed_on_disk(booked) == []
+    after = economics(booked.runner)
+
+    for _ in range(2):
+        again = restarted(tmp_path / "live", config, RECEIVE)
+        assert fundings(again) == [(iso(DUE), INSTANT)]
+        assert economics(again.runner) == after
+        assert legs(again.runner) == (0, 0)
+        again.runner.shutdown("nothing left to book")
+    assert economics(replayed(tmp_path / "replay", RECEIVE).runner) == after
+
+
+def test_a_crash_between_the_booking_and_its_record_books_nothing_twice(tmp_path, monkeypatch):
+    """Crash window D. The late booking is persisted -- both ledgers, the owed
+    entry gone in the same carry-ledger save -- and the process dies before its
+    FUNDING record. The next start recovers (section 9.3; the dying start's own
+    STARTUP record is the one ahead of the state file, so that is the cause
+    named) and books nothing again: the economics are the replay's, once."""
+    live = liquidated_while_deferred(tmp_path / "live")
+    config = live.runner.config
+    live.runner.shutdown("halted by the touch")
+
+    dying = held_over_the_instant(tmp_path / "live", through=TOUCH, config=config, start=False)
+    spike_mark(dying, TOUCH)
+    settle_at(dying, RECEIVE)
+    append = dying.runner._append
+
+    def crash_at_the_record(kind, *args, **kwargs):
+        if kind.value == "FUNDING":
+            raise RuntimeError("killed before the FUNDING record")
+        return append(kind, *args, **kwargs)
+
+    monkeypatch.setattr(dying.runner, "_append", crash_at_the_record)
+    with pytest.raises(RuntimeError, match="killed before"):
+        dying.runner.start()
+    assert owed_on_disk(dying) == []
+
+    again = restarted(tmp_path / "live", config, RECEIVE)
+    assert fundings(again) == []
+    recovery = [r for r in again.records() if r["kind"] == "RECOVERY"]
+    assert [r["recovery"]["cause"] for r in recovery] == ["LOG_AHEAD_OF_STATE"]
+    assert economics(again.runner) == economics(replayed(tmp_path / "replay", RECEIVE).runner)
+
+
+def test_a_touch_recorded_before_the_flatten_persisted_still_owes_the_settlement(
+    tmp_path, monkeypatch
+):
+    """Crash window B. The process dies after the LIQUIDATION_TOUCH record and
+    before the flatten: the stores still hold the position and Aegis is halted.
+    The row lands; the start books the settlement once, on the leg held across
+    the instant -- still held, never reopened, never flattened by this path --
+    at the flow the replay books in the due minute."""
+    harness = held_over_the_instant(tmp_path / "live", through=TOUCH)
+    spike_mark(harness, TOUCH)
+    held = legs(harness.runner)
+
+    def killed(*args, **kwargs):
+        raise RuntimeError("killed before the flatten")
+
+    monkeypatch.setattr(harness.runner.position, "emergency_reduce", killed)
+    with pytest.raises(RuntimeError, match="killed before"):
+        harness.runner.catch_up()
+    assert kinds_of(harness)[-1] == "LIQUIDATION_TOUCH"
+    config = harness.runner.config
+
+    for _ in range(2):
+        again = restarted(tmp_path / "live", config, RECEIVE)
+        assert legs(again.runner) == held
+        assert fundings(again) == [(iso(DUE), INSTANT)]
+        again.runner.shutdown("still halted")
+    replay = replayed(tmp_path / "replay", RECEIVE)
+    assert funding_cash_flows(again) == funding_cash_flows(replay)
+
+
+def test_a_row_that_lands_during_a_touching_safety_pass_is_owed_not_lost(
+    tmp_path, monkeypatch
+):
+    """N2-D. The row lands while the pass is scanning, and the pass touches. The
+    touch is acted on at once and the pass books nothing (its window is not the
+    due minute's); the settlement is then booked once, in the due minute, on the
+    leg held across the instant -- and matches the replay."""
+    harness = held_over_the_instant(tmp_path / "live", through=TOUCH)
+    spike_mark(harness, TOUCH)
+    runner = harness.runner
+    scan = runner._touch_while_deferred
+
+    def and_the_row_lands(*args, **kwargs):
+        settle_at(harness, RECEIVE)
+        return scan(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_touch_while_deferred", and_the_row_lands)
+    assert [o.kind.value for o in runner.catch_up()] == ["LIQUIDATION_TOUCH"]
+    assert fundings(harness) == [] and legs(runner) == (0, 0)
+    config = runner.config
+    runner.shutdown("halted by the touch")
+
+    again = restarted(tmp_path / "live", config, RECEIVE)
+    replay = replayed(tmp_path / "replay", RECEIVE)
+    assert fundings(again) == fundings(replay) == [(iso(DUE), INSTANT)]
+    assert economics(again.runner) == economics(replay.runner)
+
+
+def test_a_kill_switch_while_deferred_still_owes_the_settlement(tmp_path):
+    """N2-G. The switch halts the waiting runner with the position held, as it
+    always did; an operator then flattens. The row lands afterwards, and the
+    start books it once, on the leg held across the instant, at the replay's
+    flow -- then stays halted and flat, and never books it again."""
+    harness = held_over_the_instant(tmp_path / "live")
+    runner = harness.runner
+    switch = Path(runner.risk._kill_switch_path)
+    switch.parent.mkdir(parents=True, exist_ok=True)
+    switch.write_text("drill", encoding="utf-8")
+    assert runner.catch_up()[-1].kind.value == "HALT"
+    assert runner.halt_reason == "kill_switch" and legs(runner) != (0, 0)
+    runner.flatten("drill: close the held carry")
+    assert legs(runner) == (0, 0) and len(owed_on_disk(harness)) == 1
+    config = runner.config
+    runner.shutdown("halted by the switch")
+
+    for _ in range(2):
+        again = held_over_the_instant(tmp_path / "live", config=config, start=False)
+        settle_at(again, PAY)
+        assert again.runner.start() is RunnerState.HALT
+        assert fundings(again) == [(iso(DUE), INSTANT)] and legs(again.runner) == (0, 0)
+        again.runner.shutdown("still halted")
+
+    replay = funding_world(tmp_path / "replay", start=False)
+    settle_at(replay, PAY)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(DUE))
+    assert funding_cash_flows(again) == funding_cash_flows(replay)
+    assert again.runner.position.ledger.state.funding_paid > 0
 
 
 # =========================================================================== #

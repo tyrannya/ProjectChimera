@@ -638,15 +638,20 @@ class FuturesExecutor:
         self._publish_position_metrics(reference_price)
         return record
 
-    def settle_funding(self, event: FundingEvent) -> Decimal:
+    def settle_funding(self, event: FundingEvent, position: Position | None = None) -> Decimal:
         """Book one funding settlement against the current position.
 
         Returns the signed cash flow: negative paid, positive received, zero for a
         flat position or a settlement already applied. Funding does not move the
         position and cannot fail an order; it is a cash flow, and the executor
         books it exactly once.
+
+        ``position`` is the exposure the settlement is charged on when that is
+        not the one held now: a position held across the instant and flattened
+        before its row existed (R1-g, PR #108 N2). The arithmetic is unchanged.
         """
-        position = self.position(event.symbol)
+        if position is None:
+            position = self.position(event.symbol)
         flow = self.ledger.book_funding(position, event)
         if flow < ZERO:
             metrics.FUT_FUNDING.labels(direction="paid").inc(float(-flow))

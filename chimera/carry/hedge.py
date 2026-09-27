@@ -51,7 +51,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 from chimera.carry.accounting import ZERO, CarryError, FundingSettlement
 from chimera.carry.ledger import CarryLedger
-from chimera.futures.domain import OrderState, PositionSide, TargetPosition
+from chimera.futures.domain import OrderState, Position, PositionSide, TargetPosition
 from chimera.futures.fills import TopOfBook
 from chimera.futures.executor import FlattenCause, FuturesExecutor
 from chimera.futures.store import LoadOutcome
@@ -796,8 +796,40 @@ class HedgedPosition:
         instant = int(event.instant_ns)
         if not (open_instant_ns < instant <= now_ns):
             return ZERO
-        flow = self.perp.settle_funding(event)
+        owed = self.ledger.owed_for(instant)
+        if owed is None:
+            flow = self.perp.settle_funding(event)
+        else:
+            flow = self.perp.settle_funding(event, Position.from_dict(owed["perp"]))
         return self.ledger.book_funding(instant, flow)
+
+    def funding_exposure(self, instant_ns: int) -> tuple[int | None, Position]:
+        """``(open_instant_ns, perpetual position)`` a settlement at ``instant_ns``
+        is charged on.
+
+        The leg held now, in the window the ledger holds now -- unless the
+        instant was recorded as owed (:meth:`note_funding_owed`), in which case
+        the exposure and window recorded then. A flatten after that moment
+        changes neither what was held across the instant nor what it owes.
+        """
+        owed = self.ledger.owed_for(instant_ns)
+        if owed is not None:
+            return owed["open_instant_ns"], Position.from_dict(owed["perp"])
+        return self.ledger.state.open_instant_ns, self.perp.position(self.config.perp_symbol)
+
+    def note_funding_owed(self, instant_ns: int) -> bool:
+        """Record that the funding instant ``instant_ns`` is being crossed by the
+        perpetual leg held now, before its settlement row exists. True if recorded.
+
+        Nothing for a flat leg, and nothing for an instant outside the window
+        :meth:`settle_funding` would charge -- this records only what that method
+        would book at the instant, on the exposure it would book it on.
+        """
+        held = self.perp.position(self.config.perp_symbol)
+        opened = self.ledger.state.open_instant_ns
+        if held.is_flat or opened is None or not opened < int(instant_ns):
+            return False
+        return self.ledger.owe_funding(instant_ns, open_instant_ns=opened, perp=held.to_dict())
 
     def booked_settlement_instants(self) -> tuple[int, ...]:
         """The settlement instants the PERPETUAL LEG's ledger has already booked.

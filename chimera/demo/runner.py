@@ -676,13 +676,70 @@ class DemoRunner:
         # on the very same restart.
         self.risk.check_kill_switch()
         if self.risk.state.halted:
-            return self._halt(self.risk.state.halt_reason or "risk halted")
+            problem = self._book_owed_funding()
+            return self._halt(problem or self.risk.state.halt_reason or "risk halted")
 
         # R1-f: a stall the log left open is still open. A restart is not news
         # about the feed, so it is not READY until the gate sees a fresh minute.
         self._enter(RunnerState.FEED_STALLED if self._feed_stall_open() else RunnerState.READY)
         self.save_state()
         return self.state
+
+    def _book_owed_funding(self) -> str | None:
+        """R1-g: book, on a halted start, a settlement owed across a flatten.
+        Returns a halt reason.
+
+        A funding minute that waits for its row still lets the safety pass
+        flatten the position and halt (`_deferral_safety`). The settlement is
+        owed all the same -- the leg was held across the instant -- but the only
+        path that books it is a tick, and a halted runner ticks nothing, so the
+        live ledger lost it while a replay of the finished files booked it
+        (independent re-review of PR #108, N2). The instant and the leg held
+        across it are recorded when the deferral begins
+        (`HedgedPosition.note_funding_owed`), so this books it once the row
+        exists: `_settle_funding`, the tick's own, on the minute a tick would
+        have booked it in -- the row's window, or the first complete minute
+        after it -- on the recorded leg and in its recorded window. Nothing is
+        decided, no rule runs, nothing is ordered, the position is not touched
+        and the runner stays halted. Aegis is told the equity the booking moved,
+        as a stall tick's booking does, since no PERSISTENCE follows here either.
+
+        Every start of a halted runner asks, so a row that is still missing is
+        asked for again by the next one; a booked settlement is in ``settled``
+        and its entry left the ledger in the same save, so no start books it
+        twice. Nothing is booked for a sealed Aegis or a ledger that may not
+        speak: both are halts whose files are evidence.
+        """
+        ledger = self.position.ledger
+        if (
+            not ledger.state.funding_owed
+            or self.risk.continuity_disputed
+            or not self._ledger_may_speak()
+        ):
+            return None
+        try:
+            stamps = sorted(int(row[_SETTLEMENT_FIELD]) for row in self.cursor.settlements())
+            newest = self.cursor.latest_minute_ms()
+        except FeedNotReady:
+            return None  # the next start reads it
+        except Exception as exc:
+            return f"funding_source_unreadable: {exc}"
+        for stamp in stamps:
+            if newest is None or ledger.owed_for(stamp * _MS_TO_NS) is None:
+                continue
+            for minute in range((stamp - 1) // 60_000 * 60_000, newest + 60_000, 60_000):
+                try:
+                    state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
+                except FeedNotReady:
+                    return None
+                except Exception as exc:
+                    return f"feed_unreadable: {exc}"
+                if state.complete:
+                    problem = self._settle_funding(minute, state, stalled=True)
+                    if problem is not None:
+                        return problem
+                    break
+        return None
 
     def self_check(self, *, allow_dirty: bool = False) -> str | None:
         """Section 8.1's SELF_CHECK row. Returns a reason, or None if sound.
@@ -1395,6 +1452,13 @@ class DemoRunner:
             return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
         self.telemetry.on_funding_deferral(instant_ms=pending)
         if pending is not None:
+            # Before the safety pass, which may flatten: the leg and the window
+            # it would zero are what the settlement is owed on (PR #108, N2).
+            # The one write a deferral makes, and it is not the minute's: once
+            # per instant, so a repeated pass writes nothing, and the entry
+            # leaves the ledger in the save that books the row.
+            if self.position.note_funding_owed(int(pending) * _MS_TO_NS):
+                self._save_ledger()
             stopped = self._deferral_safety(minute_ms, pending)
             if stopped is not None:
                 return stopped
@@ -1860,12 +1924,15 @@ class DemoRunner:
         nothing in the log saying so.
         """
         ledger = self.position.ledger
-        perp = self.position.leg(PERP_LEG)
-        if perp.quantity == ZERO and self.position.leg(SPOT_LEG).quantity == ZERO:
+        flat = (
+            self.position.leg(PERP_LEG).quantity == ZERO
+            and self.position.leg(SPOT_LEG).quantity == ZERO
+        )
+        if flat and not ledger.state.funding_owed:
             return None  # flat: section 6.5 charges the perpetual leg, and it holds nothing
 
         open_instant = ledger.state.open_instant_ns
-        if open_instant is None:
+        if open_instant is None and not flat:
             return (
                 "funding_window_unknown: this position is not flat and the ledger records "
                 "no open instant, so section 6.9's window `open_instant < settlement <= "
@@ -1886,7 +1953,11 @@ class DemoRunner:
                 instant_ns = int(row[_SETTLEMENT_FIELD]) * _MS_TO_NS
             except (KeyError, TypeError, ValueError) as exc:
                 return f"funding_source_unreadable: {exc}"
-            if not (open_instant < instant_ns <= now_ns):
+            # The leg held now, or -- for an instant recorded as owed while its
+            # row was late -- the leg held across it, which a safety flatten
+            # since may have zeroed (PR #108, N2).
+            opened, exposure = self.position.funding_exposure(instant_ns)
+            if opened is None or not (opened < instant_ns <= now_ns):
                 continue
             if instant_ns in ledger.state.settled:
                 continue  # already booked: no economics, and no second record
@@ -1901,7 +1972,7 @@ class DemoRunner:
 
             try:
                 flow = self.position.settle_funding(
-                    settlement, open_instant_ns=open_instant, now_ns=now_ns
+                    settlement, open_instant_ns=opened, now_ns=now_ns
                 )
             except Exception as exc:
                 return f"funding_unbookable: {exc}"
@@ -1916,9 +1987,9 @@ class DemoRunner:
 
             # Aegis first, because the streak it keeps is what vetoes the next
             # increase, and the record written below carries the risk state hash.
-            if perp.side in (PositionSide.LONG, PositionSide.SHORT):
+            if exposure.side in (PositionSide.LONG, PositionSide.SHORT):
                 self.risk.note_funding_settlement(
-                    self.position.config.perp_symbol, perp.side, float(settlement.rate)
+                    self.position.config.perp_symbol, exposure.side, float(settlement.rate)
                 )
 
             mark = self.position.mark_to_market(state)
@@ -1944,7 +2015,7 @@ class DemoRunner:
             self._append(
                 RecordKind.FUNDING,
                 minute_ns,
-                self._funding_payload(state, settlement, flow, mark, row),
+                self._funding_payload(state, settlement, flow, mark, row, exposure),
             )
             self.save_state()
         return None
@@ -1956,6 +2027,7 @@ class DemoRunner:
         flow: Decimal,
         mark: Any,
         row: Mapping[str, Any],
+        perp: Any,
     ) -> dict[str, Any]:
         """One settlement, in enough detail to reconstruct the flow independently.
 
@@ -1964,9 +2036,11 @@ class DemoRunner:
         raises on a missing one; ``funding`` is the ledger's running
         ``net_funding`` after this settlement, which is the series the daily
         report differences to recover the paid/received split.
+
+        ``perp`` is the exposure the flow was charged on, which is not the leg
+        held now when the settlement was owed across a flatten (N2).
         """
         ledger = self.position.ledger.state
-        perp = self.position.leg(PERP_LEG)
         return {
             "inputs": {
                 "contract_hash": _prefixed(getattr(self.contract, "contract_hash", "")),

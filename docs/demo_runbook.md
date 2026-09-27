@@ -334,7 +334,10 @@ nothing in this build does that for you.
   each instant normally clears it within a minute or two.
 
 A deferral writes **no record** (a replay of the finished files never defers,
-so a record would split the two logs). It is visible as a `minute ...
+so a record would split the two logs). The one thing it does write, once per
+instant and only when the perpetual leg is held across it, is a
+`funding_owed` entry in `carry_ledger.json`: the instant, the leg held across
+it and its funding window -- never a rate or an amount. It is visible as a `minute ...
 deferred:` warning in the runner's log, repeated at every wake, and on two
 gauges: `chimera_demo_funding_deferred` is 1 while a minute waits, and
 `chimera_demo_funding_deferred_instant_timestamp` is the instant it waits on
@@ -350,6 +353,21 @@ halts as a tick's would; its `LIQUIDATION_TOUCH` is stamped on the last decided
 minute and names the recorded minute that touched. Nothing else happens: no
 rule, no order, no funding booked, and neither the cursor nor the decision clock
 moves.
+
+**A settlement owed across a halt is still booked** (independent re-review of
+PR #108, N2). A touch, the kill switch or `funding_unresolved_timeout` can halt
+the runner -- and a touch or an operator `flatten` can zero the leg -- before
+the instant's row exists. The settlement is still owed on the leg held across
+the instant, which the `funding_owed` entry preserves. **Every start of a halted
+runner books it once the row is recorded**: in the minute a tick would have
+(normally the due minute), on the preserved leg, with a `FUNDING` record, the
+entry removed in the same ledger save. Nothing is decided and the runner stays
+halted; a start before the row lands books nothing and keeps the entry. The
+service does not restart a halted campaign (`RestartPreventExitStatus=3`), so
+once the row is in `funding/um/settlements.ndjson`, run
+`demo_run run --once` to book it; the command exits halted, as it should. The
+safety pass's touch uses an equity that leaves the unknown settlement out; that
+is unchanged.
 
 **A deferral is bounded by `max_data_delay_s`.** Once the recorder has
 published market data more than `max_data_delay_s` past the instant (180 s in
