@@ -1325,6 +1325,155 @@ def test_a_kill_switch_while_deferred_still_owes_the_settlement(tmp_path):
 
 
 # =========================================================================== #
+# the runner: what is owed never overrides the ordinary path (N2R-1)
+# =========================================================================== #
+#: A venue row a few milliseconds after the instant: the next minute's window.
+OFF_SCHEDULE_MS = 3
+
+
+def settle_off_schedule(harness, rate: str, offset_ms: int) -> None:
+    """The 08:00 row lands, at ``rate``, stamped ``offset_ms`` after the instant."""
+    path = harness.feed.write_settlements([DAY], rates={(DAY, 8): rate})
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        if row["funding_time_ms"] == INSTANT:
+            row["funding_time_ms"] = INSTANT + offset_ms
+    path.write_text(
+        "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def basis_collapses_from(harness, index: int) -> None:
+    """Spot 25 higher from minute ``index`` on: the basis falls under R1_carry's
+    floor, and the rule exits the carry in that minute. Rewritten by every
+    publish, so it is applied again after one."""
+    path = harness.feed.normalizer.parquet_path("spot", DAY)
+    frame = pd.read_parquet(path)
+    later = frame["minute_open_ms"] >= m(index)
+    for column in (
+        "kline_open",
+        "kline_high",
+        "kline_low",
+        "kline_close",
+        "book_bid",
+        "book_ask",
+    ):
+        frame.loc[later, column] += 25.0
+    frame.to_parquet(path, index=False)
+
+
+@pytest.mark.parametrize("rate", [RECEIVE, PAY])
+@pytest.mark.parametrize(
+    ("offset_ms", "exits", "booked"),
+    [
+        (OFF_SCHEDULE_MS, True, []),
+        (0, True, [(iso(DUE), INSTANT)]),
+        (OFF_SCHEDULE_MS, False, [(iso(DUE + 1), INSTANT + OFF_SCHEDULE_MS)]),
+    ],
+    ids=["off-schedule-row-and-exit", "exact-row-and-exit", "off-schedule-row-held"],
+)
+def test_an_owed_instant_on_a_leg_still_held_is_left_to_the_ordinary_path(
+    tmp_path, rate, offset_ms, exits, booked
+):
+    """N2R-1. The due minute waits with the carry held, and what is owed is
+    recorded. The row lands -- no crash, no flatten, no halt -- so the ordinary
+    path is intact, and it answers the row exactly as it did before anything was
+    owed: in the window the row falls in, on the leg held there. A row 3 ms
+    after the instant belongs to 08:00's window; the rule exits in 07:59, so
+    08:00 holds nothing and nothing is booked, in live as in the replay. The
+    recorded pre-instant leg must not book it. Controls: the row at the instant
+    itself (07:59 books it, before the exit) and the late row with no exit
+    (08:00 books it on the leg still held)."""
+    live = funding_world(tmp_path / "live", hours=(0, 16), through=DUE + 1)
+    if exits:
+        basis_collapses_from(live, DUE)
+    assert live.runner.catch_up()[-1].kind is None
+    assert [entry["instant_ns"] for entry in owed_on_disk(live)] == [INSTANT * 1_000_000]
+    settle_off_schedule(live, rate, offset_ms)
+    publish_through(live, LAST)
+    if exits:
+        basis_collapses_from(live, DUE)
+    live.runner.catch_up()
+    live.runner.shutdown("live")
+
+    replay = funding_world(tmp_path / "replay", hours=(0, 16), start=False)
+    settle_off_schedule(replay, rate, offset_ms)
+    if exits:
+        basis_collapses_from(replay, DUE)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(LAST))
+    replay.runner.shutdown("replay")
+
+    assert fundings(live) == fundings(replay) == booked
+    assert funding_cash_flows(live) == funding_cash_flows(replay)
+    assert economics(live.runner) == economics(replay.runner)
+    assert owed_on_disk(live) == []
+    assert (legs(live.runner) == (0, 0)) is exits
+    assert minutes_of(live, "DECISION")[-1] == iso(LAST)
+    report = compare_logs(live.records(), replay.records())
+    assert report.ok and report.label == "PARITY", report.to_dict()
+
+
+@pytest.mark.parametrize("rate", [RECEIVE, PAY])
+def test_an_off_schedule_row_owed_across_a_safety_flatten_is_booked_on_the_owed_leg(
+    tmp_path, rate
+):
+    """N2R-1's other side. The safety pass flattened while the due minute waited,
+    so the leg the late row is charged on no longer exists: the recorded one
+    still answers it -- once, in its own window, 08:00 -- exactly as the replay
+    books it there before its own tick meets the touch."""
+    live = liquidated_while_deferred(tmp_path / "live")
+    config = live.runner.config
+    live.runner.shutdown("halted by the touch")
+
+    again = held_over_the_instant(tmp_path / "live", through=TOUCH, config=config, start=False)
+    spike_mark(again, TOUCH)
+    settle_off_schedule(again, rate, OFF_SCHEDULE_MS)
+    assert again.runner.start() is RunnerState.HALT
+
+    replay = funding_world(tmp_path / "replay", through=TOUCH, start=False)
+    settle_off_schedule(replay, rate, OFF_SCHEDULE_MS)
+    spike_mark(replay, TOUCH)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(TOUCH))
+    assert replay.runner.halt_reason.startswith("liquidation_touch")
+
+    moment = [(iso(DUE + 1), INSTANT + OFF_SCHEDULE_MS)]
+    assert fundings(again) == fundings(replay) == moment
+    assert economics(again.runner) == economics(replay.runner)
+    assert owed_on_disk(again) == [] and legs(again.runner) == (0, 0)
+
+
+@pytest.mark.parametrize("rate", [RECEIVE, PAY])
+def test_an_owed_instant_whose_leg_was_flattened_while_waiting_survives_the_open_gate(
+    tmp_path, rate
+):
+    """N2R-1's boundary on the ordinary path. An operator flattens while the due
+    minute waits -- no halt, so the next tick is an ordinary one. When the row
+    lands and the gate opens, the leg recorded is no longer held: something
+    other than the ordinary path took it, so the entry is kept and answers the
+    row, once, in the due minute, on the leg held across the instant -- the
+    replay's flow."""
+    harness = held_over_the_instant(tmp_path / "live")
+    runner = harness.runner
+    runner.flatten("drill: close the carry while the funding minute waits")
+    assert runner.state is RunnerState.READY and legs(runner) == (0, 0)
+    assert len(owed_on_disk(harness)) == 1
+    settle_at(harness, rate)
+    publish_through(harness, DUE + 1)
+    runner.catch_up()
+    assert fundings(harness) == [(iso(DUE), INSTANT)] and owed_on_disk(harness) == []
+
+    replay = funding_world(tmp_path / "replay", hours=(0, 16), start=False)
+    settle_at(replay, rate)
+    replay.runner.start()
+    replay.runner.replay(m(WINDOW.start), m(DUE))
+    assert fundings(replay) == [(iso(DUE), INSTANT)]
+    assert funding_cash_flows(harness) == funding_cash_flows(replay)
+
+
+# =========================================================================== #
 # the runner: a day caught mid-rewrite
 # =========================================================================== #
 def torn(path: Path) -> bytes:
