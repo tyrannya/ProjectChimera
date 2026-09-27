@@ -1091,6 +1091,24 @@ def test_a_settlement_owed_across_a_safety_flatten_is_booked_once_in_its_own_min
     assert owed_on_disk(again) == []
 
 
+def test_a_touch_on_the_first_pass_over_the_due_minute_still_owes_the_settlement(tmp_path):
+    """The deferral and the touch in ONE pass: the runner reaches the due minute
+    for the first time -- a backlog, a restart -- with a newer mark already past
+    the liquidation level. What is owed has to be written before that pass
+    flattens, or there is no leg left to write it from."""
+    harness = funding_world(tmp_path / "live", hours=(0, 16), through=TOUCH)
+    spike_mark(harness, TOUCH)
+    assert harness.runner.catch_up()[-1].kind.value == "LIQUIDATION_TOUCH"
+    assert legs(harness.runner) == (0, 0) and len(owed_on_disk(harness)) == 1
+    config = harness.runner.config
+    harness.runner.shutdown("halted by the touch")
+
+    again = restarted(tmp_path / "live", config, PAY)
+    replay = replayed(tmp_path / "replay", PAY)
+    assert fundings(again) == fundings(replay) == [(iso(DUE), INSTANT)]
+    assert economics(again.runner) == economics(replay.runner)
+
+
 def owed_on_disk(harness) -> list[dict[str, Any]]:
     """What the persisted carry ledger says is owed, read off the file itself."""
     path = harness.state_dir / "carry_ledger.json"
