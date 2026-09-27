@@ -810,7 +810,9 @@ class HedgedPosition:
         The leg held now, in the window the ledger holds now -- unless the
         instant was recorded as owed (:meth:`note_funding_owed`), in which case
         the exposure and window recorded then. A flatten after that moment
-        changes neither what was held across the instant nor what it owes.
+        changes neither what was held across the instant nor what it owes. An
+        entry outlives an ordinary tick's open gate only after such a flatten
+        (:meth:`release_funding_owed`).
         """
         owed = self.ledger.owed_for(instant_ns)
         if owed is not None:
@@ -830,6 +832,27 @@ class HedgedPosition:
         if held.is_flat or opened is None or not opened < int(instant_ns):
             return False
         return self.ledger.owe_funding(instant_ns, open_instant_ns=opened, perp=held.to_dict())
+
+    def release_funding_owed(self) -> bool:
+        """Forget each owed instant whose recorded exposure is still the one held.
+        True if any was forgotten.
+
+        Called when the funding gate opens for an ordinary tick. What is owed is
+        a fallback for an exposure something other than the ordinary path took
+        away while the minute waited -- a safety or operator flatten. While the
+        leg and window recorded are still the ones held, nothing did, and the
+        ordinary path answers the row as it did before anything was owed: in the
+        window the row falls in, on the leg held THERE. A row stamped after the
+        instant falls in a later minute, after this minute's decision may have
+        moved the leg, so the recorded leg is not its exposure (PR #108, N2R-1).
+        """
+        held = self.perp.position(self.config.perp_symbol)
+        opened = self.ledger.state.open_instant_ns
+        released = False
+        for owed in list(self.ledger.state.funding_owed):
+            if owed["open_instant_ns"] == opened and Position.from_dict(owed["perp"]) == held:
+                released = self.ledger.release_owed(owed["instant_ns"]) or released
+        return released
 
     def booked_settlement_instants(self) -> tuple[int, ...]:
         """The settlement instants the PERPETUAL LEG's ledger has already booked.

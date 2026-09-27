@@ -1123,9 +1123,10 @@ def test_the_owed_instant_is_durable_from_the_deferral_and_resolved_by_its_booki
     """N2-F, and the witness for when the fact is written: the leg is held into
     the instant, the row is absent, the minute defers -- and the carry ledger ON
     DISK already says which instant was crossed, on which leg, in which window,
-    with nothing booked. The row lands: the due minute books it once and the
-    entry leaves the file in the same save. Live and replay then agree to the
-    unit, and section 10's comparison is PARITY."""
+    with nothing booked. The row lands: the leg is still held, so the open gate
+    releases the entry (N2R-1) and the due minute books the row once, the
+    ordinary way. Live and replay then agree to the unit, and section 10's
+    comparison is PARITY."""
     harness = funding_world(tmp_path / "live", hours=(0, 16), through=DUE + 1)
     runner = harness.runner
     assert runner.catch_up()[-1].kind is None

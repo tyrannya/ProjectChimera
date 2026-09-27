@@ -218,7 +218,9 @@ class CarryLedgerState:
     #: flatten clears the window and zeroes the leg before the row can exist, and
     #: both were the only record of what the settlement is owed on.
     #: :meth:`book_funding` drops the entry in the same save that books its
-    #: settlement. Additive, like ``open_instant_ns``: absent reads as none.
+    #: settlement; an ordinary tick drops it unbooked (:meth:`release_owed`) when
+    #: its leg is still held and the ordinary path can answer the row (N2R-1).
+    #: Additive, like ``open_instant_ns``: absent reads as none.
     funding_owed: list[dict[str, Any]] = field(default_factory=list)
     #: The most recent identity residual, kept so a report can show how close the
     #: position runs to its tolerance rather than only whether it broke it.
@@ -680,6 +682,14 @@ class CarryLedger:
             }
         )
         return True
+
+    def release_owed(self, instant_ns: int) -> bool:
+        """Forget that ``instant_ns`` is owed, unbooked. False if it was not owed."""
+        for owed in self.state.funding_owed:
+            if owed["instant_ns"] == int(instant_ns):
+                self.state.funding_owed.remove(owed)
+                return True
+        return False
 
     def owed_for(self, settlement_ns: int) -> dict[str, Any] | None:
         """The owed instant a settlement stamped ``settlement_ns`` answers, if any.

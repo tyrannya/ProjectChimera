@@ -369,6 +369,22 @@ once the row is in `funding/um/settlements.ndjson`, run
 safety pass's touch uses an equity that leaves the unknown settlement out; that
 is unchanged.
 
+**On a runner that is not halted, the entry gives way to the ordinary path**
+(N2R-1). When the row lands and the due minute's funding gate opens, an entry
+whose recorded leg and window are still the ones held is dropped (and the
+ledger saved) before the minute is decided: the tick then books the row exactly
+as it would have if nothing had been owed, in the window the row falls in and
+on the leg held there. A row stamped a few milliseconds after the instant falls
+in the NEXT minute's window, after the due minute's own decision, so if the rule
+exits in the due minute nothing is booked, live and replay alike. The entry
+survives the open gate only when its leg is no longer held -- on a running
+runner, an operator `flatten` while the minute waited -- and then books the row
+once, on the recorded leg. Known limit, unchanged by N2R-1: on a HALTED runner
+the entry always answers its row. If the safety pass's touch was on the due
+minute itself and the row is stamped after the instant, the live run books it
+(in the row's window, on the recorded leg), while a replay, whose own tick
+liquidates in the due minute, books nothing.
+
 **A deferral is bounded by `max_data_delay_s`.** Once the recorder has
 published market data more than `max_data_delay_s` past the instant (180 s in
 the committed campaign) and still not its row, the runner halts

@@ -1468,6 +1468,14 @@ class DemoRunner:
                 "this minute's close and the recorder has not recorded its settlement "
                 "row yet",
             )
+        # The gate is open, so this minute is decided the ordinary way. What was
+        # owed while it waited stays only if a flatten since took that exposure
+        # away; on the leg still held, the ordinary path books the row in its own
+        # window, as it did before anything was owed (PR #108, N2R-1). Persisted
+        # at once, like the entry: a crash before the decision re-ticks this
+        # minute from the same files and releases it again.
+        if self.position.release_funding_owed():
+            self._save_ledger()
 
         minute_ns = int(minute_ms) * _MS_TO_NS
         self.clock.observe(minute_ns + MINUTE_NS)
