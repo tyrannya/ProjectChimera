@@ -811,7 +811,7 @@ class HedgedPosition:
         instant was recorded as owed (:meth:`note_funding_owed`), in which case
         the exposure and window recorded then. A flatten after that moment
         changes neither what was held across the instant nor what it owes. An
-        entry outlives an ordinary tick's safety pass only after such a flatten
+        entry outlives an ordinary tick's hand-over only after such a flatten
         (:meth:`release_funding_owed`), and answers no row stamped after a touch
         ended its leg (:meth:`drop_funding_owed_after_exposure`).
         """
@@ -854,9 +854,10 @@ class HedgedPosition:
         """Forget each owed instant whose recorded exposure is still the one held.
         True if any was forgotten.
 
-        The hand-over from the fallback to the ordinary path, called once an
-        ordinary tick's safety pass is through -- never before it, because a
-        halt there leaves no ordinary path to answer the row (RR-2). What is owed
+        The hand-over from the fallback to the ordinary path, called by a tick
+        once the kill switch and the minute's own booking are through -- never
+        before them, because a halt there leaves no ordinary path to answer the
+        row (RR-2). What is owed
         is a fallback for an exposure something other than the ordinary path
         took away while the minute waited -- a safety or operator flatten. While
         the leg and window recorded are still the ones held, nothing did, and

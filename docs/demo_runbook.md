@@ -358,32 +358,45 @@ moves.
 PR #108, N2). A touch, the kill switch or `funding_unresolved_timeout` can halt
 the runner -- and a touch or an operator `flatten` can zero the leg -- before
 the instant's row exists. The settlement is still owed on the leg held across
-the instant, which the `funding_owed` entry preserves. **Every start of a halted
-runner books it once the row is recorded**: in the minute a tick would have
-(normally the due minute), on the preserved leg, with a `FUNDING` record, the
-entry removed in the same ledger save. Nothing is decided and the runner stays
-halted; a start before the row lands books nothing and keeps the entry. The
-service does not restart a halted campaign (`RestartPreventExitStatus=3`), so
-once the row is in `funding/um/settlements.ndjson`, run
-`demo_run run --once` to book it; the command exits halted, as it should. The
-safety pass's touch uses an equity that leaves the unknown settlement out; that
-is unchanged.
+the instant, which the `funding_owed` entry preserves. **A start of a halted
+runner books it once the row is recorded and that leg is gone**: in the minute a
+tick would have (normally the due minute), on the preserved leg, with a
+`FUNDING` record, the entry removed in the same ledger save. Nothing is decided
+and the runner stays halted; a start before the row lands books nothing and
+keeps the entry. The service does not restart a halted campaign
+(`RestartPreventExitStatus=3`), so once the row is in
+`funding/um/settlements.ndjson`, run `demo_run run --once` to book it; the
+command exits halted, as it should. The safety pass's touch uses an equity that
+leaves the unknown settlement out; that is unchanged.
+
+The entry answers only the exposure it actually held (RR-1). A touch flattens at
+the close of the minute that touched -- where a replay's own tick flattens --
+and records that close on the entry (`held_until_ns`). A row stamped at or
+before it is booked on the preserved leg; a row stamped after it (a venue row a
+few milliseconds after the instant, with the touch in the due minute itself) is
+charged on nothing the entry held, so the start resolves the entry and books
+nothing, live and replay alike. An operator `flatten` records no such bound: it
+is taken after the instant, so the leg was held across the row.
+
+**A halted runner whose leg is still held books nothing from the entry** (RR-2,
+RR-3): the kill switch or `funding_unresolved_timeout` halted it, and nothing
+has taken the exposure yet. The entry stays on disk. `flatten` it, and the next
+start books the row as above; or, once the cause is cleared, `resume`, and the
+due minute is decided the ordinary way.
 
 **On a runner that is not halted, the entry gives way to the ordinary path**
-(N2R-1). When the row lands and the due minute's funding gate opens, an entry
-whose recorded leg and window are still the ones held is dropped (and the
-ledger saved) before the minute is decided: the tick then books the row exactly
-as it would have if nothing had been owed, in the window the row falls in and
-on the leg held there. A row stamped a few milliseconds after the instant falls
+(N2R-1). When the row lands, the due minute's tick checks the kill switch and
+books what its own window holds; only then is an entry whose recorded leg and
+window are still the ones held dropped (and the ledger saved), before the touch
+check and the decision. A halt before that point -- the switch -- leaves the
+entry on disk (RR-2). After it, the tick books the row exactly as it would have
+if nothing had been owed, in the window the row falls in and on the leg held
+there. A row stamped a few milliseconds after the instant falls
 in the NEXT minute's window, after the due minute's own decision, so if the rule
 exits in the due minute nothing is booked, live and replay alike. The entry
-survives the open gate only when its leg is no longer held -- on a running
+survives the hand-over only when its leg is no longer held -- on a running
 runner, an operator `flatten` while the minute waited -- and then books the row
-once, on the recorded leg. Known limit, unchanged by N2R-1: on a HALTED runner
-the entry always answers its row. If the safety pass's touch was on the due
-minute itself and the row is stamped after the instant, the live run books it
-(in the row's window, on the recorded leg), while a replay, whose own tick
-liquidates in the due minute, books nothing.
+once, on the recorded leg.
 
 **A deferral is bounded by `max_data_delay_s`.** Once the recorder has
 published market data more than `max_data_delay_s` past the instant (180 s in
