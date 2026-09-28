@@ -37,7 +37,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from chimera.futures.accounting import Ledger
 from chimera.futures.domain import FuturesError, OrderRecord, Position
@@ -136,9 +136,21 @@ class FuturesStore:
     path: Path | None
     state: FuturesState = field(default_factory=FuturesState)
     outcome: LoadOutcome = LoadOutcome.MISSING
+    #: Called with ``(file name, OSError)`` when :meth:`save` cannot persist,
+    #: before :class:`StoreError` would be raised. ``None`` keeps that error.
+    #: The demo factory installs :func:`chimera.persistence.raise_persistence_failure`
+    #: so the runner treats a failed write as a process failure (R1-i).
+    on_persist_failure: Callable[[str, OSError], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @classmethod
-    def open(cls, path: str | Path | None) -> "FuturesStore":
+    def open(
+        cls,
+        path: str | Path | None,
+        *,
+        on_persist_failure: Callable[[str, OSError], None] | None = None,
+    ) -> "FuturesStore":
         """Read the state file if there is one, and record how that went.
 
         An in-memory store (``path=None``) is for tests and for the deterministic
@@ -146,6 +158,12 @@ class FuturesStore:
         the executor still has to be bootstrapped explicitly rather than starting
         life believing it is flat.
         """
+        store = cls._read(path)
+        store.on_persist_failure = on_persist_failure
+        return store
+
+    @classmethod
+    def _read(cls, path: str | Path | None) -> "FuturesStore":
         if path is None:
             return cls(path=None, state=FuturesState(), outcome=LoadOutcome.MISSING)
 
@@ -183,16 +201,20 @@ class FuturesStore:
         """Write the state atomically. A crash leaves the previous file intact."""
         if self.path is None:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         payload = json.dumps(self.state.to_dict(), indent=2, sort_keys=True) + "\n"
         try:
+            # Inside the guard: a directory that cannot be created is as much a
+            # failed write as a full disk, and must reach the same handler.
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(temporary, "w", encoding="utf-8") as handle:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self.path)
         except OSError as exc:
+            if self.on_persist_failure is not None:
+                self.on_persist_failure(self.path.name, exc)
             raise StoreError(
                 f"could not persist futures execution state to {self.path}: {exc}. "
                 "Continuing would mean the next restart cannot know what this process "

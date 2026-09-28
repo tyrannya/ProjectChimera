@@ -2601,7 +2601,8 @@ def test_a_damaged_ledger_leaves_the_day_reportable_without_inventing_a_history(
     resumed.flatten("removing exposure on a damaged ledger")
 
     report = daily_report(resumed.state_dir, DAY)
-    assert report["records_by_kind"]["OPERATOR"] == 1
+    # R1-i: the flatten's `requested` record and its completion.
+    assert report["records_by_kind"]["OPERATOR"] == 2
     # The day's closing economics are still the last ones a real ledger held,
     # not the placeholder's. Without the guard the flatten's block closed the
     # series, so `fees` nearly doubled and `slippage` went BACKWARDS -- a

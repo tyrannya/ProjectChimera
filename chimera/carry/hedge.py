@@ -44,17 +44,18 @@ in the pull request:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from chimera.carry.accounting import ZERO, CarryError, FundingSettlement
-from chimera.carry.ledger import CarryLedger
+from chimera.carry.ledger import CORRECTION_UNKNOWN_START, CarryLedger
 from chimera.futures.domain import OrderState, Position, PositionSide, TargetPosition
 from chimera.futures.fills import TopOfBook
 from chimera.futures.executor import FlattenCause, FuturesExecutor
 from chimera.futures.store import LoadOutcome
+from chimera.persistence import PersistenceFailure
 from chimera.risk import RiskEngine
 
 logger = logging.getLogger(__name__)
@@ -201,7 +202,9 @@ class HedgeConfig:
     spot_symbol: str = "BTC/USDT"
     perp_symbol: str = "BTC/USDT:USDT"
     #: Section 6.3: retry the missing leg for at most this many minutes before
-    #: reducing the filled leg back to flat.
+    #: reducing the filled leg back to flat. Measured on the recorded minutes'
+    #: closes from the persisted instant the imbalance was first observed
+    #: (R1-i), so a restart neither resets nor extends it.
     max_correction_minutes: int = 3
     #: Section 6.8: a leg whose last observation lags the other by more than this
     #: is DISPUTED. One minute, expressed in nanoseconds.
@@ -265,6 +268,9 @@ class HedgeOutcome:
     filled: tuple[str, ...] = ()
     unfilled: tuple[str, ...] = ()
     detail: str = ""
+    #: The legs a correction sent (R1-i), for the decision record's
+    #: ``requested_action``; empty for every other outcome.
+    intents: tuple["LegIntent", ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -327,9 +333,8 @@ class HedgedPosition:
     #: so getting it from the wrong book is not a rounding difference.
     fill_models: Mapping[str, Any] | None = None
     state: HedgeState = HedgeState.FLAT
-    #: How many minutes the current PARTIAL has been under correction.
-    correction_minutes: int = 0
-    #: The quantity the position is trying to hold while OPENING or correcting.
+    #: The quantity the position is trying to hold while OPENING. A PARTIAL's
+    #: correction target is persisted in the ledger instead (R1-i).
     pending_quantity: Decimal = ZERO
 
     # -- observation -------------------------------------------------------
@@ -485,8 +490,14 @@ class HedgedPosition:
         filled: list[str] = []
         unfilled: list[str] = []
         frictions: dict[str, tuple[Decimal, Decimal]] = {}
+        failed = False
         try:
             self._execute(intents, state, equity, filled, unfilled, frictions)
+        except PersistenceFailure:
+            # R1-i: the process is ending on a failed write. Nothing more may be
+            # booked or halted on the way out -- each would be another write.
+            failed = True
+            raise
         finally:
             # `execute_target` raises -- ReconciliationRequired, NotBootstrapped
             # -- and it raises per leg, so the second leg can throw after the
@@ -494,14 +505,24 @@ class HedgedPosition:
             # is what stops that cycle's economics from being lost: the fees and
             # the realised PnL would be recovered by a later level comparison,
             # but this cycle's slippage exists nowhere else and would be gone.
-            self._reconcile_ledger(frictions)
+            if not failed:
+                self._reconcile_ledger(frictions)
 
         outcome = self._settle(filled=tuple(filled), unfilled=tuple(unfilled))
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,
             instant_ns=state.minute_ns + _MINUTE_NS,
         )
+        self._note_correction(outcome, state.minute_ns + _MINUTE_NS)
         return outcome
+
+    def _note_correction(self, outcome: HedgeOutcome, instant_ns: int) -> None:
+        """Start section 6.3's correction clock when a PARTIAL first appears, and
+        stop it when the position is anything else (R1-i)."""
+        if outcome.state is HedgeState.PARTIAL:
+            self.ledger.begin_correction(instant_ns, self.pending_quantity or None)
+        elif outcome.state is not HedgeState.DISPUTED:
+            self.ledger.end_correction()
 
     def _execute(
         self,
@@ -677,12 +698,10 @@ class HedgedPosition:
         spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
         if spot_leg.is_flat and perp_leg.is_flat:
             self.state = HedgeState.FLAT
-            self.correction_minutes = 0
             return HedgeOutcome(self.state, filled, unfilled, detail or "flat")
 
         if spot_leg.quantity == perp_leg.quantity:
             self.state = HedgeState.HEDGED
-            self.correction_minutes = 0
             return HedgeOutcome(self.state, filled, unfilled, detail or "hedged")
 
         self.state = HedgeState.PARTIAL
@@ -695,47 +714,89 @@ class HedgedPosition:
 
     # -- correction --------------------------------------------------------
 
-    def correct(self, state: CarryMarketState, *, equity: float) -> HedgeOutcome:
-        """One correction attempt on a PARTIAL position (section 6.3).
+    def correction_expired(self, now_ns: int) -> bool:
+        """Whether the PARTIAL's correction window has passed at ``now_ns``.
 
-        Retries the missing leg for at most ``max_correction_minutes``. On
-        exhaustion the filled leg is reduced to flat with
-        ``FlattenCause.HEDGE_CORRECTION`` and the position returns to FLAT.
+        The window is ``max_correction_minutes`` recorded minutes from the
+        persisted instant the imbalance was first observed. No correction on
+        record for a PARTIAL (a legacy ledger, or one re-booked after a crash)
+        is a start that is unknown, and an unknown start has expired: the retry
+        budget is never re-issued by forgetting when it began.
+        """
+        correction = self.ledger.state.correction
+        started = CORRECTION_UNKNOWN_START if correction is None else correction["started_ns"]
+        return int(now_ns) - int(started) > self.config.max_correction_minutes * _MINUTE_NS
+
+    def correct(
+        self, state: CarryMarketState, *, equity: float, now_ns: int | None = None
+    ) -> HedgeOutcome:
+        """One correction step on a PARTIAL position (section 6.3). Wired (R1-i).
+
+        The runner calls this on every complete minute the position is PARTIAL
+        and the rule still wants a position, instead of re-planning from the
+        rule. Inside the window it retries: the lagging leg is brought to the
+        persisted correction target (an increase, and so through Aegis) or,
+        with no target, while halted or while disputed, the larger leg is
+        reduced to the smaller. Past the window the filled leg is reduced to
+        flat with ``FlattenCause.HEDGE_CORRECTION``. The window is measured on
+        recorded minutes from a persisted instant, so it is finite, a restart
+        cannot reset it, and a replay of the same minutes corrects at the same
+        ones.
         """
         if self.state is not HedgeState.PARTIAL:
             return self._settle(detail="not partial")
-
-        self.correction_minutes += 1
-        if self.correction_minutes > self.config.max_correction_minutes:
+        now = int(now_ns) if now_ns is not None else int(state.minute_ns) + _MINUTE_NS
+        if self.correction_expired(now):
             return self.flatten_for_correction(state)
 
-        self.state = HedgeState.REBALANCING
-        target = HedgeTarget(quantity=min(self.leg(SPOT).quantity, self.leg(PERP).quantity))
-        larger = HedgeTarget(quantity=max(self.leg(SPOT).quantity, self.leg(PERP).quantity))
-        # A rebalance reduces the larger leg to the smaller one; only a genuine
-        # retry of an unfilled leg increases exposure, and that is what
-        # `pending_quantity` remembers.
-        wanted = self.pending_quantity if self.pending_quantity > ZERO else target.quantity
+        spot_qty, perp_qty = self.leg(SPOT).quantity, self.leg(PERP).quantity
+        smaller = min(spot_qty, perp_qty)
+        correction = self.ledger.state.correction or {}
+        target = correction.get("target")
+        wanted = Decimal(target) if target is not None else smaller
+        # Never MORE than the correction's own target, and never an increase
+        # while Aegis is halted or the position is disputed: then the only
+        # correction is reducing the larger leg to the smaller.
         if self.is_disputed or self.risk.state.halted:
-            wanted = target.quantity
-        _ = larger
-        return self.apply(self.plan(HedgeTarget(wanted), state), state, equity=equity)
+            wanted = smaller
+        self.state = HedgeState.REBALANCING
+        # Both legs are observed by a correction step -- it reads both to decide
+        # which to send -- so both are marked, not only the one it sends.
+        # Marking only the sent leg made every restart two minutes into a
+        # correction find the other leg "stale" (section 6.8) and dispute a
+        # correction that was proceeding exactly as section 6.3 says (R1-i).
+        for name in (SPOT, PERP):
+            self.ledger.note_leg_mark(name, state.minute_ns)
+        intents = self.plan(HedgeTarget(wanted), state)
+        outcome = self.apply(intents, state, equity=equity)
+        return replace(outcome, intents=tuple(intents))
 
     def flatten_for_correction(self, state: CarryMarketState) -> HedgeOutcome:
         """Reduce whichever leg is filled back to flat, and say why it closed."""
         exits: dict[str, tuple[Decimal, Decimal]] = {}
+        failed = False
         try:
             self._flatten_legs(FlattenCause.HEDGE_CORRECTION, state, exits)
+        except PersistenceFailure:
+            failed = True
+            raise
         finally:
-            self.correction_minutes = 0
             self.pending_quantity = ZERO
-            self._reconcile_ledger(exits)
+            if not failed:
+                self._reconcile_ledger(exits)
         outcome = self._settle(detail="hedge correction timed out; flattened")
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,
             instant_ns=state.minute_ns + _MINUTE_NS,
         )
-        return outcome
+        self._note_correction(outcome, state.minute_ns + _MINUTE_NS)
+        flatten = tuple(
+            LegIntent(
+                leg=name, symbol=self._executor(name)[1], side=PositionSide.FLAT, quantity=ZERO
+            )
+            for name in (PERP, SPOT)
+        )
+        return replace(outcome, intents=flatten)
 
     def _flatten_legs(
         self,
@@ -762,16 +823,22 @@ class HedgedPosition:
         """Flatten the perpetual first, then the spot (section 6.8)."""
         self.state = HedgeState.CLOSING
         exits: dict[str, tuple[Decimal, Decimal]] = {}
+        failed = False
         try:
             self._flatten_legs(cause, state, exits)
+        except PersistenceFailure:
+            failed = True
+            raise
         finally:
             self.pending_quantity = ZERO
-            self._reconcile_ledger(exits)
+            if not failed:
+                self._reconcile_ledger(exits)
         outcome = self._settle(detail=f"emergency reduce: {cause.value}")
         self.ledger.note_open_instant(
             flat=outcome.state is HedgeState.FLAT,
             instant_ns=state.minute_ns + _MINUTE_NS,
         )
+        self._note_correction(outcome, state.minute_ns + _MINUTE_NS)
         return outcome
 
     # -- funding -----------------------------------------------------------
@@ -919,6 +986,134 @@ class HedgedPosition:
                 continue
         return tuple(sorted(instants))
 
+    # -- re-booking a dispute (R1-i: `resolve --ledger`) ------------------
+
+    def rebook_plan(self) -> dict[str, Any]:
+        """What :meth:`rebook_from_stores` would book, computed without booking.
+
+        The two executors are the authority for what each leg holds and for its
+        cumulative fees and realised PnL; the ledger is moved to them, exactly as
+        :meth:`_reconcile_ledger` moves it after every cycle. Refused when an
+        executor holds LESS in fees than the ledger booked: that is not a lost
+        save, it is a reset history, and which one is true is unknowable.
+        """
+        state = self.ledger.state
+        plan: dict[str, Any] = {}
+        for name, executor, accrual in (
+            (SPOT, self.spot, state.spot),
+            (PERP, self.perp, state.perp),
+        ):
+            fee = executor.ledger.trading_fees - accrual.fees
+            if fee < ZERO:
+                raise HedgeError(
+                    f"the {name} executor reports {executor.ledger.trading_fees} of "
+                    f"cumulative fees and the ledger has booked {accrual.fees}: fees never "
+                    "fall, so this is a reset history, not a lost save"
+                )
+            plan[f"{name}_fee"] = str(fee)
+            plan[f"{name}_realised"] = str(executor.ledger.realised_pnl - accrual.realised)
+        spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
+        plan["spot_qty"] = str(spot_leg.quantity)
+        plan["perp_qty"] = str(perp_leg.quantity)
+        plan["opens_position"] = (
+            not (spot_leg.is_flat and perp_leg.is_flat) and state.open_instant_ns is None
+        )
+        return plan
+
+    def rebook_from_stores(
+        self,
+        *,
+        open_instant_ns: int | None,
+        correction: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Move the ledger to what the stores and executors hold. Returns what moved.
+
+        Fees and realised PnL by the executors' cumulative totals, principal and
+        margin by each leg's level: :meth:`_reconcile_ledger` with no frictions.
+        No slippage is booked, because none is known -- the cycle whose save was
+        lost is the only record of it, and no executor accumulates it.
+        ``open_instant_ns`` is the instant a position the ledger never saw
+        opened; the caller derives it and is refused here if it has none.
+        """
+        plan = self.rebook_plan()
+        before = self.ledger.state.free_cash
+        spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
+        if plan["opens_position"] and open_instant_ns is None:
+            raise HedgeError(
+                "the stores hold a position the ledger holds no open instant for, and none "
+                "was supplied"
+            )
+        self._reconcile_ledger()
+        flat = spot_leg.is_flat and perp_leg.is_flat
+        self.ledger.note_open_instant(flat=flat, instant_ns=open_instant_ns or 0)
+        marks = self.ledger.state.marked_at_ns
+        if marks:
+            self.remark_legs(max(marks.values()))
+        # The caller's determination of section 6.3's correction, or none: a
+        # position that is not PARTIAL has no correction, and a PARTIAL with no
+        # determination keeps an unknown (expired) start via `reconstruct`.
+        self.ledger.state.correction = (
+            None
+            if correction is None or spot_leg.quantity == perp_leg.quantity
+            else {
+                "started_ns": int(correction["started_ns"]),
+                "target": correction.get("target"),
+            }
+        )
+        return {
+            **{key: plan[key] for key in plan if key != "opens_position"},
+            "cash_moved": str(self.ledger.state.free_cash - before),
+            "open_instant_ns": self.ledger.state.open_instant_ns,
+        }
+
+    def torn_funding_plan(self) -> dict[str, Any]:
+        """The one settlement the perpetual executor booked and this ledger did not.
+
+        The flow is the EXECUTOR's own, read back as the difference between the
+        two ledgers' paid and received totals -- which are equal whenever no
+        booking is torn, because this ledger books exactly the flow the executor
+        returned. Refused for more than one torn instant (their split is
+        recorded nowhere), for a total that runs backwards, and for a total
+        that is both paid and received (one settlement is one or the other).
+        """
+        unbooked = self.unbooked_funding_instants()
+        if len(unbooked) != 1:
+            raise HedgeError(
+                f"{len(unbooked)} settlements are booked on the perpetual leg only; the "
+                "split of their flows between them is recorded nowhere"
+            )
+        paid = self.perp.ledger.funding_paid - self.ledger.state.funding_paid
+        received = self.perp.ledger.funding_received - self.ledger.state.funding_received
+        if paid < ZERO or received < ZERO:
+            raise HedgeError(
+                "the perpetual executor holds less funding (paid "
+                f"{self.perp.ledger.funding_paid}, "
+                f"received {self.perp.ledger.funding_received}) than the ledger booked"
+            )
+        if paid and received:
+            raise HedgeError(
+                f"the missing flow is both paid ({paid}) and received ({received}); one "
+                "settlement is one or the other"
+            )
+        return {"instant_ns": int(unbooked[0]), "cash_flow": str(received - paid)}
+
+    def rebook_torn_funding(self) -> Decimal:
+        """Book the torn settlement into this ledger, at the executor's own flow."""
+        plan = self.torn_funding_plan()
+        return self.ledger.book_funding(int(plan["instant_ns"]), Decimal(plan["cash_flow"]))
+
+    def remark_plan(self) -> int:
+        """The instant :meth:`remark_legs` marks both legs at: the later of the two."""
+        marks = self.ledger.state.marked_at_ns
+        if not marks:
+            raise HedgeError("neither leg has ever been observed, so there is nothing stale")
+        return max(marks.values())
+
+    def remark_legs(self, instant_ns: int) -> None:
+        """Mark both legs observed at ``instant_ns``: both were just reconciled."""
+        for name in (SPOT, PERP):
+            self.ledger.note_leg_mark(name, int(instant_ns))
+
     # -- marking and the identity -----------------------------------------
 
     def mark_to_market(self, state: CarryMarketState) -> CarryMark:
@@ -1004,7 +1199,15 @@ class HedgedPosition:
         position on a minute carrying neither is refused below, with the rest of
         the unknown-information cases.
         """
-        quantity = min(self.leg(SPOT).quantity, self.leg(PERP).quantity)
+        # PER LEG (R1-i). The leveraged leg is the perpetual, and a touch is a
+        # question about IT: its own quantity, its own margin, its own
+        # liquidation price. `min(spot, perp)` used to stand here, which is
+        # zero for a one-legged position -- so a naked short left by a refused
+        # spot leg or a failed close was never liquidation-checked at all. The
+        # spot leg is owned inventory with no liquidation of its own, and this
+        # build does not invent one: a spot-only position is checked and is
+        # never touched.
+        quantity = self.leg(PERP).quantity
         if quantity == ZERO:
             return False
         adverse = getattr(state, "mark_high", None) or state.mark
@@ -1033,7 +1236,12 @@ class HedgedPosition:
         Any disagreement disputes. Nothing is healed silently: a restart that
         quietly adopted one side's story would erase the evidence that the two
         sides ever differed.
+
+        Derived from the files alone (R1-i): an in-memory DISPUTED left by an
+        earlier call is not carried in -- a dispute that still stands is found
+        again below, and one an operator has cleared must not linger.
         """
+        self.state = HedgeState.FLAT
         for name, executor in ((SPOT, self.spot), (PERP, self.perp)):
             if executor.store.outcome is LoadOutcome.UNREADABLE:
                 self.dispute(f"{name}_store_unreadable")
@@ -1050,6 +1258,19 @@ class HedgedPosition:
             if report is not None and not report.agrees:
                 self.dispute(f"{name}_reconciliation_mismatch: {report.detail}")
                 return HedgeOutcome(self.state, detail="reconciliation mismatch")
+
+        # R1-i (the audit's crash row 13): a leg whose STORE holds a
+        # reconciliation dispute is disputed here too. `recover` compares the
+        # store with a dry-run venue seeded from that same store, so it always
+        # agrees, and a process killed between the store's dispute and Aegis's
+        # copy of it used to start READY with only `require_ready` standing in
+        # the way of the next order.
+        for name, executor in ((SPOT, self.spot), (PERP, self.perp)):
+            _, symbol = self._executor(name)
+            detail = executor.store.state.disputed.get(symbol)
+            if detail:
+                self.dispute(f"{name}_reconciliation_mismatch: {detail}")
+                return HedgeOutcome(self.state, detail="reconciliation dispute on the store")
 
         if self.ledger.disputed is not None:
             self.state = HedgeState.DISPUTED
@@ -1143,6 +1364,12 @@ class HedgedPosition:
             # so no settlement can belong to it, and leaving a stale instant
             # behind would put the next position's lower bound in the past.
             self.ledger.note_open_instant(flat=True, instant_ns=0)
+        if outcome.state is HedgeState.PARTIAL:
+            # A PARTIAL with no correction on record (a version 1 ledger) keeps
+            # an unknown start: expired, never a fresh budget.
+            self.ledger.begin_correction(CORRECTION_UNKNOWN_START, None)
+        elif outcome.state in (HedgeState.FLAT, HedgeState.HEDGED):
+            self.ledger.end_correction()
         return outcome
 
     def unbooked_funding_instants(self) -> tuple[int, ...]:

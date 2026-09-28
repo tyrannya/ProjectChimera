@@ -769,6 +769,11 @@ class DecisionLog:
         """The clock of the last committed record, or ``None`` if there is none."""
         return self._last_runner_now_ns
 
+    @property
+    def failed(self) -> bool:
+        """Whether a commit failed and this log accepts nothing further (R1-i)."""
+        return self._failure is not None
+
     def path_for_day(self, day: str) -> Path:
         """The file one UTC day's records live in."""
         return self.log_dir / f"{day}{LOG_SUFFIX}"

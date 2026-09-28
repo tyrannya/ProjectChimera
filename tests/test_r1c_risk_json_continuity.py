@@ -1601,17 +1601,16 @@ def test_a_real_funding_minute_crash_is_proved_and_deferred(tmp_path):
     assert resumed.runner.state is RunnerState.READY
 
 
-def test_a_real_day_roll_crash_stays_sealed_for_r1i(tmp_path):
-    """PINNED, not fixed: the UTC day-roll window.
+def test_a_real_day_roll_crash_is_proved_and_deferred_by_r1i(tmp_path):
+    """Pinned by R1-c as sealed and canonical R1-i's; R1-i proves it.
 
     ``update_equity`` on a new UTC day overwrites ``day_start_equity`` and
-    ``daily_pnl``. The prior baseline is not restated by the record the crash
-    preceded -- it is the equity of whichever write first touched the previous
-    day, which the configured capital or a bounded scan of earlier records may
-    reconstruct -- so proving this window means historical reconstruction of
-    the campaign's equity history, replay-shaped logic beyond R1-c's one-step
-    local inverse: canonical R1-i. It stays sealed, and this deterministic boundary is reached every
-    UTC midnight (here on the 23:59 minute, which Aegis dates by its close).
+    ``daily_pnl``. The prior baseline is one of the equities the log records
+    Aegis being handed (or the seed), and R1-i's proof tries each as a
+    candidate, accepting only the one whose full hash is the log's and which
+    the real ``update_equity`` carries to the file. This deterministic boundary
+    is reached every UTC midnight (here on the 23:59 minute, which Aegis dates
+    by its close), so a kill there must not end the campaign.
     """
     harness = build(tmp_path, days=(DAY, NEXT_DAY))
     start = harness.first_minute_ms() + 1435 * 60_000
@@ -1627,17 +1626,23 @@ def test_a_real_day_roll_crash_stays_sealed_for_r1i(tmp_path):
 
     resumed = restart(tmp_path, config, days=(DAY, NEXT_DAY))
 
-    assert resumed.runner.risk.continuity_disputed, "sealed: R1-i's to prove"
-    assert resumed.runner.risk_continuity.crash_transition == ""
-    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+    assert_proved_and_deferred(resumed, state_dir, "equity")
+    assert not resumed.runner.risk.continuity_disputed
+    assert resumed.runner.state is RunnerState.READY
+    resumed.tick(minute)
+    history = read_log_risk_history(state_dir)
+    on_disk = RiskState.from_dict(json.loads(risk_json(state_dir).read_text(encoding="utf-8")))
+    assert history.state_hash == risk_state_hash(on_disk.snapshot())
 
 
-def test_a_real_new_peak_crash_stays_sealed_for_r1i(tmp_path):
-    """PINNED, not fixed: the new-peak window. ``update_equity`` above the old
-    peak overwrites ``peak_equity``, whose prior value is the running maximum of
-    every equity Aegis was ever given -- history again, so R1-i's. A large
-    funding receipt is the fixture's way to lift the hedged equity past the
-    seeded capital.
+def test_a_real_new_peak_crash_is_proved_and_deferred_by_r1i(tmp_path):
+    """Pinned by R1-c as sealed and canonical R1-i's; R1-i proves it.
+
+    ``update_equity`` above the old peak overwrites ``peak_equity``, whose prior
+    value is the running maximum of the equities the log records Aegis being
+    handed (with or without the seed) -- a candidate R1-i's proof tries and
+    accepts only on the log's exact hash. A large funding receipt is the
+    fixture's way to lift the hedged equity past the seeded capital.
     """
     harness = build(tmp_path, days=(DAY,))
     harness.feed.write_settlements([DAY], hours=(1,), rates={(DAY, 1): "0.005"})
@@ -1653,8 +1658,9 @@ def test_a_real_new_peak_crash_stays_sealed_for_r1i(tmp_path):
 
     resumed = restart(tmp_path, config)
 
-    assert resumed.runner.risk.continuity_disputed, "sealed: R1-i's to prove"
-    assert resumed.runner.risk_continuity.crash_transition == ""
+    assert_proved_and_deferred(resumed, state_dir, "equity")
+    assert not resumed.runner.risk.continuity_disputed
+    assert resumed.runner.state is RunnerState.READY
 
 
 @pytest.mark.parametrize(

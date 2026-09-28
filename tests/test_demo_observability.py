@@ -60,6 +60,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from chimera.persistence import PersistenceFailure
+
 import demo_harness
 from chimera import metrics
 from chimera.carry.hedge import HedgeState
@@ -650,7 +652,12 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
     # Eleven since R1-g: `on_funding_deferral`, at the top of every tick, before
     # the clock observes the minute or anything about it is decided. It says
     # which funding instant the minute waits on, or none, and nothing else.
-    assert len(calls) == 11, f"expected eleven emission points, found {len(calls)}"
+    #
+    # Twelve since R1-i: a third `on_position`, where a restart finishes a
+    # liquidation flatten a crash interrupted (`_complete_interrupted_touch`) --
+    # the hedge moves and the runner halts, with no tick to refresh the gauges,
+    # exactly as on the two paths above.
+    assert len(calls) == 12, f"expected twelve emission points, found {len(calls)}"
     assert {call.func.attr for call in calls} == {
         "on_state",
         "on_log_write_error",
@@ -768,8 +775,12 @@ def test_a_log_write_error_is_counted_and_still_raised(tmp_path, monkeypatch):
         raise OSError("no space left on device")
 
     monkeypatch.setattr(DecisionLog, "append", boom)
-    with pytest.raises(OSError):
+    # R1-i: a failed append is a persistence failure -- a process failure,
+    # which no `except Exception` absorbs -- and still counted first. The
+    # filesystem's error rides along as the cause.
+    with pytest.raises(PersistenceFailure) as failure:
         harness.runner.shutdown("done")
+    assert isinstance(failure.value.__cause__, OSError)
     assert value_of(metrics.DEMO_LOG_WRITE_ERRORS) - before == 1
 
 
