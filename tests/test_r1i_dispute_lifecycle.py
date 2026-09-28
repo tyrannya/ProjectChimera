@@ -708,6 +708,29 @@ def test_the_ledger_schema_is_versioned_and_reads_both(tmp_path):
     ), "a malformed correction is refused, never defaulted"
 
 
+def test_a_correction_survives_a_save_and_a_version_1_file_reads_as_expired(tmp_path):
+    """At the file itself, not through `reconstruct` (which also re-opens an
+    unknown correction for a PARTIAL, and so would mask the reader): a saved
+    correction round-trips under the /2 schema, and a /1 file reads as the
+    unknown -- expired -- start, never as "no correction"."""
+    path = tmp_path / "carry_ledger.json"
+    ledger = CarryLedger.open(path, capital=D("1000000"))
+    assert ledger.begin_correction(123_000_000_000, D("0.5"))
+    ledger.save()
+    written = json.loads(path.read_text("utf-8"))
+    assert written["schema"] == LEDGER_SCHEMA
+    reopened = CarryLedger.open(path, capital=D("1000000")).state.correction
+    assert reopened["started_ns"] == 123_000_000_000
+    assert D(str(reopened["target"])) == D("0.5")
+
+    written["schema"] = "chimera.carry-ledger/1"
+    written.pop("correction")
+    path.write_text(json.dumps(written), encoding="utf-8")
+    old = CarryLedger.open(path, capital=D("1000000")).state
+    assert not old.disputed
+    assert old.correction == {"started_ns": 0, "target": None}
+
+
 # ---------------------------------------------------------------------------
 # one-legged positions: liquidation-checked per leg
 # ---------------------------------------------------------------------------
