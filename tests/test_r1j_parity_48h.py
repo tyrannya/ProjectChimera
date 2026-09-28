@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -84,7 +85,9 @@ def _publish(feed: SyntheticFeed, through: int) -> None:
         start = offset * 1440
         if through <= start:
             continue
-        hidden = {slot: MinuteShape(present=False) for slot in range(max(0, through - start), 1440)}
+        hidden = {
+            slot: MinuteShape(present=False) for slot in range(max(0, through - start), 1440)
+        }
         for market in ("um", "spot"):
             feed.write_day(market, day, hidden)
 
@@ -221,8 +224,9 @@ def test_the_live_run_really_restarted_and_really_flattened(fixture_run):
     assert operator[1]["operator"]["request_seq"] == operator[0]["seq"]
     # The flatten reduced a real position, and the next minute re-opened it.
     before = operator[0]["operator"]["position_before"]
-    assert before["perp_qty"] != "0.000" and before["spot_qty"] != "0.000"
-    assert operator[1]["position_after"]["perp_qty"] == "0.000"
+    assert Decimal(before["perp_qty"]) > 0 and Decimal(before["spot_qty"]) > 0
+    after = operator[1]["position_after"]
+    assert Decimal(after["perp_qty"]) == 0 and Decimal(after["spot_qty"]) == 0
     reopened = next(
         r for r in live if r["kind"] == "DECISION" and r["minute"] == _minute_iso(FLATTEN_AT)
     )
@@ -241,7 +245,15 @@ def test_the_new_hash_policy_and_real_risk_transitions_are_exercised(fixture_run
     stated = [r["risk"] for r in live if isinstance(r.get("risk"), dict)]
     assert stated and all(block["hash_policy"] == RISK_HASH_POLICY for block in stated)
     risk = json.loads((fixture_run["state_dir"] / "risk.json").read_text("utf-8"))
-    assert risk["day"] == D2, "the Aegis day rolled across the UTC midnight"
+    # The last minute (D2 23:59) closes at D3 00:00, the decision clock's last
+    # instant, so Aegis's day has rolled twice: D1 -> D2 -> D3.
+    assert risk["day"] == D3, "the Aegis day follows the recorded decision clock"
+    days = {
+        r["minute"][:10]
+        for r in live
+        if r["kind"] == "DECISION" and r["ledger_effect"] and r["execution"]
+    }
+    assert {D1, D2} <= days, "orders on both days, so the order window moved"
     # Distinct hashes across the run: the state moved, and was restated each time.
     assert len({block["state_hash"] for block in stated}) > 10
 
@@ -262,7 +274,9 @@ def test_the_replay_counterpart_is_attributed_to_the_committed_file(fixture_run,
 
 
 @pytest.mark.parametrize("omit", ["operator_file", "flatten_in_file"])
-def test_the_fixture_fails_without_its_operator_counterpart(fixture_run, tmp_path, capsys, omit):
+def test_the_fixture_fails_without_its_operator_counterpart(
+    fixture_run, tmp_path, capsys, omit
+):
     """Two-sided: the same 48 hours without the committed counterpart diverge."""
     argv = list(fixture_run["replay_argv"])
     argv[argv.index("--scratch") + 1] = str(tmp_path / "scratch")
@@ -273,7 +287,9 @@ def test_the_fixture_fails_without_its_operator_counterpart(fixture_run, tmp_pat
         empty = tmp_path / "empty.json"
         empty.write_text(
             json.dumps(
-                {"actions": [], "schema": "chimera.operator-actions/1"}, indent=2, sort_keys=True
+                {"actions": [], "schema": "chimera.operator-actions/1"},
+                indent=2,
+                sort_keys=True,
             )
             + "\n",
             encoding="ascii",
