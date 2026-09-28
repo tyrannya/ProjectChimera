@@ -1130,6 +1130,37 @@ class DemoRunner:
             return f"UNREADABLE -- it could not be read: {ledger.disputed}"
         return self._ledger_regression or "it may not speak for this campaign"
 
+    def _tell_aegis(self, mark: Any) -> None:
+        """Everything a finished MARK tells Aegis, through one writer (R1-k).
+
+        The equity, as before, and -- new in R1-k -- the RESULT of a round trip
+        that closed by this mark. Nothing called
+        :meth:`chimera.risk.RiskEngine.record_trade_result`, so
+        ``consecutive_losses`` never left zero, the cooldown was never opened,
+        and ``loss_streak_limit`` and ``cooldown_seconds`` were configured limits
+        that gated nothing.
+
+        Reported from the runner rather than from ``HedgedPosition`` because the
+        runner owns sequencing: the position executes and accounts, and telling
+        the risk engine that a trade finished is an ordering decision like every
+        other one this loop makes.
+
+        **After the ledger is persisted**, at every call site, because the mark
+        that produced the result also CLEARED the ledger's baseline for it. A
+        crash in the window between the two loses at most one cycle's report; the
+        other order would repeat one, and a cooldown opened on a trade that
+        happened once is a halt built on a fiction -- the same reason
+        ``note_cycle`` reports an unmeasured cycle as nothing rather than as
+        zero.
+
+        ``update_equity`` first, so a drawdown or daily-loss halt is raised on
+        the equity that has just been saved, before anything else is said about
+        the trade that produced it.
+        """
+        self.risk.update_equity(float(mark.equity))
+        if mark.cycle_result is not None:
+            self.risk.record_trade_result(float(mark.cycle_result))
+
     def _ledger_may_speak(self) -> bool:
         """Whether this ledger object is entitled to be persisted or quoted.
 
@@ -1579,7 +1610,7 @@ class DemoRunner:
         flattened = self.position.mark_to_market(state)
         self._save_ledger()
         if self._ledger_may_speak():
-            self.risk.update_equity(float(flattened.equity))
+            self._tell_aegis(flattened)
         self.telemetry.on_position(self.position)
         logger.warning(
             "RECOVERED an interrupted liquidation flatten on %s: %s",
@@ -2293,7 +2324,7 @@ class DemoRunner:
         # Through the same helper as the halt paths above, so the runner has one
         # ledger-persist call and not two spellings of it three lines apart.
         self._save_ledger()
-        self.risk.update_equity(float(mark.equity))
+        self._tell_aegis(mark)
         self.cursor.mark_processed(minute_ms)
 
         record_hash = self._append(
@@ -2610,7 +2641,7 @@ class DemoRunner:
                 # this the two persisted equities disagree and R1-b's restart
                 # reconciliation halts the campaign. Before the record, so the
                 # record's `risk.state_hash` is the state `risk.json` holds.
-                self.risk.update_equity(float(mark.equity))
+                self._tell_aegis(mark)
             self._append(
                 RecordKind.FUNDING,
                 minute_ns,
@@ -2815,7 +2846,7 @@ class DemoRunner:
         # next start raised an equity dispute out of an ordinary liquidation.
         # The crash harness met it on every restart across a touch.
         if self._ledger_may_speak():
-            self.risk.update_equity(float(flattened.equity))
+            self._tell_aegis(flattened)
         # A liquidation flatten moves the hedge and then HALTS, so unlike every
         # other position change there is no next minute to refresh the gauges at.
         # Without this `chimera_demo_hedge_state{state="HEDGED"}` stays 1 for as
@@ -3132,7 +3163,7 @@ class DemoRunner:
         # came from is entitled to speak -- otherwise the two persisted equities
         # disagree and R1-b's restart reconciliation halts the campaign.
         if self._ledger_may_speak():
-            self.risk.update_equity(float(mark.equity))
+            self._tell_aegis(mark)
         effect = self._ledger_effect_if_readable(mark.equity)
         record_hash = self._append(
             RecordKind.OPERATOR,
@@ -3496,11 +3527,13 @@ class DemoRunner:
         self.position.ledger.resolve(note, now_ns=self.clock.now_ns)
         booked = self._apply_rebook(kind, plan, state)
         equity = self.position.ledger.state.last_equity
+        mark = None
         if state is not None:
-            equity = self.position.mark_to_market(state).equity
+            mark = self.position.mark_to_market(state)
+            equity = mark.equity
         self._save_ledger()
-        if state is not None and self._ledger_may_speak():
-            self.risk.update_equity(float(equity))
+        if mark is not None and self._ledger_may_speak():
+            self._tell_aegis(mark)
         # The restart checks, run again on what the files now hold. A dispute
         # they find is held in memory -- as at any start -- and named in the
         # completion record; it is not written into the ledger.

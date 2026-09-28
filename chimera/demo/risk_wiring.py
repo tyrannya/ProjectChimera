@@ -66,18 +66,19 @@ class RiskWiringError(ValueError):
 #:     raises ``funding_halt`` at the Nth consecutive paid settlement, and
 #:     ``evaluate_entry`` vetoes every increase while it is up.
 #: ``loss_streak_limit`` -> ``record_trade_result`` opens a cooldown at the Nth
-#:     consecutive loss. (NOT REACHABLE on the demo path today: nothing in
-#:     ``chimera/`` or ``tools/`` calls ``record_trade_result``, so
-#:     ``consecutive_losses`` never leaves zero. Mapped anyway, so that the
-#:     campaign's value is already in force on the day something does.)
+#:     consecutive loss. Reachable since R1-k: ``DemoRunner._tell_aegis`` reports
+#:     the result of every round trip the hedged position closes, taken as the
+#:     change in EQUITY across the cycle (``CarryLedger.note_cycle``) so that the
+#:     funding, fees and slippage of both legs are all inside it. A cycle whose
+#:     opening equity was never recorded reports nothing rather than zero.
 #: ``max_open_positions`` -> ``evaluate_entry`` vetoes a new pair once this many
 #:     are open. Two, because the hedge is two legs.
 #: ``max_orders_per_minute`` -> ``record_order`` HALTS above this many approvals
 #:     in the rolling 60-second window.
 #: ``cooldown_seconds`` -> the length of the cooldown ``record_trade_result``
-#:     opens; ``evaluate_entry`` vetoes until it expires. (NOT REACHABLE on the
-#:     demo path today, for the same reason as ``loss_streak_limit``: the
-#:     cooldown is never opened, so the gate never closes.)
+#:     opens; ``evaluate_entry`` vetoes until it expires. Reachable since R1-k,
+#:     for the same reason as ``loss_streak_limit``: the cooldown is opened, so
+#:     the gate can close.
 #: ``max_daily_loss_pct`` -> ``update_equity`` halts on this loss from the day's
 #:     starting equity.
 #: ``max_data_delay_s`` -> since R1-f, the service's READY gate
@@ -94,12 +95,13 @@ class RiskWiringError(ValueError):
 #: ``max_exposure_per_asset_pct`` -> ``evaluate_entry`` vetoes when this pair's
 #:     CUMULATIVE exposure plus the new stake would pass the fraction of equity.
 #: ``max_funding_cost_rate`` -> ``evaluate_entry``'s side-aware funding veto,
-#:     ``sign(side) * rate`` (amendment A10). (NOT REACHABLE on the demo path
-#:     today: ``chimera/carry/hedge.py`` calls ``execute_target`` without a
-#:     ``funding_rate``, so ``evaluate_entry`` skips the whole funding branch.
-#:     What the demo DOES enforce against adverse funding is
-#:     ``funding_adverse_streak_limit``, whose settlements the runner really
-#:     does report.)
+#:     ``sign(side) * rate`` (amendment A10). Reachable since R1-k:
+#:     ``HedgedPosition._funding_rate_for`` passes the PERPETUAL leg's rate to
+#:     ``execute_target``, and the spot leg's stays ``None`` because spot
+#:     inventory bears no funding cost. The rate is ``MarketState``'s
+#:     ``funding_rate_next`` -- the venue's ``r`` on the mark-price stream, the
+#:     rate standing for the settlement AHEAD -- and NOT ``funding_rate_last``,
+#:     which is the last realised one. This veto is about a cost not yet paid.
 #: ``max_leverage`` -> ``evaluate_entry`` vetoes above it, and ``position_size``
 #:     caps the leverage it divides by.
 #: ``max_total_exposure_pct`` -> ``evaluate_entry`` vetoes when the sum of all

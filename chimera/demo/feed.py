@@ -250,7 +250,20 @@ class MarketState:
     book_spot: Mapping[str, Any] = field(default_factory=dict)
     book_perp: Mapping[str, Any] = field(default_factory=dict)
 
+    #: The last REALISED funding rate: read off the recorded settlement rows at
+    #: or before this minute. It names a settlement already charged.
     funding_rate_last: Decimal | None = None
+    #: The rate standing for the settlement AHEAD (R1-k): the venue's own ``r``
+    #: on the mark-price stream, which the recorder stores on the perpetual row.
+    #:
+    #: A separate field from ``funding_rate_last`` rather than a replacement,
+    #: because the two are different numbers and both are facts about the minute.
+    #: The recorder's COLUMN is also called ``funding_rate_last`` -- it is the
+    #: last rate the mark stream published, which is the next one to be charged
+    #: -- and that collision is why this field is named for what it is about
+    #: instead of for the column it comes from. Aegis's ``max_funding_cost_rate``
+    #: is a veto on a cost not yet paid, so it is this one that it judges on.
+    funding_rate_next: Decimal | None = None
     next_funding_time_ms: int | None = None
 
     perp_digest: str = ""
@@ -287,6 +300,11 @@ class MarketState:
             "book_spot": render(dict(self.book_spot)),
             "book_perp": render(dict(self.book_perp)),
             "funding_rate_last": render(self.funding_rate_last),
+            # In the hashed inputs for the same reason `mark_high` is: since
+            # R1-k it DECIDES something -- Aegis's `max_funding_cost_rate` vetoes
+            # an entry on it -- and a decision minute that omitted it would hash
+            # away one of its own inputs.
+            "funding_rate_next": render(self.funding_rate_next),
             "next_funding_time_ms": self.next_funding_time_ms,
             "um_minute_digest": self.perp_digest,
             "spot_minute_digest": self.spot_digest,
@@ -770,6 +788,7 @@ class FeedCursor:
             funding_rate_last=(
                 _decimal(settlement.get("funding_rate")) if settlement else None
             ),
+            funding_rate_next=(perp.decimal("funding_rate_last") if perp else None),
             next_funding_time_ms=(
                 int(perp.value("next_funding_time_ms"))
                 if perp is not None and perp.value("next_funding_time_ms") is not None
