@@ -487,6 +487,22 @@ the campaign resumed on a ledger it had been told to distrust. Refusing is the
 safer half of the fix; the other half, a `resolve` that actually re-books, is not
 in this change.
 
+A tenth, and the other thing to know before reconciling an equity by hand.
+**The `unrealised` term prices the perpetual leg at the MARK, and only the spot
+leg at a close** (R1-l). One valuation price, because the equity is compared
+against a requirement priced the same way: section 6.7's test is
+`equity < Q * mark_high * maintenance_margin_rate`, and until R1-l the left side
+was measured at `perp_close` while the right side was measured at the mark. The
+position is SHORT the perpetual, so a mark above the close is an unrealised loss
+the equity line did not admit to, and a touch could read as *not touched* by
+exactly `Q * (mark - close)`. Spot stays at its close because spot has no mark
+price — there is no second number there to be inconsistent with. `basis` and
+section 6.5's identity stay on the closes too: both are spreads the rules read,
+not valuations. A non-flat perpetual leg on a minute carrying no mark is
+**refused**, not valued at the close; on the decision path such a minute is
+`INCOMPLETE` and never marked, and the deferral safety pass takes the refusal as
+section 7.2 takes any unknown on a non-flat position — as a touch.
+
 A ninth, and read this one before comparing a report against a hand
 calculation. **Slippage is measured, not spent.** The campaign's equity is
 `equity = capital - fees + realised + net_funding + unrealised`, with no

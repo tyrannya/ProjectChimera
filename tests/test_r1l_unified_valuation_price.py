@@ -12,6 +12,13 @@ price at ``state.mark``. Section 6.7's test is
 priced differently: an equity the venue does not compute, against a requirement
 the venue does.
 
+Since R1-g there are **two** callers of that equity and not one:
+``mark_to_market`` marks the ledger at a minute the runner decides, and
+``equity_at`` answers 6.7's question about minutes the runner may *not* mark --
+the newer ones a funding deferral watches for a touch. Both now reach the price
+through ``_perp_pnl``, so the two cannot disagree about what the position is
+worth, and the tests below hold each of them to it.
+
 **The synthetic fixture cannot see any of this**: it writes ``mark = close`` on
 every minute, so every existing test passes either way. Each test here therefore
 moves one price and holds the other, which is the only arrangement in which the
@@ -51,6 +58,12 @@ def _opened(tmp_path):
 
 def _perp_quantity(harness) -> Decimal:
     return harness.runner.position.leg("perp").quantity
+
+
+def _hedged_quantity(harness) -> Decimal:
+    """The quantity section 6.7 prices its threshold on: ``min(spot, perp)``."""
+    position = harness.runner.position
+    return min(position.leg("spot").quantity, position.leg("perp").quantity)
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +120,108 @@ def test_the_mark_the_equity_used_is_reported(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# the second caller: R1-g's deferral safety pass
+# ---------------------------------------------------------------------------
+def test_equity_at_follows_the_mark(tmp_path):
+    """``equity_at`` is the number the deferral pass asks 6.7 with (R1-g).
+
+    It marks nothing -- that is its whole point, a later minute's low must not
+    reach an earlier minute's records -- but it must price the position the same
+    way the marking path does, or a runner would defer onto a second definition
+    of what it is worth.
+    """
+    harness, state = _opened(tmp_path)
+    quantity = _perp_quantity(harness)
+
+    base = harness.runner.position.equity_at(state)
+    lifted = harness.runner.position.equity_at(
+        replace(state, mark=state.mark + Decimal("100"))
+    )
+
+    assert lifted == base - quantity * Decimal("100")
+
+
+def test_equity_at_does_not_follow_the_close(tmp_path):
+    """The two-sided half, on the deferral path."""
+    harness, state = _opened(tmp_path)
+
+    base = harness.runner.position.equity_at(state)
+    moved = harness.runner.position.equity_at(
+        replace(state, perp_close=state.perp_close + Decimal("100"))
+    )
+
+    assert moved == base
+
+
+def test_both_callers_report_one_number(tmp_path):
+    """One valuation price means one valuation: the two paths cannot diverge.
+
+    Asserted on a minute where the mark and the close differ, because on the
+    fixture's own minutes they are equal and any two implementations agree.
+    """
+    harness, state = _opened(tmp_path)
+    moved = replace(state, mark=state.mark + Decimal("75"))
+
+    assert harness.runner.position.equity_at(moved) == (
+        harness.runner.position.mark_to_market(moved).equity
+    )
+
+
+def test_a_non_flat_leg_with_no_mark_is_refused_by_equity_at_too(tmp_path):
+    """The refusal reaches the deferral pass, which is written to expect it.
+
+    ``_touch_while_deferred`` wraps this call and returns the minute as a touch
+    when it raises -- section 7.2's answer, unknown information on a non-flat
+    position is refused -- so a minute that cannot be valued stops the runner
+    rather than passing its watch silently.
+    """
+    harness, state = _opened(tmp_path)
+
+    with pytest.raises(CarryError, match="cannot be valued"):
+        harness.runner.position.equity_at(replace(state, mark=None))
+
+
+# ---------------------------------------------------------------------------
 # what the liquidation test now compares
 # ---------------------------------------------------------------------------
+def test_a_touch_the_close_priced_equity_would_have_missed(tmp_path):
+    """The defect as an outcome, not as arithmetic: one minute, two verdicts.
+
+    Section 6.7 is ``equity < Q * mark_high * maintenance_margin_rate``. Holding
+    ``mark_high`` -- and therefore the threshold -- fixed, and asking the same
+    question with each of the two candidate equities, is the only arrangement in
+    which "which price" has a visible consequence.
+
+    ``mark_high`` is chosen from the position's own numbers so the threshold
+    falls strictly BETWEEN them. It has to be: the fixture capitalises the
+    campaign at a million against a maintenance requirement of a thousand, so no
+    ordinary price puts the threshold anywhere near either equity. Choosing it
+    is legitimate and not a thumb on the scale -- ``mark_high`` is exactly what
+    6.7 prices the threshold on, and the test moves it once and then holds it
+    while the equity is the only thing that changes.
+    """
+    harness, state = _opened(tmp_path)
+    position = harness.runner.position
+    quantity = _hedged_quantity(harness)
+    gap = Decimal("1000")
+
+    lifted = replace(state, mark=state.mark + gap)
+    at_mark = position.equity_at(lifted)
+    at_close = at_mark + quantity * gap  # what the previous implementation reported
+    threshold = (at_mark + at_close) / 2
+    lifted = replace(
+        lifted, mark_high=threshold / (quantity * position.config.maintenance_margin_rate)
+    )
+
+    # The mark stays far below the venue's liquidation price, so the second
+    # branch of 6.7 answers False and the portfolio test is what decides.
+    margin = position.perp.margin(position.config.perp_symbol, lifted.mark)
+    assert lifted.mark < margin.liquidation_price
+
+    assert position.liquidation_touched(lifted, equity=at_mark) is True
+    assert position.liquidation_touched(lifted, equity=at_close) is False
+
+
 def test_both_sides_of_the_liquidation_test_are_priced_at_the_mark(tmp_path):
     """The defect, stated as the arithmetic it produced.
 
@@ -187,7 +300,12 @@ def test_a_non_flat_leg_with_no_mark_is_refused(tmp_path):
 
 
 def test_a_flat_position_needs_no_mark(tmp_path):
-    """The control: nothing to value, so nothing to refuse."""
+    """The control: nothing to value, so nothing to refuse.
+
+    And nothing to report either. ``perp_mark`` is None exactly here -- a flat
+    leg has no unrealised term, so no price was used -- rather than carrying the
+    minute's mark, which would name a valuation that did not happen.
+    """
     # Not ticked: the fixture's rule opens on its very first minute, so a
     # position that has traded at all is no longer flat.
     harness = build(tmp_path)
@@ -198,3 +316,8 @@ def test_a_flat_position_needs_no_mark(tmp_path):
     mark = harness.runner.position.mark_to_market(replace(state, mark=None))
 
     assert mark.perp_pnl == 0
+    assert mark.perp_mark is None
+    assert mark.to_dict()["perp_mark"] is None
+    # And the same minute with a mark present still reports none: the question
+    # is whether a price was USED, not whether one was available.
+    assert harness.runner.position.mark_to_market(state).perp_mark is None
