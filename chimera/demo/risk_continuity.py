@@ -452,8 +452,11 @@ def funding_note_prior(
       halt, from any streak and either halt.
 
     ``cost_sign`` restricts the proof to one direction when the caller knows
-    the settlement (``resolve --ledger funding_booking_torn``); ``None`` tries
-    both. A candidate is accepted only when its FULL hash is ``state_hash``.
+    the settlement; ``None`` tries both. A candidate is accepted only when its
+    FULL hash is ``state_hash``. (``resolve --ledger funding_booking_torn`` no
+    longer uses this proof: a hash the log restated can precede a RESUME or an
+    OPERATOR that restates nothing, so it judges from the carry ledger's record
+    of the guard before the settlement instead.)
     """
     streak = found.get("funding_adverse_streak")
     if not isinstance(streak, int) or isinstance(streak, bool) or not state_hash:

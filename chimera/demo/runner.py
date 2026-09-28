@@ -45,7 +45,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from chimera.carry.hedge import PERP, SPOT, HedgedPosition, HedgeState
 from chimera.carry.ledger import CarryLedger, LoadOutcome
-from chimera.demo.clock import RunnerClock
+from chimera.demo.clock import RunnerClock, no_authoritative_time
 from chimera.demo.config import DemoConfig
 from chimera.demo import emergency
 from chimera.demo.decision_log import (
@@ -73,7 +73,6 @@ from chimera.demo.risk_continuity import (
     RiskContinuity,
     RiskContinuityFault,
     assess_risk_continuity,
-    funding_note_prior,
     risk_state_hash,
 )
 from chimera.demo.risk_wiring import (
@@ -93,7 +92,7 @@ from chimera.futures.store import LoadOutcome as StoreLoadOutcome
 from chimera.persistence import PersistenceFailure, errno_name
 from chimera.recorder.health import RecorderHealthError, read_heartbeat
 from chimera.recorder.sink import RecorderSinkError, write_json_atomic
-from chimera.risk import RiskEngine
+from chimera.risk import RiskEngine, RiskState
 
 logger = logging.getLogger(__name__)
 
@@ -2556,6 +2555,20 @@ class DemoRunner:
             except Exception as exc:
                 return f"funding_unbookable: {exc}"
 
+            if exposure.side in (PositionSide.LONG, PositionSide.SHORT):
+                # R1-i: Aegis's funding guard as it stands BEFORE this
+                # settlement is noted, on disk before the executor books it.
+                # From the executor's save to the ledger's below, the booking is
+                # torn; this record is what lets `resolve --ledger
+                # funding_booking_torn` tell a settlement Aegis counted from one
+                # it missed, whatever the log last restated (a RESUME, an
+                # OPERATOR or an incomplete minute restates nothing).
+                ledger.note_aegis_funding_before(
+                    instant_ns,
+                    funding_adverse_streak=self.risk.state.funding_adverse_streak,
+                    funding_halt=self.risk.state.funding_halt,
+                )
+                self._save_ledger()
             try:
                 flow = self.position.settle_funding(
                     settlement, open_instant_ns=opened, now_ns=now_ns
@@ -3592,21 +3605,24 @@ class DemoRunner:
                 ) from exc
             _opened, exposure = position.funding_exposure(instant)
             # Whether Aegis already counted it: proved one way or the other
-            # from the log, or refused. Counting it twice would move the streak
-            # that vetoes increases on a settlement that happened once.
-            counted = self._aegis_counted_the_settlement(exposure.side, settlement.rate)
-            if counted is None:
+            # from the ledger's record of the guard before it, or refused.
+            # Counting it twice would move the streak that vetoes increases on
+            # a settlement that happened once.
+            verdict = self._aegis_funding_verdict(instant, exposure.side, settlement.rate)
+            if verdict is None:
                 raise RunnerError(
                     "cannot re-book the torn settlement: whether Aegis already counted it in "
-                    "its funding streak is not provable from the log (the risk state is "
-                    "neither the log's last restated state nor that state carried through "
-                    "this one settlement). Nothing has been changed."
+                    "its funding streak is not provable (the carry ledger holds no record of "
+                    "Aegis's funding guard before this settlement -- a ledger written before "
+                    "chimera.carry-ledger/3 -- or Aegis's guard is neither that record nor "
+                    "that record carried through this one settlement). Nothing has been "
+                    "changed."
                 )
             return {
                 "torn": torn,
                 "rate": str(settlement.rate),
                 "side": exposure.side.value,
-                "aegis_counted": counted,
+                "aegis": verdict,
             }
         if kind == "stale_leg":
             return {"marked_at_ns": position.remark_plan()}
@@ -3658,15 +3674,16 @@ class DemoRunner:
         if kind == "funding_booking_torn":
             torn = plan["torn"]
             flow = position.rebook_torn_funding()
-            side = PositionSide(plan["side"])
-            if not plan["aegis_counted"] and side in (PositionSide.LONG, PositionSide.SHORT):
+            if plan["aegis"] == "missed":
                 self.risk.note_funding_settlement(
-                    position.config.perp_symbol, side, float(Decimal(plan["rate"]))
+                    position.config.perp_symbol,
+                    PositionSide(plan["side"]),
+                    float(Decimal(plan["rate"])),
                 )
             return {
                 "instant_ns": int(torn["instant_ns"]),
                 "cash_flow": str(flow),
-                "aegis_counted_before": bool(plan["aegis_counted"]),
+                "aegis": plan["aegis"],
             }
         if kind == "stale_leg":
             position.remark_legs(int(plan["marked_at_ns"]))
@@ -3687,72 +3704,62 @@ class DemoRunner:
                 continue
         return None
 
-    def _aegis_counted_the_settlement(self, side: Any, rate: Any) -> bool | None:
-        """Whether Aegis's funding streak already holds a torn settlement.
+    def _aegis_funding_verdict(self, instant_ns: int, side: Any, rate: Any) -> str | None:
+        """Whether Aegis's funding guard already holds the torn settlement.
 
-        ``True`` when proved counted, ``False`` when proved missed, ``None``
-        when neither is proved -- and ``None`` refuses the re-book.
+        ``"counted"`` or ``"missed"`` when proved, ``"unmoved"`` when noting it
+        moves nothing, and ``None`` -- which refuses the re-book -- otherwise.
 
-        Counted: a kill after ``note_funding_settlement`` persisted and before
-        the ledger was saved leaves ``risk.json`` ahead of the log, which R1-c
-        proves as the ``funding`` window and records in a ``RECOVERY`` naming
-        both hashes. The proof here is that record, newer than the log's last
-        ``FUNDING``, whose found hash is the live state (with the dispute's own
-        halt reverted, or as it is), and whose log hash is that state with THIS
-        settlement's direction taken back (:func:`funding_note_prior`). Checked
-        first: once a later record restates the counted state, the "missed"
-        test below would also pass on it.
+        The proof is the carry ledger's ``aegis_funding_before``: the guard
+        (``funding_adverse_streak``, ``funding_halt``) as it stood before THIS
+        settlement, saved by `_settle_funding` before the executor booked it and
+        cleared only in the save that books it into the ledger. The settlement
+        itself is carried through the real
+        :meth:`~chimera.risk.RiskEngine.note_funding_settlement` on a detached
+        engine; Aegis's live guard must then be one of the two:
+
+        * the record carried through the note -- ``counted``: the kill came
+          after Aegis persisted it (or a resolve interrupted after its own note);
+        * the record itself -- ``missed``: the kill came before it.
+
+        Nothing else moves those two fields between that save and this resolve:
+        only the note and ``resume`` write them, ``resume`` refuses while this
+        dispute stands, and a halted campaign decides no minute. So neither the
+        log's last restated hash (which a RESUME, an OPERATOR or an incomplete
+        minute does not restate) nor any other Aegis field enters the proof, and
+        a resolve killed before its ledger save is judged again, from the same
+        record, by the next one.
         """
-        # `RiskEngine.note_funding_settlement`'s own sign: a long pays a
-        # positive rate, a short a negative one.
-        sign = {PositionSide.LONG: 1, PositionSide.SHORT: -1}.get(PositionSide(side))
-        cost = 0.0 if sign is None else sign * float(rate)
-        if cost == 0:
-            return False  # a settlement that moves no streak: noting it is a no-op
-        cost_sign = 1 if cost > 0 else -1
-        live = self.risk.snapshot()
-        states = [live, {**live, "halted": False, "halt_reason": ""}]
-        findings: list[Mapping[str, Any]] = []
-        for record in self._log_records():
-            if record.get("kind") == RecordKind.FUNDING.value:
-                findings = []
-                continue
-            recovery = record.get("recovery")
-            block = recovery.get("risk_continuity") if isinstance(recovery, Mapping) else None
-            if isinstance(block, Mapping) and block.get("found_state_hash"):
-                findings.append(block)
-        for block in findings:
-            for state in states:
-                if risk_state_hash(state) == block["found_state_hash"] and (
-                    funding_note_prior(
-                        state, str(block.get("log_state_hash", "")), cost_sign=cost_sign
-                    )
-                    is not None
-                ):
-                    return True
-        if self._aegis_missed_the_settlement():
-            return False
-        return None
-
-    def _aegis_missed_the_settlement(self) -> bool:
-        """Whether the log proves Aegis never noted a torn settlement.
-
-        `_settle_funding` persists the executor, then Aegis's funding streak,
-        then the ledger. A kill after the streak moved leaves `risk.json` AHEAD
-        of the log, which R1-c seals; a kill before it leaves Aegis exactly the
-        log's last restated state -- plus, at most, the halt the dispute itself
-        raised on a later start. So the proof is: the live state, with the halt
-        reverted, hashes to the log's last restated ``risk.state_hash``.
-        """
-        restated = ""
-        for record in self._log_records():
-            risk = record.get("risk")
-            if isinstance(risk, Mapping) and isinstance(risk.get("state_hash"), str):
-                restated = str(risk["state_hash"])
-        if not restated:
-            return False
-        snapshot = {**self.risk.snapshot(), "halted": False, "halt_reason": ""}
-        return risk_state_hash(snapshot) == restated
+        if PositionSide(side) not in (PositionSide.LONG, PositionSide.SHORT):
+            return "unmoved"  # a settlement on no position is never noted
+        before = self.position.ledger.state.aegis_funding_before
+        if before is None or before["instant_ns"] != int(instant_ns):
+            return None
+        prior = (before["funding_adverse_streak"], before["funding_halt"])
+        # A detached engine -- no state file, no switch -- so the replay
+        # persists nothing anywhere and needs no clock.
+        replay = RiskEngine(
+            self.risk.limits,
+            clock=no_authoritative_time,
+            check_kill_switch_at_construction=False,
+        )
+        replay.state = RiskState.from_dict(
+            {
+                **self.risk.snapshot(),
+                "funding_adverse_streak": prior[0],
+                "funding_halt": prior[1],
+            }
+        )
+        replay.note_funding_settlement(
+            self.position.config.perp_symbol, PositionSide(side), float(Decimal(str(rate)))
+        )
+        after = (replay.state.funding_adverse_streak, replay.state.funding_halt)
+        live = (self.risk.state.funding_adverse_streak, self.risk.state.funding_halt)
+        if live not in (prior, after):
+            return None
+        if after == prior:
+            return "unmoved"
+        return "counted" if live == after else "missed"
 
     def resolve_risk_state(self, note: str) -> TickOutcome:
         """`resolve --risk-state`: R1-c's continuity dispute. Refuses what it cannot.

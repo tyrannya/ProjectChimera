@@ -696,8 +696,14 @@ def test_a_version_1_ledger_mid_correction_is_expired_not_renewed(tmp_path):
 
 
 def test_the_ledger_schema_is_versioned_and_reads_both(tmp_path):
-    assert LEDGER_SCHEMA == "chimera.carry-ledger/2"
-    assert LEDGER_SCHEMAS_READ == ("chimera.carry-ledger/2", "chimera.carry-ledger/1")
+    # /3 (the torn-funding remediation) adds `aegis_funding_before`; its own
+    # reader tests are in tests/test_r1i_funding_torn_resolution.py.
+    assert LEDGER_SCHEMA == "chimera.carry-ledger/3"
+    assert LEDGER_SCHEMAS_READ == (
+        "chimera.carry-ledger/3",
+        "chimera.carry-ledger/2",
+        "chimera.carry-ledger/1",
+    )
     path = tmp_path / "carry_ledger.json"
     path.write_text(
         json.dumps({"schema": LEDGER_SCHEMA, "capital": "1000000", "correction": "soon"}),

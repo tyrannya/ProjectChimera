@@ -235,6 +235,35 @@ def instrumented(faults: Faults) -> Iterator[Faults]:
             setattr(owner, attribute, original)
 
 
+@contextlib.contextmanager
+def kill_at_the_note(faults: Faults, when: str) -> Iterator[None]:
+    """Kill the process just before Aegis's ``note_funding_settlement`` or just
+    after it persisted: the two sides of a torn settlement's Aegis window.
+
+    Only the process's own Aegis (an engine with a state file) is killed in; a
+    detached engine -- the torn-funding resolve's replay of the note -- persists
+    nothing and runs as it is. From the kill on, ``instrumented`` refuses every
+    write, as for any other fault point.
+    """
+    original = RiskEngine.note_funding_settlement
+
+    def note(self: RiskEngine, *args: Any, **kwargs: Any) -> None:
+        if getattr(self, "_state_path", None) is None:
+            return original(self, *args, **kwargs)
+        if when == "before":
+            faults.killed = True
+            raise Killed("killed before Aegis noted the settlement")
+        original(self, *args, **kwargs)
+        faults.killed = True
+        raise Killed("killed after Aegis noted the settlement")
+
+    RiskEngine.note_funding_settlement = note  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        RiskEngine.note_funding_settlement = original  # type: ignore[method-assign]
+
+
 # ---------------------------------------------------------------------------
 # a runner from disk: a new process
 # ---------------------------------------------------------------------------

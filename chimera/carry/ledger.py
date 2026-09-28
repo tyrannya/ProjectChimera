@@ -54,8 +54,20 @@ logger = logging.getLogger(__name__)
 #: loaded from a version 1 file is flattened at the next complete minute. For
 #: a position that is not PARTIAL the marker is dropped the first time the
 #: state is settled (every start's `reconstruct()` does it), and means nothing.
-LEDGER_SCHEMA = "chimera.carry-ledger/2"
-LEDGER_SCHEMAS_READ: tuple[str, ...] = (LEDGER_SCHEMA, "chimera.carry-ledger/1")
+#:
+#: Version 3 (R1-i remediation) adds ``aegis_funding_before``: Aegis's funding
+#: guard (``funding_adverse_streak``, ``funding_halt``) as it stood just before
+#: ONE settlement was noted, written before the perpetual executor books that
+#: settlement. It is what ``resolve --ledger funding_booking_torn`` compares
+#: Aegis with to tell a settlement Aegis counted from one it missed. A version 1
+#: or 2 file carries no such fact and reads as ``None``: whether Aegis counted a
+#: settlement torn under it is then not provable, and the resolve refuses.
+LEDGER_SCHEMA = "chimera.carry-ledger/3"
+LEDGER_SCHEMAS_READ: tuple[str, ...] = (
+    LEDGER_SCHEMA,
+    "chimera.carry-ledger/2",
+    "chimera.carry-ledger/1",
+)
 
 #: ``correction.started_ns`` of a correction whose start is not known: the
 #: epoch, so every deadline measured from it has passed.
@@ -250,6 +262,13 @@ class CarryLedgerState:
     #: position was trying to hold (``None``: reduce the larger leg to the
     #: smaller). ``None`` whenever the position is not PARTIAL.
     correction: dict[str, Any] | None = None
+    #: Aegis's funding guard just before a settlement is noted (version 3):
+    #: ``{"instant_ns", "funding_adverse_streak", "funding_halt"}``, saved before
+    #: the perpetual executor books the settlement at ``instant_ns`` and cleared
+    #: by :meth:`CarryLedger.book_funding` in the save that books it. So while a
+    #: booking is torn -- the executor has it, this ledger does not -- the file
+    #: still holds the guard as it was before that exact settlement.
+    aegis_funding_before: dict[str, Any] | None = None
     #: Non-empty means DISPUTED. Cleared only by :meth:`resolve`, with a note.
     disputed: str | None = None
     #: Every operator resolution, with its mandatory note. Append-only evidence.
@@ -301,6 +320,9 @@ class CarryLedgerState:
             "funding_owed": [dict(owed) for owed in self.funding_owed],
             "identity_gap": _text(self.identity_gap),
             "correction": None if self.correction is None else dict(self.correction),
+            "aegis_funding_before": (
+                None if self.aegis_funding_before is None else dict(self.aegis_funding_before)
+            ),
             "disputed": self.disputed,
             "resolutions": [dict(r) for r in self.resolutions],
             "marked_at_ns": dict(sorted(self.marked_at_ns.items())),
@@ -316,11 +338,17 @@ class CarryLedgerState:
                 f"{list(LEDGER_SCHEMAS_READ)}. A ledger this build cannot read is not one "
                 "it may guess at."
             )
-        if schema == LEDGER_SCHEMA:
+        if schema != "chimera.carry-ledger/1":
             correction = _correction(data.get("correction"))
         else:
             # Version 1 recorded no correction at all: unknown, so expired.
             correction = {"started_ns": CORRECTION_UNKNOWN_START, "target": None}
+        # Versions 1 and 2 recorded no guard: unknown, which the resolve refuses.
+        aegis_before = (
+            _aegis_funding_before(data.get("aegis_funding_before"))
+            if schema == LEDGER_SCHEMA
+            else None
+        )
         settled_raw = data.get("settled", [])
         if not isinstance(settled_raw, list):
             raise LedgerError("settled must be a list of settlement instants")
@@ -388,6 +416,7 @@ class CarryLedgerState:
             funding_owed=owed,
             identity_gap=_optional_decimal(data.get("identity_gap"), "identity_gap"),
             correction=correction,
+            aegis_funding_before=aegis_before,
             disputed=None if disputed is None else str(disputed),
             resolutions=[
                 {str(k): str(v) for k, v in dict(r).items()}
@@ -416,6 +445,33 @@ def _correction(raw: Any) -> dict[str, Any] | None:
     except (KeyError, TypeError, ValueError) as exc:
         raise LedgerError(f"correction holds a malformed value: {raw!r}") from exc
     return {"started_ns": started, "target": target}
+
+
+def _aegis_funding_before(raw: Any) -> dict[str, Any] | None:
+    """A version 3 ``aegis_funding_before`` value, validated; malformed is refused."""
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "instant_ns",
+        "funding_adverse_streak",
+        "funding_halt",
+    }:
+        raise LedgerError(f"aegis_funding_before holds a malformed value: {raw!r}")
+    instant, streak, halt = (
+        raw["instant_ns"],
+        raw["funding_adverse_streak"],
+        raw["funding_halt"],
+    )
+    if (
+        isinstance(instant, bool)
+        or not isinstance(instant, int)
+        or isinstance(streak, bool)
+        or not isinstance(streak, int)
+        or streak < 0
+        or not isinstance(halt, bool)
+    ):
+        raise LedgerError(f"aegis_funding_before holds a malformed value: {raw!r}")
+    return {"instant_ns": instant, "funding_adverse_streak": streak, "funding_halt": halt}
 
 
 def _now_text(instant_ns: int | None) -> str:
@@ -738,6 +794,11 @@ class CarryLedger:
         if owed is not None:
             # Resolved by this row, booked or not, in the save that books it.
             self.state.funding_owed.remove(owed)
+        before = self.state.aegis_funding_before
+        if before is not None and before["instant_ns"] == int(instant_ns):
+            # Its settlement is booked here: in the same save, the guard it
+            # recorded stops being evidence about anything torn.
+            self.state.aegis_funding_before = None
         if instant_ns in self.state.settled:
             return ZERO
         self.state.settled.append(instant_ns)
@@ -892,6 +953,17 @@ class CarryLedger:
             "target": None if target is None or target <= ZERO else str(target),
         }
         return True
+
+    def note_aegis_funding_before(
+        self, instant_ns: int, *, funding_adverse_streak: int, funding_halt: bool
+    ) -> None:
+        """Record Aegis's funding guard before the settlement at ``instant_ns``
+        is noted (R1-i). The caller saves it before the executor books it."""
+        self.state.aegis_funding_before = {
+            "instant_ns": int(instant_ns),
+            "funding_adverse_streak": int(funding_adverse_streak),
+            "funding_halt": bool(funding_halt),
+        }
 
     def end_correction(self) -> bool:
         """The position is no longer PARTIAL. True if a correction was cleared."""
