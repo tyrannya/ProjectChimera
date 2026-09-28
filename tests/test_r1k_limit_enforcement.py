@@ -640,3 +640,34 @@ def test_a_reported_loss_still_opens_the_cooldown_at_the_committed_limit():
     assert engine.state.consecutive_losses == 3
     assert _entry(engine).allowed is False
     assert "cooldown" in _entry(engine).reason
+
+
+def test_the_rate_the_veto_reads_is_in_the_hashed_inputs(tmp_path):
+    """A decided input that the record omits is an input hashed away.
+
+    The rule is the one stated beside ``mark_high`` in ``MarketState.to_dict``:
+    a field belongs in the hashed inputs because it DECIDES something. Since
+    R1-k this rate can veto an entry, so a decision minute that left it out
+    would hash a set of inputs it did not actually decide on -- and two minutes
+    differing only in the rate that refused one of them would hash alike.
+    """
+    from tests.demo_harness import build
+
+    harness = build(tmp_path)
+    minute = harness.first_minute_ms()
+    state = harness.runner.cursor.state_for(minute, now_ns=harness.runner.clock.now_ns)
+
+    inputs = state.canonical()
+
+    assert "funding_rate_next" in inputs
+    # And still beside, not instead of, the realised rate.
+    assert "funding_rate_last" in inputs
+
+    # The consequence, not just the key: two minutes differing only in the rate
+    # that could refuse one of them must not hash alike.
+    from dataclasses import replace
+
+    from chimera.demo.runner import _inputs_hash
+
+    moved = replace(state, funding_rate_next=(state.funding_rate_next or Decimal("0")) - 1)
+    assert _inputs_hash(moved) != _inputs_hash(state)
