@@ -381,9 +381,9 @@ class LogRiskStatement(str, Enum):
 #:     before it decides whether the minute is complete, and ``note_feed``
 #:     persists ``stale_feed_since``, which IS hashed.
 #:
-#: ``SKIPPED_STALE`` is deliberately absent: ``DemoRunner._skipped_stale`` says
-#: in as many words that "nothing else about the position, the ledger or Aegis
-#: moves", and it is appended from ``catch_up`` without a tick. ``STARTUP``,
+#: ``SKIPPED_STALE`` is deliberately absent: the builds that wrote it (before
+#: R1-g retired the catch-up cap) appended it from ``catch_up`` without a tick,
+#: and "nothing else about the position, the ledger or Aegis" moved. ``STARTUP``,
 #: ``SHUTDOWN`` and ``RECOVERY`` are absent for the same reason -- none of the
 #: three mutates Aegis, and the constructor's ``check_kill_switch`` (which does)
 #: runs after the load-time snapshot this compares is taken.

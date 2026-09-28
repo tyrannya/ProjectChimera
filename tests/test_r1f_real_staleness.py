@@ -19,12 +19,14 @@ allowed to cause a FEED_STALLED or FEED_RESUMED record, and never allowed to
 put a value of its own into one.
 
 Time is simulated with R1-d's `FakeTime`, and the recorder with `Recorder`
-below, which is TODAY's recorder, not R1-g's: normalized minutes arrive in
-300 s batches (660 s when the duty cycle stretches the pass), and the heartbeat
-file is rewritten every 30 s in the production shape. Until R1-g the gate's
-authority is that heartbeat -- ``min(heartbeat_ns, um.kline_1m last_event_ns)``
-against the operational clock -- because the normalized cadence is slower than
-the committed limit (independent review F1). Its central two-sided witness is
+below. By default it is the recorder as R1-f found it: normalized minutes arrive
+in 300 s batches (660 s when the duty cycle stretches the pass) -- the slowest a
+recorder the gate must not stall can publish -- and the heartbeat file is
+rewritten every 30 s in the production shape; ``batch=1`` is R1-g's per-minute
+publication. The gate's authority is that heartbeat -- ``min(heartbeat_ns,
+um.kline_1m last_event_ns)`` against the operational clock -- because the
+normalized cadence was slower than the committed limit (independent review F1),
+and R1-g keeps it (`DemoRunner.check_feed` says why). Its central two-sided witness is
 `test_todays_recorder_healthy_for_two_hours_never_stalls` against
 `test_a_dead_kline_stream_stalls_within_the_limit_plus_grace_and_holds`.
 
@@ -692,20 +694,16 @@ def test_todays_recorder_healthy_for_two_hours_never_stalls(tmp_path, batch, kli
 # --------------------------------------------------------------------------- #
 # C. automatic continuation, and only for the stall
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("catch_up", [60, None], ids=["every-pending-minute", "committed-cap"])
-def test_the_feed_resumes_by_itself_and_no_minute_is_lost_or_repeated(tmp_path, catch_up):
+def test_the_feed_resumes_by_itself_and_no_minute_is_lost_or_repeated(tmp_path):
     """Freeze, stall, publish again. No operator, no RESUME, nothing lost.
 
-    With a catch-up window wide enough for the outage every pending minute is
-    decided, the first one included. With the committed one (3) the older ones
-    are recorded as SKIPPED_STALE, exactly once each -- that cap is section 2.2's
-    and R1-g's to replace, not this gate's.
+    Every minute the outage held back is decided once the feed resumes, the
+    first one included, under the committed configuration. (Before R1-g this
+    needed a widened catch-up window; under the committed cap of 3 the older
+    minutes were SKIPPED_STALE.)
     """
-    runner_settings = None if catch_up is None else {"max_catchup_minutes": catch_up}
     fake = FakeTime(T_START)
-    harness = harness_for(
-        tmp_path, runner=runner_settings, telemetry=telemetry_on(fake, tmp_path)
-    )
+    harness = harness_for(tmp_path, telemetry=telemetry_on(fake, tmp_path))
     runner = harness.runner
     recorder = Recorder(harness)
     recorder.frozen_at = FROZEN
@@ -745,10 +743,9 @@ def test_the_feed_resumes_by_itself_and_no_minute_is_lost_or_repeated(tmp_path, 
     assert accounted == expected
     decided = [r["minute"] for r in records if r["kind"] == "DECISION"]
     assert len(decided) == len(set(decided))
-    if catch_up is not None:
-        first = next(r for r in after(records, "FEED_RESUMED") if r["kind"] == "DECISION")
-        assert first["minute"] == expected[0]
-        assert "SKIPPED_STALE" not in [r["kind"] for r in after(records, "FEED_RESUMED")]
+    first = next(r for r in after(records, "FEED_RESUMED") if r["kind"] == "DECISION")
+    assert first["minute"] == expected[0]
+    assert "SKIPPED_STALE" not in kinds
     assert runner.cursor.last_minute_processed == minute_ms(recorder.count - 1)
 
 
@@ -1174,9 +1171,8 @@ def test_hostile_hosts_and_different_operational_clocks_write_identical_evidence
         arms.append(state_bytes(harness.state_dir))
         kinds = kinds_of(harness)
         assert kinds.count("FEED_STALLED") == 1 and kinds[-1] == "SHUTDOWN"
-        # Three catch-ups -- the start, then two of today's 300 s batches -- each
-        # deciding the committed window of 3 and skipping the rest (R1-g's).
-        assert kinds.count("DECISION") == 3 * 3
+        # Every minute up to the frozen one, decided once (R1-g: no cap).
+        assert kinds.count("DECISION") == FROZEN and "SKIPPED_STALE" not in kinds
 
     assert sorted(arms[0]) == sorted(arms[1])
     assert arms[0] == arms[1]
@@ -1200,10 +1196,6 @@ def test_two_stale_services_a_decade_apart_write_identical_stall_evidence(tmp_pa
 # --------------------------------------------------------------------------- #
 # the recorder as it is today: parity, and the failures the heartbeat must see
 # --------------------------------------------------------------------------- #
-#: A catch-up window wider than any batch: every published minute is decided.
-EVERY_MINUTE = {"max_catchup_minutes": 60}
-
-
 def test_a_healthy_day_on_todays_recorder_replays_to_parity(tmp_path):
     """Review F1's parity experiment, repeated under the heartbeat gate.
 
@@ -1214,19 +1206,14 @@ def test_a_healthy_day_on_todays_recorder_replays_to_parity(tmp_path):
     comparison (`tools.replay_parity.compare_logs`) reports PARITY. (A GENUINE
     outage still adds records and shifts ``seq``; that policy is R1-j's.)
 
-    The catch-up window is widened so that the live service decides every
-    minute a 300 s batch brings. Under the committed window of 3, two of each
-    five are SKIPPED_STALE live and decided in the replay, and the positions part
-    from there -- with or without this gate. That is R1-g's to fix, and it would
-    hide the one thing measured here: whether the gate itself moves the log.
+    Under the COMMITTED runner configuration. R1-f had to widen the catch-up
+    window here, because under the committed cap of 3 two of each five minutes
+    of a 300 s batch were SKIPPED_STALE live and decided in the replay; R1-g
+    removed the cap, and this is now the integration witness that it did.
     """
-    gated, recorder, _ = healthy_run(
-        tmp_path / "gated", batch=TODAY_BATCH, runner=EVERY_MINUTE
-    )
+    gated, recorder, _ = healthy_run(tmp_path / "gated", batch=TODAY_BATCH)
     count = recorder.count
-    ungated, _, _ = healthy_run(
-        tmp_path / "ungated", batch=TODAY_BATCH, limit=OUT_OF_REACH, runner=EVERY_MINUTE
-    )
+    ungated, _, _ = healthy_run(tmp_path / "ungated", batch=TODAY_BATCH, limit=OUT_OF_REACH)
     volatile = {"prev_hash", "record_hash", "config_hash"}
 
     def comparable(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1237,7 +1224,7 @@ def test_a_healthy_day_on_todays_recorder_replays_to_parity(tmp_path):
     ), "the gate changed a healthy day's log"
 
     # Section 10's replay: the same finished files, every minute ticked in turn.
-    replay = harness_for(tmp_path / "replay", count=count, runner=EVERY_MINUTE)
+    replay = harness_for(tmp_path / "replay", count=count)
     replay.runner.replay(minute_ms(0), minute_ms(count - 1))
     replay.runner.shutdown("replay")
     report = compare_logs(gated.records(), replay.records())

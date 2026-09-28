@@ -104,10 +104,14 @@ campaign. A replay reads finished files, is never stale, and writes neither.
 > tool; until it is made, treat a restarted run's `seq` divergences as expected
 > and read the other fields.
 >
-> The same applies to a run whose live catch-up skipped minutes: the replay
+> The same applies to a run whose live catch-up skipped minutes -- any log
+> written before R1-g, whose catch-up cap wrote `SKIPPED_STALE`: the replay
 > decides them, so it opens its position earlier and every later `signal`,
 > `position_after` and `ledger_effect` differs. A minute-level exclusion cannot
-> undo a state divergence that propagates.
+> undo a state divergence that propagates. Since R1-g the runner decides every
+> pending minute, and a funding minute reached before its settlement row waits
+> for it rather than booking it at a later minute, so neither cause arises in a
+> current log.
 
 **Everything else is compared, including the kinds PR-10R made reachable.**
 `FUNDING`, `RECONCILIATION`, `LIQUIDATION_TOUCH`, `SKIPPED_STALE` and
@@ -200,7 +204,7 @@ that minute was not one the campaign decided from its files:
 
 | live record | minute excluded | why a replay cannot reproduce it |
 | --- | --- | --- |
-| `SKIPPED_STALE` | the skipped minute | the live process came back from an outage and the minute was already older than `max_catchup_minutes`. Which minutes were stale depends on when the process restarted, and no recorded file holds that. |
+| `SKIPPED_STALE` | the skipped minute | written only by builds before R1-g, which retired the catch-up cap: the live process came back from an outage and the minute was already older than `max_catchup_minutes`. Which minutes were stale depends on when the process restarted, and no recorded file holds that. Kept so those logs still compare. |
 | `RECOVERY` | `recovery.evidence_excluded_minute` | section 9.3: the minute a crash left inconsistent "is excluded from the campaign's evidence and counted in the monthly report". |
 
 Every exclusion is reported. `explained_exclusions` lists each excluded minute

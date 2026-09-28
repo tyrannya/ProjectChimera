@@ -583,6 +583,39 @@ def build_minutes(
     return records, missing, conflicts, tallies
 
 
+def settled(
+    built: tuple[Sequence[MinuteRecord], Sequence[int], Sequence[int], Mapping[str, Any]],
+    through_ms: int | None,
+) -> tuple[list[MinuteRecord], list[int], list[int], Mapping[str, Any]]:
+    """Only the minutes that closed at or before ``through_ms`` (R1-g).
+
+    A minute's row joins three streams, and its closed kline can arrive before
+    the last mark or book event stamped inside it -- they come over different
+    sockets. Published at that moment, the row would change on the next render,
+    and a runner that had already decided it would disagree with a replay of the
+    finished file. So a caller that is publishing while the day fills passes the
+    instant every stream is known to have passed, and a minute past it is held
+    back as not-yet-written: reported missing, exactly as the minutes still to
+    come in the open day already are. ``None`` is the whole day, unchanged.
+
+    Tallies are raw record counts, not minutes, and are left as they are.
+    """
+    records, missing, conflicts, tallies = built
+    if through_ms is None:
+        return list(records), list(missing), list(conflicts), tallies
+
+    def closed(minute_ms: int) -> bool:
+        return minute_ms + MS_PER_MINUTE <= through_ms
+
+    held = [r.minute_open_ms for r in records if not closed(r.minute_open_ms)]
+    return (
+        [r for r in records if closed(r.minute_open_ms)],
+        sorted([*missing, *held]),
+        [m for m in conflicts if closed(m)],
+        tallies,
+    )
+
+
 def minute_frame(records: Iterable[MinuteRecord], *, market: str) -> pd.DataFrame:
     """The normalized table for one market, with fixed columns and fixed dtypes.
 
@@ -818,7 +851,12 @@ class MinuteNormalizer:
 
     # --- building ---------------------------------------------------------
     def build_day(
-        self, market: str, day: str, *, provenance: Mapping[str, Any] | None = None
+        self,
+        market: str,
+        day: str,
+        *,
+        provenance: Mapping[str, Any] | None = None,
+        through_ms: int | None = None,
     ) -> DayReport:
         """Normalize one UTC day of one market from its raw files.
 
@@ -827,7 +865,7 @@ class MinuteNormalizer:
         metadata, which is what lets the recorder re-derive the current day on
         every restart. Once the day is frozen it is refused, because a frozen
         day is evidence and a correction is a new file with a note rather than a
-        quiet overwrite.
+        quiet overwrite. ``through_ms`` is :func:`settled`'s.
         """
         require_day(day)
         columns_for(market)
@@ -863,7 +901,9 @@ class MinuteNormalizer:
             books=books,
             book_stream=book_stream,
         )
-        return self.write_day(market, day, built, provenance=provenance, sources=sources)
+        return self.write_day(
+            market, day, settled(built, through_ms), provenance=provenance, sources=sources
+        )
 
     def write_day(
         self,

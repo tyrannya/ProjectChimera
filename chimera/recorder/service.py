@@ -35,6 +35,21 @@ finished with, and section 4.2 gives the reconciliation the right to re-normaliz
 a day that late events changed. Those are PR-06's, and their absence here is the
 boundary rather than an omission.
 
+**A minute is published within seconds of settling (R1-g).** The maintenance
+pass keeps its duty-cycled cadence for rotation, freezing and gap-fill; a
+separate publisher renders the open day as soon as a minute has settled -- every
+stream folded into its row has passed its close, or `PUBLISH_SETTLE_CAP_S` has.
+A minute settled by its streams is final: nothing stamped inside it can still
+be on the way. A minute published by the cap is NOT final: a stream that had
+gone quiet can still deliver an event stamped inside it, and the next render
+changes the row (independent review of PR #108, finding F3). Such an event is
+republished at the publisher's next check. A runner that decided the earlier
+row then disagrees with a replay of the finished file; reconciling a day that
+changed is R1-h's, not this module's. Every render and freeze is serialised by
+one lock; see `RecorderService._render`. The parquet is still rewritten in place
+(atomic replacement is R1-h's), and the runner treats a day it catches
+mid-rewrite as not ready yet.
+
 **Shutdown is complete or it is a bug.** Every task this service creates is
 owned by it, cancelled by it and awaited by it. A task that fails does not leave
 the recorder reporting itself up: the failure is recorded, the stop event is set,
@@ -47,6 +62,7 @@ import asyncio
 import inspect
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,6 +131,29 @@ NORMALIZE_INTERVAL_S = 300.0
 #: floor and this is the ceiling: whichever is longer wins, so the work stays a
 #: bounded fraction of the machine no matter how large the day gets.
 NORMALIZE_DUTY_CYCLE = 0.1
+
+#: R1-g: how often the publisher looks for a newly settled minute. Looking is
+#: free -- it reads a few integers -- and a day is rendered only when a minute
+#: has settled since the last render, so this is the delay between a minute
+#: settling and appearing, not a rendering rate.
+PUBLISH_INTERVAL_S = 1.0
+
+#: R1-g: the longest a closed minute waits for a stream that has gone quiet. A
+#: minute is published once every stream folded into it has delivered an event
+#: at or after its close (so nothing stamped inside it can still be on the
+#: way), or once the recorder's wall clock is this far past the close, whichever
+#: is first. Without the cap one dead book stream would hold every later minute
+#: back for ever; with it, such a minute is published with the stream's column
+#: empty, as it always has been, ten seconds late. A row published by the cap
+#: is not final: see the module docstring.
+PUBLISH_SETTLE_CAP_S = 10.0
+
+#: The streams a minute's row is folded from, by suffix: exactly the ones
+#: :class:`IncrementalNormalizer` reads.
+_FOLDED_SUFFIXES = (".kline_1m", ".markPrice", ".bookTicker")
+
+#: The market the runner walks, published last in every pass. See `_render`.
+_LEADING_MARKET = "um"
 
 #: How long after a UTC midnight the previous day's raw files are frozen. A
 #: frame stamped 23:59:59 can be delivered after 00:00:00, and freezing at the
@@ -224,6 +263,8 @@ class RecorderService:
         sync_interval_s: float = SYNC_INTERVAL_S,
         heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S,
         normalize_interval_s: float = NORMALIZE_INTERVAL_S,
+        publish_interval_s: float = PUBLISH_INTERVAL_S,
+        publish_settle_cap_s: float = PUBLISH_SETTLE_CAP_S,
         premium_index_interval_s: float = PREMIUM_INDEX_INTERVAL_S,
         funding_catchup_interval_s: float = FUNDING_CATCHUP_INTERVAL_S,
         rotation_grace_s: float = ROTATION_GRACE_S,
@@ -236,6 +277,8 @@ class RecorderService:
         self.sync_interval_s = sync_interval_s
         self.heartbeat_interval_s = heartbeat_interval_s
         self.normalize_interval_s = normalize_interval_s
+        self.publish_interval_s = publish_interval_s
+        self.publish_settle_cap_s = publish_settle_cap_s
         self.premium_index_interval_s = premium_index_interval_s
         self.funding_catchup_interval_s = funding_catchup_interval_s
         self.rotation_grace_s = rotation_grace_s
@@ -268,6 +311,20 @@ class RecorderService:
         self._normalized_days: list[str] = []
         self._frozen_after: dict[str, float] = {}
         self._last_maintenance_s = 0.0
+        #: R1-g. Every render and every freeze holds this, whichever task or
+        #: thread it runs on: the publisher and the maintenance pass render in
+        #: worker threads and would otherwise advance the same incremental cache
+        #: from under each other. A threading lock and not an asyncio one,
+        #: because a cancelled task stops awaiting its thread but the thread
+        #: runs on -- and `_shutdown`'s render must wait for it.
+        self._render_lock = threading.Lock()
+        #: The settle horizon every render used, never moved back. Epoch ms.
+        self._through_ms: int | None = None
+        #: The close of the newest minute the publisher has rendered. Epoch ms.
+        self._published_through_ms: int | None = None
+        #: Set when a folded stream records an event inside a minute already
+        #: published: the publisher renders at its next check. See `_record`.
+        self._republish = False
 
     # --- writing ----------------------------------------------------------
     def _record(self, event: RawEvent) -> None:
@@ -318,6 +375,17 @@ class RecorderService:
             last = stream.last_event_ns
             if last is None or event.canonical_ns > last:
                 stream.last_event_ns = event.canonical_ns
+        published = self._published_through_ms
+        if (
+            result.accepted
+            and published is not None
+            and event.stream.endswith(_FOLDED_SUFFIXES)
+            and event.canonical_ns < published * NS_PER_MILLISECOND
+        ):
+            # R1-g, F4: a closed candle after the cap published its minute
+            # without it, or a late mark. Without this the row waited for the
+            # horizon to cross another close -- up to a minute more.
+            self._republish = True
         if event.source is EventSource.REST_GAPFILL and result.accepted:
             stream.gapfill_rows += 1
 
@@ -389,12 +457,14 @@ class RecorderService:
             recovery.last_canonical_ns[stream] = last
             if last is not None:
                 self.health.stream(stream).last_event_ns = last
-        for market in self.contract.market_keys():
-            # The same renderer the running service uses: incremental where the
-            # cache allows it, the authoritative rebuild where it does not. A
-            # restart that rendered through a different path than the run would
-            # be a restart that could disagree with itself.
-            if self._normalize(market, today):
+        # The same renderer the running service uses: incremental where the
+        # cache allows it, the authoritative rebuild where it does not. A
+        # restart that rendered through a different path than the run would be
+        # a restart that could disagree with itself.
+        rendered, through = self._render([today])
+        self._published_through_ms = through // MS_PER_MINUTE * MS_PER_MINUTE
+        for (market, _day), written in rendered.items():
+            if written:
                 recovery.normalized += (f"{market}/{today}",)
                 status = self.incremental.status.get((market, today))
                 if status is not None and status.rebuilt:
@@ -658,6 +728,7 @@ class RecorderService:
         tasks.append(self._loop(stop, self.sync_interval_s, self._sync, "sync"))
         tasks.append(self._loop(stop, self.heartbeat_interval_s, self._beat, "heartbeat"))
         tasks.append(self._maintenance_task(stop))
+        tasks.append(self._loop(stop, self.publish_interval_s, self._publish, "publish"))
         tasks.append(
             self._loop(
                 stop, self.premium_index_interval_s, self.poll_premium_index, "premium-index"
@@ -832,8 +903,7 @@ class RecorderService:
             closed = self._current_day
             self._current_day = today
             self._frozen_after[closed] = time.monotonic() + self.rotation_grace_s
-            for market in self.contract.market_keys():
-                await asyncio.to_thread(self._normalize, market, closed)
+            await asyncio.to_thread(self._render, [closed])
             if self.gapfill:
                 for market in self.contract.market_keys():
                     await self.fill_kline_gap(market)
@@ -841,20 +911,98 @@ class RecorderService:
         # Raw first, always. A cursor may only ever claim material the raw files
         # already hold durably, so the fsync happens before anything folds.
         self._sync()
-        for market in self.contract.market_keys():
-            await asyncio.to_thread(self._normalize, market, today)
+        await asyncio.to_thread(self._render, [today])
         self.health.normalized_day = today
 
-    def _normalize(self, market: str, day: str) -> bool:
+    async def _publish(self) -> None:
+        """R1-g: render as soon as a minute has settled, and not otherwise.
+
+        The maintenance pass above keeps the day rotation, the freeze, the
+        gap-fill and its own render on its duty-cycled cadence; publication is
+        this, separately, on a seconds cadence. It costs nothing until the
+        settle horizon crosses a minute close, and then one incremental render
+        of the day or days that minute is in -- the one before a midnight
+        included, which is where the 23:59 minute lives when it closes.
+
+        Also when a folded event has landed inside a minute already published
+        (`_record` sets the flag): the minute is re-rendered at this check, not
+        when the horizon next crosses a close. The flag is cleared before the
+        render, so an event that lands during it is caught by the next check.
+        """
+        newest = self._publication_horizon_ms() // MS_PER_MINUTE * MS_PER_MINUTE
+        published = self._published_through_ms
+        if published is not None and newest <= published and not self._republish:
+            return
+        self._republish = False
+        days = {utc_day((newest - MS_PER_MINUTE) * NS_PER_MILLISECOND)}
+        if published is not None:
+            days.add(utc_day(published * NS_PER_MILLISECOND))
+        self._sync()
+        _, through = await asyncio.to_thread(self._render, sorted(days))
+        self._published_through_ms = max(
+            published or 0, through // MS_PER_MINUTE * MS_PER_MINUTE
+        )
+
+    def _publication_horizon_ms(self) -> int:
+        """The instant every minute closed at or before is safe to publish. Epoch ms.
+
+        The earliest last event among the folded streams -- a stream that has
+        delivered an event at or after a close has delivered everything stamped
+        before it, and one that has delivered nothing vouches for nothing -- or
+        the wall clock less `PUBLISH_SETTLE_CAP_S`, whichever is later.
+        """
+        lasts = [
+            health.last_event_ns
+            for name in self.sinks
+            if name.endswith(_FOLDED_SUFFIXES)
+            and (health := self.health.streams.get(name)) is not None
+        ]
+        reached = min((-1 if last is None else last) for last in lasts) if lasts else -1
+        capped = self._wall_ns() - int(self.publish_settle_cap_s * NS_PER_SECOND)
+        return max(reached, capped) // NS_PER_MILLISECOND
+
+    def _render(self, days: Sequence[str]) -> tuple[dict[tuple[str, str], bool], int]:
+        """Render ``days`` for every market, as one pass, under the render lock.
+
+        One horizon for the whole pass, taken inside the lock and never moved
+        back, so no reader ever sees a market publish a minute another market
+        of the same pass held back, or a minute disappear again. The runner
+        walks the perpetual, so the perpetual is rendered LAST: whenever it
+        shows a minute, every other market's file already holds that minute.
+        A day whose raw files are already frozen is left to the authoritative
+        path; rendering it here would re-read a compressed day every pass.
+
+        Returns what was written, by (market, day), and the horizon used.
+        """
+        with self._render_lock:
+            through = max(self._through_ms or 0, self._publication_horizon_ms())
+            self._through_ms = through
+            markets = sorted(self.contract.market_keys(), key=lambda m: m == _LEADING_MARKET)
+            written: dict[tuple[str, str], bool] = {}
+            for day in days:
+                if any(
+                    sink.is_frozen(day)
+                    for name, sink in self.sinks.items()
+                    if name.endswith(".kline_1m")
+                ):
+                    continue
+                for market in markets:
+                    written[(market, day)] = self._normalize(market, day, through)
+            return written, through
+
+    def _normalize(self, market: str, day: str, through_ms: int | None = None) -> bool:
         """Render one day, incrementally where the cache allows it.
 
         Reads the raw files and writes the normalized ones; it touches no
         stream's health beyond the missing-minute count, so a stream halted by a
         storage failure stays halted and is not revived by having its day
-        rendered. Returns whether the day was written.
+        rendered. Returns whether the day was written. Call it through
+        `_render`, which holds the lock and chooses ``through_ms``.
         """
         try:
-            report = self.incremental.build_day(market, day, provenance=self._provenance())
+            report = self.incremental.build_day(
+                market, day, provenance=self._provenance(), through_ms=through_ms
+            )
         except RecorderNormalizeError as exc:
             self._note(f"{market} {day} not normalized: {exc}")
             return False
@@ -870,19 +1018,23 @@ class RecorderService:
             self.health.stream(stream).missing_minutes = missing
 
     def _freeze_due(self) -> None:
-        """Freeze the raw files of a day whose grace period has passed."""
+        """Freeze the raw files of a day whose grace period has passed.
+
+        Under the render lock: freezing moves the files a render reads.
+        """
         now = time.monotonic()
-        for day, due in sorted(self._frozen_after.items()):
-            if now < due:
-                continue
-            for stream, sink in self.sinks.items():
-                if sink.is_frozen(day):
+        with self._render_lock:
+            for day, due in sorted(self._frozen_after.items()):
+                if now < due:
                     continue
-                try:
-                    sink.freeze_day(day, provenance=self._provenance())
-                except RecorderSinkError as exc:
-                    self._note(f"{stream} {day} not frozen: {exc}")
-            del self._frozen_after[day]
+                for stream, sink in self.sinks.items():
+                    if sink.is_frozen(day):
+                        continue
+                    try:
+                        sink.freeze_day(day, provenance=self._provenance())
+                    except RecorderSinkError as exc:
+                        self._note(f"{stream} {day} not frozen: {exc}")
+                del self._frozen_after[day]
 
     def _provenance(self) -> dict[str, Any]:
         return {
@@ -895,9 +1047,7 @@ class RecorderService:
     def _shutdown(self) -> None:
         """Sync, normalize what is open, write a last heartbeat, close the files."""
         self._sync()
-        today = utc_day(self._wall_ns())
-        for market in self.contract.market_keys():
-            self._normalize(market, today)
+        self._render([utc_day(self._wall_ns())])
         self._refresh_connection_state()
         for client in self.clients:
             for stream_id in client.stream_ids:

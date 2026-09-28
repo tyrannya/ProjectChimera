@@ -137,9 +137,13 @@ LEGS: tuple[str, ...] = ("spot", "perp")
 #: settlement path, ``RECONCILIATION`` from section 8.1's hourly and
 #: post-execution checks, ``LIQUIDATION_TOUCH`` from section 6.7's per-minute
 #: check, ``RECOVERY`` from section 9.3's crash handling and ``SKIPPED_STALE``
-#: from section 2.2's catch-up rule. All twelve are now written, and the tuple is
-#: kept — not deleted — because it is what makes that a checked fact rather than
-#: a claim in a docstring.
+#: from section 2.2's catch-up rule. The tuple is kept — not deleted — because it
+#: is what makes that a checked fact rather than a claim in a docstring.
+#:
+#: And R1-g exercised the other direction. It retired the catch-up cap, so this
+#: build writes no ``SKIPPED_STALE``; the kind stays in the log's schema and in
+#: every count here because logs written before R1-g hold them, and
+#: ``input_coverage`` now reports it as a kind this build cannot write.
 RUNNER_WRITTEN_KINDS: tuple[str, ...] = (
     "DECISION",
     "FUNDING",
@@ -151,7 +155,6 @@ RUNNER_WRITTEN_KINDS: tuple[str, ...] = (
     "RECOVERY",
     "RESUME",
     "SHUTDOWN",
-    "SKIPPED_STALE",
     "STARTUP",
     # Canonical R1-f's READY gate, `DemoRunner._feed_record`.
     "FEED_STALLED",

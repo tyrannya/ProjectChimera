@@ -51,7 +51,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 from chimera.carry.accounting import ZERO, CarryError, FundingSettlement
 from chimera.carry.ledger import CarryLedger
-from chimera.futures.domain import OrderState, PositionSide, TargetPosition
+from chimera.futures.domain import OrderState, Position, PositionSide, TargetPosition
 from chimera.futures.fills import TopOfBook
 from chimera.futures.executor import FlattenCause, FuturesExecutor
 from chimera.futures.store import LoadOutcome
@@ -796,8 +796,109 @@ class HedgedPosition:
         instant = int(event.instant_ns)
         if not (open_instant_ns < instant <= now_ns):
             return ZERO
-        flow = self.perp.settle_funding(event)
+        owed = self._owed(instant)
+        if owed is None:
+            flow = self.perp.settle_funding(event)
+        else:
+            flow = self.perp.settle_funding(event, Position.from_dict(owed["perp"]))
         return self.ledger.book_funding(instant, flow)
+
+    def funding_exposure(self, instant_ns: int) -> tuple[int | None, Position]:
+        """``(open_instant_ns, perpetual position)`` a settlement at ``instant_ns``
+        is charged on.
+
+        The leg held now, in the window the ledger holds now -- unless the
+        instant was recorded as owed (:meth:`note_funding_owed`), in which case
+        the exposure and window recorded then. A flatten after that moment
+        changes neither what was held across the instant nor what it owes. An
+        entry outlives an ordinary tick's hand-over only after such a flatten
+        (:meth:`release_funding_owed`), and answers no row stamped after a touch
+        ended its leg (:meth:`drop_funding_owed_after_exposure`).
+        """
+        owed = self._owed(instant_ns)
+        if owed is not None:
+            return owed["open_instant_ns"], Position.from_dict(owed["perp"])
+        return self.ledger.state.open_instant_ns, self.perp.position(self.config.perp_symbol)
+
+    def note_funding_owed(self, instant_ns: int) -> bool:
+        """Record that the funding instant ``instant_ns`` is being crossed by the
+        perpetual leg held now, before its settlement row exists. True if recorded.
+
+        Nothing for a flat leg, and nothing for an instant outside the window
+        :meth:`settle_funding` would charge -- this records only what that method
+        would book at the instant, on the exposure it would book it on.
+        """
+        held = self.perp.position(self.config.perp_symbol)
+        opened = self.ledger.state.open_instant_ns
+        if held.is_flat or opened is None or not opened < int(instant_ns):
+            return False
+        return self.ledger.owe_funding(instant_ns, open_instant_ns=opened, perp=held.to_dict())
+
+    def _owed(self, settlement_ns: int) -> dict[str, Any] | None:
+        """The owed entry a row stamped ``settlement_ns`` is charged on: one that
+        answers the row, while its recorded leg was still held at the stamp."""
+        owed = self.ledger.owed_for(settlement_ns)
+        if owed is None or int(settlement_ns) > owed.get("held_until_ns", int(settlement_ns)):
+            return None
+        return owed
+
+    def _still_held(self, owed: Mapping[str, Any]) -> bool:
+        """Whether the leg AND window an entry recorded are the ones held now."""
+        held = self.perp.position(self.config.perp_symbol)
+        return (
+            owed["open_instant_ns"] == self.ledger.state.open_instant_ns
+            and Position.from_dict(owed["perp"]) == held
+        )
+
+    def release_funding_owed(self) -> bool:
+        """Forget each owed instant whose recorded exposure is still the one held.
+        True if any was forgotten.
+
+        The hand-over from the fallback to the ordinary path, called by a tick
+        once the kill switch and the minute's own booking are through -- never
+        before them, because a halt there leaves no ordinary path to answer the
+        row (RR-2). What is owed
+        is a fallback for an exposure something other than the ordinary path
+        took away while the minute waited -- a safety or operator flatten. While
+        the leg and window recorded are still the ones held, nothing did, and
+        the ordinary path answers the row as it did before anything was owed: in
+        the window the row falls in, on the leg held THERE. A row stamped after
+        the instant falls in a later minute, after this minute's decision may
+        have moved the leg, so the recorded leg is not its exposure (PR #108,
+        N2R-1).
+        """
+        released = False
+        for owed in list(self.ledger.state.funding_owed):
+            if self._still_held(owed):
+                released = self.ledger.release_owed(owed["instant_ns"]) or released
+        return released
+
+    def owed_to_fallback(self, settlement_ns: int) -> dict[str, Any] | None:
+        """The owed entry a HALTED start answers a row stamped ``settlement_ns``
+        with, if any: one whose recorded exposure is over -- a touch ended it
+        (``held_until_ns``) or a flatten took the leg. An entry whose leg and
+        window are still held is not: nothing has taken that exposure yet, and a
+        resumed tick answers the row the ordinary way (RR-2, RR-3).
+        """
+        owed = self.ledger.owed_for(settlement_ns)
+        if owed is None or ("held_until_ns" not in owed and self._still_held(owed)):
+            return None
+        return owed
+
+    def drop_funding_owed_after_exposure(self, settlement_ns: int) -> bool:
+        """Forget, unbooked, the owed instant a row stamped ``settlement_ns``
+        answers when a touch ended the recorded leg before that stamp. True if
+        forgotten.
+
+        The row/window contract charges a settlement on the exposure held at the
+        row's own stamp. A touch flattens at the close of the minute that
+        touched -- where a replay's own tick flattens too -- so a row stamped
+        after it is charged on nothing the entry recorded (RR-1).
+        """
+        owed = self.ledger.owed_for(settlement_ns)
+        if owed is None or self._owed(settlement_ns) is not None:
+            return False
+        return self.ledger.release_owed(owed["instant_ns"])
 
     def booked_settlement_instants(self) -> tuple[int, ...]:
         """The settlement instants the PERPETUAL LEG's ledger has already booked.
@@ -841,17 +942,8 @@ class HedgedPosition:
             if spot_leg.quantity
             else ZERO
         )
-        perp_pnl = (
-            perp_leg.quantity * (perp_leg.entry_price - state.perp_close)
-            if perp_leg.quantity
-            else ZERO
-        )
-        equity = (
-            self.ledger.state.free_cash
-            + spot_leg.quantity * state.spot_close
-            + self.ledger.state.perp_margin
-            + perp_pnl
-        )
+        perp_pnl = self._perp_pnl(state)
+        equity = self.equity_at(state)
         self.ledger.mark(
             spot_close=state.spot_close, perp_close=state.perp_close, equity=equity
         )
@@ -870,6 +962,29 @@ class HedgedPosition:
             equity=equity,
             identity_residual=residual,
         )
+
+    def equity_at(self, state: CarryMarketState) -> Decimal:
+        """The equity :meth:`mark_to_market` would mark at ``state``, marking nothing.
+
+        For a caller that must ask section 6.7's question about a minute it may
+        not mark the ledger at (R1-g: a runner holding a funding minute undecided
+        watches the newer minutes for a touch). The ledger's mark also moves its
+        worst equity, so marking a later minute and then deciding an earlier one
+        would carry the later minute's low into the earlier minute's records.
+        """
+        spot_leg = self.leg(SPOT)
+        return (
+            self.ledger.state.free_cash
+            + spot_leg.quantity * state.spot_close
+            + self.ledger.state.perp_margin
+            + self._perp_pnl(state)
+        )
+
+    def _perp_pnl(self, state: CarryMarketState) -> Decimal:
+        perp_leg = self.leg(PERP)
+        if not perp_leg.quantity:
+            return ZERO
+        return perp_leg.quantity * (perp_leg.entry_price - state.perp_close)
 
     # -- liquidation -------------------------------------------------------
 

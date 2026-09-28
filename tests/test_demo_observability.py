@@ -102,6 +102,12 @@ SECTION_11_1_NAMES: tuple[str, ...] = (
     "chimera_demo_disk_free_bytes",
     "chimera_demo_funding_adverse_streak",
 )
+#: R1-g's two, added after the independent review of PR #108 (finding F2): a
+#: funding minute held undecided must be visible before it halts anything.
+R1G_NAMES: tuple[str, ...] = (
+    "chimera_demo_funding_deferred",
+    "chimera_demo_funding_deferred_instant_timestamp",
+)
 
 #: Attribute name -> the label tuple that attribute is allowed to carry. Adding
 #: a series, or widening one's labels, has to be a deliberate edit here.
@@ -124,6 +130,8 @@ EXPECTED_LABELS: dict[str, tuple[str, ...]] = {
     "DEMO_LOG_WRITE_ERRORS": (),
     "DEMO_DISK_FREE": (),
     "DEMO_FUNDING_ADVERSE_STREAK": (),
+    "DEMO_FUNDING_DEFERRED": (),
+    "DEMO_FUNDING_DEFERRED_INSTANT": (),
 }
 
 #: The only label names the demo family may carry, written out rather than read
@@ -406,8 +414,8 @@ def mode_children() -> dict[str, set]:
 # --------------------------------------------------------------------------- #
 def test_the_demo_metric_names_are_section_11_1s_exactly():
     assert len(metrics.DEMO_METRIC_NAMES) == len(set(metrics.DEMO_METRIC_NAMES))
-    assert set(metrics.DEMO_METRIC_NAMES) == set(SECTION_11_1_NAMES)
-    assert len(SECTION_11_1_NAMES) == 18
+    assert set(metrics.DEMO_METRIC_NAMES) == set(SECTION_11_1_NAMES + R1G_NAMES)
+    assert len(SECTION_11_1_NAMES) == 18 and len(R1G_NAMES) == 2
     for name in metrics.DEMO_METRIC_NAMES:
         assert name.startswith("chimera_demo_"), name
 
@@ -560,8 +568,9 @@ def test_every_telemetry_observation_method_returns_none():
         for child in ast.walk(node):
             if isinstance(child, ast.Return):
                 assert child.value is None, f"{node.name} returns a value"
-    # Nine each since R1-d added `on_heartbeat`, the wait loop's beat.
-    assert seen == 18, f"expected nine methods on each of the two classes, saw {seen}"
+    # Nine each since R1-d added `on_heartbeat`, the wait loop's beat; ten since
+    # R1-g added `on_funding_deferral` (independent review of PR #108, F2).
+    assert seen == 20, f"expected ten methods on each of the two classes, saw {seen}"
 
 
 def test_the_telemetry_module_calls_no_mutating_method():
@@ -637,7 +646,11 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
     # `attempted=False`. It reports the minute a stall holds on, so a process
     # restarted into a stall does not show an age of zero for the whole stall,
     # and it counts no tick.
-    assert len(calls) == 10, f"expected ten emission points, found {len(calls)}"
+    #
+    # Eleven since R1-g: `on_funding_deferral`, at the top of every tick, before
+    # the clock observes the minute or anything about it is decided. It says
+    # which funding instant the minute waits on, or none, and nothing else.
+    assert len(calls) == 11, f"expected eleven emission points, found {len(calls)}"
     assert {call.func.attr for call in calls} == {
         "on_state",
         "on_log_write_error",
@@ -647,6 +660,7 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
         "on_halt",
         "on_position",
         "on_shutdown",
+        "on_funding_deferral",
     }
     for call in calls:
         method = call.func.attr

@@ -103,11 +103,9 @@ chimera-demo` shows the unit active, and `RunnerDown` is a liveness alert
 
 What R1-d does not change, and must not be read into it:
 
-* the catch-up rule is still section 2.2's: at most `max_catchup_minutes` (3)
-  pending minutes are decided and older ones are recorded as `SKIPPED_STALE`.
-  Each wake decides what the recorder has published by then, and the recorder
-  publishes on its own cadence, so a wake can find nothing new. Deciding every
-  closed minute is R1-g's.
+* each wake decides what the recorder has published by then, and the recorder
+  publishes on its own cadence, so a wake can find nothing new. Since R1-g every
+  pending minute is decided, in order, with no cap (section 0.5).
 * a halted service exits 3 rather than staying up in `HALT`, so `RunnerHalted`
   is visible only for a moment and `RunnerDown` fires two minutes later. Leaving
   `HALT` is still section 7's procedure; the halt and dispute lifecycle is
@@ -137,9 +135,10 @@ stall and requires every persisted byte to be identical.
 
 **0.4 Real staleness: the READY gate and `FEED_STALLED` (R1-f).** Before every
 pass, including one where no minute arrived, the service asks whether the feed
-is fresh. Until R1-g the answer comes from the **recorder's heartbeat**
+is fresh. The answer comes from the **recorder's heartbeat**
 (`<root>/health/heartbeat.json`, rewritten every 30 s), not from the recorder's
-normalized minutes:
+normalized minutes -- and R1-g, which publishes each minute within seconds,
+leaves it so (section 0.5):
 
     through = min(heartbeat_ns, streams["um.kline_1m"].last_event_ns)
     age     = operational now - through
@@ -222,9 +221,8 @@ would in a tick, and its records say `liquidation_touch`, not a stall.
 When the heartbeat vouches for a fresh feed again by the same test, the gate
 writes one `FEED_RESUMED` record and returns to READY by itself. No `resume` and
 no note are needed, because nothing was halted: Aegis is not told about a stall
-and holds no flag for it. The pending minutes are then processed as usual, under
-section 2.2's catch-up rule, which is unchanged (older ones become
-`SKIPPED_STALE`). An open stall survives a restart: the service comes back
+and holds no flag for it. The pending minutes are then processed as usual: every
+one of them, in order (R1-g). An open stall survives a restart: the service comes back
 `FEED_STALLED`, read from the log, and leaves it only when the gate sees a fresh
 heartbeat.
 
@@ -265,11 +263,10 @@ later record, as a restart does. A genuine outage is any of:
 * a heartbeat that happens to catch the stream in the middle of the venue's
   24-hour forced reconnect (`up` false for one beat).
 
-How `seq` is compared across those is R1-j's question. Publishing each closed
-minute within seconds is R1-g's, and R1-g may move the authority back to the
-normalized minutes once they can meet the limit. Until then a `FEED_STALLED`
-means "the recorder's heartbeat has not vouched for the perpetual kline stream
-within 180 s".
+How `seq` is compared across those is R1-j's question. R1-g publishes each
+closed minute within seconds and deliberately keeps the heartbeat as the
+authority (section 0.5), so a `FEED_STALLED` still means "the recorder's heartbeat
+has not vouched for the perpetual kline stream within 180 s".
 
 Follow-ups the independent review recorded and R1-f leaves alone:
 
@@ -298,6 +295,124 @@ settlement minutes and a count of `FUNDING` records, and both cases produce zero
 in all of them. Telling them apart means reading the recorder's
 `settlements.ndjson` against the position's own open and flat intervals, and
 nothing in this build does that for you.
+
+**0.5 Cadence and the funding minute (R1-g).** Three changes, one requirement:
+
+* **The recorder publishes each minute within seconds.** Beside the 300 s
+  maintenance pass (rotation, freeze, gap-fill), a publisher looks every second
+  for a newly *settled* minute and renders the open day incrementally when one
+  appears. A minute is settled once every stream folded into its row -- both
+  klines, the perpetual's mark and both books -- has delivered an event at or
+  after its close, or once the recorder's clock is 10 s past it
+  (`PUBLISH_SETTLE_CAP_S`). A minute its streams settled is final. A quiet
+  stream delays minutes by at most 10 s, and then they appear with that
+  stream's columns empty, as before, **but a row the cap published is not
+  final**. If the quiet stream later delivers an event stamped inside the
+  minute (a late candle, a late mark), the row changes, and it is re-rendered
+  at the publisher's next one-second check. A runner that had already decided
+  the earlier row then disagrees with a replay of the finished file.
+  Reconciling such a day is R1-h's, not R1-g's (independent review of PR #108,
+  finding F3). Every render and every freeze holds one lock, one pass uses one
+  horizon for both markets, and the perpetual is written last.
+* **The runner decides every pending minute, in order.** No cap and no
+  `SKIPPED_STALE`: `max_catchup_minutes` is retired, and a configuration that
+  still carries it is refused by name (remove the key). Old logs holding
+  `SKIPPED_STALE` still read, report and replay as before. A stop request during
+  a long backlog is taken between minutes: the minute in hand completes and the
+  next start resumes at the one after it.
+* **A funding minute waits for its settlement.** A minute whose close is at or
+  after the venue's announced `next_funding_time_ms` is decided only once
+  `funding/um/settlements.ndjson` holds that instant's row. Nothing else
+  resolves it: no documented bound says how late the venue may publish a row, so
+  a funding poll that came back empty -- however long after the instant -- is
+  never read as "no settlement" (owner decision on the independent review of
+  PR #108, finding F1; an earlier head of that PR did infer it from a poll 30 s
+  past the instant, and the reviewer showed live and replay then booking the
+  same settlement in different minutes). Until the row lands the minute is
+  **deferred**: nothing is written, the cursor and the clock do not move, and the
+  service tries again at its next wake. The recorder's scheduled poll 60 s after
+  each instant normally clears it within a minute or two.
+
+A deferral writes **no record** (a replay of the finished files never defers,
+so a record would split the two logs). The one thing it does write, once per
+instant and only when the perpetual leg is held across it, is a
+`funding_owed` entry in `carry_ledger.json`: the instant, the leg held across
+it and its funding window -- never a rate or an amount. It is visible as a `minute ...
+deferred:` warning in the runner's log, repeated at every wake, and on two
+gauges: `chimera_demo_funding_deferred` is 1 while a minute waits, and
+`chimera_demo_funding_deferred_instant_timestamp` is the instant it waits on
+(its age is `time() - chimera_demo_funding_deferred_instant_timestamp`). A
+deferral that lasts is the recorder failing to obtain the row: funding polls
+failing, or answering without it, in the recorder's log.
+
+**While a minute is deferred, the held position is still watched** (independent
+review of PR #108, finding F2). Every pass that meets the deferral checks the
+kill switch, and runs section 6.7's liquidation check on every minute the
+recorder has published from the deferred one to its newest. A touch flattens and
+halts as a tick's would; its `LIQUIDATION_TOUCH` is stamped on the last decided
+minute and names the recorded minute that touched. Nothing else happens: no
+rule, no order, no funding booked, and neither the cursor nor the decision clock
+moves.
+
+**A settlement owed across a halt is still booked** (independent re-review of
+PR #108, N2). A touch, the kill switch or `funding_unresolved_timeout` can halt
+the runner -- and a touch or an operator `flatten` can zero the leg -- before
+the instant's row exists. The settlement is still owed on the leg held across
+the instant, which the `funding_owed` entry preserves. **A start of a halted
+runner books it once the row is recorded and that leg is gone**: in the minute a
+tick would have (normally the due minute), on the preserved leg, with a
+`FUNDING` record, the entry removed in the same ledger save. Nothing is decided
+and the runner stays halted; a start before the row lands books nothing and
+keeps the entry. The service does not restart a halted campaign
+(`RestartPreventExitStatus=3`), so once the row is in
+`funding/um/settlements.ndjson`, run `demo_run run --once` to book it; the
+command exits halted, as it should. The safety pass's touch uses an equity that
+leaves the unknown settlement out; that is unchanged.
+
+The entry answers only the exposure it actually held (RR-1). A touch flattens at
+the close of the minute that touched -- where a replay's own tick flattens --
+and records that close on the entry (`held_until_ns`). A row stamped at or
+before it is booked on the preserved leg; a row stamped after it (a venue row a
+few milliseconds after the instant, with the touch in the due minute itself) is
+charged on nothing the entry held, so the start resolves the entry and books
+nothing, live and replay alike. An operator `flatten` records no such bound: it
+is taken after the instant, so the leg was held across the row.
+
+**A halted runner whose leg is still held books nothing from the entry** (RR-2,
+RR-3): the kill switch or `funding_unresolved_timeout` halted it, and nothing
+has taken the exposure yet. The entry stays on disk. `flatten` it, and the next
+start books the row as above; or, once the cause is cleared, `resume`, and the
+due minute is decided the ordinary way.
+
+**On a runner that is not halted, the entry gives way to the ordinary path**
+(N2R-1). When the row lands, the due minute's tick checks the kill switch and
+books what its own window holds; only then is an entry whose recorded leg and
+window are still the ones held dropped (and the ledger saved), before the touch
+check and the decision. A halt before that point -- the switch -- leaves the
+entry on disk (RR-2). After it, the tick books the row exactly as it would have
+if nothing had been owed, in the window the row falls in and on the leg held
+there. A row stamped a few milliseconds after the instant falls
+in the NEXT minute's window, after the due minute's own decision, so if the rule
+exits in the due minute nothing is booked, live and replay alike. The entry
+survives the hand-over only when its leg is no longer held -- on a running
+runner, an operator `flatten` while the minute waited -- and then books the row
+once, on the recorded leg.
+
+**A deferral is bounded by `max_data_delay_s`.** Once the recorder has
+published market data more than `max_data_delay_s` past the instant (180 s in
+the committed campaign) and still not its row, the runner halts
+`funding_unresolved_timeout` with the position held. The age is read off the
+published files (the newest minute's close against the instant), so a restart
+does not restart the wait. It is not a feed stall: no `FEED_STALLED` is
+written, because the heartbeat still vouches for the feed. To recover, confirm
+in `funding/um/settlements.ndjson` that the instant's row is now recorded (the
+recorder polls 60 s after each instant, then hourly), then `resume`. A runner
+resumed before the row lands halts again at once. If the venue never settles
+the announced instant, the runner cannot proceed past it in this build: that
+case is outside R1-g. The runner
+also defers, rather than halts, on a normalized day it catches mid-rewrite (the
+recorder rewrites a day in place until R1-h); the same file failing again
+unchanged still halts `feed_unreadable`.
 
 The per-settlement detail -- settlement id, rate, mark price, quantity, notional,
 signed cash flow and direction -- is in the **`FUNDING` records of the decision
@@ -1207,8 +1322,9 @@ heartbeat. The decision log shows the stall as a `FEED_STALLED` record and its e
 as a `FEED_RESUMED` record. Nothing needs an operator unless the recorder process
 itself is down (`RecorderDown`) or the stall does not end. Do not `resume` a
 stall: there is no halt to leave, and `resume` refuses outside `HALT`. A
-healthy recorder, whose normalized minutes arrive only every 300 s or slower,
-does not stall the runner (section 0.4). A stall is a real outage.
+healthy recorder does not stall the runner, whatever its publication cadence
+(section 0.4). A stall is a real outage. A minute that waits for its funding
+settlement is not a stall either, and writes nothing (section 0.5).
 
 ## 11. Process heartbeat
 

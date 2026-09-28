@@ -323,10 +323,12 @@ def _excluded_minutes(live: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     facts about the RUNNING of the campaign rather than about the files it read:
 
     ``SKIPPED_STALE``
-        The live process came back from an outage and the minute was already too
-        old to decide. A replay reads the whole range at once and is never late,
-        so it decides that minute. Which minutes were stale depends on when the
-        process restarted, and nothing in the recorded files records it.
+        Written only by builds before R1-g, which retired the catch-up cap; kept
+        so their logs still compare. The live process came back from an outage
+        and the minute was already too old to decide. A replay reads the whole
+        range at once and is never late, so it decides that minute. Which
+        minutes were stale depends on when the process restarted, and nothing
+        in the recorded files records it.
 
     ``RECOVERY``
         Section 9.3's own: the affected minute "is excluded from the campaign's
