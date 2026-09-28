@@ -396,8 +396,20 @@ def _daemon(
     loop cannot quietly read the host for itself. They decide WHEN a pass runs
     and when the heartbeat beats, never WHAT a pass decides: every decision
     instant is still the runner's own recorded clock, and nothing they return
-    reaches a record. R1-f's staleness check and stall tick will read this same
-    clock; neither exists yet.
+    reaches a record.
+
+    R1-f's READY gate runs first in every pass, on this same clock, whether or
+    not a minute arrived: `check_feed` compares it with the instant the
+    recorder's heartbeat vouches for the required kline stream up to, not the
+    newest normalized minute (R1-g kept it so; `DemoRunner.check_feed` says
+    why). A stale feed turns the pass into a stall tick, which checks the held
+    position on the last recorded minute and decides nothing; a fresh one
+    catches up -- every pending minute, since R1-g, up to any whose funding
+    settlement has not been recorded yet. While the feed is fresh the wait
+    also ends at the instant it would turn stale plus the same grace, so a dead
+    stream or recorder is declared within ``max_data_delay_s +
+    ready_grace_seconds`` of the last instant vouched for, for any limit, not
+    only one that falls on a minute.
     """
     grace = float(runner.config.runner_setting("ready_grace_seconds"))
 
@@ -406,7 +418,11 @@ def _daemon(
 
     next_beat = clock()
     while not requested():
-        runner.catch_up(stop=requested)
+        stale_after_ns = runner.check_feed(int(clock() * NS_PER_SECOND))
+        if runner.state is RunnerState.FEED_STALLED:
+            runner.stall_tick()
+        else:
+            runner.catch_up(stop=requested)
         if runner.state is RunnerState.HALT:
             reason = runner.halt_reason
             outcome = runner.shutdown(f"halted: {reason}")
@@ -417,6 +433,8 @@ def _daemon(
             )
             return EXIT_HALTED
         wake = _next_wake(clock(), grace)
+        if stale_after_ns is not None and runner.state is not RunnerState.FEED_STALLED:
+            wake = min(wake, stale_after_ns / NS_PER_SECOND + grace)
         while not requested():
             now = clock()
             if now >= wake:

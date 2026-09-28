@@ -130,7 +130,7 @@ def test_the_tools_must_match_list_is_exactly_section_10s():
 def test_the_tools_operational_kinds_are_exactly_section_10s():
     """The set itself, pinned, for the same reason."""
     assert OPERATIONAL_KINDS == frozenset(
-        {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME"}
+        {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME", "FEED_STALLED", "FEED_RESUMED"}
     )
 
 

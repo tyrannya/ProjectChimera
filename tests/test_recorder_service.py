@@ -540,7 +540,7 @@ def test_re_normalizing_the_open_day_does_not_stall_the_event_loop(tmp_path):
         service.recover()
         ticks: list[float] = []
 
-        def slow_normalize(market, day):
+        def slow_normalize(market, day, through_ms=None):
             time.sleep(0.25)
 
         service._normalize = slow_normalize

@@ -27,8 +27,10 @@ silently interpreted.
 **No host clock is read on the decision path.** Every decision instant comes
 from `RunnerClock`, which is advanced only by observed record instants, so a
 replay of the same files produces the same records -- which is what section
-10's byte comparison rests on. Wall time is confined to telemetry, and the
-runner does not even choose that clock: the emitter is injected (R1-e).
+10's byte comparison rests on. Wall time is confined to telemetry and to R1-f's
+READY gate, and the runner chooses neither clock: the emitter is injected
+(R1-e), and `check_feed` is handed the operational instant by the service loop.
+That instant decides only whether the feed is stale; it is never written down.
 """
 
 from __future__ import annotations
@@ -57,7 +59,9 @@ from chimera.demo.feed import (
     PERP_MARKET,
     SETTLEMENT_INSTANT_FIELD,
     FeedCursor,
+    FeedNotReady,
     MarketState,
+    fresh_through_ns,
     plain_json,
     settlement_from_row,
 )
@@ -82,6 +86,7 @@ from chimera.futures.executor import (
     ReconciliationOutcome,
     ReconciliationRequired,
 )
+from chimera.recorder.health import RecorderHealthError, read_heartbeat
 from chimera.recorder.sink import write_json_atomic
 from chimera.risk import RiskEngine
 
@@ -152,6 +157,10 @@ class RunnerState(str, Enum):
     RECONCILIATION = "RECONCILIATION"
     PERSISTENCE = "PERSISTENCE"
     REPORTING = "REPORTING"
+    #: Canonical R1-f: the READY gate found the feed stale. Not a HALT -- Aegis
+    #: is untouched, the position is held, and the gate leaves it by itself when
+    #: a fresh minute is published. See `DemoRunner.check_feed`.
+    FEED_STALLED = "FEED_STALLED"
     HALT = "HALT"
     SHUTDOWN = "SHUTDOWN"
 
@@ -262,6 +271,9 @@ class _Recovery:
     #: So a tail of one of those means the minute was STARTED and never decided,
     #: which is a different crash from one that ends on the minute's DECISION.
     committed_minute_kind: str = ""
+    #: Whether that minute's finishing record precedes the tail (R1-f's stall
+    #: tick appends after it). See `DemoRunner._last_record_minute`.
+    committed_minute_decided: bool = False
     #: Canonical R1-c's finding, when this recovery is one. `record_block()` on
     #: `chimera.demo.risk_continuity.RiskContinuity` builds it, and it rides
     #: INSIDE the `recovery` block rather than in a `risk` one: section 9.1's
@@ -276,7 +288,11 @@ class TickOutcome:
 
     minute_ms: int
     state: RunnerState
-    kind: RecordKind
+    #: The record the minute wrote, or None when it was DEFERRED (R1-g): not
+    #: decidable yet, nothing written, the cursor where it was. A deferral is
+    #: not an outcome for the minute -- the minute has not been reached -- so it
+    #: has no record kind. See `DemoRunner._deferred`.
+    kind: RecordKind | None
     decisions: list[RuleDecision] = field(default_factory=list)
     vetoed: bool = False
     executed: bool = False
@@ -660,11 +676,83 @@ class DemoRunner:
         # on the very same restart.
         self.risk.check_kill_switch()
         if self.risk.state.halted:
-            return self._halt(self.risk.state.halt_reason or "risk halted")
+            problem = self._book_owed_funding()
+            return self._halt(problem or self.risk.state.halt_reason or "risk halted")
 
-        self._enter(RunnerState.READY)
+        # R1-f: a stall the log left open is still open. A restart is not news
+        # about the feed, so it is not READY until the gate sees a fresh minute.
+        self._enter(RunnerState.FEED_STALLED if self._feed_stall_open() else RunnerState.READY)
         self.save_state()
         return self.state
+
+    def _book_owed_funding(self) -> str | None:
+        """R1-g: book, on a halted start, a settlement owed across a flatten.
+        Returns a halt reason.
+
+        A funding minute that waits for its row still lets the safety pass
+        flatten the position and halt (`_deferral_safety`). The settlement is
+        owed all the same -- the leg was held across the instant -- but the only
+        path that books it is a tick, and a halted runner ticks nothing, so the
+        live ledger lost it while a replay of the finished files booked it
+        (independent re-review of PR #108, N2). The instant and the leg held
+        across it are recorded when the deferral begins
+        (`HedgedPosition.note_funding_owed`), so this books it once the row
+        exists: `_settle_funding`, the tick's own, on the minute a tick would
+        have booked it in -- the row's window, or the first complete minute
+        after it -- on the recorded leg and in its recorded window. Only once
+        that exposure is over (`HedgedPosition.owed_to_fallback`): a flatten
+        took the leg, or a touch ended it, and then only a row stamped before
+        the touch's close is booked (RR-1). An entry whose leg and window are
+        still held is left alone -- a resumed tick answers its row the ordinary
+        way, and an operator flatten makes the next start book it (RR-2,
+        RR-3). Nothing is
+        decided, no rule runs, nothing is ordered, the position is not touched
+        and the runner stays halted. Aegis is told the equity the booking moved,
+        as a stall tick's booking does, since no PERSISTENCE follows here either.
+
+        Every start of a halted runner asks, so a row that is still missing is
+        asked for again by the next one; a booked settlement is in ``settled``
+        and its entry left the ledger in the same save, so no start books it
+        twice. Nothing is booked for a sealed Aegis or a ledger that may not
+        speak: both are halts whose files are evidence.
+        """
+        ledger = self.position.ledger
+        if (
+            not ledger.state.funding_owed
+            or self.risk.continuity_disputed
+            or not self._ledger_may_speak()
+        ):
+            return None
+        try:
+            stamps = sorted(int(row[_SETTLEMENT_FIELD]) for row in self.cursor.settlements())
+            newest = self.cursor.latest_minute_ms()
+        except FeedNotReady:
+            return None  # the next start reads it
+        except Exception as exc:
+            return f"funding_source_unreadable: {exc}"
+        for stamp in stamps:
+            # A row stamped after a touch ended the recorded leg resolves the
+            # entry here, unbooked, and is not handed to `_settle_funding`: the
+            # stores may still hold that leg (a crash before the flatten), and
+            # the tick's own booking would charge it as the ordinary exposure.
+            if self.position.drop_funding_owed_after_exposure(stamp * _MS_TO_NS):
+                self._save_ledger()
+                continue
+            if newest is None or self.position.owed_to_fallback(stamp * _MS_TO_NS) is None:
+                continue
+            for minute in range((stamp - 1) // 60_000 * 60_000, newest + 60_000, 60_000):
+                try:
+                    state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
+                except FeedNotReady:
+                    return None
+                except Exception as exc:
+                    return f"feed_unreadable: {exc}"
+                if state.complete:
+                    problem = self._settle_funding(minute, state, stalled=True)
+                    if problem is not None:
+                        return problem
+                    break
+        return None
 
     def self_check(self, *, allow_dirty: bool = False) -> str | None:
         """Section 8.1's SELF_CHECK row. Returns a reason, or None if sound.
@@ -862,6 +950,7 @@ class DemoRunner:
             adopted_head=tail,
             committed_minute_ms=None if committed is None else committed[0],
             committed_minute_kind="" if committed is None else committed[1],
+            committed_minute_decided=False if committed is None else committed[2],
         )
 
     def _ledger_state_complaint(self) -> str:
@@ -979,20 +1068,42 @@ class DemoRunner:
             )
         return now_ns
 
-    def _last_record_minute(self) -> tuple[int, str] | None:
-        """The newest committed record's ``(minute_ms, kind)``, or None if empty."""
+    def _last_record_minute(self) -> tuple[int, str, bool] | None:
+        """The newest committed record's ``(minute_ms, kind, decided)``, or None.
+
+        ``decided`` is whether a record that FINISHES a minute (DECISION,
+        INCOMPLETE_STATE, SKIPPED_STALE) for that same minute came before it in
+        the same day file. R1-f's stall tick appends a FUNDING or a
+        LIQUIDATION_TOUCH for the last processed minute after its DECISION, so a
+        mid-minute kind at the tail does not by itself mean an undecided minute.
+        """
         from chimera.demo.decision_log import day_files, read_records
 
         for path in reversed(day_files(self.state_dir / LOG_DIR_NAME)):
             newest: tuple[str, str] | None = None
+            finished: set[str] = set()
+            decided = False
             for record in read_records(path):
                 minute = record.get("minute")
                 if isinstance(minute, str) and minute:
-                    newest = (minute, str(record.get("kind", "")))
+                    kind = str(record.get("kind", ""))
+                    decided = minute in finished
+                    newest = (minute, kind)
+                    if kind in self._FINISHING_KINDS:
+                        finished.add(minute)
             if newest is not None:
                 stamp, kind = newest
-                return int(datetime.fromisoformat(stamp).timestamp() * 1000), kind
+                return int(datetime.fromisoformat(stamp).timestamp() * 1000), kind, decided
         return None
+
+    #: The kinds that finish a minute: its last word, written once it is decided.
+    _FINISHING_KINDS = frozenset(
+        {
+            RecordKind.DECISION.value,
+            RecordKind.INCOMPLETE_STATE.value,
+            RecordKind.SKIPPED_STALE.value,
+        }
+    )
 
     #: The kinds a minute can be left in the MIDDLE of, and only those.
     #:
@@ -1023,10 +1134,20 @@ class DemoRunner:
 
         True for a tail that finished the minute (DECISION, INCOMPLETE_STATE,
         SKIPPED_STALE) and true for a tail that is not a minute's record at all
-        (HALT, STARTUP, SHUTDOWN, OPERATOR, RESUME, RECOVERY) -- in both cases
-        there is nothing to exclude.
+        (HALT, STARTUP, SHUTDOWN, OPERATOR, RESUME, RECOVERY, FEED_STALLED,
+        FEED_RESUMED) -- in both cases there is nothing to exclude.
+
+        Also true for a mid-minute kind whose minute the log had ALREADY
+        decided. R1-f's stall tick books a late settlement row, or records a
+        liquidation touch, against the last processed minute after that minute's
+        DECISION; such a tail says nothing about an undecided minute. A tick's
+        own FUNDING always precedes its minute's DECISION, so that case is
+        unchanged.
         """
-        return triage.committed_minute_kind not in self._MID_MINUTE_KINDS
+        return (
+            triage.committed_minute_kind not in self._MID_MINUTE_KINDS
+            or triage.committed_minute_decided
+        )
 
     def _affected_minute_ms(self, triage: "_Recovery") -> int | None:
         """The minute the crash actually left in doubt.
@@ -1317,12 +1438,63 @@ class DemoRunner:
     def tick(self, minute_ms: int) -> TickOutcome:
         """One minute, through section 8.1's tick loop."""
         self._require_active("tick")
+        if self.state is RunnerState.FEED_STALLED:
+            # R1-f: nothing is decided while the feed is stale. Only the gate
+            # (`check_feed`) leaves this state, and only on a fresh minute.
+            raise RunnerError(
+                "tick refused: the runner is FEED_STALLED, and no minute is decided "
+                "until the READY gate has seen a fresh one"
+            )
+        # R1-g: a minute that cannot be decided yet is left exactly as it was
+        # found -- checked before the clock observes its close, before any state
+        # is entered and before anything is counted -- so the retry is simply
+        # the first attempt, whenever it comes. Only "not yet" waits. Anything
+        # else the gate raises -- a day that stays unreadable, a malformed
+        # settlements file, a defect -- halts here, exactly as `state_for`'s
+        # does below: swallowing it would decide the minute with its funding
+        # gate silently off, and `state_for` reads neither the day before nor
+        # the announcements the gate reads, so it would not catch it again
+        # (independent review of PR #108, finding F5).
+        try:
+            pending = self.cursor.funding_pending(minute_ms)
+        except FeedNotReady as exc:
+            return self._deferred(minute_ms, str(exc))
+        except Exception as exc:
+            reason = f"feed_unreadable: {exc}"
+            self._halt(reason)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
+        self.telemetry.on_funding_deferral(instant_ms=pending)
+        if pending is not None:
+            # Before the safety pass, which may flatten: the leg and the window
+            # it would zero are what the settlement is owed on (PR #108, N2).
+            # The one write a deferral makes, and it is not the minute's: once
+            # per instant, so a repeated pass writes nothing, and the entry
+            # leaves the ledger in the save that books the row.
+            if self.position.note_funding_owed(int(pending) * _MS_TO_NS):
+                self._save_ledger()
+            stopped = self._deferral_safety(minute_ms, pending)
+            if stopped is not None:
+                return stopped
+            return self._deferred(
+                minute_ms,
+                f"the funding instant {pending} (epoch ms) is scheduled at or before "
+                "this minute's close and the recorder has not recorded its settlement "
+                "row yet",
+            )
         minute_ns = int(minute_ms) * _MS_TO_NS
         self.clock.observe(minute_ns + MINUTE_NS)
 
         self._enter(RunnerState.DATA_READY)
         try:
             state = self.cursor.state_for(minute_ms, now_ns=self.clock.now_ns)
+        except FeedNotReady as exc:
+            # A day rewritten between the check above and this read. The clock
+            # has observed this minute's close, and that is not unwound: it is
+            # a maximum, the retry observes the same instant, and the minute is
+            # the next one decided, so no later instant moves. Unwinding would
+            # make it non-monotone, which every staleness veto rests on.
+            self._enter(RunnerState.READY)
+            return self._deferred(minute_ms, str(exc))
         except Exception as exc:
             # A feed the runner cannot read is a halt, never a traceback out of
             # the tick loop. `state_for` reads the funding settlements too (for
@@ -1333,7 +1505,12 @@ class DemoRunner:
             reason = f"feed_unreadable: {exc}"
             self._halt(reason)
             return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
-        self.risk.note_feed(minute_ns + MINUTE_NS, self.clock.now_ns)
+        # No `risk.note_feed` here any more (R1-f). It compared this minute's
+        # close with a clock `observe` had just set to that same close, so the
+        # delay was zero by construction and the mark could never be set.
+        # Staleness is the READY gate's (`check_feed`), on the operational
+        # clock, before any minute is taken on.
+        #
         # Counted here, before anything is decided about the minute, because the
         # quantity is "minutes attempted": a minute that halts inside a rule is
         # still one the runner took on, and a counter that skipped it would read
@@ -1349,28 +1526,9 @@ class DemoRunner:
         if not state.complete:
             return self._incomplete(minute_ms, state)
 
-        if self.risk.check_kill_switch():
-            self._halt("kill_switch")
-            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail="kill_switch")
-
-        # Section 6.5's funding, before anything decides. A settlement is a cash
-        # flow that has ALREADY happened by this minute's close, so booking it
-        # first is what makes the equity the rule is sized against, the equity
-        # Aegis judges, and the equity section 6.7's liquidation check reads all
-        # describe the same instant. Booking it after the decision would have the
-        # minute decided on money the position no longer had.
-        problem = self._settle_funding(minute_ms, state)
-        if problem is not None:
-            self._halt(problem)
-            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=problem)
-
-        # Section 6.7, per minute while HEDGED or PARTIAL, and before the rule
-        # for the same reason: a touched position is flattened and halted, and a
-        # rule that had already sized an increase against it would be sizing
-        # against a position that no longer exists.
-        touched = self._liquidation_check(minute_ms, state)
-        if touched is not None:
-            return touched
+        stopped = self._safety_checks(minute_ms, state)
+        if stopped is not None:
+            return stopped
 
         self._enter(RunnerState.RULE_EVALUATION)
         portfolio = self._portfolio(state)
@@ -1404,6 +1562,51 @@ class DemoRunner:
                 )
 
         return self._decide(minute_ms, state, decisions, portfolio)
+
+    def _safety_checks(
+        self, minute_ms: int, state: MarketState, *, stalled: bool = False
+    ) -> TickOutcome | None:
+        """The part of a tick that keeps a held position safe. Returns an outcome
+        when it stopped the minute.
+
+        Shared by `tick` and R1-f's `stall_tick`, so the checks a stall keeps
+        running are the tick's own and cannot drift from them.
+        """
+        if self.risk.check_kill_switch():
+            self._halt("kill_switch")
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail="kill_switch")
+
+        # Section 6.5's funding, before anything decides. A settlement is a cash
+        # flow that has ALREADY happened by this minute's close, so booking it
+        # first is what makes the equity the rule is sized against, the equity
+        # Aegis judges, and the equity section 6.7's liquidation check reads all
+        # describe the same instant. Booking it after the decision would have the
+        # minute decided on money the position no longer had.
+        problem = self._settle_funding(minute_ms, state, stalled=stalled)
+        if problem is not None:
+            self._halt(problem)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=problem)
+
+        # The hand-over, on a tick (a stall tick decides nothing, so it hands
+        # nothing over). What was owed while the minute waited stays only if a
+        # flatten since took that exposure away; on the leg still held, the
+        # ordinary path books the row in its own window, as it did before
+        # anything was owed (PR #108, N2R-1). Not before the switch and this
+        # minute's booking: a halt there leaves no ordinary path to answer the
+        # row, and the entry is then the only record of it (RR-2). From here on
+        # every halt is one a replay of the same files meets in the same minute
+        # -- a touch below included, and a touch here ends the exposure at this
+        # minute's close, before any later row. Before the touch's mark, so the
+        # save persists no equity Aegis has not been told (R1-b); a crash before
+        # the decision re-ticks this minute, and nothing is owed any more.
+        if not stalled and self.position.release_funding_owed():
+            self._save_ledger()
+
+        # Section 6.7, per minute while HEDGED or PARTIAL, and before the rule
+        # for the same reason: a touched position is flattened and halted, and a
+        # rule that had already sized an increase against it would be sizing
+        # against a position that no longer exists.
+        return self._liquidation_check(minute_ms, state)
 
     def _decide(
         self,
@@ -1714,7 +1917,9 @@ class DemoRunner:
     # ------------------------------------------------------------------
     # funding (section 6.5)
     # ------------------------------------------------------------------
-    def _settle_funding(self, minute_ms: int, state: MarketState) -> str | None:
+    def _settle_funding(
+        self, minute_ms: int, state: MarketState, *, stalled: bool = False
+    ) -> str | None:
         """Book every recorded settlement this minute closed over. Returns a halt reason.
 
         The window is section 6.9's, and :meth:`HedgedPosition.settle_funding` is
@@ -1746,12 +1951,15 @@ class DemoRunner:
         nothing in the log saying so.
         """
         ledger = self.position.ledger
-        perp = self.position.leg(PERP_LEG)
-        if perp.quantity == ZERO and self.position.leg(SPOT_LEG).quantity == ZERO:
+        flat = (
+            self.position.leg(PERP_LEG).quantity == ZERO
+            and self.position.leg(SPOT_LEG).quantity == ZERO
+        )
+        if flat and not ledger.state.funding_owed:
             return None  # flat: section 6.5 charges the perpetual leg, and it holds nothing
 
         open_instant = ledger.state.open_instant_ns
-        if open_instant is None:
+        if open_instant is None and not flat:
             return (
                 "funding_window_unknown: this position is not flat and the ledger records "
                 "no open instant, so section 6.9's window `open_instant < settlement <= "
@@ -1772,7 +1980,15 @@ class DemoRunner:
                 instant_ns = int(row[_SETTLEMENT_FIELD]) * _MS_TO_NS
             except (KeyError, TypeError, ValueError) as exc:
                 return f"funding_source_unreadable: {exc}"
-            if not (open_instant < instant_ns <= now_ns):
+            # An owed leg a touch took before this row's stamp answers nothing:
+            # the entry is resolved here, unbooked (RR-1).
+            if self.position.drop_funding_owed_after_exposure(instant_ns):
+                self._save_ledger()
+            # The leg held now, or -- for an instant recorded as owed while its
+            # row was late -- the leg held across it, which a safety flatten
+            # since may have zeroed (PR #108, N2).
+            opened, exposure = self.position.funding_exposure(instant_ns)
+            if opened is None or not (opened < instant_ns <= now_ns):
                 continue
             if instant_ns in ledger.state.settled:
                 continue  # already booked: no economics, and no second record
@@ -1787,7 +2003,7 @@ class DemoRunner:
 
             try:
                 flow = self.position.settle_funding(
-                    settlement, open_instant_ns=open_instant, now_ns=now_ns
+                    settlement, open_instant_ns=opened, now_ns=now_ns
                 )
             except Exception as exc:
                 return f"funding_unbookable: {exc}"
@@ -1802,9 +2018,9 @@ class DemoRunner:
 
             # Aegis first, because the streak it keeps is what vetoes the next
             # increase, and the record written below carries the risk state hash.
-            if perp.side in (PositionSide.LONG, PositionSide.SHORT):
+            if exposure.side in (PositionSide.LONG, PositionSide.SHORT):
                 self.risk.note_funding_settlement(
-                    self.position.config.perp_symbol, perp.side, float(settlement.rate)
+                    self.position.config.perp_symbol, exposure.side, float(settlement.rate)
                 )
 
             mark = self.position.mark_to_market(state)
@@ -1820,10 +2036,17 @@ class DemoRunner:
             self._save_ledger()
             if self.position.state is HedgeState.DISPUTED:
                 return f"identity_violation: {self.position.ledger.disputed}"
+            if stalled and self._ledger_may_speak():
+                # R1-f's stall tick has no PERSISTENCE to hand Aegis the equity
+                # the settlement just moved, which a tick's DECISION does. Without
+                # this the two persisted equities disagree and R1-b's restart
+                # reconciliation halts the campaign. Before the record, so the
+                # record's `risk.state_hash` is the state `risk.json` holds.
+                self.risk.update_equity(float(mark.equity))
             self._append(
                 RecordKind.FUNDING,
                 minute_ns,
-                self._funding_payload(state, settlement, flow, mark, row),
+                self._funding_payload(state, settlement, flow, mark, row, exposure),
             )
             self.save_state()
         return None
@@ -1835,6 +2058,7 @@ class DemoRunner:
         flow: Decimal,
         mark: Any,
         row: Mapping[str, Any],
+        perp: Any,
     ) -> dict[str, Any]:
         """One settlement, in enough detail to reconstruct the flow independently.
 
@@ -1843,9 +2067,11 @@ class DemoRunner:
         raises on a missing one; ``funding`` is the ledger's running
         ``net_funding`` after this settlement, which is the series the daily
         report differences to recover the paid/received split.
+
+        ``perp`` is the exposure the flow was charged on, which is not the leg
+        held now when the settlement was owed across a flatten (N2).
         """
         ledger = self.position.ledger.state
-        perp = self.position.leg(PERP_LEG)
         return {
             "inputs": {
                 "contract_hash": _prefixed(getattr(self.contract, "contract_hash", "")),
@@ -1885,8 +2111,14 @@ class DemoRunner:
     # ------------------------------------------------------------------
     # liquidation (section 6.7)
     # ------------------------------------------------------------------
-    def _liquidation_check(self, minute_ms: int, state: MarketState) -> TickOutcome | None:
+    def _liquidation_check(
+        self, minute_ms: int, state: MarketState, *, context: str = ""
+    ) -> TickOutcome | None:
         """Section 6.7's per-minute touch. Returns an outcome when it fired.
+
+        ``context`` is appended to the record's detail. R1-g's deferral uses it
+        to say which recorded minute touched, because it stamps the record on the
+        last decided minute rather than that one (`_deferral_safety`).
 
         Evaluated while HEDGED or PARTIAL and not otherwise: a flat position has
         nothing to liquidate, and section 6.7 names those two states. The
@@ -1945,6 +2177,12 @@ class DemoRunner:
         # be planned even if this process dies before the flatten, because the
         # halt is persisted by `RiskEngine.halt` itself.
         self.risk.halt("liquidation_touch")
+        # The flatten below takes the leg at the close of the minute that
+        # touched -- where a replay's own tick takes it -- so an owed entry
+        # answers no row stamped later (RR-1). Saved before the record, so a
+        # crash before the flatten leaves the bound on disk with the touch.
+        if self.position.ledger.end_owed(state.minute_ns + MINUTE_NS):
+            self._save_ledger()
         before = self._position_block()
         self._append(
             RecordKind.LIQUIDATION_TOUCH,
@@ -1964,7 +2202,7 @@ class DemoRunner:
                     "detail": (
                         f"equity {equity} against mark {state.mark} at maintenance rate "
                         f"{self.position.config.maintenance_margin_rate}; section 6.7's "
-                        "portfolio and isolated checks"
+                        f"portfolio and isolated checks{context}"
                     ),
                 },
             },
@@ -2653,13 +2891,21 @@ class DemoRunner:
     # driving
     # ------------------------------------------------------------------
     def run_minutes(self, minutes: Iterable[int]) -> list[TickOutcome]:
-        """Process the given minutes in order, stopping at HALT."""
+        """Process the given minutes in order, stopping at HALT or at a deferral.
+
+        A deferred minute (R1-g) ends the run exactly as a halt does: the minutes
+        after it may not be decided ahead of it, and a replay that stepped past
+        it would log them in an order no live run can produce.
+        """
         self._require_active("run_minutes")
         outcomes = []
         for minute in minutes:
-            if self.state is RunnerState.HALT:
+            if self.state in (RunnerState.HALT, RunnerState.FEED_STALLED):
                 break
-            outcomes.append(self.tick(minute))
+            outcome = self.tick(minute)
+            outcomes.append(outcome)
+            if outcome.kind is None:
+                break
         return outcomes
 
     def replay(self, start_ms: int, end_ms: int) -> list[TickOutcome]:
@@ -2670,52 +2916,51 @@ class DemoRunner:
     def catch_up(
         self, *, now_ms: int | None = None, stop: Callable[[], bool] | None = None
     ) -> list[TickOutcome]:
-        """Process every pending minute in order; decide only the recent ones.
+        """Decide every pending minute, in order, since the last decided one.
 
-        Section 2.2 line 120, in full: "minutes between the persisted cursor and
-        now are processed in order with `catch_up=True` in the log, and no
-        position change is executed for catch-up minutes older than the
-        configured `max_catchup_minutes` (default 3): older minutes are logged as
-        `SKIPPED_STALE`."
+        **R1-g retired the age cap.** Section 2.2 line 120 had the runner decide
+        only the newest `max_catchup_minutes` (3) pending minutes and write
+        `SKIPPED_STALE` for every older one; the master roadmap's R1-g replaces
+        that with "the runner decides every closed minute since its last decided
+        minute (no three-minute cap)", accepted on zero `SKIPPED_STALE` minutes
+        while the recorder is healthy. This build writes no `SKIPPED_STALE` at
+        all; the kind stays readable because logs written before it hold them.
 
-        Two clauses, and before PR-10R only half of the first was implemented:
-        the runner ticked the OLDEST `max_catchup_minutes` pending minutes and
-        abandoned the rest with no record. That is the wrong end of the queue --
-        a restart after a two-hour outage decided the two-hour-old minutes at the
-        two-hour-old book and left the current ones unread -- and it left the
-        campaign's log with a hole where the abandoned minutes should be, because
-        nothing in the log said they had been passed over.
+        Deciding an old minute is sound here because nothing about it is read
+        from the present: its inputs are its own recorded row, its fills are
+        priced off the book recorded in it, and `RunnerClock` moves only to its
+        close. A minute decided late is decided exactly as it would have been on
+        time -- which is also why a replay reproduces it. Whether the feed is
+        live enough to be trading at all is the READY gate's question (R1-f).
 
-        What runs now: every minute from the cursor up to `now_ms` is accounted
-        for, in order. The last `max_catchup_minutes` of them are ticked
-        normally. Every older one advances the cursor and writes one
-        `SKIPPED_STALE` record naming its age -- no rule evaluates, no Aegis
-        check runs and no position changes, which is exactly "no position change
-        is executed".
+        Nothing is written for a catch-up that is not written on time: no
+        `catch_up` flag, no age. In a replay every minute is caught up, so such a
+        field would record when the runner looked, not what it decided.
+
+        A minute that is not decidable yet (R1-g's funding deferral, or a day
+        caught mid-rewrite) ends the pass with the cursor on the minute before
+        it; the service comes round again at its next wake.
 
         `now_ms` is the instant catching up is happening at. Without one the
         newest minute the feed holds is used, because that is the newest minute
         that could be decided; a caller that means something else says so.
 
-        Section 9.1's schema has no `catch_up` key, so it is written at the TOP
-        LEVEL of the record -- the log's writer permits extra keys, and section
-        10's parity comparison lists the fields that must match without naming
-        this one, so a flag both live and replay produce identically cannot break
-        parity. Recorded in the PR.
-
         `stop` is R1-d's shutdown request, asked only BETWEEN minutes. A tick is
         never interrupted -- its PERSISTENCE always completes -- so a service
         told to stop in the middle of a long catch-up finishes the minute in
         hand and leaves the rest for the next start, instead of making the
-        supervisor wait out the whole backlog.
+        supervisor wait out the whole backlog -- which, without a cap, may be
+        every minute since an outage began.
         """
         self._require_active("catch_up")
-        limit = int(self.config.runner_setting("max_catchup_minutes"))
         # Read once. The window is what it was when catching up began; letting it
         # move as minutes are processed would make the answer depend on how long
         # the catch-up itself took, which is a wall-clock dependency by another
         # name and would not replay.
-        newest = self._newest_minute_ms(now_ms=now_ms)
+        try:
+            newest = self._newest_minute_ms(now_ms=now_ms)
+        except FeedNotReady:
+            return []
         if newest is None:
             # No minute exists to catch up TO. The cursor's `next_minute_ms`
             # answers "cursor + one minute" for ever whether or not a file holds
@@ -2725,20 +2970,24 @@ class DemoRunner:
             return []
         outcomes: list[TickOutcome] = []
         while True:
-            if self.state is RunnerState.HALT or (stop is not None and stop()):
+            if self.state in (RunnerState.HALT, RunnerState.FEED_STALLED) or (
+                stop is not None and stop()
+            ):
                 break
             # Bounded by `newest`, never by `now_ms` alone: with no `now_ms` the
             # cursor's own `next_minute_ms` hands back cursor + one minute for
             # ever, whether or not a file holds it, so the loop's end has to be
             # the newest minute that EXISTS.
-            minute = self.cursor.next_minute_ms(now_ms=newest)
+            try:
+                minute = self.cursor.next_minute_ms(now_ms=newest)
+            except FeedNotReady:
+                break
             if minute is None:
                 break
-            age = 0 if newest is None else (int(newest) - int(minute)) // 60_000
-            if age >= limit:
-                outcomes.append(self._skipped_stale(minute, age=age, limit=limit))
-            else:
-                outcomes.append(self.tick(minute))
+            outcome = self.tick(minute)
+            outcomes.append(outcome)
+            if outcome.kind is None:
+                break  # deferred: nothing after it may be decided first
         return outcomes
 
     def _newest_minute_ms(self, *, now_ms: int | None = None) -> int | None:
@@ -2753,45 +3002,325 @@ class DemoRunner:
             return int(now_ms)
         return self.cursor.latest_minute_ms()
 
-    def _skipped_stale(self, minute_ms: int, *, age: int, limit: int) -> TickOutcome:
-        """One catch-up minute too old to act on. Recorded, never silently dropped.
+    def _deferred(self, minute_ms: int, reason: str) -> TickOutcome:
+        """R1-g: the minute waits. Nothing is written and the cursor does not move.
 
-        The cursor advances because the minute HAS been dealt with: the answer
-        for it is "too old to decide", which is a fact about the campaign and not
-        a gap in it. Nothing else about the position, the ledger or Aegis moves,
-        so a SKIPPED_STALE minute cannot change what a later minute decides.
+        No record, deliberately. A deferral is the absence of an outcome yet,
+        and writing it would put into the campaign log an event that depends on
+        when the runner looked -- a replay over the finished files defers
+        nothing, so its log would differ. The next pass meets the same minute.
         """
-        minute_ns = int(minute_ms) * _MS_TO_NS
-        self.clock.observe(minute_ns + MINUTE_NS)
-        record_hash = self._append(
-            RecordKind.SKIPPED_STALE,
-            minute_ns,
-            {
-                "catch_up": True,
-                "stale": {
-                    "age_minutes": int(age),
-                    "max_catchup_minutes": int(limit),
-                },
-                "veto_or_rejection": {
-                    "stage": "feed",
-                    "label": "skipped_stale",
-                    "detail": (
-                        f"the minute is {age} minute(s) behind the newest available one "
-                        f"and max_catchup_minutes is {limit}; no rule evaluated and no "
-                        "position changed"
-                    ),
-                },
+        logger.warning("minute %s deferred: %s", minute_ms, reason)
+        return TickOutcome(minute_ms, self.state, None, detail=reason)
+
+    def _deferral_safety(self, minute_ms: int, pending_ms: int) -> TickOutcome | None:
+        """R1-g: what a funding deferral may not suspend. Returns an outcome when
+        it stopped the runner.
+
+        A deferred minute holds the ORDINARY decisions -- it and every minute
+        after it stay undecided, the cursor and the clock stay where they are,
+        no rule runs, nothing is booked and nothing is ordered -- but not the
+        safety of the position already held. While the minute waits the feed
+        runs on, and the independent review of PR #108 (finding F2) showed a
+        runner that stayed READY for hours ignoring its kill switch and a touch
+        on the newer marks. So on every pass that meets the deferral:
+
+        1. the kill switch, as `_safety_checks` checks it;
+        2. section 6.7's touch, on every minute the recorder has published from
+           the deferred one to its newest. Asked with `equity_at`, which marks
+           nothing: marking a later minute's ledger and then deciding an
+           earlier one would carry the later low into the earlier records. A
+           touch is then taken by `_liquidation_check`, exactly as a tick takes
+           it -- Aegis halted, LIQUIDATION_TOUCH, flatten, HALT -- stamped on
+           the last decided minute as R1-f's stall tick stamps it, so restart
+           triage reads it as a decided minute's tail and never moves the cursor
+           past the deferred minute. The equity leaves out the unresolved
+           settlement, which cannot be known yet. A minute without a complete
+           row is passed over, as a tick passes it over;
+        3. the bound. Once the recorder has published market data more than
+           `max_data_delay_s` past the instant and still not its settlement row,
+           the funding feed is stale by the campaign's own data-delay limit,
+           and the runner halts ``funding_unresolved_timeout`` with the position
+           held. The age is read off the recorded files (the newest published
+           minute's close against the instant), not off a timer, so a restart
+           neither resets it nor grants a fresh wait, and a replay of the same
+           files halts at the same minute. Only an operator `resume` leaves the
+           halt, and a runner resumed before the row lands halts again.
+
+        No funding is booked here: that window would have to pass the instant it
+        is waiting on. A feed stall is not declared either: the heartbeat still
+        says whether the feed is live (R1-f), and a missing settlement row is not
+        a stale kline stream. Repeated passes over unchanged files write
+        nothing.
+        """
+        if self.risk.check_kill_switch():
+            self._halt("kill_switch")
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail="kill_switch")
+        try:
+            newest = self.cursor.latest_minute_ms()
+            touched = self._touch_while_deferred(minute_ms, newest)
+        except FeedNotReady:
+            return None  # a day mid-rewrite: the next pass reads it
+        except Exception as exc:
+            reason = f"feed_unreadable: {exc}"
+            self._halt(reason)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
+        instant = iso_minute(int(pending_ms) * _MS_TO_NS)
+        if touched is not None:
+            held = self._minute_ns() // _MS_TO_NS
+            # The observed minute's book, so the flatten fills where that
+            # minute's tick would have.
+            self.position.install_quote(touched)
+            return self._liquidation_check(
+                held,
+                touched,
+                context=(
+                    f"; on the recorded minute {touched.minute} while the funding "
+                    f"instant {instant} was unresolved and the minute "
+                    f"{iso_minute(held * _MS_TO_NS)} the last decided"
+                ),
+            )
+        limit_s = float(self.risk.limits.max_data_delay_s)
+        overdue_s = (
+            (newest if newest is not None else minute_ms) + 60_000 - pending_ms
+        ) / 1000
+        if overdue_s > limit_s:
+            reason = (
+                f"funding_unresolved_timeout: the settlement row for the funding instant "
+                f"{instant} was not recorded within max_data_delay_s ({limit_s:g} s) of "
+                "it; the position is held and no later minute is decided"
+            )
+            logger.critical(
+                "the recorder has published %.0f s past the funding instant %s without "
+                "its settlement row",
+                overdue_s,
+                instant,
+            )
+            self._halt(reason)
+            return TickOutcome(minute_ms, self.state, RecordKind.HALT, detail=reason)
+        return None
+
+    def _touch_while_deferred(
+        self, first_ms: int, newest_ms: int | None
+    ) -> MarketState | None:
+        """The first published minute from ``first_ms`` whose row touches (6.7)."""
+        if newest_ms is None or self.position.state not in (
+            HedgeState.HEDGED,
+            HedgeState.PARTIAL,
+        ):
+            return None
+        for minute in range(int(first_ms), int(newest_ms) + 60_000, 60_000):
+            state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
+            if not state.complete:
+                continue
+            try:
+                equity = self.position.equity_at(state)
+                if self.position.liquidation_touched(state, equity=equity):
+                    return state
+            except Exception:
+                return state  # unknown on a non-flat position: `_liquidation_check` refuses it
+        return None
+
+    # ------------------------------------------------------------------
+    # R1-f: the READY gate and the stall tick
+    # ------------------------------------------------------------------
+    def check_feed(self, now_ns: int) -> int | None:
+        """Canonical R1-f's READY gate: is the feed fresh enough to catch up?
+
+        ``now_ns`` is the OPERATIONAL clock (R1-e), handed in by the service
+        loop; the runner reads no clock of its own. The authority is the
+        recorder's heartbeat (the roadmap's "or as the recorder heartbeat age"),
+        not the newest normalized minute. R1-f chose it because the recorder then
+        re-rendered the open day every 300 s or slower; R1-g, which publishes
+        each minute within seconds of it settling, keeps it, because a minute
+        still waits to settle (up to the recorder's cap on a quiet stream) and
+        the heartbeat says directly what the newest file only implies. The
+        age is ``now_ns`` minus `fresh_through_ns` -- the earlier of the
+        heartbeat's own stamp and the required kline stream's last event -- and
+        never the decision clock against itself, which is all `tick`'s old
+        `note_feed` call ever measured.
+
+        Stale is an age ABOVE `max_data_delay_s`; exactly at it is fresh, the
+        comparison `RiskEngine.note_feed` documents. A NEGATIVE age is stale
+        too, for `note_feed`'s reason: an instant after the present means the
+        clocks disagree and the feed's age is unknown. So is a heartbeat that is
+        missing or unreadable, and a required stream that is absent, not up
+        (disconnected or halted), or has never delivered an event. The newest
+        normalized minute decides nothing here; it is only written into the
+        records as a recorded fact.
+
+        Two transitions, and only between READY and FEED_STALLED. From any other
+        state -- HALT above all -- this changes nothing, so a fresh feed can
+        never clear a halt:
+
+        * READY and stale -> one FEED_STALLED record, then FEED_STALLED;
+        * FEED_STALLED and fresh -> one FEED_RESUMED record, then READY.
+
+        ``now_ns`` decides WHETHER a record is written and is never written
+        itself, and neither is anything read from the heartbeat: both records
+        carry the newest minute and the configured limit, which are recorded
+        facts, and their minute and ``runner_now_ns`` are the decision clock's as
+        always. Aegis is not told. A stale feed is not a risk halt, and nothing
+        is set that an operator would have to clear.
+
+        Returns the operational instant after which the feed turns stale if the
+        heartbeat does not advance, or None when the heartbeat vouches for
+        nothing. The service wakes then, so a dead feed is caught within the
+        limit plus the READY grace whatever the limit is.
+        """
+        self._require_active("check_feed")
+        limit_s = float(self.risk.limits.max_data_delay_s)
+        limit_ns = int(round(limit_s * 1e9))
+        try:
+            heartbeat = read_heartbeat(self.root)
+        except RecorderHealthError as exc:
+            logger.warning(
+                "the recorder heartbeat is unreadable, so the feed is stale: %s", exc
+            )
+            heartbeat = None
+        through = fresh_through_ns(heartbeat)
+        stale_after = None if through is None else through + limit_ns
+        if self.state not in (RunnerState.READY, RunnerState.FEED_STALLED):
+            return stale_after
+        age_ns = None if through is None else int(now_ns) - through
+        stale = age_ns is None or age_ns < 0 or age_ns > limit_ns
+        stalling = stale and self.state is RunnerState.READY
+        resuming = not stale and self.state is RunnerState.FEED_STALLED
+        if stalling or resuming:
+            try:
+                newest = self.cursor.latest_minute_ms()
+            except FeedNotReady:
+                # A day mid-rewrite (R1-g): the transition waits for the next
+                # pass rather than record a newest minute it could not read.
+                return stale_after
+        if stalling:
+            self._append(
+                RecordKind.FEED_STALLED,
+                self._minute_ns(),
+                self._feed_payload(newest, limit_s, stalled=True),
+            )
+            self.save_state()
+            self._enter(RunnerState.FEED_STALLED)
+            logger.warning(
+                "FEED_STALLED: the recorder heartbeat vouches for the feed up to %s s "
+                "ago (None: not at all), limit %.0f s; positions are held and the "
+                "stall tick runs",
+                None if age_ns is None else f"{age_ns / 1e9:.1f}",
+                limit_s,
+            )
+        elif resuming:
+            self._append(
+                RecordKind.FEED_RESUMED,
+                self._minute_ns(),
+                self._feed_payload(newest, limit_s, stalled=False),
+            )
+            self.save_state()
+            self._enter(RunnerState.READY)
+            logger.warning("FEED_RESUMED: the recorder heartbeat vouches for a fresh feed")
+        return stale_after
+
+    def _feed_payload(
+        self, newest: int | None, limit_s: float, *, stalled: bool
+    ) -> dict[str, Any]:
+        """A FEED_STALLED or FEED_RESUMED record's body: recorded facts only."""
+        return {
+            "feed": {
+                "newest_minute": (
+                    None if newest is None else iso_minute(int(newest) * _MS_TO_NS)
+                ),
+                "max_data_delay_s": limit_s,
             },
-        )
-        self.cursor.mark_processed(minute_ms)
-        self.save_state()
-        return TickOutcome(
-            minute_ms,
-            self.state,
-            RecordKind.SKIPPED_STALE,
-            detail=f"stale by {age} minute(s)",
-            record_hash=record_hash,
-        )
+            # What is held through the stall: the position is not touched.
+            "position_after": self._position_block(),
+            "veto_or_rejection": (
+                {
+                    "stage": "feed",
+                    "label": "feed_stalled",
+                    "detail": (
+                        "the recorder heartbeat does not vouch for the um.kline_1m "
+                        f"stream within max_data_delay_s ({limit_s:g} s) of the "
+                        "operational clock: the heartbeat or the stream's last event "
+                        "is older than that or lies ahead of the clock, or the "
+                        "heartbeat is missing or the stream is not up. Nothing is "
+                        "decided until it does; the position is held, and the kill "
+                        "switch, funding and liquidation are still checked on the "
+                        "last processed minute. newest_minute is the newest "
+                        "normalized minute, recorded as a fact, not the authority"
+                    ),
+                }
+                if stalled
+                else None
+            ),
+        }
+
+    def stall_tick(self) -> TickOutcome | None:
+        """R1-f's stall tick: keep a held position safe while the feed is stale.
+
+        The service calls it on each wake while FEED_STALLED, on the operational
+        clock's schedule, in place of `catch_up`. It runs `_safety_checks` -- the
+        kill switch, section 6.5's funding and section 6.7's liquidation check,
+        the tick's own -- against the LAST processed minute, read again from the
+        recorder's files, so a restart mid-stall checks the same minute.
+
+        What it does not do, by construction: observe the decision clock (so
+        `RunnerClock` stays where the last minute left it), evaluate a rule, plan
+        an order, mark a minute processed, or read anything newer than that
+        minute. Funding is `_settle_funding`'s window ``open < settlement <=
+        close``, with the close of that last minute, so only a settlement row
+        that arrived late for an instant already passed can be booked, once --
+        never one the feed has not reached. A liquidation touch is a real touch
+        on the last recorded mark, and flattens and halts as it would in a tick;
+        a stale feed alone flattens nothing. Repeated calls on unchanged files
+        write nothing.
+        """
+        self._require_active("stall_tick")
+        if self.state is not RunnerState.FEED_STALLED:
+            raise RunnerError(
+                f"stall_tick runs only while FEED_STALLED, not {self.state.value}"
+            )
+        minute = self.cursor.last_minute_processed
+        state = None
+        if minute is not None:
+            try:
+                state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
+            except FeedNotReady:
+                return None  # a day mid-rewrite (R1-g): the next stall tick reads it
+            except Exception as exc:
+                reason = f"feed_unreadable: {exc}"
+                self._halt(reason)
+                return TickOutcome(minute, self.state, RecordKind.HALT, detail=reason)
+            # The minute the stall holds on, not a minute attempted: seeds the
+            # age gauges in a process restarted into a stall, which has read none.
+            self.telemetry.on_minute(
+                minute_ns=int(minute) * _MS_TO_NS, missing=state.missing, attempted=False
+            )
+        if state is None or not state.complete:
+            # Nothing recorded to check a position against. The switch still is.
+            if self.risk.check_kill_switch():
+                self._halt("kill_switch")
+                return TickOutcome(
+                    minute or 0, self.state, RecordKind.HALT, detail="kill_switch"
+                )
+            return None
+        assert minute is not None
+        # The same book the minute was decided on, so an emergency reduce after a
+        # touch fills where a tick's would -- including in a fresh process.
+        self.position.install_quote(state)
+        return self._safety_checks(minute, state, stalled=True)
+
+    def _feed_stall_open(self) -> bool:
+        """Whether the log's newest stall record opened a stall rather than ended one."""
+        from chimera.demo.decision_log import day_files, read_records
+
+        pair = (RecordKind.FEED_STALLED.value, RecordKind.FEED_RESUMED.value)
+        for path in reversed(day_files(self.state_dir / LOG_DIR_NAME)):
+            last = None
+            for record in read_records(path):
+                if record.get("kind") in pair:
+                    last = record["kind"]
+            if last is not None:
+                return last == RecordKind.FEED_STALLED.value
+        return False
 
     # ------------------------------------------------------------------
     # helpers

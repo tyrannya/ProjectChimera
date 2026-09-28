@@ -102,6 +102,12 @@ SECTION_11_1_NAMES: tuple[str, ...] = (
     "chimera_demo_disk_free_bytes",
     "chimera_demo_funding_adverse_streak",
 )
+#: R1-g's two, added after the independent review of PR #108 (finding F2): a
+#: funding minute held undecided must be visible before it halts anything.
+R1G_NAMES: tuple[str, ...] = (
+    "chimera_demo_funding_deferred",
+    "chimera_demo_funding_deferred_instant_timestamp",
+)
 
 #: Attribute name -> the label tuple that attribute is allowed to carry. Adding
 #: a series, or widening one's labels, has to be a deliberate edit here.
@@ -124,6 +130,8 @@ EXPECTED_LABELS: dict[str, tuple[str, ...]] = {
     "DEMO_LOG_WRITE_ERRORS": (),
     "DEMO_DISK_FREE": (),
     "DEMO_FUNDING_ADVERSE_STREAK": (),
+    "DEMO_FUNDING_DEFERRED": (),
+    "DEMO_FUNDING_DEFERRED_INSTANT": (),
 }
 
 #: The only label names the demo family may carry, written out rather than read
@@ -132,7 +140,7 @@ DEMO_LABEL_NAMES: frozenset[str] = frozenset(
     {"state", "rule", "kind", "market", "direction", "leg"}
 )
 
-#: Section 8.1's states, typed out. Thirteen.
+#: Section 8.1's states, typed out, plus R1-f's FEED_STALLED. Fourteen.
 RUNNER_STATE_VALUES: tuple[str, ...] = (
     "STARTUP",
     "SELF_CHECK",
@@ -145,6 +153,7 @@ RUNNER_STATE_VALUES: tuple[str, ...] = (
     "RECONCILIATION",
     "PERSISTENCE",
     "REPORTING",
+    "FEED_STALLED",
     "HALT",
     "SHUTDOWN",
 )
@@ -158,7 +167,7 @@ HEDGE_STATE_VALUES: tuple[str, ...] = (
     "CLOSING",
     "DISPUTED",
 )
-#: Section 9.1's record kinds, typed out. Twelve.
+#: Section 9.1's record kinds, typed out, plus R1-f's two. Fourteen.
 RECORD_KIND_VALUES: tuple[str, ...] = (
     "DECISION",
     "FUNDING",
@@ -172,6 +181,8 @@ RECORD_KIND_VALUES: tuple[str, ...] = (
     "SKIPPED_STALE",
     "LIQUIDATION_TOUCH",
     "RECOVERY",
+    "FEED_STALLED",
+    "FEED_RESUMED",
 )
 
 #: The mode family, by the names `chimera.metrics` gives it. None of these may be
@@ -403,8 +414,8 @@ def mode_children() -> dict[str, set]:
 # --------------------------------------------------------------------------- #
 def test_the_demo_metric_names_are_section_11_1s_exactly():
     assert len(metrics.DEMO_METRIC_NAMES) == len(set(metrics.DEMO_METRIC_NAMES))
-    assert set(metrics.DEMO_METRIC_NAMES) == set(SECTION_11_1_NAMES)
-    assert len(SECTION_11_1_NAMES) == 18
+    assert set(metrics.DEMO_METRIC_NAMES) == set(SECTION_11_1_NAMES + R1G_NAMES)
+    assert len(SECTION_11_1_NAMES) == 18 and len(R1G_NAMES) == 2
     for name in metrics.DEMO_METRIC_NAMES:
         assert name.startswith("chimera_demo_"), name
 
@@ -557,8 +568,9 @@ def test_every_telemetry_observation_method_returns_none():
         for child in ast.walk(node):
             if isinstance(child, ast.Return):
                 assert child.value is None, f"{node.name} returns a value"
-    # Nine each since R1-d added `on_heartbeat`, the wait loop's beat.
-    assert seen == 18, f"expected nine methods on each of the two classes, saw {seen}"
+    # Nine each since R1-d added `on_heartbeat`, the wait loop's beat; ten since
+    # R1-g added `on_funding_deferral` (independent review of PR #108, F2).
+    assert seen == 20, f"expected ten methods on each of the two classes, saw {seen}"
 
 
 def test_the_telemetry_module_calls_no_mutating_method():
@@ -616,7 +628,7 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
     tree = runner_tree()
     statements = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Expr)}
     calls = telemetry_calls(tree)
-    # Nine, named: on_state, on_log_write_error, on_record, on_minute,
+    # Named: on_state, on_log_write_error, on_record, on_minute (twice),
     # on_reporting, on_halt, on_position (twice), on_shutdown. The count is
     # written out so that an emission added without a reader thinking about where
     # it sits in the tick is a failing test rather than a silent extra call.
@@ -629,7 +641,16 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
     # flat. The operator `flatten` command already carried the same emission for
     # the same reason; the liquidation path is the second place the hedge moves
     # with no tick to follow it.
-    assert len(calls) == 9, f"expected nine emission points, found {len(calls)}"
+    #
+    # Ten since R1-f: a second `on_minute`, in the stall tick, with
+    # `attempted=False`. It reports the minute a stall holds on, so a process
+    # restarted into a stall does not show an age of zero for the whole stall,
+    # and it counts no tick.
+    #
+    # Eleven since R1-g: `on_funding_deferral`, at the top of every tick, before
+    # the clock observes the minute or anything about it is decided. It says
+    # which funding instant the minute waits on, or none, and nothing else.
+    assert len(calls) == 11, f"expected eleven emission points, found {len(calls)}"
     assert {call.func.attr for call in calls} == {
         "on_state",
         "on_log_write_error",
@@ -639,6 +660,7 @@ def test_the_runner_never_uses_a_telemetry_call_as_a_value():
         "on_halt",
         "on_position",
         "on_shutdown",
+        "on_funding_deferral",
     }
     for call in calls:
         method = call.func.attr

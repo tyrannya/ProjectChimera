@@ -51,7 +51,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 from chimera.carry.accounting import ZERO, CarryError, FundingSettlement
 from chimera.carry.ledger import CarryLedger
-from chimera.futures.domain import OrderState, PositionSide, TargetPosition
+from chimera.futures.domain import OrderState, Position, PositionSide, TargetPosition
 from chimera.futures.fills import TopOfBook
 from chimera.futures.executor import FlattenCause, FuturesExecutor
 from chimera.futures.store import LoadOutcome
@@ -277,17 +277,19 @@ class HedgeOutcome:
 
 @dataclass(frozen=True)
 class CarryMark:
-    """The position marked at one minute's closes."""
+    """The position marked at one minute: spot at its close, the perpetual at its mark."""
 
     quantity: Decimal
     spot_close: Decimal
     perp_close: Decimal
-    #: The price the PERPETUAL leg was valued at (R1-l). Reported beside
+    #: The price the PERPETUAL leg was valued at (R1-l). Reported BESIDE
     #: ``perp_close`` rather than instead of it, because the two are different
-    #: facts about the minute and the close is still what the basis and section
-    #: 6.5's identity are defined on. A reader of a mark can tell which number
-    #: the equity beside it was computed from; before this field it could not.
-    perp_mark: Decimal
+    #: facts about the minute and the close is still what ``basis`` and section
+    #: 6.5's identity are defined on. With it a reader of a mark can tell which
+    #: number the equity beside it was computed from; before it, they could not.
+    #: ``None`` exactly when no price was needed -- a FLAT perpetual leg has no
+    #: unrealised term -- so the field never names a valuation that did not run.
+    perp_mark: Decimal | None
     basis: Decimal
     spot_pnl: Decimal
     perp_pnl: Decimal
@@ -299,7 +301,7 @@ class CarryMark:
             "quantity": str(self.quantity),
             "spot_close": str(self.spot_close),
             "perp_close": str(self.perp_close),
-            "perp_mark": str(self.perp_mark),
+            "perp_mark": None if self.perp_mark is None else str(self.perp_mark),
             "basis": str(self.basis),
             "spot_pnl": str(self.spot_pnl),
             "perp_pnl": str(self.perp_pnl),
@@ -803,8 +805,109 @@ class HedgedPosition:
         instant = int(event.instant_ns)
         if not (open_instant_ns < instant <= now_ns):
             return ZERO
-        flow = self.perp.settle_funding(event)
+        owed = self._owed(instant)
+        if owed is None:
+            flow = self.perp.settle_funding(event)
+        else:
+            flow = self.perp.settle_funding(event, Position.from_dict(owed["perp"]))
         return self.ledger.book_funding(instant, flow)
+
+    def funding_exposure(self, instant_ns: int) -> tuple[int | None, Position]:
+        """``(open_instant_ns, perpetual position)`` a settlement at ``instant_ns``
+        is charged on.
+
+        The leg held now, in the window the ledger holds now -- unless the
+        instant was recorded as owed (:meth:`note_funding_owed`), in which case
+        the exposure and window recorded then. A flatten after that moment
+        changes neither what was held across the instant nor what it owes. An
+        entry outlives an ordinary tick's hand-over only after such a flatten
+        (:meth:`release_funding_owed`), and answers no row stamped after a touch
+        ended its leg (:meth:`drop_funding_owed_after_exposure`).
+        """
+        owed = self._owed(instant_ns)
+        if owed is not None:
+            return owed["open_instant_ns"], Position.from_dict(owed["perp"])
+        return self.ledger.state.open_instant_ns, self.perp.position(self.config.perp_symbol)
+
+    def note_funding_owed(self, instant_ns: int) -> bool:
+        """Record that the funding instant ``instant_ns`` is being crossed by the
+        perpetual leg held now, before its settlement row exists. True if recorded.
+
+        Nothing for a flat leg, and nothing for an instant outside the window
+        :meth:`settle_funding` would charge -- this records only what that method
+        would book at the instant, on the exposure it would book it on.
+        """
+        held = self.perp.position(self.config.perp_symbol)
+        opened = self.ledger.state.open_instant_ns
+        if held.is_flat or opened is None or not opened < int(instant_ns):
+            return False
+        return self.ledger.owe_funding(instant_ns, open_instant_ns=opened, perp=held.to_dict())
+
+    def _owed(self, settlement_ns: int) -> dict[str, Any] | None:
+        """The owed entry a row stamped ``settlement_ns`` is charged on: one that
+        answers the row, while its recorded leg was still held at the stamp."""
+        owed = self.ledger.owed_for(settlement_ns)
+        if owed is None or int(settlement_ns) > owed.get("held_until_ns", int(settlement_ns)):
+            return None
+        return owed
+
+    def _still_held(self, owed: Mapping[str, Any]) -> bool:
+        """Whether the leg AND window an entry recorded are the ones held now."""
+        held = self.perp.position(self.config.perp_symbol)
+        return (
+            owed["open_instant_ns"] == self.ledger.state.open_instant_ns
+            and Position.from_dict(owed["perp"]) == held
+        )
+
+    def release_funding_owed(self) -> bool:
+        """Forget each owed instant whose recorded exposure is still the one held.
+        True if any was forgotten.
+
+        The hand-over from the fallback to the ordinary path, called by a tick
+        once the kill switch and the minute's own booking are through -- never
+        before them, because a halt there leaves no ordinary path to answer the
+        row (RR-2). What is owed
+        is a fallback for an exposure something other than the ordinary path
+        took away while the minute waited -- a safety or operator flatten. While
+        the leg and window recorded are still the ones held, nothing did, and
+        the ordinary path answers the row as it did before anything was owed: in
+        the window the row falls in, on the leg held THERE. A row stamped after
+        the instant falls in a later minute, after this minute's decision may
+        have moved the leg, so the recorded leg is not its exposure (PR #108,
+        N2R-1).
+        """
+        released = False
+        for owed in list(self.ledger.state.funding_owed):
+            if self._still_held(owed):
+                released = self.ledger.release_owed(owed["instant_ns"]) or released
+        return released
+
+    def owed_to_fallback(self, settlement_ns: int) -> dict[str, Any] | None:
+        """The owed entry a HALTED start answers a row stamped ``settlement_ns``
+        with, if any: one whose recorded exposure is over -- a touch ended it
+        (``held_until_ns``) or a flatten took the leg. An entry whose leg and
+        window are still held is not: nothing has taken that exposure yet, and a
+        resumed tick answers the row the ordinary way (RR-2, RR-3).
+        """
+        owed = self.ledger.owed_for(settlement_ns)
+        if owed is None or ("held_until_ns" not in owed and self._still_held(owed)):
+            return None
+        return owed
+
+    def drop_funding_owed_after_exposure(self, settlement_ns: int) -> bool:
+        """Forget, unbooked, the owed instant a row stamped ``settlement_ns``
+        answers when a touch ended the recorded leg before that stamp. True if
+        forgotten.
+
+        The row/window contract charges a settlement on the exposure held at the
+        row's own stamp. A touch flattens at the close of the minute that
+        touched -- where a replay's own tick flattens too -- so a row stamped
+        after it is charged on nothing the entry recorded (RR-1).
+        """
+        owed = self.ledger.owed_for(settlement_ns)
+        if owed is None or self._owed(settlement_ns) is not None:
+            return False
+        return self.ledger.release_owed(owed["instant_ns"])
 
     def booked_settlement_instants(self) -> tuple[int, ...]:
         """The settlement instants the PERPETUAL LEG's ledger has already booked.
@@ -828,36 +931,38 @@ class HedgedPosition:
     # -- marking and the identity -----------------------------------------
 
     def mark_to_market(self, state: CarryMarketState) -> CarryMark:
-        """Mark both legs and check the running identity. The perpetual at MARK.
+        """Mark both legs and check the running identity. The perpetual at its MARK.
 
         **R1-l: one valuation price, and for a perpetual it is the mark.** The
         unrealised term used to be measured at ``perp_close`` -- the price one
-        trade printed at -- while the liquidation test standing beside it
-        measured its threshold on ``mark_high`` and asked the executor for a
-        liquidation price at ``state.mark``. Section 6.7's test is
+        trade printed at -- while section 6.7's test standing beside it measured
+        its threshold on ``mark_high`` and asked the executor for a liquidation
+        price at ``state.mark``. That test is
         ``equity < Q * mark_high * maintenance_margin_rate``, and with the two
         sides priced differently it compared an equity the venue does not
-        compute against a requirement the venue does. When the mark sat above
-        the close, this position -- SHORT the perpetual -- carried a larger
-        unrealised loss than the equity line admitted, so the test ran on an
-        equity that was too high and a touch could read as "not touched". The
-        call site of that test already took care that both sides describe the
-        same MINUTE; this is the other half, that they describe the same PRICE.
-        The same number reaches ``RiskEngine.update_equity``, so the drawdown
-        and daily-loss halts move onto the mark with it.
+        compute against a requirement the venue does. This position is SHORT the
+        perpetual, so a mark above the close is an unrealised loss the equity
+        line did not admit to: the left side ran too high by exactly
+        ``Q * (mark - close)``, and a touch could read as *not touched* by the
+        amount the two prices differed. The call site of that test already took
+        care that both sides describe the same MINUTE; this is the other half,
+        that they describe the same PRICE. The same number reaches
+        ``RiskEngine.update_equity``, so the drawdown and daily-loss halts move
+        onto the mark with it, and R1-g's `equity_at` -- which asks 6.7's
+        question on minutes it may not mark -- gets it through the same
+        `_perp_pnl`.
 
         **The spot leg stays at its close, and that is not the same mismatch.**
         Spot has no mark price: there is no second number to be inconsistent
-        with, and the close is what the inventory is worth. Stated here so that
-        the one remaining price difference in this method is a documented fact
-        about the two instruments rather than a leftover.
+        with, and the close is what the inventory is worth. Stated here so the
+        one remaining price difference in this method reads as a documented fact
+        about two instruments rather than as a leftover.
 
-        **Basis and the section 6.5 identity do not move.** Both are defined on
-        the closes, and both are spreads rather than valuations -- ``basis`` is
-        what the rule reads and what ``check_identity`` reconciles the two legs
-        against. Repricing them here would change a frozen accounting
-        definition, which R1-l does not ask for and which is not this PR's to
-        change.
+        **Basis and the section 6.5 identity do not move.** Both are spreads
+        rather than valuations -- ``basis`` is what the rule reads and what
+        ``check_identity`` reconciles the two legs against -- and both are
+        defined on the closes. Repricing them would change a frozen accounting
+        definition, which R1-l does not ask for.
 
         Section 6.6's identity, per leg. ``perp_margin`` is the margin posted for
         the quantity the PERPETUAL leg holds, so the unrealised term that sits
@@ -872,21 +977,17 @@ class HedgedPosition:
         """
         spot_leg, perp_leg = self.leg(SPOT), self.leg(PERP)
         quantity = min(spot_leg.quantity, perp_leg.quantity)
-        mark = self._valuation_mark(perp_leg.quantity, state)
         spot_pnl = (
             spot_leg.quantity * (state.spot_close - spot_leg.entry_price)
             if spot_leg.quantity
             else ZERO
         )
-        perp_pnl = (
-            perp_leg.quantity * (perp_leg.entry_price - mark) if perp_leg.quantity else ZERO
-        )
-        equity = (
-            self.ledger.state.free_cash
-            + spot_leg.quantity * state.spot_close
-            + self.ledger.state.perp_margin
-            + perp_pnl
-        )
+        perp_pnl = self._perp_pnl(state)
+        # The price that term was computed from, or None when no price was
+        # needed: a flat leg has no unrealised term, and reporting the minute's
+        # mark there would claim a valuation that did not happen.
+        perp_mark = self._valuation_mark(state) if perp_leg.quantity else None
+        equity = self.equity_at(state)
         self.ledger.mark(
             spot_close=state.spot_close, perp_close=state.perp_close, equity=equity
         )
@@ -899,7 +1000,7 @@ class HedgedPosition:
             quantity=quantity,
             spot_close=state.spot_close,
             perp_close=state.perp_close,
-            perp_mark=mark,
+            perp_mark=perp_mark,
             basis=state.perp_close - state.spot_close,
             spot_pnl=spot_pnl,
             perp_pnl=perp_pnl,
@@ -907,39 +1008,65 @@ class HedgedPosition:
             identity_residual=residual,
         )
 
+    def equity_at(self, state: CarryMarketState) -> Decimal:
+        """The equity :meth:`mark_to_market` would mark at ``state``, marking nothing.
+
+        For a caller that must ask section 6.7's question about a minute it may
+        not mark the ledger at (R1-g: a runner holding a funding minute undecided
+        watches the newer minutes for a touch). The ledger's mark also moves its
+        worst equity, so marking a later minute and then deciding an earlier one
+        would carry the later minute's low into the earlier minute's records.
+        """
+        spot_leg = self.leg(SPOT)
+        return (
+            self.ledger.state.free_cash
+            + spot_leg.quantity * state.spot_close
+            + self.ledger.state.perp_margin
+            + self._perp_pnl(state)
+        )
+
+    def _perp_pnl(self, state: CarryMarketState) -> Decimal:
+        """The perpetual leg's unrealised term, priced at the MARK (R1-l).
+
+        One function, because one number: :meth:`mark_to_market` reports it and
+        :meth:`equity_at` answers section 6.7 with it, and the two must not be
+        able to disagree about what the position is worth.
+        """
+        perp_leg = self.leg(PERP)
+        if not perp_leg.quantity:
+            return ZERO
+        return perp_leg.quantity * (perp_leg.entry_price - self._valuation_mark(state))
+
     @staticmethod
-    def _valuation_mark(perp_quantity: Decimal, state: CarryMarketState) -> Decimal:
-        """The mark the perpetual leg is valued at, or a refusal (R1-l).
+    def _valuation_mark(state: CarryMarketState) -> Decimal:
+        """The price a NON-FLAT perpetual leg is valued at, or a refusal (R1-l).
 
-        A FLAT perpetual leg has no unrealised term, so it needs no mark and a
-        minute without one values it at zero either way; returning the close
-        there keeps the reported price a real number without letting it reach
-        any arithmetic.
-
-        A NON-FLAT leg with no mark is refused rather than valued at the close.
+        A minute with no mark is refused rather than valued at the close.
         Falling back would reinstate exactly the inconsistency this change
         removes, and silently: the equity would be priced at one number while
-        the liquidation test beside it priced its threshold at another, on the
-        one kind of minute where nobody would think to look. It is the same
-        answer section 7.2's liquidation rule already gives -- unknown
-        information on a non-flat position is refused, never read as "far away"
-        -- and the runner turns the refusal into a recorded HALT.
+        the threshold beside it was priced at another, on the one kind of minute
+        where nobody would think to look. It is the same answer section 7.2's
+        liquidation rule already gives -- unknown information on a non-flat
+        position is refused, never read as "far away" -- and both callers turn
+        the refusal into that refusal: the runner's tick into a recorded HALT,
+        and `_touch_while_deferred` into the touch it takes when it cannot
+        answer.
 
-        In practice this does not fire on the decision path: ``um_mark`` is one
-        of the fields whose absence makes a minute INCOMPLETE, and an incomplete
-        minute never reaches a mark. The guard is for every other caller.
+        Only reached with a non-flat leg: a flat one has no unrealised term, so
+        :meth:`_perp_pnl` returns zero without asking for a price. Nor does this
+        fire on the decision path, where ``um_mark`` is one of the fields whose
+        absence makes a minute INCOMPLETE and an incomplete minute is never
+        marked. The guard is for every other caller.
         """
         mark = getattr(state, "mark", None)
-        if mark is not None:
-            return mark
-        if perp_quantity == ZERO:
-            return state.perp_close
-        raise CarryError(
-            "the minute carries no mark price and the perpetual leg is not flat, so this "
-            "position cannot be valued. Section 6.7 tests equity against a threshold priced "
-            "at the mark; pricing the equity at the close instead would compare two "
-            "different numbers and call it a margin check"
-        )
+        if mark is None:
+            raise CarryError(
+                "the minute carries no mark price and the perpetual leg is not flat, so "
+                "this position cannot be valued. Section 6.7 tests equity against a "
+                "threshold priced at the mark; pricing the equity at the close instead "
+                "would compare two different numbers and call it a margin check"
+            )
+        return mark
 
     # -- liquidation -------------------------------------------------------
 

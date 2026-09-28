@@ -63,22 +63,37 @@ replay design rests on.
 
 ## What may differ
 
-**Operational records.** `STARTUP`, `SHUTDOWN`, `RECOVERY`, `HALT` and `RESUME`
-are aligned by `(minute, kind, ordinal)` and their contents are not compared,
-because "the replay may have fewer restarts". Dropping a `STARTUP` is not a
-parity failure; dropping a `DECISION` is.
+**Operational records.** `STARTUP`, `SHUTDOWN`, `RECOVERY`, `HALT`, `RESUME`,
+`FEED_STALLED` and `FEED_RESUMED` are aligned by `(minute, kind, ordinal)` and
+their contents are not compared, because "the replay may have fewer restarts".
+Dropping a `STARTUP` is not a parity failure; dropping a `DECISION` is. R1-f's
+two feed kinds are here for the same reason: they record when the LIVE service's
+READY gate found the recorder's heartbeat stale, a fact about the running of the
+campaign. A replay reads finished files, is never stale, and writes neither.
 
-> **Known limitation, not fixed here: a live run with more restarts than its
-> replay diverges on `seq` regardless of any exclusion.** Section 10's table
-> requires `seq` to match byte-for-byte *and* permits the replay to have fewer
-> restarts, and those two cannot both hold: `seq` is one counter over **every**
-> record, operational kinds included (`DecisionLog.append` assigns it before it
-> knows the kind), so each extra live `STARTUP`/`SHUTDOWN`/`RECOVERY` shifts the
-> `seq` of every record after it. A clean restart in the middle of a run
-> therefore produces one `seq` divergence per subsequent record, and because
+> **Known limitation, not fixed here: a live run with more operational records
+> than its replay diverges on `seq` regardless of any exclusion.** Section 10's
+> table requires `seq` to match byte-for-byte *and* permits the replay to have
+> fewer restarts, and those two cannot both hold: `seq` is one counter over
+> **every** record, operational kinds included (`DecisionLog.append` assigns it
+> before it knows the kind), so each extra live `STARTUP`/`SHUTDOWN`/`RECOVERY`
+> shifts the `seq` of every record after it. A clean restart in the middle of a
+> run therefore produces one `seq` divergence per subsequent record, and because
 > every `RECOVERY` is by construction preceded by a restart, the explained
 > exclusions below cannot turn such a run into `PARITY` — they remove the
 > crashed minute, not the offset.
+>
+> A genuine feed outage does the same. Each `FEED_STALLED` / `FEED_RESUMED`
+> pair the live service writes when the recorder's heartbeat stops vouching for
+> the perpetual kline stream (a dead stream, a dead recorder, a halted stream,
+> or a heartbeat that catches the stream reconnecting) shifts the `seq` of every
+> later record. A **healthy** recorder writes no such pair: the gate reads the
+> heartbeat, not the 300 s normalized cadence, so a healthy day's gated log is
+> the ungated one, `seq` included
+> (`tests/test_r1f_real_staleness.py::test_a_healthy_day_on_todays_recorder_replays_to_parity`).
+> Before the independent review's F1 fix the gate read the newest normalized
+> minute and did write such pairs on a healthy recorder; that is gone. How `seq`
+> is compared across genuine restarts and outages is R1-j's decision, not R1-f's.
 >
 > This is inherited, not introduced: `seq` was already in `MUST_MATCH` at
 > `e02b871`, taken verbatim from section 10. It is recorded rather than repaired
@@ -89,10 +104,14 @@ parity failure; dropping a `DECISION` is.
 > tool; until it is made, treat a restarted run's `seq` divergences as expected
 > and read the other fields.
 >
-> The same applies to a run whose live catch-up skipped minutes: the replay
+> The same applies to a run whose live catch-up skipped minutes -- any log
+> written before R1-g, whose catch-up cap wrote `SKIPPED_STALE`: the replay
 > decides them, so it opens its position earlier and every later `signal`,
 > `position_after` and `ledger_effect` differs. A minute-level exclusion cannot
-> undo a state divergence that propagates.
+> undo a state divergence that propagates. Since R1-g the runner decides every
+> pending minute, and a funding minute reached before its settlement row waits
+> for it rather than booking it at a later minute, so neither cause arises in a
+> current log.
 
 **Everything else is compared, including the kinds PR-10R made reachable.**
 `FUNDING`, `RECONCILIATION`, `LIQUIDATION_TOUCH`, `SKIPPED_STALE` and
@@ -185,7 +204,7 @@ that minute was not one the campaign decided from its files:
 
 | live record | minute excluded | why a replay cannot reproduce it |
 | --- | --- | --- |
-| `SKIPPED_STALE` | the skipped minute | the live process came back from an outage and the minute was already older than `max_catchup_minutes`. Which minutes were stale depends on when the process restarted, and no recorded file holds that. |
+| `SKIPPED_STALE` | the skipped minute | written only by builds before R1-g, which retired the catch-up cap: the live process came back from an outage and the minute was already older than `max_catchup_minutes`. Which minutes were stale depends on when the process restarted, and no recorded file holds that. Kept so those logs still compare. |
 | `RECOVERY` | `recovery.evidence_excluded_minute` | section 9.3: the minute a crash left inconsistent "is excluded from the campaign's evidence and counted in the monthly report". |
 
 Every exclusion is reported. `explained_exclusions` lists each excluded minute

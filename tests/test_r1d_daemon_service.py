@@ -45,7 +45,8 @@ from chimera.demo.feed import PERP_MARKET, FeedCursor
 from chimera.demo.fixtures import MinuteShape
 from chimera.demo.runner import _STATE_NAMES, RunnerState
 from chimera.demo.telemetry import RunnerTelemetry
-from tests.demo_harness import DAY, NEXT_DAY, build
+from tests.demo_harness import DAY, NEXT_DAY, campaign_config
+from tests.demo_harness import build as _build
 from tests.test_demo_cli import written_config
 from tools import demo_run
 
@@ -59,6 +60,24 @@ GRACE = 5.0  # conf/demo/pvc1.json and section 8.1: `ready_grace_seconds`
 #: An ABSOLUTE tolerance for simulated instants. `pytest.approx`'s default is
 #: relative, and at T0's magnitude relative means roughly 1800 seconds.
 EPS = 1e-3
+
+
+#: R1-f. Every service here runs an operational clock that has nothing to do
+#: with the recorded day -- T0 is two days after it -- and under R1-f's READY gate
+#: that is a stale feed. These tests are about the loop's schedule, its signals
+#: and its heartbeat, not about staleness, so every harness in this module holds
+#: `max_data_delay_s` out of reach (about 31.7 years). Staleness has its own
+#: two-sided tests, and the same service properties during a stall, in
+#: `tests/test_r1f_real_staleness.py`.
+STALENESS_OUT_OF_REACH = {"max_data_delay_s": 1e9}
+
+
+def build(tmp_path: Path, **kwargs: Any):
+    """`tests.demo_harness.build`, with the READY gate's limit out of reach."""
+    kwargs.setdefault(
+        "config", campaign_config(tmp_path / "state", limits=STALENESS_OUT_OF_REACH)
+    )
+    return _build(tmp_path, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -439,8 +458,9 @@ def test_sigterm_during_persistence_lets_the_minute_complete_then_stops(tmp_path
     assert seen.get("fired")
     _assert_the_minute_in_hand_completed(harness.state_dir)
     first = day_start_ms()
-    # 7 SKIPPED_STALE, then the first of the three decidable minutes, and stop.
-    assert runner_state(harness.state_dir)["last_minute_processed"] == first + 7 * MINUTE_MS
+    # The first pending minute -- R1-g decides every one, so it is the first --
+    # completes, and the nine behind it wait for the next start.
+    assert runner_state(harness.state_dir)["last_minute_processed"] == first
     assert fake.sleeps == [], "a stop requested mid-pass does not wait for the next close"
 
     before = len(records(harness.state_dir))
@@ -536,9 +556,9 @@ def test_the_heartbeat_stays_within_30s_through_a_pass_that_works_for_many_minut
 ):
     """Correction 2's witness: progress, not only waiting, keeps it fresh.
 
-    One pass over 200 published minutes -- 197 SKIPPED_STALE and three
-    decisions -- where every durable write costs 12 simulated seconds, so the
-    pass alone spans about forty simulated minutes. Every gap between beats stays
+    One pass over 200 published minutes -- every one of them decided since
+    R1-g -- where every durable write costs 12 simulated seconds, so the pass
+    alone spans well over half an hour of simulated time. Every gap between beats stays
     within the cadence, because each processed minute passes a main-thread
     checkpoint: a state change inside `tick`, or the committed record of a
     minute that is not decided. Remove the record-time beat and the backlog runs
@@ -563,7 +583,8 @@ def test_the_heartbeat_stays_within_30s_through_a_pass_that_works_for_many_minut
 
     assert fake.t - T0 > 30 * 60, "the pass alone worked for half an hour of simulated time"
     assert fake.sleeps == [] or fake.sleeps[0] <= demo_run.WAIT_SLICE_SECONDS
-    assert kinds(harness.state_dir).count("SKIPPED_STALE") == 197
+    logged = kinds(harness.state_dir)
+    assert "SKIPPED_STALE" not in logged and logged.count("DECISION") >= 100
     assert _max_gap([T0, *beats]) <= demo_run.HEARTBEAT_SECONDS + EPS
 
 

@@ -29,6 +29,10 @@ def written_config(tmp_path: Path, harness) -> Path:
     payload.update(
         {
             "profile": config.profile.value,
+            # The harness's limits, not the committed file's: they are equal
+            # unless a test changed one on purpose (R1-f's service tests hold
+            # `max_data_delay_s` out of reach), and then the CLI must run it too.
+            "limits": config.limits.to_dict(),
             "runner": {"state_dir": str(harness.state_dir)},
             "rules": {"R1_carry": dict(CARRY_PARAMS)},
         }

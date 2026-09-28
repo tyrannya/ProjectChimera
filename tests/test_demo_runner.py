@@ -17,6 +17,7 @@ import pytest
 
 from chimera.carry.hedge import HedgeState
 from chimera.carry.ledger import LedgerError, LoadOutcome
+from chimera.demo.config import DemoConfigError
 from chimera.demo.decision_log import RecordKind, iso_minute
 from chimera.demo.fixtures import MinuteShape, SyntheticFeed
 from chimera.demo.rules import HedgeTarget, RuleError, RuleRegistry
@@ -733,82 +734,41 @@ def test_an_unreadable_runner_state_is_refused_rather_than_reset(tmp_path):
 # ---------------------------------------------------------------------------
 # catch-up
 # ---------------------------------------------------------------------------
-def test_catch_up_decides_at_most_max_catchup_minutes(tmp_path):
-    """Section 2.2 line 120's first clause: only the recent minutes are decided.
+def test_catch_up_decides_every_pending_minute_in_order(tmp_path):
+    """R1-g: no cap. Ten pending minutes are ten decided minutes, oldest first.
 
-    ``now_ms`` bounds the pending window. Without one the drain runs to the end
-    of the fixture's day, and since PR-10R accounts for every pending minute
-    rather than abandoning the surplus, that is 1437 SKIPPED_STALE records with
-    an fsync each -- minutes of wall clock to assert something about three.
+    Before R1-g the newest three were decided and the oldest seven written as
+    SKIPPED_STALE. ``now_ms`` bounds the window only so the test does not drain
+    the fixture's whole day.
     """
-    harness = build(tmp_path, config=None)
-    limit = int(harness.runner.config.runner_setting("max_catchup_minutes"))
+    harness = build(tmp_path)
     first = harness.first_minute_ms()
     outcomes = harness.runner.catch_up(now_ms=first + 9 * 60_000)
-    decided = [o for o in outcomes if o.kind is not RecordKind.SKIPPED_STALE]
-    assert len(decided) == limit
+
+    expected = [first + i * 60_000 for i in range(10)]
+    assert [o.minute_ms for o in outcomes] == expected
+    assert [o.kind for o in outcomes] == [RecordKind.DECISION] * 10
+    decided = [r["minute"] for r in harness.records() if r["kind"] == "DECISION"]
+    assert decided == [iso_minute(m * 1_000_000) for m in expected]
+    assert "SKIPPED_STALE" not in [r["kind"] for r in harness.records()]
+    assert harness.runner.cursor.last_minute_processed == expected[-1]
 
 
-def test_catch_up_honours_a_configured_limit(tmp_path):
-    state_dir = tmp_path / "state"
-    config = campaign_config(state_dir, runner={"max_catchup_minutes": 2})
-    harness = build(tmp_path, config=config)
+def test_no_record_carries_a_catch_up_flag_or_an_age(tmp_path):
+    """The flag went with the skip. In a replay every minute is caught up, so a
+    live-only ``catch_up`` or age field would record when the runner looked."""
+    harness = build(tmp_path)
     first = harness.first_minute_ms()
-    outcomes = harness.runner.catch_up(now_ms=first + 9 * 60_000)
-    assert len([o for o in outcomes if o.kind is not RecordKind.SKIPPED_STALE]) == 2
+    harness.runner.catch_up(now_ms=first + 9 * 60_000)
+    records = harness.records()
+    assert records
+    assert not [r for r in records if "catch_up" in r or "stale" in r]
 
 
-def test_catch_up_accounts_for_every_pending_minute(tmp_path):
-    """Section 2.2 line 120's second clause: older minutes are LOGGED as skipped.
-
-    The property is that the campaign's log has no hole. Before PR-10R the
-    minutes beyond the limit were abandoned with no record at all, so a restart
-    after an outage left a gap nothing in the log named -- and it abandoned the
-    NEWEST minutes rather than the stalest, deciding the oldest ones at the
-    oldest book.
-    """
-    state_dir = tmp_path / "state"
-    config = campaign_config(state_dir, runner={"max_catchup_minutes": 3})
-    harness = build(tmp_path, config=config)
-    first = harness.first_minute_ms()
-    # Ten pending minutes: the newest three are decided, the oldest seven are not.
-    outcomes = harness.runner.catch_up(now_ms=first + 9 * 60_000)
-
-    assert [o.minute_ms for o in outcomes] == [first + i * 60_000 for i in range(10)]
-    stale = [o for o in outcomes if o.kind is RecordKind.SKIPPED_STALE]
-    decided = [o for o in outcomes if o.kind is not RecordKind.SKIPPED_STALE]
-    assert len(stale) == 7 and len(decided) == 3
-    assert [o.minute_ms for o in decided] == [first + i * 60_000 for i in (7, 8, 9)]
-
-    records = {r["minute"]: r for r in harness.records()}
-    skipped = [r for r in harness.records() if r["kind"] == RecordKind.SKIPPED_STALE.value]
-    assert len(skipped) == 7
-    assert skipped[0]["catch_up"] is True
-    assert skipped[0]["stale"]["max_catchup_minutes"] == 3
-    assert skipped[0]["stale"]["age_minutes"] == 9
-    assert records  # every processed minute reached the log
-
-
-def test_a_skipped_stale_minute_changes_no_position(tmp_path):
-    """ "No position change is executed" -- asserted, not assumed."""
-    state_dir = tmp_path / "state"
-    config = campaign_config(state_dir, runner={"max_catchup_minutes": 1})
-    harness = build(tmp_path, config=config)
-    first = harness.first_minute_ms()
-    before = harness.runner._position_block()
-    harness.runner.catch_up(now_ms=first + 4 * 60_000)
-    stale = [r for r in harness.records() if r["kind"] == RecordKind.SKIPPED_STALE.value]
-    assert len(stale) == 4
-    # The four stale minutes ran before the one decided minute, so the position
-    # at the end of them is still the one the run started with.
-    assert before == {
-        "hedge_state": "FLAT",
-        "spot_qty": "0",
-        "perp_qty": "0",
-        "imbalance": "0",
-    }
-    assert all("execution" not in r for r in stale)
-    assert all("signal" not in r for r in stale)
+def test_a_retired_catch_up_cap_cannot_reach_a_runner(tmp_path):
+    """Refused by name when the config is built, so no runner is ever built from it."""
+    with pytest.raises(DemoConfigError, match="max_catchup_minutes is no longer a setting"):
+        campaign_config(tmp_path / "state", runner={"max_catchup_minutes": 3})
 
 
 # ---------------------------------------------------------------------------

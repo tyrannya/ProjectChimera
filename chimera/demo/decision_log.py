@@ -192,6 +192,11 @@ class RecordKind(str, Enum):
     SKIPPED_STALE = "SKIPPED_STALE"
     LIQUIDATION_TOUCH = "LIQUIDATION_TOUCH"
     RECOVERY = "RECOVERY"
+    #: Canonical R1-f's pair: the service's READY gate found the feed stale, and
+    #: later found it fresh again. Neither carries an operational instant; see
+    #: `DemoRunner.check_feed`.
+    FEED_STALLED = "FEED_STALLED"
+    FEED_RESUMED = "FEED_RESUMED"
 
 
 #: The kinds section 9.4 names as evidence: what the monthly frozen report is
@@ -236,6 +241,10 @@ OPERATIONAL_KINDS: frozenset[RecordKind] = frozenset(
 #: the question visible rather than closing it by default. The three sets still
 #: partition :class:`RecordKind`, so a kind added later cannot be absent from
 #: all of them.
+#:
+#: R1-f's ``FEED_STALLED`` and ``FEED_RESUMED`` land here too, by the same
+#: rule: the roadmap calls the stall a halt, and whether a campaign's halts are
+#: scored is still the protocol's question.
 UNCLASSIFIED_KINDS: frozenset[RecordKind] = (
     frozenset(RecordKind) - EVIDENCE_KINDS - OPERATIONAL_KINDS
 )

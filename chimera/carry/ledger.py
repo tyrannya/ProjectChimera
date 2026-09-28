@@ -50,6 +50,8 @@ LEDGER_SCHEMA = "chimera.carry-ledger/1"
 #: still catches a leg that is wrong by a fill.
 IDENTITY_TOLERANCE = Decimal("0.01")
 
+_MINUTE_NS = 60_000_000_000
+
 
 class LedgerError(CarryError):
     """The ledger cannot be read, written, or reconciled."""
@@ -204,6 +206,25 @@ class CarryLedgerState:
     #: written before it existed still loads under the same schema id, and the
     #: absence means exactly what it says.
     open_instant_ns: int | None = None
+    #: Funding instants this position was held across whose settlement row the
+    #: runner had not seen yet (R1-g, independent re-review of PR #108, N2). Each
+    #: entry says exactly: "the scheduled instant ``instant_ns`` was crossed while
+    #: the perpetual leg held ``perp`` (a
+    #: :meth:`chimera.futures.domain.Position.to_dict`), opened at
+    #: ``open_instant_ns``; no settlement for it has been booked". It claims no
+    #: rate, no mark and no amount -- those come only from the row.
+    #:
+    #: Kept here, beside ``settled`` and ``open_instant_ns``, because a safety
+    #: flatten clears the window and zeroes the leg before the row can exist, and
+    #: both were the only record of what the settlement is owed on.
+    #: :meth:`book_funding` drops the entry in the same save that books its
+    #: settlement; an ordinary tick drops it unbooked (:meth:`release_owed`) when
+    #: its leg is still held and the ordinary path can answer the row (N2R-1).
+    #: A liquidation touch adds ``held_until_ns`` (:meth:`end_owed`): the close of
+    #: the minute that touched, after which the recorded leg was not held, so the
+    #: entry answers no row stamped later (RR-1). Additive, like
+    #: ``open_instant_ns``: absent reads as none.
+    funding_owed: list[dict[str, Any]] = field(default_factory=list)
     #: The most recent identity residual, kept so a report can show how close the
     #: position runs to its tolerance rather than only whether it broke it.
     identity_gap: Decimal | None = None
@@ -255,6 +276,7 @@ class CarryLedgerState:
             "worst_equity": _text(self.worst_equity),
             "settled": list(self.settled),
             "open_instant_ns": self.open_instant_ns,
+            "funding_owed": [dict(owed) for owed in self.funding_owed],
             "identity_gap": _text(self.identity_gap),
             "disputed": self.disputed,
             "resolutions": [dict(r) for r in self.resolutions],
@@ -296,6 +318,24 @@ class CarryLedgerState:
                 f"open_instant_ns holds a non-integer instant: {opened_raw!r}"
             ) from exc
 
+        owed_raw = data.get("funding_owed", [])
+        try:
+            owed = [
+                {
+                    "instant_ns": int(entry["instant_ns"]),
+                    "open_instant_ns": int(entry["open_instant_ns"]),
+                    "perp": {str(k): str(v) for k, v in dict(entry["perp"]).items()},
+                    **(
+                        {"held_until_ns": int(entry["held_until_ns"])}
+                        if "held_until_ns" in entry
+                        else {}
+                    ),
+                }
+                for entry in owed_raw
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LedgerError(f"funding_owed holds a malformed entry: {owed_raw!r}") from exc
+
         disputed = data.get("disputed")
         return cls(
             capital=_decimal(data.get("capital", "0"), "capital"),
@@ -316,6 +356,7 @@ class CarryLedgerState:
             worst_equity=_optional_decimal(data.get("worst_equity"), "worst_equity"),
             settled=settled,
             open_instant_ns=opened,
+            funding_owed=owed,
             identity_gap=_optional_decimal(data.get("identity_gap"), "identity_gap"),
             disputed=None if disputed is None else str(disputed),
             resolutions=[
@@ -621,6 +662,10 @@ class CarryLedger:
         restart between the venue's settlement and this ledger's save cannot book
         it twice.
         """
+        owed = self.owed_for(instant_ns)
+        if owed is not None:
+            # Resolved by this row, booked or not, in the save that books it.
+            self.state.funding_owed.remove(owed)
         if instant_ns in self.state.settled:
             return ZERO
         self.state.settled.append(instant_ns)
@@ -630,6 +675,50 @@ class CarryLedger:
         elif flow > ZERO:
             self.state.funding_received += flow
         return flow
+
+    def owe_funding(
+        self, instant_ns: int, *, open_instant_ns: int, perp: Mapping[str, Any]
+    ) -> bool:
+        """Record that ``instant_ns`` was crossed holding ``perp``. False if already owed."""
+        if any(owed["instant_ns"] == int(instant_ns) for owed in self.state.funding_owed):
+            return False
+        self.state.funding_owed.append(
+            {
+                "instant_ns": int(instant_ns),
+                "open_instant_ns": int(open_instant_ns),
+                "perp": {str(k): str(v) for k, v in perp.items()},
+            }
+        )
+        return True
+
+    def release_owed(self, instant_ns: int) -> bool:
+        """Forget that ``instant_ns`` is owed, unbooked. False if it was not owed."""
+        for owed in self.state.funding_owed:
+            if owed["instant_ns"] == int(instant_ns):
+                self.state.funding_owed.remove(owed)
+                return True
+        return False
+
+    def end_owed(self, until_ns: int) -> bool:
+        """Record that every owed leg stopped being held at ``until_ns``. False if
+        none was owed. An entry already ended keeps the earlier bound."""
+        ended = False
+        for owed in self.state.funding_owed:
+            if "held_until_ns" not in owed:
+                owed["held_until_ns"] = int(until_ns)
+                ended = True
+        return ended
+
+    def owed_for(self, settlement_ns: int) -> dict[str, Any] | None:
+        """The owed instant a settlement stamped ``settlement_ns`` answers, if any.
+
+        The feed's own rule (`FeedCursor.funding_pending`): an instant is answered
+        by a row stamped at it or within the minute after it, never before it.
+        """
+        for owed in self.state.funding_owed:
+            if owed["instant_ns"] <= int(settlement_ns) < owed["instant_ns"] + _MINUTE_NS:
+                return owed
+        return None
 
     def book_costs(
         self,

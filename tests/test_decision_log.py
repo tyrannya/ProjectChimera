@@ -649,6 +649,9 @@ def test_the_kinds_section_9_1_names_are_exactly_the_ones_the_log_admits() -> No
         # Section 9.3's recovery record. The kind is part of the schema; when one
         # is written is the runner's decision and not this module's.
         "RECOVERY",
+        # Canonical R1-f's stall and its end.
+        "FEED_STALLED",
+        "FEED_RESUMED",
     }
 
 
@@ -678,12 +681,15 @@ def test_the_kinds_9_4_does_not_classify_are_left_unclassified() -> None:
     them there silently, which decides — without the adopted plan saying so —
     that a campaign's halts are not scored. PR-12 and PR-14 own that; this test
     pins the refusal to answer it here, and pins that the three sets still cover
-    every kind so nothing can go missing from all of them.
+    every kind so nothing can go missing from all of them. R1-f's feed-stall
+    pair is a halt by the roadmap's own word, so it is left open the same way.
     """
     assert UNCLASSIFIED_KINDS == {
         RecordKind.HALT,
         RecordKind.RESUME,
         RecordKind.RECOVERY,
+        RecordKind.FEED_STALLED,
+        RecordKind.FEED_RESUMED,
     }
     assert EVIDENCE_KINDS | OPERATIONAL_KINDS | UNCLASSIFIED_KINDS == set(RecordKind)
     assert not EVIDENCE_KINDS & OPERATIONAL_KINDS

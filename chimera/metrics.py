@@ -511,9 +511,22 @@ DEMO_FUNDING_ADVERSE_STREAK = Gauge(
     "Consecutive settlements the position paid funding on, from the Aegis state",
 )
 
-#: The eighteen series section 11.1 requires of the runner, by name. Pinned here
-#: for the same reason RECORDER_METRIC_NAMES is: a rename must be caught by a
-#: test rather than by a blank dashboard panel.
+#: R1-g: a funding minute the runner is holding undecided until its settlement
+#: row is recorded. Without these a deferral is visible only in the runner's log
+#: (independent review of PR #108, finding F2). How long it has waited is
+#: ``time() - chimera_demo_funding_deferred_instant_timestamp``.
+DEMO_FUNDING_DEFERRED = Gauge(
+    f"{_PREFIX}_demo_funding_deferred",
+    "1 while the runner waits on a scheduled funding instant's settlement row, else 0",
+)
+DEMO_FUNDING_DEFERRED_INSTANT = Gauge(
+    f"{_PREFIX}_demo_funding_deferred_instant_timestamp",
+    "Unix timestamp of the funding instant the runner waits on; NaN while it waits on none",
+)
+
+#: The eighteen series section 11.1 requires of the runner, by name, and R1-g's
+#: two. Pinned here for the same reason RECORDER_METRIC_NAMES is: a rename must
+#: be caught by a test rather than by a blank dashboard panel.
 DEMO_METRIC_NAMES: tuple[str, ...] = (
     f"{_PREFIX}_demo_up",
     f"{_PREFIX}_demo_state",
@@ -533,6 +546,8 @@ DEMO_METRIC_NAMES: tuple[str, ...] = (
     f"{_PREFIX}_demo_log_write_errors_total",
     f"{_PREFIX}_demo_disk_free_bytes",
     f"{_PREFIX}_demo_funding_adverse_streak",
+    f"{_PREFIX}_demo_funding_deferred",
+    f"{_PREFIX}_demo_funding_deferred_instant_timestamp",
 )
 
 

@@ -70,6 +70,8 @@ from chimera.metrics import (
     DEMO_FEED_AGE,
     DEMO_FUNDING,
     DEMO_FUNDING_ADVERSE_STREAK,
+    DEMO_FUNDING_DEFERRED,
+    DEMO_FUNDING_DEFERRED_INSTANT,
     DEMO_HEARTBEAT,
     DEMO_HEDGE_IMBALANCE,
     DEMO_LAST_MINUTE_AGE,
@@ -130,7 +132,9 @@ class NullTelemetry:
 
     def on_state(self, state: str) -> None: ...
 
-    def on_minute(self, *, minute_ns: int, missing: Sequence[str]) -> None: ...
+    def on_minute(
+        self, *, minute_ns: int, missing: Sequence[str], attempted: bool = True
+    ) -> None: ...
 
     def on_record(self, kind: str) -> None: ...
 
@@ -154,6 +158,8 @@ class NullTelemetry:
     def on_shutdown(self) -> None: ...
 
     def on_heartbeat(self) -> None: ...
+
+    def on_funding_deferral(self, *, instant_ms: int | None) -> None: ...
 
 
 class RunnerTelemetry:
@@ -195,6 +201,7 @@ class RunnerTelemetry:
         # `.inc()` can never be handed a negative number.
         self._funding_seen: dict[str, Any] = {"paid": None, "received": None}
         self._market_close_ns: dict[str, int] = {}
+        self._last_close_ns: int | None = None
 
         DEMO_UP.set(1.0)
         for kind in RecordKind:
@@ -209,6 +216,7 @@ class RunnerTelemetry:
         for leg in LEGS:
             DEMO_LIQUIDATION_DISTANCE.labels(leg=leg).set(math.nan)
         set_hedge_state(HedgeState.FLAT.value, states=self._hedge_states)
+        self.on_funding_deferral(instant_ms=None)
 
     # ------------------------------------------------------------------
     # the runner's state machine
@@ -227,10 +235,17 @@ class RunnerTelemetry:
         tell a healthy wait from a dead process. It is called from the main
         loop, never from a thread of its own: a heartbeat that kept beating
         while the loop was wedged would be a liveness signal that cannot fail.
+
+        The two ages are republished here too (R1-f). They used to move only
+        when a minute was attempted, so a feed that stopped left them frozen at
+        a few seconds -- reading healthiest exactly while the feed was dead.
         """
         self._beat()
+        self._publish_ages(self._wall_ns())
 
-    def on_minute(self, *, minute_ns: int, missing: Sequence[str]) -> None:
+    def on_minute(
+        self, *, minute_ns: int, missing: Sequence[str], attempted: bool = True
+    ) -> None:
         """One attempted minute, counted before anything is decided about it.
 
         Deliberately upstream of rule evaluation, and deliberately carrying no
@@ -243,23 +258,48 @@ class RunnerTelemetry:
         market actually produced, so an incomplete minute leaves the missing
         market's age rising while the other's resets -- which is the fact
         distinguishing "the whole feed stopped" from "one stream stopped".
+
+        ``attempted=False`` is R1-f's stall tick: it reads the last processed
+        minute again and attempts nothing, so it is not counted. It is still
+        reported, because a process restarted into a stall has seen no minute
+        at all, and its ages would otherwise read zero, the healthiest value,
+        for the whole stall.
         """
         close_ns = int(minute_ns) + MINUTE_NS
         absent = set(missing)
-        now_ns = self._wall_ns()
         for market in MARKETS:
             if f"{market}_minute" not in absent:
                 self._market_close_ns[market] = close_ns
+        self._last_close_ns = close_ns
+        self._publish_ages(self._wall_ns())
+        if attempted:
+            DEMO_TICKS.inc()
+
+    def _publish_ages(self, now_ns: int) -> None:
+        """Both ages, from the closes already seen. Nothing seen, nothing set."""
+        for market in MARKETS:
             seen = self._market_close_ns.get(market)
             if seen is not None:
                 DEMO_FEED_AGE.labels(market=market).set(_age_seconds(now_ns, seen))
-        DEMO_LAST_MINUTE_AGE.set(_age_seconds(now_ns, close_ns))
-        DEMO_TICKS.inc()
+        if self._last_close_ns is not None:
+            DEMO_LAST_MINUTE_AGE.set(_age_seconds(now_ns, self._last_close_ns))
 
     def on_shutdown(self) -> None:
         """The process is going away on purpose, so ``up`` says so rather than
         being inferred from a scrape that stopped answering."""
         DEMO_UP.set(0.0)
+
+    def on_funding_deferral(self, *, instant_ms: int | None) -> None:
+        """R1-g: the funding instant the next minute waits on, or None.
+
+        Set by every tick before anything about its minute is decided: the
+        instant while the minute is deferred, None once it is not. The age of a
+        deferral is the scrape's ``time()`` minus the instant, so nothing here
+        reads a clock.
+        """
+        waiting = instant_ms is not None
+        DEMO_FUNDING_DEFERRED.set(1.0 if waiting else 0.0)
+        DEMO_FUNDING_DEFERRED_INSTANT.set(int(instant_ms) / 1000 if waiting else math.nan)
 
     # ------------------------------------------------------------------
     # the log
@@ -268,9 +308,9 @@ class RunnerTelemetry:
         """One record, counted only once it is on disk. See `DemoRunner._append`.
 
         Also a heartbeat. A committed record is main-loop progress, and it is the
-        one checkpoint every processed minute passes: a `SKIPPED_STALE` or
-        `INCOMPLETE_STATE` minute appends without changing state, so a long
-        backlog of them would otherwise run with no beat at all.
+        one checkpoint every processed minute passes: an `INCOMPLETE_STATE`
+        minute appends without changing state (as `SKIPPED_STALE` did before
+        R1-g), so a long backlog of them would otherwise run with no beat at all.
         """
         DEMO_LOG_RECORDS.labels(kind=kind).inc()
         self._beat()
