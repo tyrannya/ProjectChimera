@@ -267,6 +267,21 @@ def test_a_record_moved_across_another_kind_in_its_minute_fails():
     assert {d.field_name for d in report.divergences} == {"parity_seq"}
 
 
+def test_the_earlier_of_two_same_minute_records_is_compared_too():
+    """Each repeated record is compared with its own counterpart, not only the
+    last one: here only the first settlement differs."""
+    live = [
+        _record(M0, "FUNDING", 1, ledger_effect={"funding": "1"}),
+        _record(M0, "FUNDING", 2, ledger_effect={"funding": "2"}),
+    ]
+    replay = [dict(live[0], ledger_effect={"funding": "9"}), dict(live[1])]
+
+    report = compare_logs(live, replay)
+
+    assert not report.ok
+    assert [d.field_name for d in report.divergences] == ["ledger_effect"]
+
+
 def test_a_raw_seq_that_does_not_rise_is_reported_on_its_side():
     live = [_record(M0, "DECISION", 1), _record(M1, "DECISION", 2)]
     broken = [_record(M0, "DECISION", 2), _record(M1, "DECISION", 2)]
@@ -523,6 +538,36 @@ def test_the_replay_attribution_is_required_and_checked(flatten_run, tmp_path):
 
     # A "live" log that is really a replay's.
     assert not compare_logs(replayed, replayed, operator_file_hash=actions.file_hash).ok
+
+
+def test_a_runner_that_refuses_the_action_is_a_refusal_not_a_skip():
+    """Whatever `apply_operator_action` refuses propagates as a refusal."""
+    from chimera.demo.runner import RunnerError
+
+    class Cursor:
+        last_minute_processed = 60_000
+
+        def next_minute_ms(self):
+            return 120_000
+
+    class Refusing:
+        cursor = Cursor()
+        state = RunnerState.READY
+        calls: list[str] = []
+
+        def replay(self, start, end):
+            self.calls.append(f"replay {start}-{end}")
+
+        def apply_operator_action(self, command, note, *, replay_action):
+            raise RunnerError("the runner refuses")
+
+    from chimera.demo.decision_log import iso_minute
+
+    actions = _actions(_flatten_action(iso_minute(60_000 * 1_000_000)))
+    runner = Refusing()
+    with pytest.raises(OperatorActionRefused, match="the runner refuses"):
+        replay_with_actions(runner, 0, 600_000, actions)
+    assert runner.calls == [], "nothing is replayed past a refused action"
 
 
 def test_operator_is_not_an_operational_kind():
