@@ -2205,6 +2205,18 @@ def test_the_cash_identity_holds_across_every_transition_of_a_campaign(tmp_path)
             tmp_path / "state",
             limits={
                 "max_orders_per_minute": 64,
+                # And raised for the same reason, since R1-k made the limit
+                # reachable. This test flattens at minutes 10, 20 and 30, and a
+                # round trip closed after ten minutes pays both legs' fees and
+                # slippage against a basis that has barely moved -- so all three
+                # report a small LOSS, section 7.4's `loss_streak_limit` of 3 is
+                # met on the third, and the hour-long cooldown vetoes the
+                # re-entry this test counts as its last transition. The campaign
+                # limit is not touched; it is raised HERE, in the fixture, as
+                # the order rate above is, and this test asserts nothing about
+                # loss streaks. `tests/test_r1k_limit_enforcement.py` holds the
+                # witness that the streak DOES close the gate at 3.
+                "loss_streak_limit": 99,
             },
         ),
     )

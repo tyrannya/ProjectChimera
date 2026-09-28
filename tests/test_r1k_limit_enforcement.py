@@ -538,3 +538,41 @@ def test_the_three_limits_r1k_wired_have_a_reachable_caller():
 
     assert "funding_rate=self._funding_rate_for(" in hedge, "the perp leg passes no rate"
     assert "self.risk.record_trade_result(" in runner, "no caller drives the loss streak"
+
+
+def test_three_flattens_open_the_cooldown_on_the_committed_limit(tmp_path):
+    """End to end, on section 7.4's own ``loss_streak_limit`` of 3.
+
+    **This is the behavioural consequence of R1-k and it is deliberately
+    asserted rather than left to be discovered.** Before R1-k nothing called
+    ``record_trade_result``, so the cooldown could never open and the campaign
+    ran on regardless. Now it can, and it does: a round trip closed after a few
+    minutes pays both legs' fees and slippage against a basis that has barely
+    moved, so a short cycle is a small LOSS almost by construction. Three of
+    them running -- here three operator flattens -- meet the configured streak
+    and open the hour-long cooldown, which vetoes every entry until it expires.
+
+    Whether counting an OPERATOR's flatten toward a strategy's loss streak is
+    what section 7.4 intends is a governance question and not this change's to
+    settle. What this change owes is that the answer be visible: the limit now
+    binds, the campaign now stops entering after three losing cycles, and that
+    is here in a test rather than in a surprise on a soak run.
+    """
+    from tests.demo_harness import build
+
+    harness = build(tmp_path)
+    first = harness.first_minute_ms()
+    risk = harness.runner.risk
+
+    assert risk.limits.loss_streak_limit == 3, "the committed campaign limit moved"
+    assert risk.state.consecutive_losses == 0
+
+    for index in range(33):
+        harness.tick(first + index * MINUTE_MS)
+        if index in (10, 20, 30):
+            harness.runner.flatten(f"operator flatten at minute {index}")
+
+    assert risk.state.consecutive_losses >= 3, "the round trips reported nothing"
+    assert risk.state.cooldown_until > 0, "three losses did not open the cooldown"
+    assert _entry(risk).allowed is False
+    assert "cooldown" in _entry(risk).reason
