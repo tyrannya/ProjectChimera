@@ -31,6 +31,22 @@ Section 10 fixes what must match and what may not:
         STARTUP, SHUTDOWN and RECOVERY: "the replay may have fewer restarts;
         the comparison aligns by minute and kind and ignores operational kinds".
 
+R1-j decides the two questions section 10 left open (see ``docs/replay_parity.md``):
+
+    ``seq`` -- exclusion of operational kinds. The persisted ``seq`` keeps its
+        meaning: one counter over every record of the log, which ``request_seq``,
+        the hash chain, R1-c and the reports read. What parity compares is a
+        DERIVED ``parity_seq``: a record's 1-based position among the comparable
+        records of its own log, in log order. Operational records do not count,
+        so a restart shifts no ``parity_seq``, while a reordered, dropped or added
+        comparable record still does. Each side's raw ``seq`` must still rise
+        strictly through its records.
+
+    ``OPERATOR`` -- a deterministic replay counterpart from a committed
+        operator-action file (``chimera.demo.operator_actions``). ``OPERATOR``
+        and ``RESUME`` are operator-semantic: compared like every other
+        comparable kind, and their ``operator`` block too.
+
 **A parity failure is never repaired here.** The tool prints the first divergent
 record and both versions and exits non-zero. Section 10's failure criterion is
 "any mismatch in a must-match field", and a tool that could paper over one would
@@ -52,6 +68,10 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 __all__ = [
     "MUST_MATCH",
     "OPERATIONAL_KINDS",
+    "OPERATOR_KINDS",
+    "SEQ_POLICY",
+    "OperatorActionRefused",
+    "replay_with_actions",
     "EXCLUDING_KINDS",
     "EXCLUDING_RECOVERY_CAUSES",
     "ParityReport",
@@ -63,7 +83,9 @@ __all__ = [
 
 #: Section 10's must-match list, verbatim. `seq` and `minute` and `kind` are
 #: included: a replay that decided the same things in a different order, or
-#: skipped a minute, is not a parity pass.
+#: skipped a minute, is not a parity pass. Since R1-j ``seq`` is compared under
+#: :data:`SEQ_POLICY`, as the derived ``parity_seq``, and reported under that
+#: name; the persisted ``seq`` is never renumbered.
 MUST_MATCH: tuple[str, ...] = (
     "kind",
     "minute",
@@ -80,17 +102,49 @@ MUST_MATCH: tuple[str, ...] = (
     "veto_or_rejection",
 )
 
-#: Aligned by minute and kind, and otherwise not compared field by field.
-#: Section 10: "the replay may have fewer restarts".
+#: Left out of the comparison: neither their presence nor their contents is
+#: compared, and they do not count towards ``parity_seq``. Section 10: "the
+#: replay may have fewer restarts".
 #:
-#: R1-f's two feed-stall kinds are here for section 10's own reason: they record
-#: when the LIVE process found the feed stale, which is a fact about the running
-#: of the campaign. A replay reads finished files and is never stale, so it
-#: writes neither. (A live stall still shifts the global ``seq`` of every later
-#: record, as a live restart already does; how ``seq`` is compared is R1-j's.)
+#: R1-j's reading of each, and what still has to be reproduced:
+#:
+#: ``STARTUP`` / ``SHUTDOWN`` / ``RECOVERY`` -- how often the process started,
+#:     stopped or recovered. A replay starts once. A restart moves no decision
+#:     state, which the next comparable record's ``risk`` block proves. A
+#:     crash's damaged minute is still named, by ``EXCLUDING_KINDS``.
+#: ``HALT`` -- a halted campaign writes one again at every restart, so the
+#:     count is operational. The halt itself is not invisible: no minute is
+#:     decided while it stands (a missing ``DECISION`` diverges), ``halted`` and
+#:     ``halt_reason`` are in the next ``risk`` hash, and a ``resume`` names what
+#:     it cleared in its compared ``operator`` block.
+#: ``FEED_STALLED`` / ``FEED_RESUMED`` -- when the LIVE service found the feed
+#:     stale, a fact about the running of the campaign. A replay reads finished
+#:     files and is never stale, so it writes neither.
+#:
+#: ``RESUME`` left this set in R1-j: it is the completion of an operator
+#: ``resume`` and is compared with ``OPERATOR`` (:data:`OPERATOR_KINDS`).
 OPERATIONAL_KINDS: frozenset[str] = frozenset(
-    {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME", "FEED_STALLED", "FEED_RESUMED"}
+    {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "FEED_STALLED", "FEED_RESUMED"}
 )
+
+#: R1-j: intentional state mutation by an operator. Compared like every other
+#: comparable kind, and their ``operator`` block as well (command, note, phase,
+#: what the command saw or cleared, and the request/completion link). A replay
+#: produces them only from a committed operator-action file, so a live action
+#: the file omits is ``live_only`` and an extra one is ``replay_only``.
+OPERATOR_KINDS: frozenset[str] = frozenset({"OPERATOR", "RESUME"})
+
+#: R1-j's ``seq`` policy, by name, as the report states it.
+SEQ_POLICY = (
+    "chimera.parity-seq/1: operational kinds excluded; seq compared as parity_seq, "
+    "the record's 1-based position among its log's comparable records"
+)
+
+#: The key a replayed operator record carries naming its committed action
+#: (`chimera.demo.runner.REPLAY_ACTION_KEY`). Required on the replay side,
+#: forbidden on the live side, and otherwise the only key of an ``operator``
+#: block not compared.
+REPLAY_ACTION_KEY = "replay_action"
 
 #: Kinds whose presence in the LIVE log can exclude their minute from the
 #: comparison, with the reason reported. This is not a third kind-set with a
@@ -114,6 +168,11 @@ EXCLUDING_KINDS: frozenset[str] = frozenset({"SKIPPED_STALE", "RECOVERY"})
 #: The unconditional rule dropped real evidence for a finished minute; no rule at
 #: all left an unfinished one to diverge as an unexplainable `replay_only`.
 EXCLUDING_RECOVERY_CAUSES: frozenset[str] = frozenset({"LOG_BEHIND_STATE", "TORN_TAIL"})
+
+
+class OperatorActionRefused(RuntimeError):
+    """A committed operator action the replay could not perform. Never skipped."""
+
 
 EXIT_PARITY = 0
 EXIT_DIVERGED = 1
@@ -157,6 +216,9 @@ class ParityReport:
     #: reason. Never empty silently: a run with no exclusions reports none, and a
     #: run with any lists every one. See :func:`_excluded_minutes`.
     explained_exclusions: list[str] = field(default_factory=list)
+    #: R1-j: the committed operator-action file the replay applied, by hash, or
+    #: None when the run was given none.
+    operator_actions: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -173,6 +235,8 @@ class ParityReport:
             "environment_note": self.environment_note,
             "explained_exclusions": list(self.explained_exclusions),
             "first_divergence": (self.divergences[0].render() if self.divergences else None),
+            "seq_policy": SEQ_POLICY,
+            "operator_actions": self.operator_actions,
         }
 
 
@@ -221,10 +285,18 @@ def _keys(records: Sequence[Mapping[str, Any]]) -> list[tuple[str, str, int]]:
     return keys
 
 
-def _render_key(key: tuple[str, str, int]) -> str:
-    """One alignment key, for a human. The ordinal shows only when it matters."""
+def _render_key(key: tuple[str, str, int], record: Mapping[str, Any] | None = None) -> str:
+    """One alignment key, for a human. The ordinal shows only when it matters.
+
+    An operator record also names its command and phase, so a missing or extra
+    operator action reads as one.
+    """
     minute, kind, ordinal = key
-    return f"{kind} at {minute}" if ordinal == 0 else f"{kind} #{ordinal + 1} at {minute}"
+    text = f"{kind} at {minute}" if ordinal == 0 else f"{kind} #{ordinal + 1} at {minute}"
+    operator = (record or {}).get("operator")
+    if kind in OPERATOR_KINDS and isinstance(operator, Mapping):
+        text += f" (operator {operator.get('command')} {operator.get('phase')})"
+    return text
 
 
 def _environment_differs(
@@ -255,14 +327,21 @@ def compare_logs(
     replay: Sequence[Mapping[str, Any]],
     *,
     must_match: Iterable[str] = MUST_MATCH,
+    operator_file_hash: str | None = None,
 ) -> ParityReport:
-    """Compare two decision logs under section 10's rules.
+    """Compare two decision logs under section 10's rules and R1-j's policy.
 
-    Operational kinds are aligned by ``(minute, kind)`` and their presence is
-    checked rather than their contents, because "the replay may have fewer
+    Operational kinds are left out, because "the replay may have fewer
     restarts". Everything else is compared field by field over the must-match
-    list, and the FIRST divergence is what the tool reports -- a list of
-    hundreds of downstream differences from one upstream cause is noise.
+    list, with ``seq`` compared as ``parity_seq`` (:data:`SEQ_POLICY`), and the
+    FIRST divergence is what the tool reports -- a list of hundreds of downstream
+    differences from one upstream cause is noise.
+
+    Operator records (:data:`OPERATOR_KINDS`) are compared on their ``operator``
+    block too, with ``request_seq`` read as the ``parity_seq`` of the request it
+    names in its own log. ``operator_file_hash`` is the hash of the committed
+    operator-action file the replay applied; every replayed operator record must
+    name it, and no live one may carry a replay attribution at all.
     """
     report = ParityReport()
     note = _environment_differs(live, replay)
@@ -275,6 +354,9 @@ def compare_logs(
         f"{minute}: {reason}" for minute, reason in sorted(excluded.items())
     ]
 
+    report.divergences.extend(_chronology(live, "live"))
+    report.divergences.extend(_chronology(replay, "replay"))
+
     def comparable(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
         return [
             r
@@ -285,6 +367,8 @@ def compare_logs(
 
     live_decisions = comparable(live)
     replay_decisions = comparable(replay)
+    live_pseq = {id(r): n for n, r in enumerate(live_decisions, start=1)}
+    replay_pseq = {id(r): n for n, r in enumerate(replay_decisions, start=1)}
 
     live_keys = _keys(live_decisions)
     replay_keys = _keys(replay_decisions)
@@ -293,10 +377,15 @@ def compare_logs(
 
     for key in live_keys:
         if key not in replay_by_key:
-            report.live_only.append(_render_key(key))
+            report.live_only.append(_render_key(key, live_by_key[key]))
     for key in replay_keys:
         if key not in live_by_key:
-            report.replay_only.append(_render_key(key))
+            report.replay_only.append(_render_key(key, replay_by_key[key]))
+
+    live_operator = _OperatorView(live, live_pseq, side="live", file_hash=None)
+    replay_operator = _OperatorView(
+        replay, replay_pseq, side="replay", file_hash=operator_file_hash
+    )
 
     fields = tuple(must_match)
     for index, key in enumerate(live_keys):
@@ -308,10 +397,151 @@ def compare_logs(
         for name in fields:
             if name in ("software",):  # handled by the environment label
                 continue
+            if name == "seq":
+                a = {"parity_seq": live_pseq[id(original)], "seq": original.get("seq")}
+                b = {"parity_seq": replay_pseq[id(replayed)], "seq": replayed.get("seq")}
+                if a["parity_seq"] != b["parity_seq"]:
+                    report.divergences.append(
+                        Divergence(index, key[0], key[1], "parity_seq", a, b)
+                    )
+                continue
             a, b = original.get(name), replayed.get(name)
             if a != b:
                 report.divergences.append(Divergence(index, key[0], key[1], name, a, b))
+        if key[1] in OPERATOR_KINDS:
+            a = live_operator.normalised(original)
+            b = replay_operator.normalised(replayed)
+            if a != b:
+                report.divergences.append(Divergence(index, key[0], key[1], "operator", a, b))
+    for side_view, records in (
+        (live_operator, live_decisions),
+        (replay_operator, replay_decisions),
+    ):
+        for record in records:
+            problem = side_view.attribution_problem(record)
+            if problem is not None:
+                report.divergences.append(
+                    Divergence(
+                        -1,
+                        str(record.get("minute", "")),
+                        str(record.get("kind", "")),
+                        f"operator.{REPLAY_ACTION_KEY}",
+                        problem if side_view.side == "live" else None,
+                        problem if side_view.side == "replay" else None,
+                    )
+                )
     return report
+
+
+def _chronology(records: Sequence[Mapping[str, Any]], side: str) -> list[Divergence]:
+    """R1-j: the persisted ``seq`` must rise strictly through a log's records.
+
+    ``parity_seq`` is derived from log order, so log order has to be the chain's
+    order: a record out of place, or a ``seq`` that is not an integer, is
+    reported rather than re-sorted. (The chain itself is the decision log's to
+    verify; this is the one property the derived sequence depends on.)
+    """
+    found: list[Divergence] = []
+    previous: int | None = None
+    for index, record in enumerate(records):
+        seq = record.get("seq")
+        if (
+            not isinstance(seq, int)
+            or isinstance(seq, bool)
+            or (previous is not None and seq <= previous)
+        ):
+            detail = {"seq": seq, "previous_seq": previous}
+            found.append(
+                Divergence(
+                    index,
+                    str(record.get("minute", "")),
+                    str(record.get("kind", "")),
+                    "seq",
+                    detail if side == "live" else None,
+                    detail if side == "replay" else None,
+                )
+            )
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            previous = seq
+    return found
+
+
+class _OperatorView:
+    """One log's operator records, read under R1-j's correspondence rules."""
+
+    def __init__(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        pseq: Mapping[int, int],
+        *,
+        side: str,
+        file_hash: str | None,
+    ) -> None:
+        self.side = side
+        self.file_hash = file_hash
+        self.pseq = pseq
+        self.by_seq = {
+            int(r["seq"]): r
+            for r in records
+            if isinstance(r.get("seq"), int) and not isinstance(r.get("seq"), bool)
+        }
+
+    def normalised(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        """The ``operator`` block as compared.
+
+        ``request_seq`` names a record by its PERSISTED ``seq``, which a restart
+        shifts, so it is compared as what it resolves to in its own log: the
+        ``parity_seq`` of a ``requested`` OPERATOR record, or ``unresolved`` with
+        the raw value when it names nothing of the kind. The replay attribution
+        is set aside here and checked by :meth:`attribution_problem`.
+        """
+        block = record.get("operator")
+        if not isinstance(block, Mapping):
+            return {"operator": block}
+        out = {k: v for k, v in block.items() if k != REPLAY_ACTION_KEY}
+        if "request_seq" in out:
+            raw = out["request_seq"]
+            target = self.by_seq.get(raw) if isinstance(raw, int) else None
+            requested = (
+                target is not None
+                and str(target.get("kind")) == "OPERATOR"
+                and isinstance(target.get("operator"), Mapping)
+                and target["operator"].get("phase") == "requested"
+                and id(target) in self.pseq
+            )
+            out["request_seq"] = (
+                {"parity_seq": self.pseq[id(target)]} if requested else {"unresolved": raw}
+            )
+        return out
+
+    def attribution_problem(self, record: Mapping[str, Any]) -> str | None:
+        """Why a record's replay attribution is wrong for its side, or None."""
+        if str(record.get("kind")) not in OPERATOR_KINDS:
+            return None
+        block = record.get("operator")
+        attribution = block.get(REPLAY_ACTION_KEY) if isinstance(block, Mapping) else None
+        if self.side == "live":
+            if attribution is not None:
+                return (
+                    "a live operator record carries a replay attribution: this log was "
+                    "written by a replay, not by the campaign"
+                )
+            return None
+        if attribution is None:
+            return (
+                "a replayed operator record names no committed operator action; a replay "
+                "performs operator actions only from the committed file"
+            )
+        if (
+            self.file_hash is None
+            or not isinstance(attribution, Mapping)
+            or (attribution.get("file_hash") != self.file_hash)
+        ):
+            return (
+                f"a replayed operator record names {attribution!r}, not the committed "
+                f"operator-action file {self.file_hash!r} this run applied"
+            )
+        return None
 
 
 def _excluded_minutes(live: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -410,6 +640,66 @@ def copy_range(root: Path, scratch: Path, days: Sequence[str]) -> Path:
     return scratch
 
 
+def replay_with_actions(
+    runner: Any, first_ms: int, last_ms: int, actions: Any = None
+) -> list[str]:
+    """Replay ``first_ms``..``last_ms`` and apply the committed operator actions.
+
+    Section 10's replay (``DemoRunner.replay``), cut at each action's anchor:
+    the minutes up to and including ``after_minute`` are decided, the action is
+    performed through `DemoRunner.apply_operator_action` -- the CLI's own
+    `flatten` / `resume` -- and the replay continues from the runner's cursor.
+    With no actions this is exactly one ``runner.replay(first_ms, last_ms)``.
+
+    Returns the ids of the actions applied, in order. Raises
+    :class:`OperatorActionRefused` when an action lies outside the replay's
+    range, when the replay never reached its anchor (it halted, or a minute was
+    deferred), or when the runner refused to perform it. A committed action is
+    never skipped.
+    """
+    from chimera.demo.runner import RunnerError, RunnerState
+
+    applied: list[str] = []
+    listed = list(actions.actions) if actions is not None else []
+    for action in listed:
+        anchor = action.after_minute_ms
+        if not first_ms <= anchor <= last_ms:
+            raise OperatorActionRefused(
+                f"operator action {action.id!r} is anchored after {action.after_minute}, "
+                "outside the replayed range; an action for a minute this replay does not "
+                "decide cannot be applied, and it is not skipped"
+            )
+        upcoming = runner.cursor.next_minute_ms()
+        if upcoming is not None and upcoming <= anchor:
+            runner.replay(upcoming, anchor)
+        reached = runner.cursor.last_minute_processed
+        if reached != anchor:
+            raise OperatorActionRefused(
+                f"operator action {action.id!r} ({action.command}) is anchored after "
+                f"{action.after_minute}, and the replay's last decided minute is "
+                f"{reached} (state {runner.state.value}): the replay never reached the "
+                "anchor, so the action cannot be applied where the file says it was"
+            )
+        try:
+            runner.apply_operator_action(
+                action.command, action.note, replay_action=actions.attribution(action)
+            )
+        except RunnerError as exc:
+            raise OperatorActionRefused(
+                f"operator action {action.id!r} ({action.command} after "
+                f"{action.after_minute}) cannot be performed by the replay: {exc}"
+            ) from exc
+        applied.append(action.id)
+    upcoming = runner.cursor.next_minute_ms()
+    if (
+        upcoming is not None
+        and upcoming <= last_ms
+        and runner.state not in (RunnerState.HALT, RunnerState.FEED_STALLED)
+    ):
+        runner.replay(upcoming, last_ms)
+    return applied
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="replay_parity",
@@ -426,6 +716,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile", default="CAMPAIGN", help="which profile the config must declare"
     )
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
+    parser.add_argument(
+        "--operator-actions",
+        type=Path,
+        default=None,
+        help=(
+            "R1-j: the committed operator-action file (chimera.operator-actions/1) "
+            "the replay applies as its OPERATOR counterpart; its sha256 is reported "
+            "and stamped on every replayed operator record. Without it the replay "
+            "performs no operator action"
+        ),
+    )
     return parser
 
 
@@ -466,6 +767,16 @@ def main(
     ``runner_now_ns`` with tolerance zero checks.
     """
     args = build_parser().parse_args(argv)
+
+    actions = None
+    if args.operator_actions is not None:
+        from chimera.demo.operator_actions import OperatorActionError, load_operator_actions
+
+        try:
+            actions = load_operator_actions(args.operator_actions)
+        except OperatorActionError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_REFUSED
 
     live_records = read_log(args.live_log, args.days)
     if not live_records:
@@ -528,11 +839,21 @@ def main(
     if last is None:
         print("the live log names no minute to replay", file=sys.stderr)
         return EXIT_REFUSED
-    runner.replay(first, max(first, last))
+    try:
+        replay_with_actions(runner, first, max(first, last), actions)
+    except OperatorActionRefused as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
     runner.shutdown("replay parity")
 
     replay_records = read_log(replay_state / "decision_log", args.days)
-    report = compare_logs(live_records, replay_records)
+    report = compare_logs(
+        live_records,
+        replay_records,
+        operator_file_hash=None if actions is None else actions.file_hash,
+    )
+    if actions is not None:
+        report.operator_actions = actions.to_report(str(args.operator_actions))
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -547,6 +868,14 @@ def main(
             print(f"    - {line}")
         if report.environment_note:
             print(f"  environment      : {report.environment_note}")
+        print(f"  seq policy       : {SEQ_POLICY}")
+        if report.operator_actions is not None:
+            print(
+                f"  operator actions : {len(report.operator_actions['actions'])} from "
+                f"{report.operator_actions['path']} ({report.operator_actions['file_hash']})"
+            )
+        else:
+            print("  operator actions : none supplied")
         if report.live_only:
             print(f"  live only        : {report.live_only[:5]}")
         if report.replay_only:

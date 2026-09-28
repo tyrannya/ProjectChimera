@@ -128,9 +128,13 @@ def test_the_tools_must_match_list_is_exactly_section_10s():
 
 
 def test_the_tools_operational_kinds_are_exactly_section_10s():
-    """The set itself, pinned, for the same reason."""
+    """The set itself, pinned, for the same reason.
+
+    R1-j took ``RESUME`` out: it completes an operator ``resume`` and is compared
+    with ``OPERATOR`` (`tests/test_r1j_replay_parity_policy.py`).
+    """
     assert OPERATIONAL_KINDS == frozenset(
-        {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "RESUME", "FEED_STALLED", "FEED_RESUMED"}
+        {"STARTUP", "SHUTDOWN", "RECOVERY", "HALT", "FEED_STALLED", "FEED_RESUMED"}
     )
 
 
