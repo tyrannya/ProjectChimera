@@ -594,10 +594,12 @@ def test_the_report_module_imports_no_tool_and_no_second_kind_set(tmp_path):
         "SHUTDOWN",
         "RECOVERY",
         "HALT",
-        "RESUME",
         "FEED_STALLED",
         "FEED_RESUMED",
     }
+    # R1-j took RESUME out of the parity set: it completes an operator resume
+    # and is compared with OPERATOR. The evidence boundary above is unchanged.
+    assert "RESUME" in replay_parity.OPERATOR_KINDS
     assert reports.kind_class("HALT") == "unclassified"
     assert reports.kind_class("INCOMPLETE_STATE") == "operational"
 
