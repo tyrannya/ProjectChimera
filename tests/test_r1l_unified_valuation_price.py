@@ -110,13 +110,19 @@ def test_the_mark_the_equity_used_is_reported(tmp_path):
     Without it a reader of a mark cannot tell whether the equity beside it was
     priced at the close or at the mark, which is the ambiguity this change
     exists to end.
+
+    Asserted on a minute where the two prices DIFFER. Asking it on a fixture
+    minute proves nothing: ``mark == close`` there, so a field reporting either
+    one passes. The mutation campaign found this test blind exactly that way.
     """
     harness, state = _opened(tmp_path)
+    moved = replace(state, mark=state.mark + Decimal("40"))
 
-    mark = harness.runner.position.mark_to_market(state)
+    mark = harness.runner.position.mark_to_market(moved)
 
-    assert mark.perp_mark == state.mark
-    assert mark.to_dict()["perp_mark"] == str(state.mark)
+    assert mark.perp_mark == moved.mark
+    assert mark.perp_mark != moved.perp_close
+    assert mark.to_dict()["perp_mark"] == str(moved.mark)
 
 
 # ---------------------------------------------------------------------------
@@ -153,11 +159,19 @@ def test_equity_at_does_not_follow_the_close(tmp_path):
     assert moved == base
 
 
-def test_both_callers_report_one_number(tmp_path):
-    """One valuation price means one valuation: the two paths cannot diverge.
+def test_the_marking_path_computes_no_second_equity(tmp_path):
+    """What this can and cannot witness, stated rather than implied.
 
-    Asserted on a minute where the mark and the close differ, because on the
-    fixture's own minutes they are equal and any two implementations agree.
+    Today ``mark_to_market`` asks ``equity_at``, so the two agree BY
+    CONSTRUCTION and no test can strengthen that. What the assertion does catch
+    is the change that would end it: an equity line inlined back into
+    ``mark_to_market``, which is how the two definitions would come apart again.
+    That ``equity_at`` itself prices at the mark is held by the two tests above,
+    not by this one -- the mutation campaign confirmed it, by surviving here and
+    dying there.
+
+    On a minute where the mark and the close differ, because on the fixture's
+    own minutes they are equal and any two implementations agree.
     """
     harness, state = _opened(tmp_path)
     moved = replace(state, mark=state.mark + Decimal("75"))
@@ -268,7 +282,15 @@ def test_the_basis_stays_on_the_closes(tmp_path):
 
 
 def test_the_spot_leg_stays_on_its_close(tmp_path):
-    """Spot has no mark, so there is no second number to be inconsistent with."""
+    """Spot has no mark, so there is no second number to be inconsistent with.
+
+    Both halves, because they are separately reachable: the equity moves with
+    the spot close, and the REPORTED ``spot_pnl`` is computed from it too. The
+    second is not implied by the first -- ``spot_pnl`` is reported and never
+    added to the equity -- so a spot leg quietly repriced onto the perpetual's
+    mark moves nothing the first half can see. The mutation campaign found this
+    test blind that way.
+    """
     harness, state = _opened(tmp_path)
 
     base = harness.runner.position.mark_to_market(state)
@@ -276,11 +298,19 @@ def test_the_spot_leg_stays_on_its_close(tmp_path):
         replace(state, spot_close=state.spot_close + Decimal("10"))
     )
 
-    spot_quantity = harness.runner.position.leg("spot").quantity
+    spot_leg = harness.runner.position.leg("spot")
     # Once, not twice: the equity line carries the INVENTORY term
     # (`quantity * spot_close`) and not `spot_pnl`, which `CarryMark` reports
     # but never adds -- the entry price is already inside `free_cash`.
-    assert moved.equity == base.equity + spot_quantity * Decimal("10")
+    assert moved.equity == base.equity + spot_leg.quantity * Decimal("10")
+
+    # And the reported term, on a minute where the perpetual's mark is a
+    # different number, so "at the spot close" is distinguishable from "at the
+    # perpetual's mark".
+    apart = harness.runner.position.mark_to_market(
+        replace(state, mark=state.mark + Decimal("500"))
+    )
+    assert apart.spot_pnl == spot_leg.quantity * (state.spot_close - spot_leg.entry_price)
 
 
 # ---------------------------------------------------------------------------
