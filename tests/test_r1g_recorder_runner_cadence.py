@@ -1239,10 +1239,14 @@ def test_a_touch_recorded_before_the_flatten_persisted_still_owes_the_settlement
     tmp_path, monkeypatch
 ):
     """Crash window B. The process dies after the LIQUIDATION_TOUCH record and
-    before the flatten: the stores still hold the position and Aegis is halted.
-    The row lands; the start books the settlement once, on the leg held across
-    the instant -- still held, never reopened, never flattened by this path --
-    at the flow the replay books in the due minute."""
+    before the flatten: the stores still hold the position.
+
+    Since R1-i the next start FINISHES the flatten the touch decided, on the
+    touched minute's own book (`_complete_interrupted_touch`), instead of
+    leaving the touched position open until an operator acts. The row lands;
+    that start books the settlement once, on the leg held across the instant,
+    at the flow the replay books in the due minute -- and a second start books
+    nothing more."""
     harness = held_over_the_instant(tmp_path / "live", through=TOUCH)
     spike_mark(harness, TOUCH)
     held = legs(harness.runner)
@@ -1256,9 +1260,10 @@ def test_a_touch_recorded_before_the_flatten_persisted_still_owes_the_settlement
     assert kinds_of(harness)[-1] == "LIQUIDATION_TOUCH"
     config = harness.runner.config
 
+    assert held != (0, 0)
     for _ in range(2):
         again = restarted(tmp_path / "live", config, RECEIVE)
-        assert legs(again.runner) == held
+        assert legs(again.runner) == (0, 0), "the restart finishes the touch's flatten"
         assert fundings(again) == [(iso(DUE), INSTANT)]
         again.runner.shutdown("still halted")
     replay = replayed(tmp_path / "replay", RECEIVE)
@@ -1698,7 +1703,8 @@ def test_the_touch_bound_is_on_disk_before_the_flatten(
     and before the flatten: the stores still hold the position. The bound was
     saved with the touch, so the start that finds the row books exactly what the
     replay books -- nothing for the row after the touch's close, the row at the
-    instant once -- and resolves the entry either way."""
+    instant once -- and resolves the entry either way. Since R1-i that start
+    also finishes the flatten the touch decided (`_complete_interrupted_touch`)."""
     harness = held_over_the_instant(tmp_path / "live")
     spike_mark(harness, DUE)
 
@@ -1715,7 +1721,7 @@ def test_the_touch_bound_is_on_disk_before_the_flatten(
     replay = replayed_touched(tmp_path / "replay", DUE, PAY, offset_ms)
     assert fundings(again) == fundings(replay) == booked
     assert funding_cash_flows(again) == funding_cash_flows(replay)
-    assert owed_on_disk(again) == [] and legs(again.runner) != (0, 0)
+    assert owed_on_disk(again) == [] and legs(again.runner) == (0, 0)
 
 
 @pytest.mark.parametrize(

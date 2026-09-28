@@ -1601,17 +1601,16 @@ def test_a_real_funding_minute_crash_is_proved_and_deferred(tmp_path):
     assert resumed.runner.state is RunnerState.READY
 
 
-def test_a_real_day_roll_crash_stays_sealed_for_r1i(tmp_path):
-    """PINNED, not fixed: the UTC day-roll window.
+def test_a_real_day_roll_crash_is_proved_and_deferred_by_r1i(tmp_path):
+    """Pinned by R1-c as sealed and canonical R1-i's; R1-i proves it.
 
     ``update_equity`` on a new UTC day overwrites ``day_start_equity`` and
-    ``daily_pnl``. The prior baseline is not restated by the record the crash
-    preceded -- it is the equity of whichever write first touched the previous
-    day, which the configured capital or a bounded scan of earlier records may
-    reconstruct -- so proving this window means historical reconstruction of
-    the campaign's equity history, replay-shaped logic beyond R1-c's one-step
-    local inverse: canonical R1-i. It stays sealed, and this deterministic boundary is reached every
-    UTC midnight (here on the 23:59 minute, which Aegis dates by its close).
+    ``daily_pnl``. The prior baseline is one of the equities the log records
+    Aegis being handed (or the seed), and R1-i's proof tries each as a
+    candidate, accepting only the one whose full hash is the log's and which
+    the real ``update_equity`` carries to the file. This deterministic boundary
+    is reached every UTC midnight (here on the 23:59 minute, which Aegis dates
+    by its close), so a kill there must not end the campaign.
     """
     harness = build(tmp_path, days=(DAY, NEXT_DAY))
     start = harness.first_minute_ms() + 1435 * 60_000
@@ -1627,17 +1626,23 @@ def test_a_real_day_roll_crash_stays_sealed_for_r1i(tmp_path):
 
     resumed = restart(tmp_path, config, days=(DAY, NEXT_DAY))
 
-    assert resumed.runner.risk.continuity_disputed, "sealed: R1-i's to prove"
-    assert resumed.runner.risk_continuity.crash_transition == ""
-    assert causes(state_dir) == [RecoveryCause.RISK_STATE_MISMATCH.value]
+    assert_proved_and_deferred(resumed, state_dir, "equity")
+    assert not resumed.runner.risk.continuity_disputed
+    assert resumed.runner.state is RunnerState.READY
+    resumed.tick(minute)
+    history = read_log_risk_history(state_dir)
+    on_disk = RiskState.from_dict(json.loads(risk_json(state_dir).read_text(encoding="utf-8")))
+    assert history.state_hash == risk_state_hash(on_disk.snapshot())
 
 
-def test_a_real_new_peak_crash_stays_sealed_for_r1i(tmp_path):
-    """PINNED, not fixed: the new-peak window. ``update_equity`` above the old
-    peak overwrites ``peak_equity``, whose prior value is the running maximum of
-    every equity Aegis was ever given -- history again, so R1-i's. A large
-    funding receipt is the fixture's way to lift the hedged equity past the
-    seeded capital.
+def test_a_real_new_peak_crash_is_proved_and_deferred_by_r1i(tmp_path):
+    """Pinned by R1-c as sealed and canonical R1-i's; R1-i proves it.
+
+    ``update_equity`` above the old peak overwrites ``peak_equity``, whose prior
+    value is the running maximum of the equities the log records Aegis being
+    handed (with or without the seed) -- a candidate R1-i's proof tries and
+    accepts only on the log's exact hash. A large funding receipt is the
+    fixture's way to lift the hedged equity past the seeded capital.
     """
     harness = build(tmp_path, days=(DAY,))
     harness.feed.write_settlements([DAY], hours=(1,), rates={(DAY, 1): "0.005"})
@@ -1653,8 +1658,9 @@ def test_a_real_new_peak_crash_stays_sealed_for_r1i(tmp_path):
 
     resumed = restart(tmp_path, config)
 
-    assert resumed.runner.risk.continuity_disputed, "sealed: R1-i's to prove"
-    assert resumed.runner.risk_continuity.crash_transition == ""
+    assert_proved_and_deferred(resumed, state_dir, "equity")
+    assert not resumed.runner.risk.continuity_disputed
+    assert resumed.runner.state is RunnerState.READY
 
 
 @pytest.mark.parametrize(
@@ -2176,10 +2182,10 @@ def crash_before_a_paid_settlement_is_recorded(tmp_path: Path):
     ``DemoRunner._settle_funding`` books the settlement into the ledger (which
     marks it) and reports it to Aegis (``note_funding_settlement``, which moves
     the hashed adverse streak) before it appends the record that restates the
-    hash. So the kill leaves all three at once: a ``RISK_STATE_MISMATCH`` no
-    Aegis-only proof explains (the funding-streak window is unproved), a
-    section 9.3 ``LOG_BEHIND_STATE`` triage that does explain it, and a ledger
-    equity Aegis never received -- the disagreement R1-b exists to catch.
+    hash. So the kill leaves all three at once: a ``RISK_STATE_MISMATCH`` that
+    R1-i's ``funding`` window now proves (R1-c left it unproved), a section 9.3
+    ``LOG_BEHIND_STATE`` triage that also explains it, and a ledger equity Aegis
+    never received -- the disagreement R1-b exists to catch.
     """
     harness = build(tmp_path, days=(DAY,))
     harness.feed.write_settlements([DAY], hours=(1,), rate="-0.0001")
@@ -2198,7 +2204,11 @@ def test_b4_a_real_crash_mismatch_is_reconciled_after_the_verdict(tmp_path, monk
     """B4-3. The crash explains the mismatch, so the file is released -- and R1-b
     runs THEN, exactly once, on the released engine, and still disputes the
     equity the crash left behind. The operator's clearing path works and the
-    campaign runs again."""
+    campaign runs again.
+
+    R1-i: the funding-streak window is now PROVED as well, so the finding is
+    named ``funding`` and gets its own (deferring, not sealing) ``RECOVERY``
+    beside the triage's -- the same as every other proved window."""
     harness = crash_before_a_paid_settlement_is_recorded(tmp_path)
     config = harness.runner.config
     state_dir = harness.state_dir
@@ -2211,11 +2221,12 @@ def test_b4_a_real_crash_mismatch_is_reconciled_after_the_verdict(tmp_path, monk
 
     verdict = resumed.runner.risk_continuity
     assert verdict.fault is RiskContinuityFault.RISK_STATE_MISMATCH
-    assert verdict.crash_transition == "", "not an Aegis-only window"
+    assert verdict.crash_transition == "funding", "R1-i proves the funding-streak window"
     assert RecoveryCause.LOG_BEHIND_STATE.value in [
         r["recovery"]["cause"] for r in records(state_dir) if r["kind"] == "RECOVERY"
-    ], "section 9.3's triage is what explains it"
-    assert not resumed.runner.risk.continuity_disputed and not continuity_recoveries(state_dir)
+    ], "section 9.3's triage explains it too"
+    assert not resumed.runner.risk.continuity_disputed
+    assert len(continuity_recoveries(state_dir)) == 1, "recorded, and deferred"
     assert calls == [("DemoRunner.start", False)], "R1-b ran once, after the release"
     assert resumed.runner.state is RunnerState.HALT
     assert resumed.runner.halt_reason.startswith(risk_wiring.EQUITY_DISPUTE_PREFIX)

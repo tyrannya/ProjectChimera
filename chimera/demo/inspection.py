@@ -14,10 +14,10 @@ switch, save a file, observe a clock, or manufacture an instant.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from chimera.carry.factory import PERP_SYMBOL, SPOT_SYMBOL
 from chimera.carry.hedge import HedgeState
@@ -47,6 +47,10 @@ class DemoInspection:
     spot_quantity: Decimal
     perp_quantity: Decimal
     ledger: CarryLedger
+    #: R1-i: the exposure Aegis would hold for each leg's symbol if its last
+    #: report matched the store -- ``None`` for a flat leg (no entry). See
+    #: :func:`store_exposure`.
+    exposures: Mapping[str, float | None] = field(default_factory=dict)
 
     @property
     def imbalance(self) -> Decimal:
@@ -73,6 +77,30 @@ class DemoInspection:
             perp_quantity=perp,
             ledger=position.ledger,
         )
+
+
+def store_exposure(store: FuturesStore, symbol: str) -> float | None:
+    """What `FuturesExecutor._report_exposure` last told Aegis, read off the store.
+
+    The executor reports ``notional(fill price) / leverage`` after each fill,
+    and ``None`` -- no entry -- for a flat position. The fill price of the
+    position's last fill is the average price of the newest filled order for
+    the symbol (order ids are a zero-padded sequence per executor). Used only as
+    a candidate by R1-c's ``exposure`` crash-window proof, whose hash check
+    decides whether it is right.
+    """
+    position = store.state.position(symbol)
+    if position.is_flat:
+        return None
+    filled = [
+        order
+        for order_id, order in sorted(store.state.orders.items())
+        if order.intent.symbol == symbol and order.filled_quantity > 0
+    ]
+    if not filled:
+        return None
+    price = filled[-1].average_price
+    return float(position.notional(price)) / float(position.leverage)
 
 
 def inspect_demo_state(
@@ -111,4 +139,8 @@ def inspect_demo_state(
         spot_quantity=spot_store.state.position(SPOT_SYMBOL).quantity,
         perp_quantity=perp_store.state.position(PERP_SYMBOL).quantity,
         ledger=ledger,
+        exposures={
+            SPOT_SYMBOL: store_exposure(spot_store, SPOT_SYMBOL),
+            PERP_SYMBOL: store_exposure(perp_store, PERP_SYMBOL),
+        },
     )

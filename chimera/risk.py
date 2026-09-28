@@ -58,7 +58,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers only; see _position_sign
     from chimera.futures.domain import PositionSide
@@ -418,8 +418,16 @@ class RiskEngine:
         kill_switch_path: str | Path | None = None,
         *,
         check_kill_switch_at_construction: bool = True,
+        on_persist_failure: Callable[[str, OSError], None] | None = None,
     ) -> None:
         self.limits = limits or RiskLimits()
+        #: Called with ``("risk.json"-style file name, OSError)`` when
+        #: :meth:`_persist` cannot write, after the failure is logged. ``None``
+        #: keeps this engine's historical behaviour (log and carry on). The demo
+        #: runner's factory installs
+        #: :func:`chimera.persistence.raise_persistence_failure`, because for a
+        #: runner a halt that cannot be written down is a process failure (R1-i).
+        self._on_persist_failure = on_persist_failure
         self.state = RiskState()
         self._clock = clock
         self._state_path = Path(state_path) if state_path else None
@@ -800,6 +808,8 @@ class RiskEngine:
             os.replace(temporary, self._state_path)
         except OSError as exc:
             logger.error("Could not persist risk state: %s", exc)
+            if self._on_persist_failure is not None:
+                self._on_persist_failure(self._state_path.name, exc)
 
     def _load_state(self) -> None:
         """Restore the state, or halt because it could not be restored.
@@ -937,11 +947,11 @@ class RiskEngine:
           be readable in the file it came from.
 
         There is deliberately no way out of this from here. Clearing a dispute
-        is an operator action with exactly one path per dispute kind, which is
-        canonical **R1-i**; R1-c's job is to make the condition visible and fail
-        closed, and inventing a clearing path for it would be taking R1-i's
-        decision. :meth:`adopt_after_unreadable` is not that path and cannot be
-        reached from here: it refuses unless the LOAD was unreadable.
+        is an operator action with exactly one path per dispute kind (R1-i):
+        for this one it is the ``--risk-state`` selector, which refuses,
+        because the prior state is recorded only as a hash.
+        :meth:`adopt_after_unreadable` is not that path and cannot be reached
+        from here: it refuses unless the LOAD was unreadable.
 
         **The seal is also a refusal to change the state in memory**, not only on
         disk (see :meth:`_continuity_guard`). Refusing the write alone was too

@@ -50,6 +50,7 @@ from typing import Any, Callable, Mapping
 from chimera.carry.ledger import CarryLedger, LoadOutcome
 from chimera.demo.config import COUNT_LIMITS, DemoConfig, DemoLimits
 from chimera.demo.risk_continuity import assess_risk_continuity
+from chimera.persistence import raise_persistence_failure
 from chimera.risk import RiskEngine, RiskLimits, RiskStateLoad
 
 
@@ -432,10 +433,11 @@ def seed_or_reconcile_equity(
       **R1-i**, not this item; R1-b does not reorder the runner's writes.
     * ``_funding``'s mark either falls through to that same writer later in the
       tick, or the tick halts.
-    * both marks on the liquidation-touch path are followed by a halt, and
-      ``halt`` keeps the FIRST reason, so the restart reports the touch rather
-      than the equity. The disagreement is still on disk underneath it and
-      surfaces if the touch is ever resumed.
+    * both marks on the liquidation-touch path are followed by a halt. Until
+      R1-i the second one -- after the flatten -- told Aegis nothing, and since
+      ``halt`` keeps the FIRST reason the restart reported the touch while the
+      disagreement sat underneath and surfaced once the touch was resumed.
+      R1-i hands Aegis the flattened equity there, as ``flatten`` does below.
     * ``DemoRunner.flatten`` marked, persisted, and told Aegis nothing -- so an
       ordinary operator flatten, with no crash anywhere, left the two files
       stating different equities and the campaign halting on its next start. That
@@ -575,6 +577,9 @@ def build_risk_engine(
         clock=clock,
         kill_switch_path=root / "KILL_SWITCH",
         check_kill_switch_at_construction=False,
+        # R1-i: a risk state the demo runner cannot write down ends the
+        # process (`chimera.persistence`), instead of living on in memory.
+        on_persist_failure=raise_persistence_failure,
     )
     continuity = assess_risk_continuity(
         load=engine.load_outcome, snapshot=engine.loaded_snapshot, state_dir=root

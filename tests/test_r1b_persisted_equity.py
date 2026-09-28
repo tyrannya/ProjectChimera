@@ -998,16 +998,18 @@ def test_a_disputed_restart_is_settled_by_resolve_equity_and_then_runs(tmp_path)
 def test_resume_alone_does_not_settle_the_dispute(tmp_path):
     """Why the command has to exist. The review's finding, pinned.
 
-    `resume` clears the flag and changes neither equity, so the next construction
-    reads the same disagreement and halts again. A campaign with only `resume`
-    cannot leave this state by any permitted action.
+    `resume` would clear the flag and change neither equity, so the next
+    construction would read the same disagreement and halt again. Since R1-i it
+    does not even do that: a dispute has exactly one clearing path, and `resume`
+    refuses, naming it, and changes nothing.
     """
     config, _, _ = _crashed_campaign(tmp_path)
 
     resuming = build(tmp_path, days=(DAY,), config=config, start=False)
     assert resuming.runner.start() is RunnerState.HALT
-    resuming.runner.resume("operator: I looked at it")
-    assert not resuming.runner.risk.state.halted
+    with pytest.raises(RunnerError, match="resolve --equity"):
+        resuming.runner.resume("operator: I looked at it")
+    assert resuming.runner.risk.state.halted
 
     again = build(tmp_path, days=(DAY,), config=config, start=False)
 
@@ -1119,8 +1121,11 @@ def test_resolve_equity_writes_an_operator_record_naming_both_numbers(tmp_path):
         if r.get("kind") == "OPERATOR"
         and r.get("operator", {}).get("command") == "resolve-equity"
     ]
-    assert len(operator) == 1
-    block = operator[0]["operator"]
+    # R1-i: a `requested` record before the adoption and a `completed` one
+    # after it, the second citing the first.
+    assert [r["operator"]["phase"] for r in operator] == ["requested", "completed"]
+    assert operator[1]["operator"]["request_seq"] == operator[0]["seq"]
+    block = operator[1]["operator"]
     assert block["note"] == "operator: the ledger is the campaign's accounting"
     assert block["settled"].startswith(EQUITY_DISPUTE_PREFIX)
     assert block["risk_equity_before"] == repr(persisted)

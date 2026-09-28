@@ -6,17 +6,38 @@ Exactly six subcommands, as the plan lists them:
     status
     flatten --note TEXT
     resume --note TEXT
-    resolve (--symbol S | --equity) --note TEXT
+    resolve (--symbol S | --equity | --ledger KIND | --risk-state | --emergency) --note TEXT
     report --day D
 
 "Every operator command writes a decision-log record with `kind = OPERATOR`."
 
-`resolve` clears one dispute, and which one is named rather than guessed:
-``--symbol`` is a leg's reconciliation dispute, ``--equity`` the one a restart
-raises when the persisted risk state and the carry ledger state different
-equities (R1-b). One or the other, never both and never neither, so the command
-cannot be run in the hope that it clears whatever it finds. Six subcommands
-still, as section 8.3 lists them.
+`resolve` clears one dispute, and which one is named rather than guessed (R1-i:
+"every dispute kind has exactly one clearing path"):
+
+* ``--symbol S`` -- a leg's reconciliation dispute, wherever it is held;
+* ``--equity`` -- R1-b's restart equity dispute;
+* ``--ledger KIND`` -- one carry-ledger dispute, named by kind; it re-books what
+  the stores and executors determine and refuses, naming the unknowable fact,
+  what they do not (`chimera.demo.runner.LEDGER_DISPUTES`);
+* ``--risk-state`` -- R1-c's continuity dispute (refuses: see the runner);
+* ``--emergency`` -- a persistence failure the emergency record holds.
+
+Exactly one selector, never none, so the command cannot be run in the hope that
+it clears whatever it finds. Six subcommands still, as section 8.3 lists them.
+
+**R1-i: `flatten`, `resume` and `resolve` run `start()` first** -- the same
+STARTUP, SELF_CHECK and RECOVER a restarted service runs, with the decision
+clock seeded no earlier than the committed log tail -- so an operator acts on
+the persisted reality a restart sees, and every record it appends is later than
+the log's last. None of them passes ``allow_dirty``.
+
+**R1-i: a persistence failure is a process failure.** A write the runner depends
+on that fails -- ENOSPC or any other ``OSError`` -- ends every writing command
+with exit 4, after the failure has been written into the pre-allocated
+emergency record (`chimera.demo.emergency`) where that is still possible. Exit 4
+is deliberately not exit 3: 3 means "halted", which a supervisor must not
+restart into; 4 means the process failed, and the restart it gets finds the
+trace and halts on it (`resolve --emergency`, then `resume`).
 
 ``--note`` is REQUIRED on `flatten`, `resume` and `resolve`, and a note that is
 empty or only whitespace is refused. That matches
@@ -70,15 +91,23 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 from chimera.carry.factory import build_hedged_position
+from chimera.demo import emergency
 from chimera.demo.config import ConfigProfile, DemoConfig, parse_demo_config
 from chimera.demo.inspection import inspect_demo_state
 from chimera.demo.risk_wiring import build_risk_engine
 from chimera.demo.rules import RuleRegistry
 from chimera.demo.rules_carry import CarryParams, CarryRule
 from chimera.demo.rules_shadow import DailyMomentumRule, FrozenLogisticRule, ShadowParams
-from chimera.demo.runner import _STATE_NAMES, DemoRunner, RunnerError, RunnerState
+from chimera.demo.runner import (
+    _STATE_NAMES,
+    LEDGER_DISPUTES,
+    DemoRunner,
+    RunnerError,
+    RunnerState,
+)
 from chimera.demo.telemetry import NullTelemetry, RunnerTelemetry
 from chimera.futures.fills import RecordedQuoteFillModel
+from chimera.persistence import PersistenceFailure
 from chimera.recorder.contract import load_recorder_contract
 from chimera.recorder.events import NS_PER_SECOND
 
@@ -87,6 +116,9 @@ logger = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_HALTED = 3
+#: R1-i: a durable write failed. Not 3: a supervisor restarts this one, and the
+#: restart halts on the emergency record the failure left.
+EXIT_PERSISTENCE_FAILURE = 4
 
 #: R1-d's heartbeat cadence while the service waits for the next minute close.
 HEARTBEAT_SECONDS = 30.0
@@ -161,6 +193,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--equity",
         action="store_true",
         help="the restart equity dispute between risk.json and carry_ledger.json",
+    )
+    which.add_argument(
+        "--ledger",
+        choices=sorted(LEDGER_DISPUTES),
+        metavar="KIND",
+        help=f"one carry-ledger dispute, by kind: {', '.join(sorted(LEDGER_DISPUTES))}",
+    )
+    which.add_argument(
+        "--risk-state",
+        action="store_true",
+        help="the R1-c continuity dispute on risk.json",
+    )
+    which.add_argument(
+        "--emergency",
+        action="store_true",
+        help="a persistence failure recorded in the emergency record",
     )
     resolve.add_argument("--note", required=True)
 
@@ -474,12 +522,61 @@ def main(
 
     if args.command not in WRITING_COMMANDS:
         return _command(args, operational_clock=operational_clock, sleep=sleep)
+    state_dir = Path(_config(args).runner_setting("state_dir"))
     try:
-        with _single_writer(Path(_config(args).runner_setting("state_dir"))):
+        with _single_writer(state_dir):
             return _command(args, operational_clock=operational_clock, sleep=sleep)
     except StateDirectoryBusy as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_REFUSED
+
+
+def _persistence_failure(
+    failure: PersistenceFailure, runner: DemoRunner | None, state_dir: Path, command: str
+) -> int:
+    """R1-i: trip the emergency record, say so, and exit 4. Never raises.
+
+    Nothing else is written: no HALT record, no state file. Each would be one
+    more write on the disk that has just refused one, and the emergency record
+    is the one write that was prepared for this.
+    """
+    try:
+        if runner is not None:
+            written = runner.record_persistence_failure(failure, command=command)
+        else:
+            written = emergency.trip(
+                state_dir,
+                {
+                    "failure": {
+                        "role": failure.role,
+                        "operation": failure.operation,
+                        "errno": failure.errno,
+                    },
+                    "halt_reason": f"persistence_failure: {failure.summary()}",
+                    "command": command,
+                    "runner_state": "STARTUP",
+                },
+            )
+    except Exception:  # pragma: no cover - the trip itself never raises
+        written = False
+    trace = (
+        "recorded in the emergency record; the next start halts on it"
+        if written
+        else "the emergency record could NOT be written: a restart will find no trace "
+        "of this failure beyond this message"
+    )
+    logger.critical("PERSISTENCE FAILURE (%s): %s", failure.summary(), trace)
+    print(
+        json.dumps(
+            {
+                "state": "PERSISTENCE_FAILURE",
+                "failure": failure.summary(),
+                "emergency_record_written": written,
+            }
+        )
+    )
+    print(f"persistence failure: {failure.summary()}; {trace}", file=sys.stderr)
+    return EXIT_PERSISTENCE_FAILURE
 
 
 def _command(
@@ -488,8 +585,22 @@ def _command(
     operational_clock: Callable[[], float],
     sleep: Callable[[float], None],
 ) -> int:
-    runner = _load(args, operational_clock=operational_clock)
+    runner: DemoRunner | None = None
+    try:
+        runner = _load(args, operational_clock=operational_clock)
+        return _dispatch(args, runner, operational_clock=operational_clock, sleep=sleep)
+    except PersistenceFailure as failure:
+        state_dir = Path(_config(args).runner_setting("state_dir"))
+        return _persistence_failure(failure, runner, state_dir, str(args.command))
 
+
+def _dispatch(
+    args: argparse.Namespace,
+    runner: DemoRunner,
+    *,
+    operational_clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> int:
     if args.command == "run":
         if args.metrics_port is not None:
             # Imported and called here rather than in `chimera/demo`, because
@@ -535,59 +646,76 @@ def _command(
 
     if args.command == "flatten":
         note = _require_note(args.note, "flatten")
-        runner.start(allow_dirty=True)
-        outcome = runner.flatten(note)
+        # R1-i: the ordinary start, never `allow_dirty` -- which on a CAMPAIGN
+        # persisted the spurious halt "allow_dirty was requested for a CAMPAIGN
+        # profile". A flatten is permitted whatever the start concluded:
+        # reducing exposure is what a halted runner is for.
+        try:
+            runner.start()
+            outcome = runner.flatten(note)
+        except RunnerError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_REFUSED
         print(json.dumps({"flattened": True, "record": outcome.record_hash}))
         return EXIT_OK
 
     if args.command == "resume":
         note = _require_note(args.note, "resume")
+        # R1-i: through `start()`, so there is a HALT to leave, the restart
+        # checks have run, and the clock is at or past the log's tail.
         try:
+            runner.start()
             outcome = runner.resume(note)
         except RunnerError as exc:
             print(str(exc), file=sys.stderr)
             return EXIT_REFUSED
-        print(json.dumps({"resumed": True, "record": outcome.record_hash}))
+        print(
+            json.dumps(
+                {"resumed": True, "state": runner.state.value, "record": outcome.record_hash}
+            )
+        )
         return EXIT_OK
 
     if args.command == "resolve":
         note = _require_note(args.note, "resolve")
-        if args.equity:
-            # Started first, unlike the `--symbol` arm below. `resolve_equity`
-            # reads Aegis, and Aegis does not exist until `start()` builds it --
-            # which is also where the restart reconciliation runs and raises the
-            # halt this settles, so there is nothing to settle before it. The
-            # `--symbol` arm is left exactly as it was: making THAT one reachable
-            # from a fresh process is canonical R1-i's item ("`resume` and
-            # `resolve` succeed from the CLI via `start()` with log-tail clock
-            # seeding"), and changing it here would be taking that decision.
-            #
-            # Deliberately without `allow_dirty`: a dirty tree makes `start()`
-            # refuse and halt, but `RiskEngine.halt` keeps the FIRST reason, so
-            # the dispute survives and can still be settled. An operator is never
-            # locked out of a recovery path by the state of the working tree.
-            try:
-                runner.start()
-                outcome = runner.resolve_equity(note)
-            except RunnerError as exc:
-                print(str(exc), file=sys.stderr)
-                return EXIT_REFUSED
-            print(
-                json.dumps(
-                    {
-                        "resolved": "equity",
-                        "state": runner.state.value,
-                        "record": outcome.record_hash,
-                    }
-                )
-            )
-            return EXIT_OK
+        # R1-i: every selector through `start()`, deliberately without
+        # `allow_dirty`. A dirty tree makes `start()` refuse and halt, but
+        # `RiskEngine.halt` keeps the FIRST reason, so a dispute survives and
+        # can still be settled: an operator is never locked out of a recovery
+        # path by the state of the working tree.
         try:
-            outcome = runner.resolve(args.symbol, note)
+            runner.start()
+            if args.equity:
+                outcome = runner.resolve_equity(note)
+                resolved = "equity"
+            elif args.ledger:
+                outcome = runner.resolve_ledger(args.ledger, note)
+                resolved = f"ledger:{args.ledger}"
+            elif args.risk_state:
+                outcome = runner.resolve_risk_state(note)
+                resolved = "risk-state"
+            elif args.emergency:
+                outcome = runner.resolve_emergency(note)
+                resolved = "emergency"
+            else:
+                outcome = runner.resolve(args.symbol, note)
+                resolved = args.symbol
         except RunnerError as exc:
             print(str(exc), file=sys.stderr)
             return EXIT_REFUSED
-        print(json.dumps({"resolved": args.symbol, "record": outcome.record_hash}))
+        print(
+            json.dumps(
+                {
+                    "resolved": resolved,
+                    "state": runner.state.value,
+                    "record": outcome.record_hash,
+                    "still_disputed": [
+                        {"resolve": selector, "dispute": what}
+                        for selector, what in runner.standing_disputes()
+                    ],
+                }
+            )
+        )
         return EXIT_OK
 
     raise SystemExit(f"unknown command {args.command!r}")  # pragma: no cover
@@ -627,6 +755,8 @@ def _status(runner: DemoRunner) -> dict[str, Any]:
             "equity": str(ledger.last_equity) if ledger.last_equity is not None else None,
         },
         "disputed": inspection.ledger.disputed,
+        # R1-i: the emergency record, as found. Read-only, like everything here.
+        "emergency": runner.emergency_trace.status_block(),
     }
 
 

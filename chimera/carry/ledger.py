@@ -35,14 +35,43 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from chimera.carry.accounting import ZERO, CarryError
 
 logger = logging.getLogger(__name__)
 
-#: The persisted schema. A file that does not declare exactly this is refused.
-LEDGER_SCHEMA = "chimera.carry-ledger/1"
+#: The persisted schema. A file that does not declare one of
+#: :data:`LEDGER_SCHEMAS_READ` is refused.
+#:
+#: Version 2 (R1-i) adds ``correction``: when the position became PARTIAL and
+#: what it was trying to hold, so section 6.3's correction deadline is a fact on
+#: disk rather than a counter in a process a restart forgets. A version 1 file
+#: carries no such fact, and its absence is NOT read as "no correction under
+#: way" -- that is the direction that would hand a restarted PARTIAL a fresh
+#: retry budget. It reads as :data:`CORRECTION_UNKNOWN`: a correction whose
+#: start is unknown, and therefore already past its deadline, so a PARTIAL
+#: loaded from a version 1 file is flattened at the next complete minute. For
+#: a position that is not PARTIAL the marker is dropped the first time the
+#: state is settled (every start's `reconstruct()` does it), and means nothing.
+#:
+#: Version 3 (R1-i remediation) adds ``aegis_funding_before``: Aegis's funding
+#: guard (``funding_adverse_streak``, ``funding_halt``) as it stood just before
+#: ONE settlement was noted, written before the perpetual executor books that
+#: settlement. It is what ``resolve --ledger funding_booking_torn`` compares
+#: Aegis with to tell a settlement Aegis counted from one it missed. A version 1
+#: or 2 file carries no such fact and reads as ``None``: whether Aegis counted a
+#: settlement torn under it is then not provable, and the resolve refuses.
+LEDGER_SCHEMA = "chimera.carry-ledger/3"
+LEDGER_SCHEMAS_READ: tuple[str, ...] = (
+    LEDGER_SCHEMA,
+    "chimera.carry-ledger/2",
+    "chimera.carry-ledger/1",
+)
+
+#: ``correction.started_ns`` of a correction whose start is not known: the
+#: epoch, so every deadline measured from it has passed.
+CORRECTION_UNKNOWN_START = 0
 
 #: How far the running basis identity may disagree with the legs' marked PnL
 #: before the position is disputed, in quote currency. Fees and step rounding
@@ -228,6 +257,18 @@ class CarryLedgerState:
     #: The most recent identity residual, kept so a report can show how close the
     #: position runs to its tolerance rather than only whether it broke it.
     identity_gap: Decimal | None = None
+    #: Section 6.3's correction, while the position is PARTIAL (R1-i): the
+    #: instant (ns) the imbalance was first observed and the quantity the
+    #: position was trying to hold (``None``: reduce the larger leg to the
+    #: smaller). ``None`` whenever the position is not PARTIAL.
+    correction: dict[str, Any] | None = None
+    #: Aegis's funding guard just before a settlement is noted (version 3):
+    #: ``{"instant_ns", "funding_adverse_streak", "funding_halt"}``, saved before
+    #: the perpetual executor books the settlement at ``instant_ns`` and cleared
+    #: by :meth:`CarryLedger.book_funding` in the save that books it. So while a
+    #: booking is torn -- the executor has it, this ledger does not -- the file
+    #: still holds the guard as it was before that exact settlement.
+    aegis_funding_before: dict[str, Any] | None = None
     #: Non-empty means DISPUTED. Cleared only by :meth:`resolve`, with a note.
     disputed: str | None = None
     #: Every operator resolution, with its mandatory note. Append-only evidence.
@@ -278,6 +319,10 @@ class CarryLedgerState:
             "open_instant_ns": self.open_instant_ns,
             "funding_owed": [dict(owed) for owed in self.funding_owed],
             "identity_gap": _text(self.identity_gap),
+            "correction": None if self.correction is None else dict(self.correction),
+            "aegis_funding_before": (
+                None if self.aegis_funding_before is None else dict(self.aegis_funding_before)
+            ),
             "disputed": self.disputed,
             "resolutions": [dict(r) for r in self.resolutions],
             "marked_at_ns": dict(sorted(self.marked_at_ns.items())),
@@ -287,11 +332,23 @@ class CarryLedgerState:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "CarryLedgerState":
         schema = str(data.get("schema", ""))
-        if schema != LEDGER_SCHEMA:
+        if schema not in LEDGER_SCHEMAS_READ:
             raise LedgerError(
-                f"persisted carry ledger declares schema {schema!r}, not {LEDGER_SCHEMA!r}. "
-                "A ledger this build cannot read is not one it may guess at."
+                f"persisted carry ledger declares schema {schema!r}, not one of "
+                f"{list(LEDGER_SCHEMAS_READ)}. A ledger this build cannot read is not one "
+                "it may guess at."
             )
+        if schema != "chimera.carry-ledger/1":
+            correction = _correction(data.get("correction"))
+        else:
+            # Version 1 recorded no correction at all: unknown, so expired.
+            correction = {"started_ns": CORRECTION_UNKNOWN_START, "target": None}
+        # Versions 1 and 2 recorded no guard: unknown, which the resolve refuses.
+        aegis_before = (
+            _aegis_funding_before(data.get("aegis_funding_before"))
+            if schema == LEDGER_SCHEMA
+            else None
+        )
         settled_raw = data.get("settled", [])
         if not isinstance(settled_raw, list):
             raise LedgerError("settled must be a list of settlement instants")
@@ -358,6 +415,8 @@ class CarryLedgerState:
             open_instant_ns=opened,
             funding_owed=owed,
             identity_gap=_optional_decimal(data.get("identity_gap"), "identity_gap"),
+            correction=correction,
+            aegis_funding_before=aegis_before,
             disputed=None if disputed is None else str(disputed),
             resolutions=[
                 {str(k): str(v) for k, v in dict(r).items()}
@@ -366,6 +425,53 @@ class CarryLedgerState:
             marked_at_ns=marked,
             updated_at=str(data.get("updated_at", "")),
         )
+
+
+def _correction(raw: Any) -> dict[str, Any] | None:
+    """A version 2 ``correction`` value, validated; malformed is refused."""
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise LedgerError(f"correction must be null or a mapping, not {raw!r}")
+    try:
+        started = raw["started_ns"]
+        if isinstance(started, bool) or not isinstance(started, int) or started < 0:
+            raise ValueError(started)
+        target = raw.get("target")
+        if target is not None:
+            if _decimal(target, "correction.target") < ZERO:
+                raise ValueError(target)
+            target = str(target)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LedgerError(f"correction holds a malformed value: {raw!r}") from exc
+    return {"started_ns": started, "target": target}
+
+
+def _aegis_funding_before(raw: Any) -> dict[str, Any] | None:
+    """A version 3 ``aegis_funding_before`` value, validated; malformed is refused."""
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "instant_ns",
+        "funding_adverse_streak",
+        "funding_halt",
+    }:
+        raise LedgerError(f"aegis_funding_before holds a malformed value: {raw!r}")
+    instant, streak, halt = (
+        raw["instant_ns"],
+        raw["funding_adverse_streak"],
+        raw["funding_halt"],
+    )
+    if (
+        isinstance(instant, bool)
+        or not isinstance(instant, int)
+        or isinstance(streak, bool)
+        or not isinstance(streak, int)
+        or streak < 0
+        or not isinstance(halt, bool)
+    ):
+        raise LedgerError(f"aegis_funding_before holds a malformed value: {raw!r}")
+    return {"instant_ns": instant, "funding_adverse_streak": streak, "funding_halt": halt}
 
 
 def _now_text(instant_ns: int | None) -> str:
@@ -388,17 +494,36 @@ class CarryLedger:
     path: Path | None
     state: CarryLedgerState
     outcome: LoadOutcome = LoadOutcome.MISSING
+    #: Called with ``(file name, OSError)`` when :meth:`save` cannot persist,
+    #: before :class:`LedgerError` would be raised. ``None`` keeps that error.
+    #: The demo factory installs :func:`chimera.persistence.raise_persistence_failure`
+    #: so the runner treats a failed write as a process failure (R1-i).
+    on_persist_failure: Callable[[str, OSError], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     # -- lifecycle ---------------------------------------------------------
 
     @classmethod
-    def open(cls, path: str | Path | None, *, capital: Decimal) -> "CarryLedger":
+    def open(
+        cls,
+        path: str | Path | None,
+        *,
+        capital: Decimal,
+        on_persist_failure: Callable[[str, OSError], None] | None = None,
+    ) -> "CarryLedger":
         """Read the ledger if there is one; otherwise start one against ``capital``.
 
         An unreadable or schema-foreign file is **not** replaced by a fresh
         ledger. It loads as ``UNREADABLE`` with the position already disputed,
         and the file is left exactly as it was found.
         """
+        ledger = cls._read(path, capital=capital)
+        ledger.on_persist_failure = on_persist_failure
+        return ledger
+
+    @classmethod
+    def _read(cls, path: str | Path | None, *, capital: Decimal) -> "CarryLedger":
         if path is None:
             return cls(
                 path=None,
@@ -494,10 +619,11 @@ class CarryLedger:
                 "the file by hand, with the damaged bytes preserved."
             )
         self.state.updated_at = _now_text(now_ns)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         payload = json.dumps(self.state.to_dict(), indent=2, sort_keys=True) + "\n"
         try:
+            # Inside the guard, for the reason `FuturesStore.save` gives.
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(temporary, "w", encoding="utf-8") as handle:
                 handle.write(payload)
                 handle.flush()
@@ -523,6 +649,8 @@ class CarryLedger:
                 finally:
                     os.close(directory)
         except OSError as exc:
+            if self.on_persist_failure is not None:
+                self.on_persist_failure(self.path.name, exc)
             raise LedgerError(
                 f"could not persist the carry ledger to {self.path}: {exc}. Continuing "
                 "would mean the next restart cannot know what this position did."
@@ -666,6 +794,11 @@ class CarryLedger:
         if owed is not None:
             # Resolved by this row, booked or not, in the save that books it.
             self.state.funding_owed.remove(owed)
+        before = self.state.aegis_funding_before
+        if before is not None and before["instant_ns"] == int(instant_ns):
+            # Its settlement is booked here: in the same save, the guard it
+            # recorded stops being evidence about anything torn.
+            self.state.aegis_funding_before = None
         if instant_ns in self.state.settled:
             return ZERO
         self.state.settled.append(instant_ns)
@@ -806,6 +939,38 @@ class CarryLedger:
             self.state.open_instant_ns = None
         elif self.state.open_instant_ns is None:
             self.state.open_instant_ns = int(instant_ns)
+
+    def begin_correction(self, started_ns: int, target: Decimal | None) -> bool:
+        """Record that the position became PARTIAL at ``started_ns``. True if new.
+
+        An existing correction is kept: its start is the deadline's anchor, and
+        moving it would hand the imbalance a fresh budget (R1-i).
+        """
+        if self.state.correction is not None:
+            return False
+        self.state.correction = {
+            "started_ns": int(started_ns),
+            "target": None if target is None or target <= ZERO else str(target),
+        }
+        return True
+
+    def note_aegis_funding_before(
+        self, instant_ns: int, *, funding_adverse_streak: int, funding_halt: bool
+    ) -> None:
+        """Record Aegis's funding guard before the settlement at ``instant_ns``
+        is noted (R1-i). The caller saves it before the executor books it."""
+        self.state.aegis_funding_before = {
+            "instant_ns": int(instant_ns),
+            "funding_adverse_streak": int(funding_adverse_streak),
+            "funding_halt": bool(funding_halt),
+        }
+
+    def end_correction(self) -> bool:
+        """The position is no longer PARTIAL. True if a correction was cleared."""
+        if self.state.correction is None:
+            return False
+        self.state.correction = None
+        return True
 
     def note_leg_mark(self, leg: str, instant_ns: int) -> None:
         """Record when a leg was last observed, for the stale-leg rule."""

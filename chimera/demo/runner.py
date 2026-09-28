@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
@@ -45,10 +45,12 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from chimera.carry.hedge import PERP, SPOT, HedgedPosition, HedgeState
 from chimera.carry.ledger import CarryLedger, LoadOutcome
-from chimera.demo.clock import RunnerClock
+from chimera.demo.clock import RunnerClock, no_authoritative_time
 from chimera.demo.config import DemoConfig
+from chimera.demo import emergency
 from chimera.demo.decision_log import (
     LOG_DIR_NAME,
+    ChainVerification,
     DecisionLog,
     RecordKind,
     iso_minute,
@@ -65,7 +67,7 @@ from chimera.demo.feed import (
     plain_json,
     settlement_from_row,
 )
-from chimera.demo.inspection import DemoInspection
+from chimera.demo.inspection import DemoInspection, store_exposure
 from chimera.demo.risk_continuity import (
     RISK_CONTINUITY_SEALED_FIELD,
     RiskContinuity,
@@ -86,9 +88,11 @@ from chimera.futures.executor import (
     ReconciliationOutcome,
     ReconciliationRequired,
 )
+from chimera.futures.store import LoadOutcome as StoreLoadOutcome
+from chimera.persistence import PersistenceFailure, errno_name
 from chimera.recorder.health import RecorderHealthError, read_heartbeat
-from chimera.recorder.sink import write_json_atomic
-from chimera.risk import RiskEngine
+from chimera.recorder.sink import RecorderSinkError, write_json_atomic
+from chimera.risk import RiskEngine, RiskState
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +232,81 @@ class RecoveryCause(str, Enum):
     RISK_STATE_UNREADABLE = RiskContinuityFault.RISK_STATE_UNREADABLE.value
     RISK_STATE_PRE_SCHEMA = RiskContinuityFault.RISK_STATE_PRE_SCHEMA.value
     RISK_STATE_MISMATCH = RiskContinuityFault.RISK_STATE_MISMATCH.value
+    #: R1-i: the pre-allocated emergency record holds a persistence failure (or
+    #: could not be read). Names what the record says; asserts nothing about
+    #: which writes reached disk before the process stopped.
+    PERSISTENCE_FAILURE = "PERSISTENCE_FAILURE"
+    #: R1-i: an operator command's ``requested`` record has no completion
+    #: record. Asserts nothing about which of its writes reached disk: what the
+    #: files hold now is judged by the same restart checks as any other state.
+    OPERATOR_INCOMPLETE = "OPERATOR_INCOMPLETE"
+    #: R1-i: Aegis's per-symbol exposure differed from what the stores hold and
+    #: was set to the stores'. See `DemoRunner._resync_exposure`.
+    EXPOSURE_RESYNC = "EXPOSURE_RESYNC"
+
+
+#: R1-i's causes, which like R1-c's are not a claim about any MINUTE: a record
+#: about a persistence failure or an unfinished operator command excludes no
+#: minute from the campaign's evidence.
+R1I_RECOVERY_CAUSES: frozenset[RecoveryCause] = frozenset(
+    {
+        RecoveryCause.PERSISTENCE_FAILURE,
+        RecoveryCause.OPERATOR_INCOMPLETE,
+        RecoveryCause.EXPOSURE_RESYNC,
+    }
+)
+
+#: R1-i: every dispute kind the CARRY LEDGER can hold, and what `resolve --ledger
+#: KIND` does about it. ``REBOOK`` re-derives what the stores and executors hold
+#: deterministically and clears the dispute; the value of a ``REFUSE`` entry is
+#: the fact nothing in the state directory can supply, which the refusal names,
+#: and the dispute is left exactly as it is. The leg reconciliation dispute is
+#: not here: its one clearing path is `resolve --symbol`.
+REBOOK = "REBOOK"
+LEDGER_DISPUTES: Mapping[str, str] = {
+    "ledger_store_mismatch": REBOOK,
+    "funding_booking_torn": REBOOK,
+    "stale_leg": REBOOK,
+    "asymmetric_close": REBOOK,
+    "ledger_unreadable": (
+        "the carry ledger's own history -- per-leg slippage, the owed funding "
+        "entries, the observation instants and every cash movement before the "
+        "file became unreadable -- exists in no other file"
+    ),
+    "ledger_capital_mismatch": (
+        "which capital this campaign was opened with: the ledger and the "
+        "configuration disagree, and a resolve cannot choose the campaign's identity"
+    ),
+    "spot_ledger_regressed": (
+        "which of two fee histories is the spot leg's: its executor holds less than "
+        "the ledger already booked, so its accumulators were reset"
+    ),
+    "perp_ledger_regressed": (
+        "which of two fee histories is the perpetual leg's: its executor holds less "
+        "than the ledger already booked, so its accumulators were reset"
+    ),
+    "spot_store_unreadable": (
+        "what the spot leg holds: its store could not be read and the dry-run venue "
+        "reports only from that store"
+    ),
+    "perp_store_unreadable": (
+        "what the perpetual leg holds: its store could not be read and the dry-run "
+        "venue reports only from that store"
+    ),
+    "identity_violation": (
+        "which of the ledger's own entry fields is wrong: the basis identity is "
+        "computed from the ledger alone, so no other file can say"
+    ),
+    "ledger_behind_log": (
+        "what the ledger held after the log's last ledger record: the file holds "
+        "less than the log committed and no other file holds the difference"
+    ),
+}
+
+
+def ledger_dispute_kind(reason: str) -> str:
+    """The kind a carry-ledger dispute reason names: its text before the first colon."""
+    return reason.split(":", 1)[0].strip()
 
 
 #: The causes that are not a claim about any MINUTE. R1-c's findings are about a
@@ -280,6 +359,9 @@ class _Recovery:
     #: `risk.state_hash` is what the next start compares against, so putting the
     #: disputed hash there would make the dispute its own evidence.
     risk_continuity: Mapping[str, Any] | None = None
+    #: R1-i's findings ride inside the `recovery` block too: the emergency
+    #: record's contents, or the unfinished operator request.
+    extra: Mapping[str, Any] | None = None
 
 
 @dataclass
@@ -397,11 +479,23 @@ class DemoRunner:
             state_dir=self.state_dir,
             limits=risk_limits(config.limits),
             ledger_equity=ledger_equity(self.state_dir, capital=self.capital),
+            capital=self.capital,
+            exposures=self._inspection.exposures,
         )
         self._inspection_ledger_unreadable = (
             self._inspection.ledger.outcome is LoadOutcome.UNREADABLE
         )
         self._inspection_ledger_complaint = self._inspection.ledger.disputed
+        #: R1-i: the pre-allocated emergency record, as found. Read here, before
+        #: anything this process does can write it -- `start()` arms a missing
+        #: one, and a failure trips one -- so the verdict is about what the LAST
+        #: process left behind. Read-only: `status` reports it without `start()`.
+        self._emergency = emergency.read_trace(self.state_dir)
+        #: R1-i: what this run's `start()` established, which the operator
+        #: commands consult rather than re-deriving: the SELF_CHECK refusal, if
+        #: there was one, and whether RECOVER's `reconstruct()` ran and agreed.
+        self._self_check_problem: str | None = None
+        self._reconstructed = False
         self._log: DecisionLog | None = None
         self._config_hash = _config_hash(config)
         self._enter(RunnerState.STARTUP)
@@ -500,7 +594,17 @@ class DemoRunner:
             # the check for ever.
             "last_reconcile_minute_ms": self.last_reconcile_minute_ms,
         }
-        write_json_atomic(self.state_path, payload)
+        try:
+            write_json_atomic(self.state_path, payload)
+        except (RecorderSinkError, OSError) as exc:
+            # R1-i: a runner state that cannot be written is a process failure.
+            # The recorder's writer reports an OSError as `RecorderSinkError`;
+            # only that shape is a persistence failure, and anything else it
+            # raises is a defect and propagates as itself.
+            cause = exc if isinstance(exc, OSError) else exc.__cause__
+            if not isinstance(cause, OSError):
+                raise
+            raise PersistenceFailure(self.state_path.name, "write", errno_name(cause)) from exc
 
     # ------------------------------------------------------------------
     # the log
@@ -528,12 +632,24 @@ class DemoRunner:
         }
         try:
             appended = self.log.append(record)
-        except Exception:
-            # Counted, then re-raised unchanged. A failed append is a failure of
-            # the evidence and the runner's behaviour on it is not this line's to
-            # change; without the counter the failure is visible only in a log
-            # file nobody is watching at 03:00.
+        except Exception as exc:
+            # Counted, then re-raised. A failed append is a failure of the
+            # evidence; without the counter it is visible only in a log file
+            # nobody is watching at 03:00.
             self.telemetry.on_log_write_error()
+            # R1-i: a commit the filesystem refused -- or any append to a log
+            # that already refused one -- is a PERSISTENCE failure, and ends the
+            # process rather than reaching an `except Exception` that would turn
+            # it into an ordinary HALT whose own writes fail the same way. A
+            # refusal that is not the disk's (a clock moving backwards, a
+            # malformed payload, a forged tail) is re-raised unchanged.
+            cause = exc if isinstance(exc, OSError) else exc.__cause__
+            if isinstance(cause, OSError) or (self._log is not None and self._log.failed):
+                raise PersistenceFailure(
+                    LOG_DIR_NAME,
+                    "append",
+                    errno_name(cause) if isinstance(cause, OSError) else "UNKNOWN",
+                ) from exc
             raise
         self.last_record_hash = appended.record_hash
         self.telemetry.on_record(kind.value)
@@ -545,17 +661,35 @@ class DemoRunner:
     def start(self, *, now_ns: int | None = None, allow_dirty: bool = False) -> RunnerState:
         """Run the three states before the tick loop. Returns where it stopped."""
         self._enter(RunnerState.STARTUP)
+        # R1-i: the emergency reserve exists before anything that can fail.
+        # First, because every write below -- a torn-tail repair, a seeded
+        # equity, the STARTUP record -- is one that can meet a full disk.
+        self._arm_emergency()
+        # R1-i: the decision clock never starts behind the committed log tail.
+        # The cursor's next minute is where a campaign's clock has always been
+        # seeded, and in every ordinary state it is at or past the tail. It is
+        # not when `runner_state.json` lags the log (the LOG_AHEAD window) by
+        # more than a minute, or is gone -- and an operator command from a
+        # fresh process would then append a record the log refuses as moving
+        # the clock backwards. The tail is read from a VERIFIED log only: a
+        # forged one is not a source of time (`start()` refuses it below, and
+        # nothing is appended to it).
+        verification = verify_log(self.state_dir / LOG_DIR_NAME)
+        tail_ns = None if verification.is_forged else verification.last_runner_now_ns
         if now_ns is not None:
             self.clock.observe(int(now_ns))
         elif not self.clock.started:
             first = self.cursor.next_minute_ms()
-            if first is None:
+            if first is None and tail_ns is None:
                 raise RunnerError(
                     "there is no minute to start from: the recorder has written no "
                     "normalized day under this root. The runner does not invent a start "
                     "instant; a campaign begins where the evidence begins"
                 )
-            self.clock.observe(first * _MS_TO_NS + MINUTE_NS)
+            if first is not None:
+                self.clock.observe(first * _MS_TO_NS + MINUTE_NS)
+        if tail_ns is not None:
+            self.clock.observe(int(tail_ns))
 
         if self._risk is None:
             # One bound callable object, not three separately created bound
@@ -577,7 +711,7 @@ class DemoRunner:
         # chain head before the STARTUP record replaces it, or section 9.3's
         # "its record_hash equals last_record_hash" compares the runner's own
         # STARTUP record against itself and can never disagree.
-        triage = self._triage_log()
+        triage = self._triage_log(verification)
         if triage is not None and not triage.recoverable:
             return self._halt(triage.reason)
 
@@ -641,6 +775,7 @@ class DemoRunner:
         self._enter(RunnerState.SELF_CHECK)
         problem = self.self_check(allow_dirty=allow_dirty)
         if problem is not None:
+            self._self_check_problem = problem
             return self._halt(problem)
 
         self._enter(RunnerState.RECOVER)
@@ -662,9 +797,28 @@ class DemoRunner:
         # its STARTUP record above says so.
         if continuity_stands or self._risk_continuity.crash_transition:
             self._write_risk_continuity_recovery()
+        # R1-i: an operator command whose `requested` record has no completion.
+        # Its own finding, beside the crash triage's: LOG_AHEAD_OF_STATE says
+        # which file lagged, this says an operator action was left unfinished.
+        self._write_incomplete_operator_recovery()
+        # R1-i: a persistence failure the last process recorded in the
+        # emergency reserve. Recorded in the log (once per trace) and halted on
+        # BEFORE `reconstruct()` may judge the state files a failed write left
+        # behind: a campaign that stopped on a broken disk is not declared
+        # healthy by the next start. `resolve --emergency` acknowledges it.
+        if self._emergency.needs_attention:
+            self._write_emergency_recovery()
+            return self._halt(f"persistence_failure: {self._emergency.summary()}")
+        # R1-i: Aegis counts what the stores hold, whatever a crash left.
+        self._resync_exposure()
+        # R1-i: a liquidation flatten the last process began and did not finish.
+        touched = self._interrupted_touch()
+        if touched is not None:
+            return self._complete_interrupted_touch(touched)
         outcome = self.position.reconstruct()
         if outcome.state is HedgeState.DISPUTED:
             return self._halt(f"dispute: {outcome.detail}")
+        self._reconstructed = True
         # Checked for its effect, not its return: `RiskEngine.halt` keeps the
         # FIRST reason, so an engine already halted here -- by
         # `build_risk_engine`'s own `check_kill_switch` call, or by R1-c's
@@ -858,7 +1012,7 @@ class DemoRunner:
     # ------------------------------------------------------------------
     # section 9.3: what a crash left behind, and what may be done about it
     # ------------------------------------------------------------------
-    def _triage_log(self) -> "_Recovery | None":
+    def _triage_log(self, verification: ChainVerification | None = None) -> "_Recovery | None":
         """What a crash left behind, decided BEFORE anything is appended.
 
         Returns None when there is nothing to recover. Otherwise a
@@ -890,7 +1044,8 @@ class DemoRunner:
         root = self.state_dir / LOG_DIR_NAME
         persisted_head = self.last_record_hash
         committed = self._last_record_minute()
-        verification = verify_log(root)
+        if verification is None:
+            verification = verify_log(root)
         if verification.is_forged:
             return _Recovery(
                 cause=RecoveryCause.LOG_FORGED,
@@ -906,7 +1061,17 @@ class DemoRunner:
         detail = ""
         repaired_bytes = 0
         if verification.is_torn:
-            repair = recover_tail(self.state_dir)
+            try:
+                repair = recover_tail(self.state_dir)
+            except Exception as exc:
+                # R1-i: the repair is a write, and a disk that refuses it is a
+                # persistence failure rather than a reason to continue.
+                cause = exc if isinstance(exc, OSError) else exc.__cause__
+                if isinstance(cause, OSError):
+                    raise PersistenceFailure(
+                        LOG_DIR_NAME, "repair", errno_name(cause)
+                    ) from exc
+                raise
             repaired_bytes = repair.truncated_bytes
             cause = RecoveryCause.TORN_TAIL
             detail = (
@@ -1190,7 +1355,20 @@ class DemoRunner:
         # so, and the replay's DECISION for it came back as an unexplainable
         # `replay_only`.
         finished = self._minute_was_finished(triage)
-        if triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE and affected is not None:
+        # R1-i: only a MINUTE's record says its minute was processed. A tail of
+        # a kind that is not a minute's record at all -- STARTUP, HALT,
+        # OPERATOR, RECOVERY, ... -- is stamped `_minute_ns()`, which on a
+        # campaign that has decided nothing is the NEXT, undecided minute, so
+        # adopting it skipped that minute for ever (found by the crash harness:
+        # a kill inside the first STARTUP append of an operator command).
+        minute_record = triage.committed_minute_kind in (
+            self._FINISHING_KINDS | self._MID_MINUTE_KINDS
+        )
+        if (
+            triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE
+            and affected is not None
+            and minute_record
+        ):
             # The record for this minute is committed and complete; only the
             # state file naming it was lost. Leaving the cursor behind it made
             # `catch_up` decide the minute a second time, so the log ended up
@@ -1233,6 +1411,7 @@ class DemoRunner:
                     "evidence_excluded_minute": (
                         None
                         if triage.cause in CAUSES_WITHOUT_AN_AFFECTED_MINUTE
+                        or triage.cause in R1I_RECOVERY_CAUSES
                         or (triage.cause is RecoveryCause.LOG_AHEAD_OF_STATE and finished)
                         else iso_minute(minute_ns)
                     ),
@@ -1245,6 +1424,7 @@ class DemoRunner:
                         if triage.risk_continuity is not None
                         else {}
                     ),
+                    **(dict(triage.extra) if triage.extra is not None else {}),
                 },
                 "veto_or_rejection": {
                     "stage": "recovery",
@@ -1292,11 +1472,9 @@ class DemoRunner:
         its `HALT` or `DECISION`. It is non-empty only when reverting exactly
         the fields that window writes reproduces the log's own FULL hash, and,
         for the equity window, the real `update_equity` replayed on that prior
-        reproduces the file and the carry ledger holds the same equity. A day
-        roll or a new peak is NOT proved -- the prior baseline and peak are not
-        restated by the record the crash preceded, and reconstructing them from
-        the campaign's history is replay-shaped work, canonical R1-i -- so
-        those windows stay sealed. See
+        reproduces the file and the carry ledger holds the same equity. R1-i
+        adds the day roll, the new peak and the first minute to the equity
+        window, and the `exposure` and `funding` windows; see
         `chimera.demo.risk_continuity._crash_transition`.
         """
         verdict = self._risk_continuity
@@ -1341,6 +1519,356 @@ class DemoRunner:
                 risk_continuity=verdict.record_block(),
             )
         )
+
+    # ------------------------------------------------------------------
+    # R1-i: the emergency record, and operator actions left unfinished
+    # ------------------------------------------------------------------
+    def _interrupted_touch(self) -> int | None:
+        """The minute of a liquidation touch whose flatten never finished, or None.
+
+        Section 6.7's sequence is: ``LIQUIDATION_TOUCH`` appended, Aegis halted,
+        both legs reduced, the ledger saved, and its own ``HALT`` (reason
+        ``liquidation_touch: ...``) appended. A touch record with no such HALT
+        after it is a process that died between the record and the end of the
+        flatten -- the position the touch decided to close may still be open,
+        one leg or both.
+        """
+        touched: int | None = None
+        for record in self._log_records():
+            kind = record.get("kind")
+            if kind == RecordKind.LIQUIDATION_TOUCH.value:
+                block = record.get("liquidation")
+                stamp = block.get("touched_minute") if isinstance(block, Mapping) else None
+                stamp = stamp or record.get("minute")
+                touched = int(datetime.fromisoformat(str(stamp)).timestamp() * 1000)
+            elif kind == RecordKind.HALT.value:
+                # Only the touch's OWN halt ends its sequence. Any other halt in
+                # between -- a restart halting on a persistence failure, on a
+                # dispute -- leaves the flatten exactly as unfinished as it was.
+                veto = record.get("veto_or_rejection")
+                detail = veto.get("detail", "") if isinstance(veto, Mapping) else ""
+                if str(detail).startswith("liquidation_touch"):
+                    touched = None
+        return touched
+
+    def _complete_interrupted_touch(self, touched_ms: int) -> RunnerState:
+        """R1-i: finish the section 6.7 flatten a crash interrupted, then halt.
+
+        The touch was decided and recorded; only its flatten was cut short. It is
+        completed exactly as `_liquidation_check` would have completed it --
+        against the touched minute's own recorded book, perpetual first, the
+        ledger reconciled to what the legs now hold, and the same ``HALT`` with
+        its ``ledger_effect`` -- so the campaign reaches the state an
+        uninterrupted run reaches. It can only reduce: `emergency_reduce` sends
+        reduce-only orders, and nothing opens. A store that could not be read
+        is left to `reconstruct` to dispute instead.
+        """
+        if any(
+            executor.store.outcome is StoreLoadOutcome.UNREADABLE
+            for executor in (self.position.spot, self.position.perp)
+        ):
+            outcome = self.position.reconstruct()
+            return self._halt(f"dispute: {outcome.detail}")
+        state = self.cursor.state_for(touched_ms, now_ns=self.clock.now_ns)
+        # The touch's own halt, as `_liquidation_check` writes it, if the crash
+        # came before it.
+        if not self.risk.state.halted:
+            self.risk.halt("liquidation_touch")
+        self.position.install_quote(state)
+        outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
+        flattened = self.position.mark_to_market(state)
+        self._save_ledger()
+        if self._ledger_may_speak():
+            self.risk.update_equity(float(flattened.equity))
+        self.telemetry.on_position(self.position)
+        logger.warning(
+            "RECOVERED an interrupted liquidation flatten on %s: %s",
+            iso_minute(int(touched_ms) * _MS_TO_NS),
+            outcome.detail,
+        )
+        effect = self._ledger_effect_if_readable(self.position.ledger.state.last_equity)
+        # And, as every halted start does, a settlement owed across the touch
+        # whose row has landed: the touch's own bound decides which rows the
+        # flattened leg answers (R1-g, RR-1).
+        problem = self._book_owed_funding()
+        return self._halt(
+            problem or f"liquidation_touch: {outcome.detail} (completed after a restart)",
+            ledger_effect=effect,
+        )
+
+    def _resync_exposure(self) -> None:
+        """R1-i: make Aegis's per-symbol exposure the one the stores imply.
+
+        A fill reaches Aegis (`FuturesExecutor._report_exposure` persists
+        ``open_positions``) before the store that books it is saved. A process
+        killed between the two leaves Aegis counting a fill the store -- the
+        dry-run venue -- never booked, or, once one leg's store is saved and the
+        other's is not, counting neither correctly. The crash harness found both.
+        Whatever the crash, the stores are the authority for what is held, so the
+        exposure Aegis holds for each leg's symbol is set to what the store
+        implies (:func:`chimera.demo.inspection.store_exposure`) -- the value the
+        uninterrupted run reported -- and a ``RECOVERY`` record restates the
+        risk hash so the next start's continuity check reads the repaired state
+        as this campaign's own. An ordinary restart finds nothing to change and
+        writes nothing. Not while R1-c seals the engine: it persists nothing.
+        """
+        if self.risk.continuity_disputed:
+            return
+        implied = {
+            executor_symbol: store_exposure(executor.store, executor_symbol)
+            for executor, executor_symbol in (
+                (self.position.spot, self.position.config.spot_symbol),
+                (self.position.perp, self.position.config.perp_symbol),
+            )
+        }
+        held = self.risk.state.open_positions
+        changed: dict[str, Any] = {}
+        for symbol, value in implied.items():
+            if held.get(symbol) == value:
+                continue
+            changed[symbol] = {"aegis": held.get(symbol), "store": value}
+            if value is None:
+                self.risk.close_position(symbol)
+            else:
+                self.risk.set_position_exposure(symbol, value)
+        if not changed:
+            return
+        logger.warning("RECOVERED Aegis exposure to the stores: %s", changed)
+        self._append(
+            RecordKind.RECOVERY,
+            self._minute_ns(),
+            {
+                "recovery": {
+                    "cause": RecoveryCause.EXPOSURE_RESYNC.value,
+                    "detail": (
+                        "Aegis's exposure for a leg did not match the store's position "
+                        "(a fill's report persisted before or after the store that books "
+                        "it, across a crash). The store is the authority for what is "
+                        "held, so Aegis now counts what it holds"
+                    ),
+                    "affected_minute": iso_minute(self._minute_ns()),
+                    "evidence_excluded_minute": None,
+                    "exposure": changed,
+                },
+                # Restated, so the next start compares the repaired file with a
+                # statement that describes it.
+                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "veto_or_rejection": {
+                    "stage": "recovery",
+                    "label": RecoveryCause.EXPOSURE_RESYNC.value.lower(),
+                    "detail": "exposure re-synchronised to the stores",
+                },
+            },
+        )
+        self.save_state()
+
+    @property
+    def emergency_trace(self) -> emergency.EmergencyTrace:
+        """The emergency record as this process found it (read-only, R1-i)."""
+        return self._emergency
+
+    def _arm_emergency(self) -> None:
+        """Create the reserve if there is none. Never overwrites a tripped one."""
+        try:
+            emergency.arm(self.state_dir)
+        except OSError as exc:
+            raise PersistenceFailure(emergency.EMERGENCY_NAME, "arm", errno_name(exc)) from exc
+
+    def record_persistence_failure(
+        self, failure: PersistenceFailure, *, command: str = ""
+    ) -> bool:
+        """Write the failure into the emergency reserve. True if it was fsynced.
+
+        R1-i's "attempting to append the halt reason to a pre-allocated
+        emergency record". Called on the way OUT of a process whose disk has
+        failed -- by ``tools/demo_run.py``, which exits non-zero whatever this
+        returns. It reads only what is already in memory and writes only the
+        reserve; it appends nothing to the decision log and saves no state file,
+        because each of those is a write the failed disk may refuse again.
+
+        The halt reason is the failure itself, and the runner's own earlier
+        halt reason, if it had one, rides beside it: a disk can fail inside the
+        very `_halt` that was writing the first one down.
+        """
+        prior = self.halt_reason
+        if not prior and self._risk is not None:
+            prior = self._risk.state.halt_reason or None
+        minute = self.cursor.last_minute_processed
+        payload = {
+            "failure": {
+                "role": failure.role,
+                "operation": failure.operation,
+                "errno": failure.errno,
+            },
+            "halt_reason": f"persistence_failure: {failure.summary()}",
+            "prior_halt_reason": prior or None,
+            "command": command or None,
+            "runner_state": self.state.value,
+            "last_minute_processed": (
+                None if minute is None else iso_minute(int(minute) * _MS_TO_NS)
+            ),
+            # Named `log_head`, not `..._hash`: the trace is copied verbatim into
+            # a RECOVERY record, and the decision log holds every `*_hash` field
+            # to a `sha256:` digest -- which an empty head is not.
+            "log_head": self.last_record_hash or None,
+            "runner_now_ns": self.clock.now_ns if self.clock.started else None,
+        }
+        return emergency.trip(
+            self.state_dir, {key: value for key, value in payload.items() if value is not None}
+        )
+
+    def _log_records(self) -> Iterable[Mapping[str, Any]]:
+        """Every readable record, oldest first. Read-only."""
+        from chimera.demo.decision_log import day_files, read_records
+
+        for path in day_files(self.state_dir / LOG_DIR_NAME):
+            yield from read_records(path)
+
+    def _write_emergency_recovery(self) -> None:
+        """Copy the emergency record into the log, once per trace."""
+        trace = self._emergency
+        for record in self._log_records():
+            recovery = record.get("recovery")
+            if (
+                isinstance(recovery, Mapping)
+                and recovery.get("cause") == RecoveryCause.PERSISTENCE_FAILURE.value
+                and recovery.get("emergency_digest") == trace.digest
+            ):
+                return
+        self._write_recovery(
+            _Recovery(
+                cause=RecoveryCause.PERSISTENCE_FAILURE,
+                reason=(
+                    "the emergency record holds a persistence failure from an earlier "
+                    f"process ({trace.summary()}). It records the failure class and the "
+                    "transition it happened in; which writes reached disk before the "
+                    "process stopped is not asserted. The runner halts until an operator "
+                    "acknowledges it with `resolve --emergency`"
+                ),
+                recoverable=True,
+                extra={
+                    "emergency_state": trace.state.value,
+                    "emergency_digest": trace.digest or None,
+                    "emergency_slots": [dict(slot) for slot in trace.slots],
+                    **({"emergency_detail": trace.detail} if trace.detail else {}),
+                },
+            )
+        )
+
+    def _incomplete_operator_requests(self) -> list[Mapping[str, Any]]:
+        """The ``requested`` operator records no later record completes or reports.
+
+        A request is completed by a record carrying its ``request_seq`` -- the
+        command's own completion (an ``OPERATOR`` with ``phase: completed``, or
+        a ``RESUME``) -- or already reported by an ``OPERATOR_INCOMPLETE``
+        ``RECOVERY`` for the same seq, so each is reported once.
+        """
+        open_requests: dict[int, Mapping[str, Any]] = {}
+        for record in self._log_records():
+            operator = record.get("operator")
+            if isinstance(operator, Mapping):
+                if operator.get("phase") == "requested" and isinstance(record.get("seq"), int):
+                    open_requests[int(record["seq"])] = operator
+                elif isinstance(operator.get("request_seq"), int):
+                    open_requests.pop(int(operator["request_seq"]), None)
+            recovery = record.get("recovery")
+            if (
+                isinstance(recovery, Mapping)
+                and recovery.get("cause") == RecoveryCause.OPERATOR_INCOMPLETE.value
+                and isinstance(recovery.get("request_seq"), int)
+            ):
+                open_requests.pop(int(recovery["request_seq"]), None)
+        return [{"seq": seq, **dict(op)} for seq, op in sorted(open_requests.items())]
+
+    def _write_incomplete_operator_recovery(self) -> None:
+        for request in self._incomplete_operator_requests():
+            command = str(request.get("command", "?"))
+            self._write_recovery(
+                _Recovery(
+                    cause=RecoveryCause.OPERATOR_INCOMPLETE,
+                    reason=(
+                        f"the operator `{command}` requested at seq {request['seq']} has "
+                        "no completion record: the process stopped between the request "
+                        "and its completion. Which of its writes reached disk is not "
+                        "asserted; this start judges the state files as it finds them, "
+                        "and the command may be run again"
+                    ),
+                    recoverable=True,
+                    extra={"request_seq": int(request["seq"]), "command": command},
+                )
+            )
+
+    def _operator_requested(
+        self, command: str, note: str, details: Mapping[str, Any] | None = None
+    ) -> int:
+        """R1-i: append the operator's ``requested`` record BEFORE any mutation.
+
+        Every operator mutation is attributable before it happens: a process
+        killed between this record and the completion leaves a log that names
+        the command, the operator's note and what it was going to do, and the
+        next start reports the unfinished request (`OPERATOR_INCOMPLETE`)
+        instead of leaving a state change nobody wrote down. Returns the
+        record's ``seq``, which the completion record cites.
+        """
+        seq = self.log.next_seq
+        self._append(
+            RecordKind.OPERATOR,
+            self._minute_ns(),
+            {
+                "operator": {
+                    "command": command,
+                    "note": note,
+                    "phase": "requested",
+                    **dict(details or {}),
+                }
+            },
+        )
+        return seq
+
+    def standing_disputes(self) -> list[tuple[str, str]]:
+        """Every dispute this runner holds now, as ``(resolve selector, what)``.
+
+        R1-i: one clearing path per dispute kind, named. `resume` refuses while
+        any of these stands, and says which `resolve` clears it.
+        """
+        found: list[tuple[str, str]] = []
+        # First: a recorded persistence failure is what the start halted on, and
+        # it is acknowledged before anything the failed writes left is judged.
+        if self._emergency.needs_attention:
+            found.append(("--emergency", self._emergency.summary()))
+        if self._risk is None or self._position is None:
+            return found
+        legs = (
+            (SPOT_LEG, self.position.spot, self.position.config.spot_symbol),
+            (PERP_LEG, self.position.perp, self.position.config.perp_symbol),
+        )
+        for _leg, executor, symbol in legs:
+            detail = executor.store.state.disputed.get(symbol)
+            if detail:
+                found.append((f"--symbol {symbol}", f"{symbol}: {detail}"))
+        for symbol, detail in sorted(self.risk.state.reconciliation_disputed.items()):
+            selector = f"--symbol {symbol}"
+            if not any(item[0] == selector for item in found):
+                found.append((selector, f"{symbol}: {detail}"))
+        ledger = self.position.ledger.disputed
+        if ledger is not None:
+            kind = ledger_dispute_kind(ledger)
+            if kind.endswith("_reconciliation_mismatch"):
+                symbol = dict((leg, sym) for leg, _e, sym in legs).get(
+                    kind.split("_", 1)[0], ""
+                )
+                selector = f"--symbol {symbol}"
+                if not any(item[0] == selector for item in found):
+                    found.append((selector, ledger))
+            else:
+                found.append((f"--ledger {kind}", ledger))
+        if self.risk.continuity_disputed:
+            found.append(("--risk-state", self.risk.state.halt_reason))
+        if self.risk.state.halted and is_equity_reconciliation_halt(
+            self.risk.state.halt_reason
+        ):
+            found.append(("--equity", self.risk.state.halt_reason))
+        return found
 
     @property
     def risk_continuity(self) -> RiskContinuity:
@@ -1629,7 +2157,25 @@ class DemoRunner:
         self._enter(RunnerState.RISK_CHECK)
         intents: list[Any] = []
         veto: dict[str, Any] | None = None
-        if actionable:
+        # R1-i: section 6.3's correction, wired. A PARTIAL position is not
+        # re-planned from the rule's target every minute with no end: while the
+        # rule still wants a position, the minute is a CORRECTION step -- retry
+        # within the persisted window, then flatten -- and only a rule that
+        # wants nothing closes it the ordinary way. Also when no rule is
+        # actionable this minute: a one-legged position is corrected regardless.
+        correcting = self.position.state is HedgeState.PARTIAL and not (
+            actionable and actionable[0].target.quantity == ZERO
+        )
+        # R1-i: a minute acts once. A re-tick of a minute whose correction
+        # flatten already reached the stores (a crash before its DECISION) finds
+        # the position flat, and without this the rule would open a new one in
+        # the same minute -- an action the uninterrupted run never took, which
+        # opens one minute later. The stores' own flatten record, stamped by the
+        # decision clock at this minute's close, is the evidence.
+        already_corrected = self._corrected_this_minute(minute_ns)
+        if already_corrected:
+            correcting = False
+        if actionable and not correcting and not already_corrected:
             target = actionable[0].target
             assert isinstance(target, HedgeTarget)
             target = self._target_to_act_on(target)
@@ -1647,12 +2193,20 @@ class DemoRunner:
         executed = False
         outcome = None
         orders_before = _order_ids(self.position)
-        if intents and veto is None:
+        if correcting or (intents and veto is None):
             self._enter(RunnerState.EXECUTION)
             try:
-                outcome = self.position.apply(
-                    intents, state, equity=float(portfolio["equity"])
-                )
+                if correcting:
+                    outcome = self.position.correct(
+                        state,
+                        equity=float(portfolio["equity"]),
+                        now_ns=minute_ns + MINUTE_NS,
+                    )
+                    intents = list(outcome.intents)
+                else:
+                    outcome = self.position.apply(
+                        intents, state, equity=float(portfolio["equity"])
+                    )
                 executed = True
             except ReconciliationRequired as exc:
                 # Persisted BEFORE the halt, and that order is the whole point.
@@ -2001,6 +2555,20 @@ class DemoRunner:
             except Exception as exc:
                 return f"funding_unbookable: {exc}"
 
+            if exposure.side in (PositionSide.LONG, PositionSide.SHORT):
+                # R1-i: Aegis's funding guard as it stands BEFORE this
+                # settlement is noted, on disk before the executor books it.
+                # From the executor's save to the ledger's below, the booking is
+                # torn; this record is what lets `resolve --ledger
+                # funding_booking_torn` tell a settlement Aegis counted from one
+                # it missed, whatever the log last restated (a RESUME, an
+                # OPERATOR or an incomplete minute restates nothing).
+                ledger.note_aegis_funding_before(
+                    instant_ns,
+                    funding_adverse_streak=self.risk.state.funding_adverse_streak,
+                    funding_halt=self.risk.state.funding_halt,
+                )
+                self._save_ledger()
             try:
                 flow = self.position.settle_funding(
                     settlement, open_instant_ns=opened, now_ns=now_ns
@@ -2129,19 +2697,24 @@ class DemoRunner:
         Order, and it is the order a crash may interrupt at any point:
 
         1. evaluate against the recorded minute;
-        2. halt Aegis, so no increase can be planned even if step 4 fails;
-        3. write the LIQUIDATION_TOUCH record, so the log says a touch happened
-           BEFORE anything claims a flatten;
+        2. write the LIQUIDATION_TOUCH record, so the log says a touch happened
+           BEFORE anything claims a flatten or halts on one;
+        3. halt Aegis, so no increase can be planned;
         4. reduce both legs (reductions are permitted while halted, by design);
-        5. persist the ledger and write the OPERATOR-free position record.
+        5. persist the ledger and write the HALT, which ends the sequence.
 
-        3 before 4 is deliberate. A crash between them leaves a log that says
+        2 before 4 is deliberate. A crash between them leaves a log that says
         "touched, and does not say flattened" over stores that still hold the
         position -- true, and recoverable. The other order would leave a log
         claiming a flatten that the stores show never happened, which is the one
-        thing section 9.3 says a log may never do.
+        thing section 9.3 says a log may never do. 2 before 3 is R1-i's: a
+        touch record with no HALT after it is what the next start finds and
+        finishes (`_complete_interrupted_touch`), before any tick.
         """
-        if self.position.state not in (HedgeState.HEDGED, HedgeState.PARTIAL):
+        # R1-i: every position with an open leg, not only HEDGED and PARTIAL
+        # by name. `liquidation_touched` is per leg, so the leveraged leg is
+        # checked whatever the hedge state calls the pair.
+        if self._position_is_flat():
             return None
         if state.mark is None:
             # A minute with no mark cannot answer 6.7 on a non-flat position, and
@@ -2173,14 +2746,19 @@ class DemoRunner:
             return None
 
         minute_ns = int(minute_ms) * _MS_TO_NS
-        # Aegis first, and before any record: from this line on no increase can
-        # be planned even if this process dies before the flatten, because the
-        # halt is persisted by `RiskEngine.halt` itself.
-        self.risk.halt("liquidation_touch")
         # The flatten below takes the leg at the close of the minute that
         # touched -- where a replay's own tick takes it -- so an owed entry
-        # answers no row stamped later (RR-1). Saved before the record, so a
-        # crash before the flatten leaves the bound on disk with the touch.
+        # answers no row stamped later (RR-1).
+        #
+        # R1-i: saved BEFORE Aegis halts, closing the crash window R1-g's
+        # review left for this item. The other order persisted the halt first,
+        # so a kill between the two restarted halted on the touch with the
+        # owed entry unbounded -- and once an operator flattened, the next
+        # halted start's `_book_owed_funding` charged the owed leg a row
+        # stamped AFTER the touch, which the replay never charges. Bound first,
+        # a kill before the halt leaves an unhalted runner whose next tick
+        # meets the same recorded minute, touches again and halts; the bound it
+        # writes again is the same instant.
         if self.position.ledger.end_owed(state.minute_ns + MINUTE_NS):
             self._save_ledger()
         before = self._position_block()
@@ -2196,6 +2774,12 @@ class DemoRunner:
                 },
                 "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
                 "position_after": before,
+                # R1-i: the recorded minute whose book the flatten below fills
+                # against. Not always this record's own minute -- R1-g's
+                # deferral stamps a touch on the last decided minute -- and a
+                # restart that finds the flatten interrupted completes it on
+                # exactly this minute's book (`_complete_interrupted_touch`).
+                "liquidation": {"touched_minute": iso_minute(int(state.minute_ns))},
                 "veto_or_rejection": {
                     "stage": "carry",
                     "label": "liquidation_touch",
@@ -2208,13 +2792,30 @@ class DemoRunner:
             },
         )
         self.save_state()
+        # R1-i: Aegis AFTER the record, not before it. Before R1-i the halt came
+        # first, so a process killed between the two restarted halted on a touch
+        # the log never mentions -- no record of which minute touched, so
+        # nothing could finish the flatten, and the touched position stayed
+        # open. Now a kill anywhere from here to the HALT below leaves a touch
+        # record with no HALT after it, and the next start finishes the flatten
+        # on that minute's book (`_complete_interrupted_touch`) before any tick
+        # can run -- so no increase is planned either way.
+        self.risk.halt("liquidation_touch")
 
         outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
         # Re-marked after the flatten and before the save, so the `ledger_effect`
         # the HALT record carries describes the position the campaign stopped
         # with rather than the one it was touched at.
-        self.position.mark_to_market(state)
+        flattened = self.position.mark_to_market(state)
         self._save_ledger()
+        # R1-i: Aegis is told what the flatten left the account worth, as the
+        # operator flatten tells it, so the two persisted equities agree. R1-b
+        # left this path disclosed as the one that did not: the halt below
+        # masked the disagreement until the touch was resumed, and then the
+        # next start raised an equity dispute out of an ordinary liquidation.
+        # The crash harness met it on every restart across a touch.
+        if self._ledger_may_speak():
+            self.risk.update_equity(float(flattened.equity))
         # A liquidation flatten moves the hedge and then HALTS, so unlike every
         # other position change there is no next minute to refresh the gauges at.
         # Without this `chimera_demo_hedge_state{state="HEDGED"}` stays 1 for as
@@ -2483,13 +3084,28 @@ class DemoRunner:
     # operator commands
     # ------------------------------------------------------------------
     def flatten(self, note: str) -> TickOutcome:
-        """Reduce to flat. Permitted while halted; that is what HALT is for."""
+        """Reduce to flat. Permitted while halted; that is what HALT is for.
+
+        **R1-i.** Reached from the CLI through the ordinary `start()` -- the one
+        a restarted service runs -- and never through `start(allow_dirty=True)`,
+        which used to persist the spurious Aegis halt "allow_dirty was requested
+        for a CAMPAIGN profile" on every CAMPAIGN flatten. A genuinely dirty
+        tree still halts at SELF_CHECK, exactly as `run` would, and the flatten
+        still reduces: reducing exposure is permitted while halted.
+
+        Two records. The ``requested`` OPERATOR record is appended before either
+        leg moves, so a process killed mid-flatten leaves the command and the
+        operator's note in the log and the next start reports the unfinished
+        request; the completion record carries what the legs and the ledger hold
+        afterwards, as the single record always did.
+        """
         note = (note or "").strip()
         if not note:
             raise RunnerError(
                 "flatten requires an operator note; an unexplained flatten "
                 "is an unexplained position change"
             )
+        self._require_active("flatten")
         minute = self.cursor.last_minute_processed
         if minute is None:
             raise RunnerError("nothing has been processed yet, so there is nothing to flatten")
@@ -2500,37 +3116,21 @@ class DemoRunner:
         # been flattened, with nothing in the log to say a flatten happened.
         self._require_recordable("flatten")
         state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
-        # The book, before the orders. `install_quote` was put on the tick loop
-        # only, so a `flatten` from a fresh process -- which is every flatten
-        # through `tools/demo_run.py`, since the CLI constructs a runner and
-        # calls this straight away -- sent both reduce-only orders against a
-        # model holding no quote. Every one came back REJECTED `no_fresh_quote`,
-        # the executor recorded "did not reach zero", and the position an
-        # operator was trying to close in an emergency simply stood.
+        seq = self._operator_requested(
+            "flatten", note, {"position_before": self._position_block()}
+        )
+        # The book, before the orders: a flatten from a fresh process otherwise
+        # sent both reduce-only orders against a model holding no quote.
         self.position.install_quote(state)
         outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
         # Marked BEFORE the ledger is persisted, so the equity that reaches the
-        # record is the flattened position's and is the one on disk. Marking
-        # after the save would record a number no file holds.
+        # record is the flattened position's and is the one on disk.
         mark = self.position.mark_to_market(state)
         self._save_ledger()
-        # Aegis is told what the flatten left the account worth, through the same
-        # single writer the tick uses and under the same condition as the record
-        # below: only when the ledger the number came from is entitled to speak.
-        #
-        # Without this the command was the one legitimate, crash-free way to make
-        # the two persisted equities disagree. `mark_to_market` moves the
-        # ledger's `last_equity` by the reduce orders' fees and slippage and
-        # `_save_ledger` writes that down, while Aegis kept the pre-flatten
-        # reading -- so every ordinary flatten left `risk.json` and
-        # `carry_ledger.json` stating different equities, and R1-b's restart
-        # reconciliation then halted the campaign on its next start. Before R1-b
-        # the same divergence was there and merely invisible, because the restart
-        # overwrote Aegis's equity with the configured capital, which is AEG-1.
-        #
-        # It is the guard, not a setter: a flatten that crystallises a real
-        # drawdown breach halts here, on a position that is already flat, which
-        # is the honest outcome and costs the campaign nothing it still had.
+        # Aegis is told what the flatten left the account worth, through the
+        # same single writer the tick uses, and only when the ledger the number
+        # came from is entitled to speak -- otherwise the two persisted equities
+        # disagree and R1-b's restart reconciliation halts the campaign.
         if self._ledger_may_speak():
             self.risk.update_equity(float(mark.equity))
         effect = self._ledger_effect_if_readable(mark.equity)
@@ -2538,16 +3138,16 @@ class DemoRunner:
             RecordKind.OPERATOR,
             int(minute) * _MS_TO_NS,
             {
-                "operator": {"command": "flatten", "note": note},
+                "operator": {
+                    "command": "flatten",
+                    "note": note,
+                    "phase": "completed",
+                    "request_seq": seq,
+                },
                 "position_after": self._position_block(),
-                # Omitted, not zeroed, when the ledger is UNREADABLE. The
-                # flatten still happens -- reducing exposure is what the command
-                # is for and a corrupt file is no reason to leave a position
-                # standing -- but its economics were booked into a placeholder
-                # and persisted nowhere, so the record says nothing about them
-                # rather than saying something false. The `position_after` block
-                # and the note are read off the legs and the operator, not the
-                # ledger, so both stay.
+                # Omitted, not zeroed, when the ledger may not speak: the
+                # flatten still happens, and its economics were persisted
+                # nowhere, so the record says nothing about them.
                 **({"ledger_effect": effect} if effect is not None else {}),
             },
         )
@@ -2566,65 +3166,99 @@ class DemoRunner:
     def resume(self, note: str) -> TickOutcome:
         """Leave HALT by an explicit operator action, and only by one.
 
-        Section 8.1's HALT row also offers "automatic after a transient
-        stale-feed cause clears". Section 7.2 makes a stale feed a VETO rather
-        than a halt, so no stale feed can put the runner in HALT in the first
-        place and that clause names an unreachable path. Recorded in the PR;
-        implemented as operator-only, which is also what `RiskEngine.resume`
-        already requires ("Only ever called by an explicit operator action").
+        **R1-i: what `resume` refuses.** It clears a HALT whose cause is over. It
+        does not clear a DISPUTE -- each has exactly one clearing path, a named
+        `resolve` -- and it does not clear a halt whose cause still stands:
+
+        * a dispute on either leg's store, in Aegis's reconciliation map, or in
+          the carry ledger (`standing_disputes` names the `resolve` for each);
+        * R1-b's equity dispute (`resolve --equity`), which the next start would
+          raise again from the same two files;
+        * R1-c's continuity seal (nothing it cleared could be persisted);
+        * a persistence failure in the emergency record (`resolve --emergency`);
+        * a ledger that may not speak for the campaign (restore it first);
+        * this start's own SELF_CHECK refusal (a dirty tree on a campaign);
+        * an engaged kill switch (remove the file, then start again);
+        * a start that never reached RECOVER's `reconstruct()`.
+
+        **R1-i: the order.** The ``requested`` OPERATOR record, then Aegis's
+        durable `resume()`, then the RESUME record. The old order -- persist,
+        then append -- left a crash window in which `risk.json` was running and
+        the log's last statement about it was still the HALT, which R1-c reads,
+        correctly, as a halt cleared behind the log's back and SEALS: an
+        unclearable dispute out of an ordinary resume. Now a kill before the
+        persist leaves the campaign halted with the request on record, and a
+        kill after it leaves it running with the request on record; either way
+        the next start reports the unfinished request (`OPERATOR_INCOMPLETE`),
+        and the original halt reason is on disk until the request that clears it
+        is.
         """
         note = (note or "").strip()
         if not note:
             raise RunnerError("resume requires an operator note stating what was checked")
+        self._require_active("resume")
         if self.state is not RunnerState.HALT:
             raise RunnerError("the runner is not halted; there is nothing to resume from")
-        # Canonical R1-c: a continuity-sealed Aegis may not be resumed, and
-        # `RiskEngine.resume` refuses it too. Checked here first so the refusal
-        # is the operator-facing one and comes before anything is appended.
         if self.risk.continuity_disputed:
             raise RunnerError(
                 "cannot resume: Aegis is sealed by an R1-c continuity dispute "
                 f"({self.risk.state.halt_reason}). Nothing it would clear can be "
-                "persisted, and this build has no clearing path for the finding; see "
-                "the RECOVERY record and docs/demo_runbook.md"
+                "persisted; see the RECOVERY record and `resolve --risk-state`"
             )
-        # A halt whose cause is still true is not resumable. `resume` used to go
-        # straight to RECOVER, so a ledger that may not speak could have its halt
-        # cleared without the file being repaired: the mute correctly kept it
-        # silent, and the next tick then raised out of `_ledger_effect` with no
-        # HALT record -- a traceback where a refusal belongs. `reconstruct` does
-        # not cover this, because it compares quantities and settlements and
-        # never the accumulators the guard compares.
-        #
-        # This asks the WHOLE predicate rather than `_ledger_regression` alone,
-        # so an unreadable ledger is diagnosed as unreadable instead of being
-        # described through its placeholder's zeros as "holds fees=0".
         if not self._ledger_may_speak():
             raise RunnerError(
                 f"cannot resume: {self._ledger_state_complaint()}. Restore the ledger from a "
                 "copy at least as recent as the log's last ledger_effect and FUNDING "
                 "records, then start again -- resuming cannot make the file hold what it "
                 "does not. Restore BEFORE running `flatten`: a flatten while the ledger is "
-                "muted moves the legs and writes no ledger, so a copy restored afterwards "
-                "disagrees with the stores and `reconstruct` disputes ledger_store_mismatch, "
-                "which no command clears."
+                "muted moves the legs and writes no ledger."
             )
+        disputes = self.standing_disputes()
+        if disputes:
+            named = "; ".join(
+                f"`resolve {selector}` for {what}" for selector, what in disputes
+            )
+            raise RunnerError(
+                f"cannot resume: a dispute stands, and a dispute is cleared by its own "
+                f"`resolve`, never by `resume`: {named}. Nothing has been changed."
+            )
+        if self._self_check_problem is not None:
+            raise RunnerError(
+                "cannot resume: this start was refused at SELF_CHECK "
+                f"({self._self_check_problem})"
+            )
+        # A fresh look, level-triggered as every look is: the switch may have
+        # been removed since this process started, and it may not have been.
+        if self.risk.check_kill_switch():
+            raise RunnerError(
+                "cannot resume: the kill switch is engaged. Remove the KILL_SWITCH file and "
+                "run the command again; nothing has been changed."
+            )
+        if not self._reconstructed:
+            raise RunnerError(
+                f"cannot resume: this start halted before RECOVER could check the position "
+                f"({self.halt_reason}). Nothing has been changed."
+            )
+        self._require_recordable("resume")
+        cleared = self.risk.state.halt_reason or self.halt_reason or ""
+        seq = self._operator_requested("resume", note, {"cleared": cleared})
         self.risk.resume()
         record_hash = self._append(
             RecordKind.RESUME,
             self._minute_ns(),
-            {"operator": {"command": "resume", "note": note, "cleared": self.halt_reason}},
+            {
+                "operator": {
+                    "command": "resume",
+                    "note": note,
+                    "cleared": cleared,
+                    "phase": "completed",
+                    "request_seq": seq,
+                }
+            },
         )
         self.halt_reason = None
-        self._enter(RunnerState.RECOVER)
-        outcome = self.position.reconstruct()
-        if outcome.state is HedgeState.DISPUTED:
-            return TickOutcome(
-                self.cursor.last_minute_processed or 0,
-                self._halt(f"dispute: {outcome.detail}"),
-                RecordKind.HALT,
-            )
-        self._enter(RunnerState.READY)
+        # R1-f: a stall the log left open is still open after a resume.
+        self._enter(RunnerState.FEED_STALLED if self._feed_stall_open() else RunnerState.READY)
         self.save_state()
         return TickOutcome(
             self.cursor.last_minute_processed or 0,
@@ -2633,39 +3267,63 @@ class DemoRunner:
             record_hash=record_hash,
         )
 
+    def _operator_completed(
+        self, command: str, note: str, seq: int, details: Mapping[str, Any]
+    ) -> str:
+        """The completion record of a `resolve`: what it did, and what still stands."""
+        record_hash = self._append(
+            RecordKind.OPERATOR,
+            self._minute_ns(),
+            {
+                "operator": {
+                    "command": command,
+                    "note": note,
+                    "phase": "completed",
+                    "request_seq": seq,
+                    **dict(details),
+                    "still_disputed": [
+                        {"resolve": selector, "dispute": what}
+                        for selector, what in self.standing_disputes()
+                    ],
+                },
+                "position_after": self._position_block(),
+            },
+        )
+        self.save_state()
+        return record_hash
+
+    def _outcome(self, record_hash: str) -> TickOutcome:
+        return TickOutcome(
+            self.cursor.last_minute_processed or 0,
+            self.state,
+            RecordKind.OPERATOR,
+            record_hash=record_hash,
+        )
+
     def resolve(self, symbol: str, note: str) -> TickOutcome:
-        """Clear one leg's reconciliation dispute, with a mandatory note.
+        """`resolve --symbol`: clear one leg's reconciliation dispute, with a note.
 
-        The note requirement is not this method's invention:
-        `FuturesExecutor.resolve_reconciliation` already refuses an empty one.
-        Checked here too so the CLI fails before touching a store, and so the
-        OPERATOR record and the executor's own record carry the same text.
+        **What is adopted.** ``resolve_reconciliation(symbol, adopted, note)``
+        takes the position the operator has decided is the true one, and this
+        build adopts the LOCAL one: the venue here is ``DryRunFuturesVenue``,
+        which reports from state this process itself wrote, so "the venue's
+        view" is not independent evidence. Adopting local leaves the position
+        exactly as the stores record it and clears only the dispute flags and
+        the orders the dispute froze; the operator's note is the evidence. A
+        build with a real venue must revisit this line.
 
-        **What is adopted, and how.** ``resolve_reconciliation(symbol, adopted,
-        note)`` takes the position the operator has decided is the true one. The
-        two candidates are the local view and the venue's, and this build adopts
-        the LOCAL one. That is not a preference: the venue here is
-        ``DryRunFuturesVenue``, which reports from state this process itself
-        wrote, so "the venue's view" is not independent evidence an operator
-        could have checked anything against. Adopting local leaves the position
-        exactly as the stores record it and clears only the dispute flag and the
-        orders it froze; the operator's note is the evidence, which is what
-        section 11.5 says it is. A build with a real venue must revisit this line
-        rather than this docstring.
-
-        Before PR-10R this method called ``resolve_reconciliation(symbol, note)``
-        -- two of the three required positionals. Every real invocation raised
-        ``TypeError`` before touching a store, so the one operator command that
-        can clear a dispute could not be run at all. The single test on the path
-        passed a symbol that is not a leg and returned one line earlier, which is
-        why the suite never saw it.
+        **R1-i.** It clears THIS dispute wherever it is held -- the leg's store,
+        Aegis's reconciliation map and the carry ledger's
+        ``{leg}_reconciliation_mismatch`` -- and refuses when the named symbol
+        holds none of them: a resolve is never run in the hope that it clears
+        whatever it finds. The ``requested`` record precedes every write, and
+        the completion record names anything that still stands afterwards.
         """
         note = (note or "").strip()
         if not note:
             raise RunnerError("resolve requires an operator note stating what was checked")
         # A fresh CLI process has no recorded instant. Establish that the
-        # action could be recorded before even consulting an active position;
-        # this preserves the operator-facing refusal and changes nothing.
+        # action could be recorded before even consulting an active position.
         self._require_recordable("resolve")
         legs = {
             self.position.config.spot_symbol: (SPOT, self.position.spot),
@@ -2676,107 +3334,535 @@ class DemoRunner:
                 f"{symbol!r} is not one of this position's legs ({sorted(legs)})"
             )
         leg_name, executor = legs[symbol]
-        # Nothing above this line has changed anything; nothing below may change
-        # anything until the record it will be written into is reachable. The
-        # clock is the one part of that which can fail: `tools/demo_run.py`
-        # constructs the runner without one and does not `start()` for this
-        # command, so `now_ns` raised -- AFTER the store had been saved and
-        # Aegis's dispute cleared, and out through an `except RunnerError` that
-        # does not catch it. The safety-critical dispute was cleared with no
-        # OPERATOR record, which is the one outcome section 8.3 forbids. Reading
-        # the clock first turns that into a refusal that changes nothing.
-        now_ns = self.clock.now_ns
+        if self.risk.continuity_disputed:
+            raise RunnerError(
+                "cannot resolve a reconciliation dispute while Aegis is sealed by an R1-c "
+                "continuity dispute: Aegis's copy of it could not be cleared on disk. "
+                "Nothing has been changed."
+            )
+        store_dispute = executor.store.state.disputed.get(symbol)
+        aegis_dispute = self.risk.state.reconciliation_disputed.get(symbol)
+        ledger = self.position.ledger.disputed
+        ledger_dispute = (
+            ledger
+            if ledger is not None and ledger.startswith(f"{leg_name}_reconciliation_mismatch")
+            else None
+        )
+        if not (store_dispute or aegis_dispute or ledger_dispute):
+            raise RunnerError(
+                f"there is no reconciliation dispute on {symbol} to resolve: its store, Aegis "
+                "and the carry ledger hold none. Nothing has been changed."
+            )
         adopted = executor.position(symbol)
+        seq = self._operator_requested(
+            "resolve",
+            note,
+            {
+                "selector": "symbol",
+                "symbol": symbol,
+                "adopted_side": adopted.side.value,
+                "adopted_qty": str(adopted.quantity),
+                "clearing": {
+                    "store": store_dispute,
+                    "aegis": aegis_dispute,
+                    "ledger": ledger_dispute,
+                },
+            },
+        )
         executor.resolve_reconciliation(symbol, adopted, note)
-        # Aegis keeps its own copy of the dispute (section 7.2's reconciliation
-        # row: "cleared only by operator note"), and it is what vetoes increases
-        # on the symbol. Clearing the store without clearing this would leave the
-        # campaign permanently unable to increase over a dispute nothing records.
-        self.risk.note_reconciliation(symbol, None)
-        # Only the RECONCILIATION dispute, and only when the ledger is the real
-        # one. This used to clear whatever the carry ledger happened to be
-        # disputing, which is not the same question: `ledger_unreadable` says the
-        # file could not be parsed, `ledger_capital_mismatch` that it disagrees
-        # with the configuration, `funding_booking_torn` that a settlement is
-        # booked on one side only. Clearing those here cleared a flag and fixed
-        # nothing -- and on an unreadable ledger it also SAVED, overwriting the
-        # only record of the campaign's cash with a placeholder that says it
-        # never traded. `CarryLedger.save` now refuses that outright; this stops
-        # asking.
-        dispute = self.position.ledger.disputed
-        if dispute is not None and dispute.startswith(f"{leg_name}_reconciliation_mismatch"):
-            self.position.ledger.resolve(note, now_ns=now_ns)
+        # Aegis keeps its own copy (section 7.2: "cleared only by operator
+        # note"); leaving it would veto increases over a dispute nothing records.
+        if aegis_dispute is not None:
+            self.risk.note_reconciliation(symbol, None)
+        if ledger_dispute is not None:
+            self.position.ledger.resolve(note, now_ns=self.clock.now_ns)
             self._save_ledger()
+        # The position as the stores and the ledger now describe it: anything
+        # else the restart checks find is named in the completion record.
+        self.position.reconstruct()
+        record_hash = self._operator_completed(
+            "resolve",
+            note,
+            seq,
+            {
+                "selector": "symbol",
+                "symbol": symbol,
+                "adopted_side": adopted.side.value,
+                "adopted_qty": str(adopted.quantity),
+            },
+        )
+        return self._outcome(record_hash)
+
+    def resolve_ledger(self, kind: str, note: str) -> TickOutcome:
+        """`resolve --ledger KIND`: clear one carry-ledger dispute, or refuse.
+
+        R1-i: "re-books what it must, refuses what it cannot". The kinds are
+        :data:`LEDGER_DISPUTES`:
+
+        ``ledger_store_mismatch``
+            The stores moved and the ledger's save did not (a process killed in
+            an execution or flatten window). The stores are the authority for
+            the position, and the executors' own cumulative fees and realised
+            PnL are the authority for those: the ledger is moved to them by
+            `HedgedPosition.rebook_from_stores`. The one quantity no executor
+            accumulates -- the lost cycle's measured slippage -- is NOT invented:
+            it is booked as zero and the record says it is unknown. Slippage is
+            measured, not spent (amendment A12), so free cash and equity are
+            exact.
+        ``funding_booking_torn``
+            The perpetual executor booked a settlement and the ledger's save did
+            not follow. The flow is the executor's own, read back as the
+            difference of the two ledgers' paid and received totals, for exactly
+            one torn instant (more than one cannot be split). Aegis's funding
+            streak is noted too, but only when the log PROVES Aegis never saw
+            the settlement; otherwise the command refuses.
+        ``stale_leg``
+            A leg's last observation lags the other's. Both legs were observed
+            by this start's reconciliation, so both are marked at one instant.
+        ``asymmetric_close``
+            One leg did not flatten. Once `flatten` has brought the legs level,
+            the ledger is reconciled to them and the dispute cleared; while they
+            differ it refuses.
+
+        Every other kind is refused and left exactly as it is, naming the fact
+        no file can supply. The dispute must be the one the ledger holds: a
+        resolve that named a different kind would be run in the hope of
+        clearing whatever it finds.
+        """
+        note = (note or "").strip()
+        if not note:
+            raise RunnerError("resolve requires an operator note stating what was checked")
+        self._require_active("resolve --ledger")
+        if kind not in LEDGER_DISPUTES:
+            raise RunnerError(
+                f"{kind!r} is not a carry-ledger dispute kind ({sorted(LEDGER_DISPUTES)})"
+            )
+        if kind == "ledger_behind_log":
+            held = self._ledger_regression
+        else:
+            held = self.position.ledger.disputed
+            if held is not None and ledger_dispute_kind(held) != kind:
+                raise RunnerError(
+                    f"the carry ledger is disputed on {held!r}, not {kind!r}. A resolve "
+                    "clears the dispute it names; nothing has been changed."
+                )
+        if held is None:
+            raise RunnerError(
+                f"the carry ledger holds no {kind!r} dispute. Nothing has been changed."
+            )
+        action = LEDGER_DISPUTES[kind]
+        if action != REBOOK:
+            raise RunnerError(
+                f"cannot resolve {kind!r}: it would need {action}. Re-deriving it would be "
+                "a guess, so the dispute stands and nothing has been changed. Restore the "
+                "affected file from a copy taken after the log's last record that quotes "
+                "it (docs/demo_runbook.md, section 6)."
+            )
+        if self.risk.continuity_disputed:
+            raise RunnerError(
+                "cannot re-book while Aegis is sealed by an R1-c continuity dispute: the "
+                "equity the re-book hands Aegis could not be persisted. Nothing has been "
+                "changed."
+            )
+        if not self._ledger_may_speak():
+            raise RunnerError(
+                f"cannot re-book: {self._ledger_state_complaint()}. Nothing has been changed."
+            )
+        self._require_recordable("resolve --ledger")
+        # The re-booked position is marked at the minute the crash left in
+        # doubt -- the next undecided one, the minute triage re-ticks -- because
+        # that is the mark the uninterrupted run made with this same position:
+        # the crashed minute's own tick, or, after a lost flatten save, a flat
+        # position whose equity is its cash at any minute. A mark at the last
+        # DECIDED minute would put an equity into the ledger's worst and into
+        # Aegis's peak that no uninterrupted run ever recorded. Without a
+        # complete recorded minute there, nothing is marked: the ledger's
+        # persisted mark and Aegis's equity stay equal, and the next tick marks.
+        pending = self.cursor.next_minute_ms()
+        state: MarketState | None = None
+        if pending is not None:
+            try:
+                candidate = self.cursor.state_for(pending, now_ns=self.clock.now_ns)
+            except Exception:
+                candidate = None
+            if candidate is not None and candidate.complete:
+                state = candidate
+        plan = self._rebook_plan(kind)
+        seq = self._operator_requested(
+            "resolve-ledger",
+            note,
+            {"selector": "ledger", "kind": kind, "clearing": held, **plan},
+        )
+        self.position.ledger.resolve(note, now_ns=self.clock.now_ns)
+        booked = self._apply_rebook(kind, plan, state)
+        equity = self.position.ledger.state.last_equity
+        if state is not None:
+            equity = self.position.mark_to_market(state).equity
+        self._save_ledger()
+        if state is not None and self._ledger_may_speak():
+            self.risk.update_equity(float(equity))
+        # The restart checks, run again on what the files now hold. A dispute
+        # they find is held in memory -- as at any start -- and named in the
+        # completion record; it is not written into the ledger.
+        self.position.reconstruct()
         record_hash = self._append(
             RecordKind.OPERATOR,
             self._minute_ns(),
             {
                 "operator": {
-                    "command": "resolve",
-                    "symbol": symbol,
+                    "command": "resolve-ledger",
                     "note": note,
-                    "adopted_side": adopted.side.value,
-                    "adopted_qty": str(adopted.quantity),
+                    "phase": "completed",
+                    "request_seq": seq,
+                    "selector": "ledger",
+                    "kind": kind,
+                    "rebook": booked,
+                    "still_disputed": [
+                        {"resolve": selector, "dispute": what}
+                        for selector, what in self.standing_disputes()
+                    ],
                 },
                 "position_after": self._position_block(),
+                **(
+                    {"ledger_effect": effect}
+                    if equity is not None
+                    and (effect := self._ledger_effect_if_readable(equity)) is not None
+                    else {}
+                ),
             },
         )
         self.save_state()
-        return TickOutcome(
-            self.cursor.last_minute_processed or 0,
-            self.state,
-            RecordKind.OPERATOR,
-            record_hash=record_hash,
+        return self._outcome(record_hash)
+
+    def _rebook_plan(self, kind: str) -> dict[str, Any]:
+        """What a re-book will do, decided before anything moves. Refuses by raising."""
+        position = self.position
+        if kind in ("ledger_store_mismatch", "asymmetric_close"):
+            if kind == "asymmetric_close" and position.imbalance() != ZERO:
+                raise RunnerError(
+                    f"cannot resolve asymmetric_close: the legs still differ by "
+                    f"{position.imbalance()}. `flatten` first, so that one quantity "
+                    "describes the position again; nothing has been changed."
+                )
+            try:
+                levels = position.rebook_plan()
+            except Exception as exc:
+                raise RunnerError(f"cannot re-book {kind}: {exc}. Nothing has been changed.")
+            opens = None
+            last = None
+            for record in self._log_records():
+                if record.get("kind") == RecordKind.DECISION.value:
+                    last = record.get("position_after")
+            crashed = self.cursor.next_minute_ms()
+            if levels["opens_position"]:
+                # The ledger holds no open instant for a position the stores hold.
+                # Only a tick opens a position from flat, the ledger is saved
+                # before every DECISION, and the last DECISION left the position
+                # flat -- so the position came into existence in the next
+                # undecided minute's tick, at that minute's close. (HALT and
+                # STARTUP records after the crash echo the stores, so they are
+                # not what says what the last DECIDED minute held.)
+                if isinstance(last, Mapping) and (
+                    str(last.get("spot_qty")) != "0" or str(last.get("perp_qty")) != "0"
+                ):
+                    raise RunnerError(
+                        "cannot re-book: the stores hold a position the ledger has no open "
+                        "instant for, and the last decided minute was not flat, so when it "
+                        "was opened is unknowable. Nothing has been changed."
+                    )
+                if crashed is None:
+                    raise RunnerError("cannot re-book: no minute follows the last decided one")
+                opens = int(crashed) * _MS_TO_NS + MINUTE_NS
+            return {
+                "levels": levels,
+                "open_instant_ns": opens,
+                "correction": self._rebooked_correction(crashed),
+            }
+        if kind == "funding_booking_torn":
+            try:
+                torn = position.torn_funding_plan()
+            except Exception as exc:
+                raise RunnerError(
+                    f"cannot re-book the torn settlement: {exc}. Nothing has been changed."
+                )
+            instant = int(torn["instant_ns"])
+            row = self._settlement_row(instant)
+            if row is None:
+                raise RunnerError(
+                    "cannot re-book the torn settlement: the recorder holds no settlement row "
+                    f"for {instant}, so its rate is unknowable. Nothing has been changed."
+                )
+            try:
+                settlement = settlement_from_row(
+                    row,
+                    position_symbol=position.config.perp_symbol,
+                    venue_symbol=_venue_symbol(self.contract),
+                )
+            except Exception as exc:
+                raise RunnerError(
+                    f"cannot re-book the torn settlement: its row cannot be read ({exc}). "
+                    "Nothing has been changed."
+                ) from exc
+            _opened, exposure = position.funding_exposure(instant)
+            # Whether Aegis already counted it: proved one way or the other
+            # from the ledger's record of the guard before it, or refused.
+            # Counting it twice would move the streak that vetoes increases on
+            # a settlement that happened once.
+            verdict = self._aegis_funding_verdict(instant, exposure.side, settlement.rate)
+            if verdict is None:
+                raise RunnerError(
+                    "cannot re-book the torn settlement: whether Aegis already counted it in "
+                    "its funding streak is not provable (the carry ledger holds no record of "
+                    "Aegis's funding guard before this settlement -- a ledger written before "
+                    "chimera.carry-ledger/3 -- or Aegis's guard is neither that record nor "
+                    "that record carried through this one settlement). Nothing has been "
+                    "changed."
+                )
+            return {
+                "torn": torn,
+                "rate": str(settlement.rate),
+                "side": exposure.side.value,
+                "aegis": verdict,
+            }
+        if kind == "stale_leg":
+            return {"marked_at_ns": position.remark_plan()}
+        raise RunnerError(f"no re-book is defined for {kind!r}")  # pragma: no cover
+
+    def _rebooked_correction(self, crashed: int | None) -> dict[str, Any] | None:
+        """Section 6.3's correction for a position the crash left one-legged.
+
+        A crash between the legs' saves leaves a PARTIAL the ledger never saw,
+        and so no correction on record. What the correction would have been is
+        determined, not guessed: the crashed tick is the next undecided minute,
+        which is where `apply` would have started the clock (its close), and the
+        leg that MOVED -- whose level in its store differs from the level the
+        ledger booked before the lost save -- is the one that reached the
+        cycle's target. When both legs moved, or neither did, the target is not
+        determined and none is recorded: the correction then only ever REDUCES
+        the larger leg to the smaller, which can never add exposure.
+        """
+        spot_leg = self.position.leg(SPOT_LEG)
+        perp_leg = self.position.leg(PERP_LEG)
+        if spot_leg.quantity == perp_leg.quantity or crashed is None:
+            return None
+        booked = self.position.ledger.state
+        moved = [
+            leg.quantity
+            for leg, level in (
+                (spot_leg, booked.spot_principal),
+                (perp_leg, booked.perp_margin),
+            )
+            if leg.quantity * leg.entry_price != level
+        ]
+        target: Decimal | None = None
+        if len(moved) == 1 and moved[0] > ZERO:
+            target = moved[0]
+        return {
+            "started_ns": int(crashed) * _MS_TO_NS + MINUTE_NS,
+            "target": None if target is None else str(target),
+        }
+
+    def _apply_rebook(
+        self, kind: str, plan: Mapping[str, Any], state: MarketState | None
+    ) -> dict[str, Any]:
+        position = self.position
+        if kind in ("ledger_store_mismatch", "asymmetric_close"):
+            booked = position.rebook_from_stores(
+                open_instant_ns=plan["open_instant_ns"], correction=plan["correction"]
+            )
+            return {**booked, "slippage": "unknown: not accumulated by any executor"}
+        if kind == "funding_booking_torn":
+            torn = plan["torn"]
+            flow = position.rebook_torn_funding()
+            if plan["aegis"] == "missed":
+                self.risk.note_funding_settlement(
+                    position.config.perp_symbol,
+                    PositionSide(plan["side"]),
+                    float(Decimal(plan["rate"])),
+                )
+            return {
+                "instant_ns": int(torn["instant_ns"]),
+                "cash_flow": str(flow),
+                "aegis": plan["aegis"],
+            }
+        if kind == "stale_leg":
+            position.remark_legs(int(plan["marked_at_ns"]))
+            return {"marked_at_ns": int(plan["marked_at_ns"])}
+        raise RunnerError(f"no re-book is defined for {kind!r}")  # pragma: no cover
+
+    def _settlement_row(self, instant_ns: int) -> Mapping[str, Any] | None:
+        """The recorded settlement row stamped at ``instant_ns``, if the recorder has one."""
+        try:
+            rows = list(self.cursor.settlements())
+        except Exception:
+            return None
+        for row in rows:
+            try:
+                if int(row[_SETTLEMENT_FIELD]) * _MS_TO_NS == int(instant_ns):
+                    return row
+            except (KeyError, TypeError, ValueError):
+                continue
+        return None
+
+    def _aegis_funding_verdict(self, instant_ns: int, side: Any, rate: Any) -> str | None:
+        """Whether Aegis's funding guard already holds the torn settlement.
+
+        ``"counted"`` or ``"missed"`` when proved, ``"unmoved"`` when noting it
+        moves nothing, and ``None`` -- which refuses the re-book -- otherwise.
+
+        The proof is the carry ledger's ``aegis_funding_before``: the guard
+        (``funding_adverse_streak``, ``funding_halt``) as it stood before THIS
+        settlement, saved by `_settle_funding` before the executor booked it and
+        cleared only in the save that books it into the ledger. The settlement
+        itself is carried through the real
+        :meth:`~chimera.risk.RiskEngine.note_funding_settlement` on a detached
+        engine; Aegis's live guard must then be one of the two:
+
+        * the record carried through the note -- ``counted``: the kill came
+          after Aegis persisted it (or a resolve interrupted after its own note);
+        * the record itself -- ``missed``: the kill came before it.
+
+        Nothing else moves those two fields between that save and this resolve:
+        only the note and ``resume`` write them, ``resume`` refuses while this
+        dispute stands, and a halted campaign decides no minute. So neither the
+        log's last restated hash (which a RESUME, an OPERATOR or an incomplete
+        minute does not restate) nor any other Aegis field enters the proof, and
+        a resolve killed before its ledger save is judged again, from the same
+        record, by the next one.
+        """
+        if PositionSide(side) not in (PositionSide.LONG, PositionSide.SHORT):
+            return "unmoved"  # a settlement on no position is never noted
+        before = self.position.ledger.state.aegis_funding_before
+        if before is None or before["instant_ns"] != int(instant_ns):
+            return None
+        prior = (before["funding_adverse_streak"], before["funding_halt"])
+        # A detached engine -- no state file, no switch -- so the replay
+        # persists nothing anywhere and needs no clock.
+        replay = RiskEngine(
+            self.risk.limits,
+            clock=no_authoritative_time,
+            check_kill_switch_at_construction=False,
+        )
+        replay.state = RiskState.from_dict(
+            {
+                **self.risk.snapshot(),
+                "funding_adverse_streak": prior[0],
+                "funding_halt": prior[1],
+            }
+        )
+        replay.note_funding_settlement(
+            self.position.config.perp_symbol, PositionSide(side), float(Decimal(str(rate)))
+        )
+        after = (replay.state.funding_adverse_streak, replay.state.funding_halt)
+        live = (self.risk.state.funding_adverse_streak, self.risk.state.funding_halt)
+        if live not in (prior, after):
+            return None
+        if after == prior:
+            return "unmoved"
+        return "counted" if live == after else "missed"
+
+    def resolve_risk_state(self, note: str) -> TickOutcome:
+        """`resolve --risk-state`: R1-c's continuity dispute. Refuses what it cannot.
+
+        R1-c seals Aegis when ``risk.json`` is absent, unreadable, pre-schema, or
+        not the state the decision log last restated -- and a crash window the
+        runner can PROVE is deferred at start, never sealed, so what reaches
+        this command is a file no proof connects to the log. The log restates
+        the risk state only as a hash, so the state it last described cannot be
+        rebuilt from it, and adopting the file as found would be adopting a
+        state nothing vouches for. The one way out is to restore the
+        campaign's own ``risk.json`` (a copy the log's last ``risk.state_hash``
+        matches); the next start then finds no dispute. This command says so,
+        names what is unknowable, and changes nothing.
+        """
+        note = (note or "").strip()
+        if not note:
+            raise RunnerError("resolve requires an operator note stating what was checked")
+        self._require_active("resolve --risk-state")
+        verdict = self._risk_continuity
+        if not self.risk.continuity_disputed or verdict.fault is None:
+            raise RunnerError(
+                "Aegis is not sealed by an R1-c continuity dispute: there is nothing for "
+                "`resolve --risk-state` to resolve. Nothing has been changed."
+            )
+        raise RunnerError(
+            f"cannot resolve {verdict.fault.value}: the risk state the decision log last "
+            "described -- its peak, its day baseline, its streaks, its disputes and its "
+            "halt -- is recorded there only as a hash, so it cannot be rebuilt, and the "
+            "file as found is not provably this campaign's. Restore the campaign's own "
+            "risk.json (one whose hash is the log's last risk.state_hash) and start "
+            "again. Nothing has been changed."
         )
 
+    def resolve_emergency(self, note: str) -> TickOutcome:
+        """`resolve --emergency`: acknowledge a recorded persistence failure.
+
+        The trace has already been copied into the decision log by the start
+        that found it (`RecoveryCause.PERSISTENCE_FAILURE`), and it is copied
+        again into this command's own records, so nothing is lost when the
+        reserve is re-armed. Re-arming is the only write here besides the two
+        records. It does not resume: the halt stays until `resume`, after the
+        operator has checked what the failure left behind.
+        """
+        note = (note or "").strip()
+        if not note:
+            raise RunnerError("resolve requires an operator note stating what was checked")
+        self._require_active("resolve --emergency")
+        trace = self._emergency
+        if not trace.needs_attention:
+            raise RunnerError(
+                f"the emergency record holds no failure (it is {trace.state.value}). "
+                "Nothing has been changed."
+            )
+        self._require_recordable("resolve --emergency")
+        details = {
+            "selector": "emergency",
+            "emergency_state": trace.state.value,
+            "emergency_digest": trace.digest or None,
+            "emergency_slots": [dict(slot) for slot in trace.slots],
+        }
+        seq = self._operator_requested("resolve-emergency", note, details)
+        try:
+            emergency.rearm(self.state_dir)
+        except OSError as exc:
+            raise PersistenceFailure(
+                emergency.EMERGENCY_NAME, "rearm", errno_name(exc)
+            ) from exc
+        self._emergency = emergency.read_trace(self.state_dir)
+        record_hash = self._operator_completed(
+            "resolve-emergency", note, seq, {"selector": "emergency", "rearmed": True}
+        )
+        return self._outcome(record_hash)
+
     def resolve_equity(self, note: str) -> TickOutcome:
-        """Settle the equity dispute a restart raised, with a mandatory note.
+        """`resolve --equity`: settle the equity dispute a restart raised.
 
         R1-b makes a restart reconcile the persisted risk equity against the
-        carry ledger and HALT when they disagree, which is what canonical R1-b
-        asks for. That halt is unlike every other one the campaign can carry: its
-        cause is re-read at every construction, so `resume` -- which clears the
-        flag and does not touch either equity -- is undone by the very next
-        process before a tick can re-synchronise them. Without this command the
-        only way out of a disagreement is to edit a state file by hand, which the
-        runbook forbids and which R1's own acceptance ("zero manual state edits")
-        rules out. This is that dispute kind's one clearing path, which is what
-        canonical R1-i asks of every dispute kind.
+        carry ledger and HALT when they disagree. That halt's cause is re-read at
+        every construction, so `resume` -- which clears the flag and does not
+        touch either equity -- would be undone by the very next process; this is
+        that dispute kind's one clearing path.
 
         **What it decides.** That the campaign's ACCOUNTING is the reading to
-        keep, and that Aegis's copy of it was stale. That is the direction the
-        demo's authorities already point: the carry ledger is where the cash and
-        the marks live, and Aegis's equity is a reading the runner hands it. The
-        opposite direction -- keeping Aegis's number and rewriting the ledger --
-        is not offered here and should not be: it would mean writing an accounting
-        record no accounting produced.
+        keep, and that Aegis's copy of it was stale. The number adopted is read
+        through :func:`chimera.demo.risk_wiring.ledger_equity`, the same function
+        the reconciliation compares against, so the dispute cannot re-raise
+        itself. The opposite direction -- rewriting the ledger -- is not offered:
+        it would be an accounting record no accounting produced.
 
-        The number adopted is read through
-        :func:`chimera.demo.risk_wiring.ledger_equity`, the same function the
-        reconciliation compares against. That is what makes the settlement stick:
-        the value written into Aegis is by construction the value the next start
-        will compare, so the dispute cannot re-raise itself.
+        **What it refuses.** Everything that is not this dispute: an unhalted
+        Aegis, a halt on anything else (checked again by
+        :meth:`chimera.risk.RiskEngine.adopt_reconciled_equity`), a continuity
+        seal, a ledger that may not speak.
 
-        **What it refuses.** Everything that is not this dispute. It will not run
-        when Aegis is unhalted, nor when Aegis is halted on anything else -- a
-        drawdown breach, a liquidation touch, an identity violation, a kill
-        switch -- and :meth:`chimera.risk.RiskEngine.adopt_reconciled_equity`
-        checks the reason a second time rather than trusting this one. It will
-        not run while the ledger may not speak, because the accounting is
-        precisely what it adopts: an unreadable or log-regressed ledger has to be
-        restored first, and settling from the placeholder would write a number no
-        file holds into the central risk authority.
+        **R1-i.** The ``requested`` record precedes the adoption. The old order
+        -- adopt and persist, then append -- left a window in which `risk.json`
+        was running while the log's last statement about it was the start's
+        HALT, which R1-c seals as a halt cleared behind the log's back.
 
-        **What it is not.** Not a resume of anything else, not a way to clear a
-        real breach, and not a repair of the crash window that can produce the
-        disagreement in the first place -- reordering the runner's writes is
-        canonical R1-i's and is untouched here. If the adopted equity is itself a
-        breach, Aegis halts on that instead, named, and this command has still
-        done its job: the two files now agree, and what remains is a genuine halt
-        an operator resumes in the ordinary way.
-
-        Idempotent: once settled there is no dispute left to settle, so a second
-        invocation refuses and changes nothing.
+        If the adopted equity is itself a breach, Aegis halts on that instead,
+        named; the two files agree either way. Idempotent: once settled there is
+        no dispute left, so a second invocation refuses and changes nothing.
         """
         note = (note or "").strip()
         if not note:
@@ -2786,12 +3872,6 @@ class DemoRunner:
             )
         self._require_active("resolve-equity")
         reason = self.risk.state.halt_reason
-        # Before the halt reason is even read as an equity dispute. A sealed
-        # engine persists nothing, so an adoption here would be a READY that
-        # the next start contradicts -- and `RiskEngine.adopt_reconciled_equity`
-        # refuses it anyway, as an exception the CLI would show as a traceback.
-        # The engine can carry an `equity_dispute:` reason under the seal when
-        # the disputed file was itself halted on one: the seal keeps the first.
         if self.risk.continuity_disputed:
             raise RunnerError(
                 "cannot settle the equity dispute: Aegis is sealed by an R1-c continuity "
@@ -2808,10 +3888,6 @@ class DemoRunner:
                 "and the carry ledger state different equities, or when the ledger "
                 "could not be read at all"
             )
-        # Both refusals below change nothing, and both come before Aegis is
-        # touched, for the reason `resolve` states: an operator command that moves
-        # the safety state and only THEN finds it cannot be written down has done
-        # the one thing section 8.3 forbids.
         self._require_recordable("resolve-equity")
         if not self._ledger_may_speak():
             raise RunnerError(
@@ -2824,12 +3900,19 @@ class DemoRunner:
             )
         accounted = ledger_equity(self.state_dir, capital=self.capital)
         if accounted is None:
-            # Unreachable while `_ledger_may_speak` covers UNREADABLE, and kept
-            # because this function's contract is the None, not that predicate.
             raise RunnerError(
                 "cannot settle the equity dispute: the carry ledger could not be read"
             )
         before = self.risk.state.equity
+        seq = self._operator_requested(
+            "resolve-equity",
+            note,
+            {
+                "settling": reason,
+                "risk_equity_before": repr(before),
+                "adopted_equity": str(accounted),
+            },
+        )
         self.risk.adopt_reconciled_equity(float(accounted), clearing=reason, note=note)
         record_hash = self._append(
             RecordKind.OPERATOR,
@@ -2838,6 +3921,8 @@ class DemoRunner:
                 "operator": {
                     "command": "resolve-equity",
                     "note": note,
+                    "phase": "completed",
+                    "request_seq": seq,
                     "settled": reason,
                     "risk_equity_before": repr(before),
                     "adopted_equity": str(accounted),
@@ -2848,21 +3933,14 @@ class DemoRunner:
         )
         self.save_state()
         # Bookkeeping, not a second decision: this runner's HALT came from Aegis
-        # and Aegis has just answered. A process whose state said HALT while the
-        # engine it reads said otherwise would report the wrong thing for as long
-        # as it lived.
+        # and Aegis has just answered.
         if self.risk.state.halted:
             self._enter(RunnerState.HALT)
             self.halt_reason = self.risk.state.halt_reason
         else:
             self.halt_reason = None
             self._enter(RunnerState.READY)
-        return TickOutcome(
-            self.cursor.last_minute_processed or 0,
-            self.state,
-            RecordKind.OPERATOR,
-            record_hash=record_hash,
-        )
+        return self._outcome(record_hash)
 
     def shutdown(self, note: str = "") -> TickOutcome:
         """Finish, persist, write SHUTDOWN, and stop. Never mid-record."""
@@ -2874,8 +3952,12 @@ class DemoRunner:
         )
         self.save_state()
         if self._log is not None:
-            self._log.close()
-            self._log = None
+            log, self._log = self._log, None
+            try:
+                log.close()
+            except OSError as exc:
+                # R1-i: the final fsync of the day file is a persistence step too.
+                raise PersistenceFailure(LOG_DIR_NAME, "close", errno_name(exc)) from exc
         # Last, and after the log is closed: `chimera_demo_up` says the process
         # stopped on purpose, which is what tells a clean shutdown apart from the
         # scrape failure of a process that died mid-record.
@@ -3104,10 +4186,7 @@ class DemoRunner:
         self, first_ms: int, newest_ms: int | None
     ) -> MarketState | None:
         """The first published minute from ``first_ms`` whose row touches (6.7)."""
-        if newest_ms is None or self.position.state not in (
-            HedgeState.HEDGED,
-            HedgeState.PARTIAL,
-        ):
+        if newest_ms is None or self._position_is_flat():
             return None
         for minute in range(int(first_ms), int(newest_ms) + 60_000, 60_000):
             state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
@@ -3335,6 +4414,30 @@ class DemoRunner:
         # A record still needs a minute. Use the clock's own minute floor rather
         # than inventing one: iso_minute refuses a non-boundary instant.
         return (self.clock.now_ns // MINUTE_NS) * MINUTE_NS
+
+    def _corrected_this_minute(self, minute_ns: int) -> bool:
+        """Whether a section 6.3 correction flatten already ran in this minute."""
+        if not self._position_is_flat():
+            return False
+        stamp = datetime.fromtimestamp(
+            (int(minute_ns) + MINUTE_NS) / 1_000_000_000, tz=timezone.utc
+        ).isoformat()
+        for executor in (self.position.spot, self.position.perp):
+            reasons = executor.store.state.flatten_reasons
+            if (
+                reasons
+                and reasons[-1].get("reason") == FlattenCause.HEDGE_CORRECTION.value
+                and reasons[-1].get("at") == stamp
+            ):
+                return True
+        return False
+
+    def _position_is_flat(self) -> bool:
+        """Whether both legs are flat, read from the stores (R1-i)."""
+        return (
+            self.position.leg(SPOT_LEG).quantity == ZERO
+            and self.position.leg(PERP_LEG).quantity == ZERO
+        )
 
     def _portfolio(self, state: MarketState) -> dict[str, Any]:
         """The read-only view a rule is given. Never the position object itself."""

@@ -39,6 +39,7 @@ from chimera.futures.venue import (
     StaticConstraintSource,
     default_constraints_table,
 )
+from chimera.persistence import raise_persistence_failure
 from chimera.risk import RiskEngine
 
 #: Binance spot BTCUSDT. Declared rather than fetched, for the reason
@@ -162,8 +163,9 @@ def build_hedged_position(
     wrong number: ``RecordedQuoteFillModel.plan`` measures the fill against the
     leg's own ``reference_price``, so once the real basis exceeds
     ``max_reference_deviation_bps`` the spot leg is refused *after* the perpetual
-    has filled, leaving a naked SHORT that ``liquidation_touched`` -- which reads
-    ``min(spot, perp)`` -- does not check.
+    has filled, leaving a naked SHORT that ``liquidation_touched`` -- which then
+    read ``min(spot, perp)`` -- did not check (R1-i checks the perpetual leg's
+    own quantity).
 
     ``fill_model`` is therefore a **prototype**: its settings are cloned onto one
     model per leg, so a caller that wants different slippage still gets it on
@@ -182,9 +184,18 @@ def build_hedged_position(
     perp_model = replace(prototype, quote=None, now_ns=0)
 
     root = Path(state_dir) if state_dir is not None else None
-    spot_store = FuturesStore.open(root / "spot_store.json" if root else None)
-    perp_store = FuturesStore.open(root / "perp_store.json" if root else None)
-    ledger = CarryLedger.open(root / "carry_ledger.json" if root else None, capital=capital)
+    # R1-i: a store or ledger the demo runner cannot write down ends the process
+    # (`chimera.persistence`); no `except Exception` on the demo path absorbs it.
+    fail = raise_persistence_failure
+    spot_store = FuturesStore.open(
+        root / "spot_store.json" if root else None, on_persist_failure=fail
+    )
+    perp_store = FuturesStore.open(
+        root / "perp_store.json" if root else None, on_persist_failure=fail
+    )
+    ledger = CarryLedger.open(
+        root / "carry_ledger.json" if root else None, capital=capital, on_persist_failure=fail
+    )
 
     execution = FuturesExecutionConfig(dry_run=True, leverage=Decimal("1"))
 

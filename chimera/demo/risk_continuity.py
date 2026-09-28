@@ -76,7 +76,7 @@ vouch for.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -162,7 +162,15 @@ def risk_state_hash(snapshot: Mapping[str, Any]) -> str:
 #: reports; the record's ``halt_transition_explains_mismatch`` is true exactly
 #: for the halting ones.
 CRASH_TRANSITIONS: frozenset[str] = frozenset(
-    {"halt", "kill_switch_halt", "kill_switch_mirror", "equity", "equity_halt"}
+    {
+        "halt",
+        "kill_switch_halt",
+        "kill_switch_mirror",
+        "equity",
+        "equity_halt",
+        "exposure",
+        "funding",
+    }
 )
 _HALTING_TRANSITIONS: frozenset[str] = frozenset({"halt", "kill_switch_halt", "equity_halt"})
 
@@ -173,6 +181,8 @@ def _crash_transition(
     *,
     limits: RiskLimits | None = None,
     ledger_equity: Decimal | None = None,
+    capital: Decimal | None = None,
+    exposures: Mapping[str, float | None] | None = None,
 ) -> str:
     """Which ONE production persist-then-append window provably produced this file.
 
@@ -233,22 +243,29 @@ def _crash_transition(
         restates the hash without moving Aegis's equity, and the tick's
         ``update_equity`` follows it.
 
-    **What this does not prove, and why each stays disputed.** A ``DECISION``
-    that rolled the UTC day overwrote ``day_start_equity`` and ``daily_pnl``,
-    and one that set a new peak overwrote ``peak_equity``. The values they held
-    before are not restated by the record the crash preceded: the prior day's
-    baseline is the equity of whichever write first touched that day, and the
-    prior peak is the running maximum over every equity Aegis was ever given.
-    Neither is necessarily unavailable -- the configured capital or a bounded
-    scan of the log's earlier records may reconstruct them -- but that is
-    historical reconstruction, replay-shaped logic over the campaign's equity
-    history, well beyond the one-step local inverse every proof here is. It is
-    canonical **R1-i**'s crash/restart work, so those windows stay
-    ``RISK_STATE_MISMATCH``. So do the windows closed by a ``STATE_HASH``
-    record rather than a ``HALT`` or ``DECISION`` (``note_funding_settlement``'s
-    streak before its ``FUNDING`` record), those that move the feed mark
-    (``note_feed``), and any combination of two windows. Deliberately: an
-    unproved window is sealed, never waved through.
+    **R1-i: the day roll, the new peak and the first minute.** R1-c left three
+    equity windows sealed and named them canonical R1-i's: a ``DECISION`` that
+    rolled the UTC day (overwriting ``day_start_equity`` and ``daily_pnl``),
+    one that set a new peak (overwriting ``peak_equity``), and -- found by
+    R1-i's crash harness -- the campaign's first decided minute, before any
+    ``DECISION`` has handed Aegis an equity. :func:`_equity_transition` now
+    tries, as candidate priors, the values those fields can only have held:
+    the seed (the configured capital) for the first minute, the running
+    maximum of the equities the log records for the peak, and each recorded
+    equity (and the seed) for the day baseline. The acceptance test is
+    unchanged -- the candidate's FULL hash must be the log's and the real
+    ``update_equity`` must carry it to the file -- so widening the candidates
+    widens nothing a wrong candidate could prove.
+
+    **R1-i: the funding streak.** ``funding``: :meth:`RiskEngine.note_funding_settlement`
+    persisted before the settlement's ``FUNDING`` record -- found by R1-i's
+    crash harness on an adverse settlement (a rebate on a streak already at
+    zero moves nothing). :func:`funding_note_prior` builds the one prior each
+    direction allows and accepts it only on the log's full hash.
+
+    **What this still does not prove, and why each stays disputed.** Windows
+    that move the feed mark (``note_feed``), and any combination of two
+    windows. Deliberately: an unproved window is sealed, never waved through.
     """
     if history.statement is not LogRiskStatement.STATE_HASH:
         return ""
@@ -264,7 +281,13 @@ def _crash_transition(
     for name, prior in candidates:
         if risk_state_hash({**found, **prior}) == history.state_hash:
             return name
-    return _equity_transition(found, history, limits=limits, ledger_equity=ledger_equity)
+    if exposure_prior(found, history, exposures) is not None:
+        return "exposure"
+    if funding_note_prior(found, history.state_hash) is not None:
+        return "funding"
+    return _equity_transition(
+        found, history, limits=limits, ledger_equity=ledger_equity, capital=capital
+    )
 
 
 def _equity_transition(
@@ -273,6 +296,7 @@ def _equity_transition(
     *,
     limits: RiskLimits | None,
     ledger_equity: Decimal | None,
+    capital: Decimal | None = None,
 ) -> str:
     """The ``equity`` / ``equity_halt`` half of :func:`_crash_transition`.
 
@@ -281,8 +305,27 @@ def _equity_transition(
     which defers every ``RISK_STATE_MISMATCH`` to the runner anyway -- gets no
     equity proof, never a weaker one.
     """
-    given = history.equity_given
-    if limits is None or ledger_equity is None or given is None:
+    # R1-i widens the candidate PRIORS this proof may try, and nothing else: a
+    # candidate is still accepted only when its FULL hash is the log's and the
+    # real `update_equity` replayed on it reproduces the file. So a wrong
+    # candidate costs a hash and proves nothing -- it can never prove a file
+    # the log does not explain. The three widenings are the windows R1-c named
+    # as "canonical R1-i's crash/restart work":
+    #
+    # * the prior EQUITY on a campaign's first decided minute, when no DECISION
+    #   has handed Aegis anything yet: the seed, which is the configured capital;
+    # * the prior PEAK, when the window's own update set a new one: the running
+    #   maximum of every equity the log records Aegis being handed, with and
+    #   without the seed;
+    # * the prior DAY BASELINE, when the window's own update rolled the UTC day
+    #   (the file's `day_start_equity` is its own equity and its `daily_pnl`
+    #   zero): each equity the log records, and the seed.
+    if limits is None or ledger_equity is None:
+        return ""
+    givens = [history.equity_given] if history.equity_given is not None else []
+    if not givens and capital is not None:
+        givens = [float(capital)]
+    if not givens:
         return ""
     if float(ledger_equity) != found["equity"]:
         return ""
@@ -290,27 +333,161 @@ def _equity_transition(
         day = datetime.fromisoformat(str(found["day"])).replace(tzinfo=timezone.utc)
     except ValueError:
         return ""
-    before = {**found, "equity": given, "daily_pnl": given - found["day_start_equity"]}
-    options = [("equity", before)]
-    if found["halted"]:
-        options.append(("equity_halt", {**before, "halted": False, "halt_reason": ""}))
-    target = risk_state_hash(found)
-    for name, prior in options:
-        if risk_state_hash(prior) != history.state_hash:
-            continue
-        # A detached engine -- no state file, no switch -- so the replay writes
-        # nothing anywhere. Same day as the found file, so no day roll. Its day
-        # comes from `now=` and it persists nothing, so it never needs a clock;
-        # the raising one makes that a fact rather than the `time.time` default
-        # quietly standing by on the demo path (R1-e).
-        replay = RiskEngine(
-            limits, clock=no_authoritative_time, check_kill_switch_at_construction=False
+    seed = [float(capital)] if capital is not None else []
+    handed = list(history.equities_given)
+    peaks = _unique([found["peak_equity"]])
+    if found["peak_equity"] == found["equity"]:
+        peaks += _unique([max(handed + seed)] if handed or seed else []) + _unique(
+            [max(handed)] if handed else []
         )
-        replay.state = RiskState.from_dict(prior)
-        replay.update_equity(float(found["equity"]), now=day)
-        if risk_state_hash(replay.snapshot()) == target:
-            return name
+    rolled = found["daily_pnl"] == 0 and found["day_start_equity"] == found["equity"]
+    baselines = [found["day_start_equity"]]
+    if rolled:
+        baselines = _unique([found["day_start_equity"]] + handed + seed)
+    previous_day = (day.date() - timedelta(days=1)).isoformat()
+    target = risk_state_hash(found)
+    for given in givens:
+        for peak in _unique(peaks):
+            for baseline in baselines:
+                roll = rolled and baseline != found["day_start_equity"]
+                before = {
+                    **found,
+                    "equity": given,
+                    "peak_equity": peak,
+                    "day_start_equity": baseline,
+                    "daily_pnl": given - baseline,
+                    **({"day": previous_day} if roll else {}),
+                }
+                options = [("equity", before)]
+                if found["halted"]:
+                    options.append(
+                        ("equity_halt", {**before, "halted": False, "halt_reason": ""})
+                    )
+                for name, prior in options:
+                    if risk_state_hash(prior) != history.state_hash:
+                        continue
+                    # A detached engine -- no state file, no switch -- so the
+                    # replay writes nothing anywhere. Its day comes from `now=`
+                    # and it persists nothing, so it never needs a clock; the
+                    # raising one makes that a fact rather than the `time.time`
+                    # default quietly standing by on the demo path (R1-e).
+                    replay = RiskEngine(
+                        limits,
+                        clock=no_authoritative_time,
+                        check_kill_switch_at_construction=False,
+                    )
+                    replay.state = RiskState.from_dict(prior)
+                    replay.update_equity(float(found["equity"]), now=day)
+                    if risk_state_hash(replay.snapshot()) == target:
+                        return name
     return ""
+
+
+def exposure_prior(
+    found: Mapping[str, Any],
+    history: "LogRiskHistory",
+    exposures: Mapping[str, float | None] | None,
+) -> dict[str, Any] | None:
+    """R1-i: the ``exposure`` window, proved -- or ``None``.
+
+    A fill reaches Aegis (`FuturesExecutor._report_exposure` persists
+    ``open_positions``) BEFORE the store that records it is saved. A process
+    killed between the two leaves ``risk.json`` describing a fill the store --
+    the dry-run venue -- never booked, and nothing else moved, so section 9.3's
+    triage sees nothing. Found by R1-i's crash harness on a liquidation
+    flatten; every fill after the campaign's first restated hash has it.
+
+    The prior is not guessed: for ONE symbol, ``open_positions`` is set back to
+    what the store still implies (:func:`chimera.demo.inspection.store_exposure`)
+    and the result must hash to the log's last restated state exactly. When it
+    does, Aegis is ahead of every state file by exactly that report (and, on a
+    liquidation flatten, the touch's own halt), and
+    :meth:`chimera.demo.runner.DemoRunner._resync_exposure` then returns the
+    exposure to the store's.
+    """
+    if not exposures:
+        return None
+    held = dict(found.get("open_positions") or {})
+    # With the halt reverted too: section 6.7's touch halts Aegis after its
+    # record and before its flatten reports, so a kill inside that flatten
+    # leaves exactly these two steps ahead of the record. Each candidate still
+    # has to reproduce the log's full hash.
+    halts: list[dict[str, Any]] = [{}]
+    if found.get("halted"):
+        halts.append({"halted": False, "halt_reason": ""})
+    for symbol, implied in exposures.items():
+        prior_positions = dict(held)
+        if implied is None:
+            prior_positions.pop(symbol, None)
+        else:
+            prior_positions[symbol] = implied
+        if prior_positions == held:
+            continue
+        for halt in halts:
+            prior = {**found, "open_positions": prior_positions, **halt}
+            if risk_state_hash(prior) == history.state_hash:
+                return {"symbol": symbol, "exposure": implied}
+    return None
+
+
+#: How far back a rebate's reset is searched for the streak it cleared. A
+#: search bound, not a policy: a longer streak than this is not proved, and a
+#: file the proof does not reach stays disputed.
+_FUNDING_STREAK_SEARCH = 256
+
+
+def funding_note_prior(
+    found: Mapping[str, Any], state_hash: str, *, cost_sign: int | None = None
+) -> dict[str, Any] | None:
+    """R1-i: the ``funding`` window, proved -- or ``None``.
+
+    :meth:`chimera.risk.RiskEngine.note_funding_settlement` moves exactly two
+    hashed fields, ``funding_adverse_streak`` and ``funding_halt``, and
+    persists before the ledger is saved and the ``FUNDING`` record restates the
+    hash. The priors it can have come from:
+
+    * a PAID settlement (``cost_sign`` +1): the streak one lower, and the halt
+      as found or -- when this settlement raised it -- ``False``;
+    * a RECEIVED settlement (``cost_sign`` -1): a found streak of zero with no
+      halt, from any streak and either halt.
+
+    ``cost_sign`` restricts the proof to one direction when the caller knows
+    the settlement; ``None`` tries both. A candidate is accepted only when its
+    FULL hash is ``state_hash``. (``resolve --ledger funding_booking_torn`` no
+    longer uses this proof: a hash the log restated can precede a RESUME or an
+    OPERATOR that restates nothing, so it judges from the carry ledger's record
+    of the guard before the settlement instead.)
+    """
+    streak = found.get("funding_adverse_streak")
+    if not isinstance(streak, int) or isinstance(streak, bool) or not state_hash:
+        return None
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    if cost_sign in (None, 1) and streak >= 1:
+        for halt in _unique([bool(found.get("funding_halt")), False]):
+            candidates.append(
+                ("paid", {"funding_adverse_streak": streak - 1, "funding_halt": halt})
+            )
+    if cost_sign in (None, -1) and streak == 0 and not found.get("funding_halt"):
+        for prior in range(_FUNDING_STREAK_SEARCH + 1):
+            for halt in (False, True):
+                if prior == 0 and not halt:
+                    continue  # moves nothing: not a window
+                candidates.append(
+                    ("received", {"funding_adverse_streak": prior, "funding_halt": halt})
+                )
+    for cost, fields in candidates:
+        if risk_state_hash({**found, **fields}) == state_hash:
+            return {"cost": cost, **fields}
+    return None
+
+
+def _unique(values: list[Any]) -> list[Any]:
+    """``values`` in order, each once."""
+    seen: list[Any] = []
+    for value in values:
+        if value not in seen:
+            seen.append(value)
+    return seen
 
 
 class LogRiskStatement(str, Enum):
@@ -487,6 +664,10 @@ class LogRiskHistory:
     #: ``update_equity``. Used only as the candidate prior equity of
     #: :func:`_crash_transition`, whose hash check decides whether it was.
     equity_given: float | None = None
+    #: Every distinct equity the log records Aegis being handed, oldest first
+    #: (R1-i): the candidate prior PEAK and prior DAY BASELINE of the same
+    #: proof, again decided by its hash check and never assumed.
+    equities_given: tuple[float, ...] = ()
 
     @property
     def has_history(self) -> bool:
@@ -733,6 +914,7 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
     recorded: tuple[int, tuple[str, str, str]] | None = None
 
     equity_given: float | None = None
+    equities_given: list[float] = []
 
     #: Whether the RUN the current record belongs to had a SEALED engine, as
     #: that run's own ``STARTUP`` record says (:data:`RISK_CONTINUITY_SEALED_FIELD`).
@@ -796,6 +978,18 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
                         equity_given = float(effect["equity"])
                     except (KeyError, TypeError, ValueError):
                         pass
+                    else:
+                        if equity_given not in equities_given:
+                            equities_given.append(equity_given)
+                operator = record.get("operator")
+                if isinstance(operator, Mapping) and operator.get("adopted_equity"):
+                    try:
+                        adopted = float(operator["adopted_equity"])
+                    except (TypeError, ValueError):
+                        pass
+                    else:
+                        if adopted not in equities_given:
+                            equities_given.append(adopted)
             identity = _recorded_dispute(record)
             if identity is not None and seq is not None:
                 recorded = (seq, identity)
@@ -811,6 +1005,7 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
         last_restated_seq=last_restated_seq,
         recorded_dispute=recorded,
         equity_given=equity_given,
+        equities_given=tuple(equities_given),
     )
 
 
@@ -826,6 +1021,8 @@ def assess_risk_continuity(
     history: LogRiskHistory | None = None,
     limits: RiskLimits | None = None,
     ledger_equity: Decimal | None = None,
+    capital: Decimal | None = None,
+    exposures: Mapping[str, float | None] | None = None,
 ) -> RiskContinuity:
     """R1-c's verdict: is this ``risk.json`` the continuation of this log?
 
@@ -934,7 +1131,12 @@ def assess_risk_continuity(
                     "Neither side is rewritten to make them agree"
                 )
                 transition = _crash_transition(
-                    snapshot, history, limits=limits, ledger_equity=ledger_equity
+                    snapshot,
+                    history,
+                    limits=limits,
+                    ledger_equity=ledger_equity,
+                    capital=capital,
+                    exposures=exposures,
                 )
                 if transition:
                     detail += (
@@ -1002,6 +1204,7 @@ __all__ = [
     "RiskContinuity",
     "RiskContinuityFault",
     "assess_risk_continuity",
+    "funding_note_prior",
     "read_log_risk_history",
     "risk_state_hash",
 ]
