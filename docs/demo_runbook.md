@@ -109,7 +109,7 @@ What R1-d does not change, and must not be read into it:
 * a halted service exits 3 rather than staying up in `HALT`, so `RunnerHalted`
   is visible only for a moment and `RunnerDown` fires two minutes later. Leaving
   `HALT` is still section 7's procedure; the halt and dispute lifecycle is
-  R1-i's.
+  R1-i's (section 0.6).
 * the wait runs on the host's wall clock -- since R1-e, the injected
   OPERATIONAL clock described just below. Nothing it reads reaches a record.
 * `flatten`, `resume` and `resolve` refuse, exit 2, while the service holds the
@@ -472,20 +472,11 @@ and `dirty: False`, so a campaign on a genuinely dirty tree would pass
 the argument **and** subscript access, and it belongs to the change that owns
 `tools/demo_run.py`.
 
-A fifth, about the disputes an operator cannot clear — which is all of them.
-`resolve` is scoped to a leg's `RECONCILIATION` dispute and, as section 6 records,
-cannot run from the CLI at all in this build. `stale_leg`,
-`ledger_store_mismatch`, `funding_booking_torn`, `asymmetric_close`,
-`ledger_unreadable`, `ledger_capital_mismatch`, `{leg}_ledger_regressed` and
-`{leg}_store_unreadable` have no command that ends them either. **There is no supported way to clear
-them, and editing the state files by hand is not one this runbook offers** — see
-section 6 for why a safety flag cleared without its record is worse than a
-campaign left halted. That is narrower than it was: `resolve`
-used to clear whatever the carry ledger was disputing, which set a flag and fixed
-nothing — a torn funding booking stayed unbooked and the cash stayed short while
-the campaign resumed on a ledger it had been told to distrust. Refusing is the
-safer half of the fix; the other half, a `resolve` that actually re-books, is not
-in this change.
+A fifth, about the disputes an operator cannot clear. **Superseded by R1-i:**
+every dispute kind now has exactly one `resolve` selector, which re-books what
+the files determine and refuses, naming the missing fact, what they do not —
+section 0.6's clearing matrix. Editing the state files by hand is still not a
+procedure this runbook offers.
 
 A ninth, and read this one before comparing a report against a hand
 calculation. **Slippage is measured, not spent.** The campaign's equity is
@@ -528,14 +519,10 @@ it, and no CLI reaches it). Which history is the real one is an operator
 judgement and no command records it, so the campaign stops rather than crediting
 itself the difference — and it stays stopped.
 
-A sixth, for anyone reading a `PARTIAL`. `HedgedPosition.correct()` implements
-section 6.3's correction policy — a bounded retry, then a
-`HEDGE_CORRECTION` flatten — and the runner never calls it. A position left with
-one leg filled is retried implicitly by the next minute's `plan()` at a re-sized
-quantity, with no correction timeout and no cap on how long it stays one-legged;
-`liquidation_touched` reads `min(spot, perp)`, which is zero for such a position,
-so it is not liquidation-checked either. Flatten it by hand (section 7) rather
-than waiting for a timeout that does not exist.
+A sixth, for anyone reading a `PARTIAL`. **Superseded by R1-i:**
+`HedgedPosition.correct()` is wired, with the bounded, restart-proof window of
+section 0.6, and a one-legged position is liquidation-checked on its perpetual
+leg.
 
 A seventh, about one halt reason you will not see. `CarryLedger.check_identity`
 compares `Q x (entry_basis - current_basis)` against `spot_pnl + perp_pnl`, and
@@ -549,6 +536,80 @@ the rule is not dead code -- but for a ledger this build wrote,
 `identity_violation` is unreachable. It cannot detect "a leg that is wrong by a
 fill", which is what section 6.5 introduces it for, so its absence is not
 evidence that the legs agree.
+
+**0.6 Halts, disputes and persistence failures (R1-i).** R1-i owns the operator
+lifecycle. Where an older paragraph of this runbook says a command "always
+refuses", "cannot run from the CLI" or "has no clearing path", **this section
+supersedes it**. The older paragraphs are kept as the record of the build they
+describe.
+
+*Every operator command goes through `start()`.* `flatten`, `resume` and
+`resolve` build the runner and call `start()` first — `STARTUP`, `SELF_CHECK`,
+`RECOVER`, the same restart checks as `run` — and then act. None of them passes
+`allow_dirty`, so a `CAMPAIGN` flatten no longer persists a spurious
+`allow_dirty` halt; a genuinely dirty tree still halts on `source_identity`, and
+`flatten` still reduces exposure under that halt. The runner clock is seeded from
+the **verified** log tail as well as the cursor, so the records a command writes
+never move the clock backwards. A tail that does not verify is not used as a
+seed: the start refuses `log_forged` and nothing is changed.
+
+*Two records per command.* Every command appends an `OPERATOR` record with
+`phase: "requested"` before it changes anything. It then appends its completion,
+which cites `request_seq`: an `OPERATOR` with `phase: "completed"`, or `RESUME`
+for `resume`. A process that dies in between leaves a request with no completion.
+The next start records that as `RECOVERY` `OPERATOR_INCOMPLETE`; run the same
+command again.
+
+*`resume` refuses while anything is disputed*, and names the clearing path.
+`resume` goes: requested record, then Aegis clears the halt, then the `RESUME`
+record. It also refuses while the kill switch is engaged, re-read at that moment.
+
+*The clearing matrix.* Each dispute kind has exactly one `resolve` selector.
+Each needs `--note` (a note that is empty or only whitespace is refused), and
+`demo_run status` lists every standing dispute with its selector:
+
+| dispute | selector | what the resolve does |
+|---|---|---|
+| emergency record tripped or unreadable | `resolve --emergency` | re-arms the record after the operator has read it; the trace is already copied into the log |
+| a leg's reconciliation mismatch (store and Aegis) | `resolve --symbol SYMBOL` | clears the store's and Aegis's flag and reconstructs from the stores |
+| `ledger_store_mismatch` | `resolve --ledger ledger_store_mismatch` | **re-books** the ledger's levels from the stores; the opening instant comes from the crashed minute, and a one-legged position gets the correction it would have started |
+| `asymmetric_close` | `resolve --ledger asymmetric_close` | **re-books** as above. If one leg still holds, `flatten` it instead |
+| `funding_booking_torn` | `resolve --ledger funding_booking_torn` | **re-books** the settlement the executor booked and the ledger did not, from the recorder's own settlement row. Aegis counts it only if the log proves it did not already |
+| `stale_leg` | `resolve --ledger stale_leg` | **re-marks** both legs at the next undecided minute |
+| `ledger_unreadable`, `ledger_capital_mismatch`, `{leg}_ledger_regressed`, `{leg}_store_unreadable`, `identity_violation`, `ledger_behind_log` | `resolve --ledger KIND` | **refuses**, naming the fact no file holds. Restore the file from a good copy (section 6) |
+| Aegis equity dispute (R1-b) | `resolve --equity` | adopts the ledger's equity: request record first |
+| R1-c risk continuity (`risk.json` absent, unreadable, pre-schema or unproved) | `resolve --risk-state` | **always refuses**. The prior risk state is recorded only as a hash. Restore `risk.json` |
+
+A re-book cannot restore the lost cycle's **slippage**, because no executor
+accumulates it. The completion record says so rather than inventing a number.
+
+*Persistence failure is a process failure (exit 4).* Any failed durable write
+exits **4**, not the halt exit 3. That covers a failed write of `risk.json`, a
+store, the carry ledger, the decision log or `runner_state.json`, and `ENOSPC`
+as much as `EIO` or `EROFS`. Before exiting, the process writes the failure into
+`state/demo/emergency_record.bin`: a fixed 4096-byte file created when the
+runner first starts, and rewritten in place so that a full disk can still take
+it. The first failure is never overwritten; the latest one sits beside it. If
+even that write fails, stderr says so and the exit is still 4. The next start
+copies the trace into the log once, as `RECOVERY` `PERSISTENCE_FAILURE`, and
+halts on it before judging any state file. Free the space (section 8), then
+`resolve --emergency --note "..."`, then deal with whatever else the start
+reports. The systemd unit does not restart on 4.
+
+*Correction and liquidation.* A one-legged position is now corrected (section
+6.3): each minute the missing leg is retried towards the persisted target, and
+after `max_correction_minutes` (3) without a hedge the position is flattened
+with `HEDGE_CORRECTION`. The window's start is in `carry_ledger.json`, so a
+restart does not renew it. A ledger written before R1-i has no start and is
+treated as expired. Liquidation is checked on the perpetual leg's own quantity,
+so a perpetual-only position is checked. A spot-only one has nothing to
+liquidate. A touch's flatten hands Aegis the post-flatten equity, and a touch
+interrupted by a crash is completed by the next start.
+
+*The crash harness.* `tests/test_r1i_crash_harness.py` runs in CI on Linux and
+Windows. It kills each transition at every persistence step and requires
+recovery to the uninterrupted run's economics, and it repeats the sweep with
+`ENOSPC` at every step.
 
 ## 1. Preconditions
 
@@ -761,19 +822,15 @@ hash in between. Each sealed restart's own `STARTUP` still says it was sealed.
   the minute). `recovery.risk_continuity.halt_transition_explains_mismatch` is
   `true` exactly when the proved window persisted a halt.
 
-  **Still sealed, and canonical R1-i's:** the same `update_equity` window when
-  it **rolled the UTC day** (every UTC midnight) or **set a new peak**. The
-  values those overwrote are not unavailable: the prior `day_start_equity` is the
-  equity of whichever write first touched the previous UTC day, and the prior
-  `peak_equity` the running maximum of every equity Aegis was handed, and both
-  may be reconstructable from the configured capital or a bounded scan of the
-  log's earlier records. But neither is restated by the record the crash
-  preceded, so proving either window takes historical reconstruction —
-  replay-shaped logic over the campaign's equity history — rather than the
-  narrow one-step local inverse the five proved windows use, and that is R1-i's
-  work. So is a crash between `note_funding_settlement` and its `FUNDING`
-  record (unless section 9.3's triage finds that crash through the ledger), one
-  that moved the feed mark, and any combination of two windows. A sealed crash
+  **Proved since R1-i:** the same `update_equity` window when it **rolled the
+  UTC day** or **set a new peak**, and on the campaign's **first** decided
+  minute. The candidate priors are the configured capital and the equities the
+  log records, and the acceptance test is unchanged: full hash, then forward
+  replay. Also proved: `exposure`, a fill reported to Aegis before its store was
+  saved, and `funding`, `note_funding_settlement` before its `FUNDING` record.
+  **Still sealed:** a crash
+  that moved the feed mark, and any other combination of two windows (only a
+  touch's halt with its flatten's exposure is proved together). A sealed crash
   window looks exactly like a swapped file; record it as an incident and stop.
 * A log that does not verify. A forged log halts the campaign on `log_forged:`,
   which is the graver finding and the one that owns it; an edited log may not
@@ -838,8 +895,10 @@ thing that clears a `RISK_STATE_ABSENT` or `RISK_STATE_UNREADABLE` finding
 without a new command, and a backup older than that will be refused again, for
 the same reason it is refused for `carry_ledger.json` in section 6. A clearing
 path with a mandatory note — one per dispute kind, reachable from the CLI — is
-**canonical R1-i's** item and is not in this build. If you meet one of these
-findings, record it as an incident (section 15) and stop.
+R1-i's (section 0.6), and for these findings that path is `resolve --risk-state`,
+which **always refuses**: the prior state is recorded only as a hash, so a note
+cannot supply it. Record the finding as an incident (section 15) and restore the
+file.
 
 ### Two halt reasons you can now meet at startup
 
@@ -920,10 +979,9 @@ of this section said it was, and that was wrong. Against the current runner:
   with the command above;
 * **funding** marks and saves, then either the same tick reaches that one writer
   or the runner halts;
-* **a liquidation touch** marks and saves and then halts. `halt` keeps the *first*
-  reason, so the restart reports the touch rather than the equity; the
-  disagreement is underneath it and surfaces if the touch is ever resumed, where
-  the command above settles it;
+* **a liquidation touch** used to mark and save and then halt, without handing
+  Aegis the post-flatten equity. Since R1-i the touch's flatten calls
+  `update_equity` before it halts, so the two agree;
 * **`flatten` used to be the fourth**, and it needed no crash at all: it marked
   the ledger, persisted it, and told Aegis nothing, so every ordinary operator
   flatten left the two files disagreeing and halted the campaign on its next
@@ -995,31 +1053,11 @@ decoration: it is written into an `OPERATOR` record and it appears in the daily
 report under `reconciliation.operator_resolutions`. A note that does not say
 what was checked is a resolution nobody can audit.
 
-> **In this build that command always refuses, and no operator path clears a
-> reconciliation dispute.** `tools/demo_run.py` constructs the runner and calls
-> `resolve` without `start()`, so the runner clock has observed nothing;
-> `resolve` checks that it can write the `OPERATOR` record before it changes
-> anything, and refuses with *"resolve cannot be recorded"*. That refusal is the
-> correct half — the alternative, which this build shipped until it was caught,
-> was clearing the store dispute and Aegis's copy and *then* dying, leaving the
-> safety state changed with nothing in the log to say who changed it. But it
-> leaves the command unusable.
->
-> **There is no supported way to clear a reconciliation dispute in this build,
-> and this is an open S3 blocker.** Editing `spot_store.json` /
-> `perp_store.json` and `risk.json` by hand would clear the flags, and it is
-> **not** a procedure this runbook offers: section 8.3 requires that a change to
-> the safety state carry the record naming who changed it and why, and a hand
-> edit changes that state with nothing in the decision log at all — strictly
-> worse than the refusal, and worse than leaving the campaign halted. A halted
-> campaign with a durable, explained dispute is a recoverable situation; a
-> campaign whose safety flags were edited by hand is not evidence any more.
->
-> The fix is to seed the clock from the **log's tail** rather than from the state
-> file, which is a change with its own crash matrix: an earlier attempt seeded it
-> from the state file instead and made `start()` raise on the crash section 9.3
-> exists to recover from. It is recorded here rather than improvised, and it is
-> tracked with the `resume` blocker in section 7 as one piece of work.
+Since R1-i the command goes through `start()` and succeeds: it appends its
+`requested` record, clears the store's and Aegis's flag, reconstructs, and
+appends its `completed` record. `resume` then returns the campaign to `READY`
+(section 7). The carry ledger's own disputes use `resolve --ledger KIND`
+(section 0.6).
 
 ### If `carry_ledger.json` itself cannot be read
 
@@ -1068,27 +1106,24 @@ neither a ledger nor a `ledger_effect` — a file that cannot speak for the
 campaign must not be allowed to start speaking for it through the emergency
 path. `resume` refuses too, for the same reason: an operator note cannot make the
 file hold what it does not hold, and clearing the halt without repairing the
-ledger used to end in a traceback rather than a refusal. (On this build you will
-not meet that refusal from the CLI, because `resume` is reached without
-`start()` and stops earlier on "the runner is not halted" — section 7. The check
-is there for when the CLI adopts the persisted halt.)
+ledger used to end in a traceback rather than a refusal. Since R1-i the CLI
+reaches that refusal, because `resume` goes through `start()` (section 0.6).
 
 **The order of the repair decides whether the campaign survives, and this is the
 one place it is written down.** Restore the ledger **before** running `flatten`:
 
 * `restore` → `flatten` saves the campaign's accounting: the ledger survives, and
   the flatten is booked and carries its `ledger_effect`. It does NOT return the
-  campaign to READY — the halt is still in `risk.json` and no CLI command clears
-  it, which is section 7's blocker, not this procedure's.
-  (`flatten` calls `start()` itself, which
-  is what makes this the CLI-followable form; there is no `start` subcommand, and
-  `resume` cannot be reached from the CLI on this build — section 7.)
+  campaign to READY by itself — the halt is still in `risk.json`; since R1-i
+  `resume` clears it (section 7).
 * `flatten` → `restore` **ends the campaign**. A flatten while the ledger is
   muted moves both legs to flat and writes neither a ledger nor a
   `ledger_effect` — correctly, that is the whole point — so a copy restored
   afterwards still holds the pre-flatten quantity while the stores hold zero.
-  `reconstruct` then disputes `ledger_store_mismatch` — one of the disputes
-  section 0 lists (under "a fifth") as clearable by no operator command — and the
+  `reconstruct` then disputes `ledger_store_mismatch` — which R1-i gives a
+  clearing path, `resolve --ledger ledger_store_mismatch`, re-booking the levels
+  from the stores; this ordering has **not** been re-derived under that path, so
+  treat it as ending the campaign until it has — and the
   flatten's own exit **slippage** is then recorded nowhere at all. Its fees are
   not lost — the executor stores accumulate `trading_fees`, and
   `_reconcile_ledger` re-derives fees from them. No executor accumulates
@@ -1153,14 +1188,11 @@ R1-a repaired it, and the conclusion survives for a different reason — no
 CLI path on that profile reaches `reconstruct` either. Re-check it again when
 that is repaired.
 
-One more halt reason section 6 will show you that nobody asked for: on a
-`CAMPAIGN` profile the CLI's `flatten` calls `start(allow_dirty=True)` on your
-behalf, so every CAMPAIGN flatten appends a HALT record reading `allow_dirty was
-requested for a CAMPAIGN profile`. You did not request it; the CLI did.
-
-This is a reporting defect in the operator lifecycle, recorded here because
-following section 6 is exactly when you meet it, and repairing it belongs to the
-change that owns the lifecycle.
+One more halt reason section 6 used to show you that nobody asked for: the CLI's
+`flatten` called `start(allow_dirty=True)` on a `CAMPAIGN` profile, so every
+CAMPAIGN flatten appended a HALT reading `allow_dirty was requested for a
+CAMPAIGN profile`. **Repaired by R1-i:** `flatten` calls `start()` without it and
+persists no such halt (section 0.6).
 
 ## 7. Kill switch, flatten, resume
 
@@ -1207,49 +1239,13 @@ re-asserts the halt, so the file must be gone before `resume` is attempted.
 `resume` refuses an empty note and refuses to run when the runner is not in
 `HALT`.
 
-> **In this build that second command always refuses, and there is no supported
-> operator path out of a persisted HALT. This is an open S3 blocker.**
->
-> `resume` refuses when the runner is not in `HALT`, and a runner reached
-> through the CLI's **`resume`, `resolve` and `status`** paths never is. Those
-> three construct a `DemoRunner` and act on it without calling `start()`, so the
-> object is in its constructor's `STARTUP` state; the halt is on **disk**, in
-> `risk.json`, and nothing on those paths reads it back into the runner. (`run`
-> and `flatten` do call `start()` and do reach `HALT` — the gap is not that the
-> CLI can never be halted, it is that the commands which exist to LEAVE a halt
-> are the ones that never look.) Observed end to end: after a kill-switch halt
-> and a clean shutdown, `risk.json` holds `halted: true` with `halt_reason:
-> kill_switch`, and a fresh process reports `STARTUP` and answers *"the runner
-> is not halted; there is nothing to resume from"*. Removing the kill-switch
-> file first does not change it — the refusal is about the runner's own state,
-> not the switch.
->
-> **The repair is smaller than it looks, and the direction matters.** Calling
-> `start()` first is not a second obstacle, it is the missing step: measured on
-> the same fixture, `start()` returns `HALT` and `resume()` then **succeeds** —
-> the runner reaches `READY` and `risk.json`'s `halted` flips back to false. What
-> is missing is that the CLI's resume path adopts the persisted campaign state
-> before it decides whether there is anything to resume from. It cannot simply be
-> `start()` as it stands, because on a `CAMPAIGN` profile section 0.2's
-> `_software()` defect makes `start()` halt on `source_identity` first, and
-> `resume` would then be clearing a halt whose recorded cause is a bug rather
-> than the operator's. Both have to be fixed together.
->
-> The same shape blocks `resolve` (section 6), for a different reason on the
-> same path. Between them, a campaign that halts cannot be returned to `READY`
-> by any documented command.
->
-> **Do not hand-edit `risk.json` to work around this.** It appears to work and
-> it destroys the audit trail: section 8.3 requires that a change to the safety
-> state be accompanied by the record that says who made it and why, and an
-> operator who clears `halted` by hand has changed the safety state with nothing
-> in the decision log at all — strictly worse than the refusal. If a campaign is
-> halted and must be stopped, stop it; the halt, its cause and its evidence are
-> already durable.
->
-> Closing this is a runtime change with its own crash matrix — the durable halt
-> must not be cleared before the `RESUME` record is provably writable — and it
-> is tracked as its own piece of work rather than improvised here.
+Since R1-i that second command works: `resume` builds the runner, calls
+`start()` — which reads the persisted halt back and reaches `HALT` — and then
+appends the `requested` record, clears Aegis and appends `RESUME`. It refuses,
+naming the command that clears it, while any dispute stands (section 0.6), while
+the kill switch is still engaged, or while the ledger may not speak. **Do not
+hand-edit `risk.json`**: a change to the safety state must carry the record that
+says who made it and why.
 
 ### What is on disk after a dispute halt, and what is not
 

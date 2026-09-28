@@ -947,11 +947,11 @@ class RiskEngine:
           be readable in the file it came from.
 
         There is deliberately no way out of this from here. Clearing a dispute
-        is an operator action with exactly one path per dispute kind, which is
-        canonical **R1-i**; R1-c's job is to make the condition visible and fail
-        closed, and inventing a clearing path for it would be taking R1-i's
-        decision. :meth:`adopt_after_unreadable` is not that path and cannot be
-        reached from here: it refuses unless the LOAD was unreadable.
+        is an operator action with exactly one path per dispute kind (R1-i):
+        for this one it is the ``--risk-state`` selector, which refuses,
+        because the prior state is recorded only as a hash.
+        :meth:`adopt_after_unreadable` is not that path and cannot be reached
+        from here: it refuses unless the LOAD was unreadable.
 
         **The seal is also a refusal to change the state in memory**, not only on
         disk (see :meth:`_continuity_guard`). Refusing the write alone was too

@@ -1473,11 +1473,9 @@ class DemoRunner:
         its `HALT` or `DECISION`. It is non-empty only when reverting exactly
         the fields that window writes reproduces the log's own FULL hash, and,
         for the equity window, the real `update_equity` replayed on that prior
-        reproduces the file and the carry ledger holds the same equity. A day
-        roll or a new peak is NOT proved -- the prior baseline and peak are not
-        restated by the record the crash preceded, and reconstructing them from
-        the campaign's history is replay-shaped work, canonical R1-i -- so
-        those windows stay sealed. See
+        reproduces the file and the carry ledger holds the same equity. R1-i
+        adds the day roll, the new peak and the first minute to the equity
+        window, and the `exposure` and `funding` windows; see
         `chimera.demo.risk_continuity._crash_transition`.
         """
         verdict = self._risk_continuity

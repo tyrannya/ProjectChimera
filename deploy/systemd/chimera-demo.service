@@ -89,9 +89,13 @@ TimeoutStopSec=120
 # DemoRunner.resume refuses to be. Leaving HALT stays a human action:
 #   python -m tools.demo_run --config ... --root ... resume --note "..."
 # followed by `systemctl start chimera-demo`.
+# Exit 4 (R1-i) is a persistence failure: a durable write failed, ENOSPC
+# included, and the trace is in emergency_record.bin. Restarting against the
+# same full or read-only disk would loop; the next start halts on the trace
+# anyway, so it is left stopped for the operator (docs/demo_runbook.md 0.6).
 Restart=on-failure
 RestartSec=30s
-RestartPreventExitStatus=3
+RestartPreventExitStatus=3 4
 
 # The runner needs its checkout, its own state directory and read access to the
 # recorder's data. Nothing else, so nothing else is reachable. ProtectSystem=

@@ -163,8 +163,9 @@ def build_hedged_position(
     wrong number: ``RecordedQuoteFillModel.plan`` measures the fill against the
     leg's own ``reference_price``, so once the real basis exceeds
     ``max_reference_deviation_bps`` the spot leg is refused *after* the perpetual
-    has filled, leaving a naked SHORT that ``liquidation_touched`` -- which reads
-    ``min(spot, perp)`` -- does not check.
+    has filled, leaving a naked SHORT that ``liquidation_touched`` -- which then
+    read ``min(spot, perp)`` -- did not check (R1-i checks the perpetual leg's
+    own quantity).
 
     ``fill_model`` is therefore a **prototype**: its settings are cloned onto one
     model per leg, so a caller that wants different slippage still gets it on

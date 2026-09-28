@@ -814,7 +814,9 @@ def test_the_unit_is_a_long_running_service_and_restarts_only_on_failure():
     service = unit["Service"]
     assert service["Type"] == "simple"
     assert service["Restart"] == "on-failure", "exit is no longer the scheduler"
-    assert service["RestartPreventExitStatus"] == "3", "a halt must not auto-restart"
+    prevented = service["RestartPreventExitStatus"].split()
+    assert "3" in prevented, "a halt must not auto-restart"
+    assert "4" in prevented, "a persistence failure must not restart onto the same disk"
     assert service["KillSignal"] == "SIGTERM"
     assert int(service["TimeoutStopSec"]) >= 60
     exec_start = " ".join(service["ExecStart"].split())

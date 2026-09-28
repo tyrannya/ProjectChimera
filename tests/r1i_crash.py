@@ -502,9 +502,9 @@ def consistency(runner: DemoRunner, *, cash_offset: Decimal = Decimal("0")) -> l
       each leg's level (quantity x VWAP), less both legs' fees, plus both legs'
       realised PnL and the perpetual's net funding;
     * the ledger's levels and hedged quantity are the legs';
-    * Aegis's equity is the ledger's (R1-b's comparison) -- except after a
-      liquidation touch, whose flatten R1-b documents as not handing Aegis the
-      post-flatten equity (the dispute surfaces on resume, `resolve --equity`);
+    * Aegis's equity is the ledger's (R1-b's comparison) -- a liquidation
+      touch included, whose flatten hands Aegis the post-flatten equity since
+      R1-i;
     * Aegis's exposure per symbol is what the store implies.
 
     ``cash_offset`` is a fixture's own deliberate edit of the cash, if any.
@@ -532,12 +532,7 @@ def consistency(runner: DemoRunner, *, cash_offset: Decimal = Decimal("0")) -> l
         problems.append("the ledger's perp margin is not the perp leg's level")
     if state.quantity != min(spot.quantity, perp.quantity):
         problems.append("the ledger's hedged quantity is not the legs'")
-    touched = runner.risk.state.halt_reason.startswith("liquidation_touch")
-    if (
-        not touched
-        and state.last_equity is not None
-        and float(state.last_equity) != runner.risk.state.equity
-    ):
+    if state.last_equity is not None and float(state.last_equity) != runner.risk.state.equity:
         problems.append(
             f"Aegis's equity {runner.risk.state.equity!r} is not the ledger's {state.last_equity}"
         )
