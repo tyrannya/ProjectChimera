@@ -551,7 +551,9 @@ class LifecycleLog:
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as exc:
-            raise RecorderHealthError(f"could not record {event} in {self.path}: {exc}") from exc
+            raise RecorderHealthError(
+                f"could not record {event} in {self.path}: {exc}"
+            ) from exc
         return document
 
 

@@ -593,10 +593,12 @@ class StreamClient:
                             (now - since) / 1e9,
                         )
                         return
+                if silence_left is not None:
+                    remaining = min(remaining, silence_left)
                 receive = asyncio.ensure_future(_recv(socket))
                 done, _ = await asyncio.wait(
                     {receive, stop_task},
-                    timeout=remaining if silence_left is None else min(remaining, silence_left),
+                    timeout=remaining,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if receive not in done:

@@ -26,7 +26,11 @@ import pytest
 
 import chimera.recorder.health as health_module
 import chimera.recorder.sink as sink_module
-from chimera.recorder.contract import GEN3_CONTRACT_ID, canonical_material, load_recorder_contract
+from chimera.recorder.contract import (
+    GEN3_CONTRACT_ID,
+    canonical_material,
+    load_recorder_contract,
+)
 from chimera.recorder.events import (
     SPOT_BOOK_TICKER,
     SPOT_KLINE_1M,
@@ -86,8 +90,12 @@ def test_a_publication_replaces_the_whole_file_and_leaves_no_temporary(tmp_path)
     assert temporaries(tmp_path) == []
 
 
-@pytest.mark.parametrize("fault", [OSError("disk full"), RuntimeError("a bug"), KeyboardInterrupt()])
-def test_a_failed_write_keeps_the_old_file_and_removes_its_temporary(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize(
+    "fault", [OSError("disk full"), RuntimeError("a bug"), KeyboardInterrupt()]
+)
+def test_a_failed_write_keeps_the_old_file_and_removes_its_temporary(
+    tmp_path, monkeypatch, fault
+):
     """OSError becomes RecorderSinkError; anything else propagates as itself. Both
     leave the destination byte-identical and no temporary behind."""
     target = tmp_path / "day.bin"
@@ -357,8 +365,14 @@ def test_every_file_the_recorder_publishes_arrives_by_rename(tmp_path, monkeypat
 
     published = {path.resolve() for path in tmp_path.rglob("*") if path.is_file()}
     names = {path.name for path in published}
-    for required in ("manifest.json", f"{DAY}.parquet", f"{DAY}.meta.json", f"{DAY}.sha256",
-                     "settlements.ndjson", "heartbeat.json"):
+    for required in (
+        "manifest.json",
+        f"{DAY}.parquet",
+        f"{DAY}.meta.json",
+        f"{DAY}.sha256",
+        "settlements.ndjson",
+        "heartbeat.json",
+    ):
         assert required in names, f"the inventory run never wrote {required}"
     strays = {
         path.relative_to(tmp_path.resolve()).as_posix()
@@ -416,7 +430,9 @@ def every(interval: float, *makers):
         while True:
             for make in makers:
                 frame = make(tick)
-                socket.frames.put_nowait(frame if isinstance(frame, str) else json.dumps(frame))
+                socket.frames.put_nowait(
+                    frame if isinstance(frame, str) else json.dumps(frame)
+                )
             tick += 1
             await asyncio.sleep(interval)
 
@@ -460,7 +476,9 @@ def drive(client: StreamClient, seconds: float) -> None:
     asyncio.run(scenario())
 
 
-def client(subscriptions, feed=None, *, silence=0.15, **options) -> tuple[StreamClient, FakeConnect]:
+def client(
+    subscriptions, feed=None, *, silence=0.15, **options
+) -> tuple[StreamClient, FakeConnect]:
     connect = FakeConnect(feed)
     return (
         StreamClient(
@@ -484,9 +502,9 @@ def test_a_connected_socket_whose_periodic_stream_stops_is_reconnected_and_told_
     silent, connect = client(subs("um", *UM_MARKET))
     drive(silent, 0.6)
     assert silent.counters.silent_reconnects >= 2
-    assert silent.counters.reconnects >= silent.counters.silent_reconnects, (
-        "a silent reconnect is also a reconnect"
-    )
+    assert (
+        silent.counters.reconnects >= silent.counters.silent_reconnects
+    ), "a silent reconnect is also a reconnect"
     assert len(connect.sessions) >= 3
     # the control: the same socket with its mark flowing is never ended for silence
     healthy, connect = client(subs("um", *UM_MARKET), every(0.02, mark, um_kline))
@@ -584,14 +602,19 @@ def test_the_heartbeat_tells_a_silent_reconnect_from_an_ordinary_one(tmp_path):
     scripted.counters.reconnects, scripted.counters.silent_reconnects = 5, 2
     service._beat()
     streams = {s["stream"]: s for s in read_heartbeat(tmp_path)["streams"]}
-    assert (streams[UM_MARK_PRICE]["reconnects"], streams[UM_MARK_PRICE]["silent_reconnects"]) == (5, 2)
+    assert (
+        streams[UM_MARK_PRICE]["reconnects"],
+        streams[UM_MARK_PRICE]["silent_reconnects"],
+    ) == (5, 2)
 
 
 # =========================================================================== #
 # C. the lifecycle log
 # =========================================================================== #
 def records(root: Path) -> list[dict]:
-    return [json.loads(line) for line in lifecycle_path(root).read_bytes().splitlines() if line]
+    return [
+        json.loads(line) for line in lifecycle_path(root).read_bytes().splitlines() if line
+    ]
 
 
 def events(root: Path) -> list[str]:
@@ -725,7 +748,9 @@ def test_a_shutdown_that_raises_is_recorded_as_failed_and_still_raises(tmp_path,
 def test_a_failed_task_and_an_interrupted_run_each_say_which(tmp_path):
     failing = service_for(tmp_path / "failed")
     failing.clients = (
-        ScriptedClient("um-test", (UM_KLINE_1M,), failing._record, fail=RuntimeError("socket bug")),
+        ScriptedClient(
+            "um-test", (UM_KLINE_1M,), failing._record, fail=RuntimeError("socket bug")
+        ),
     )
     with pytest.raises(RecorderServiceError):
         asyncio.run(run_briefly(failing))
@@ -753,13 +778,28 @@ def test_a_lifecycle_log_that_cannot_be_written_is_reported_and_recording_goes_o
     assert result.events == 1, "the market data was still recorded"
     assert any(f"{LIFECYCLE_UP} not recorded" in note for note in result.errors)
     assert any(f"{LIFECYCLE_DOWN} not recorded" in note for note in result.errors)
-    assert any(f"{LIFECYCLE_UP} not recorded" in note for note in read_heartbeat(tmp_path)["errors"])
+    assert any(
+        f"{LIFECYCLE_UP} not recorded" in note for note in read_heartbeat(tmp_path)["errors"]
+    )
 
 
 LIFECYCLE_FIELDS = {
-    "schema", "event", "wall_ns", "wall_utc", "pid", "contract_id", "contract_hash",
-    "source_revision", "reason", "error", "shutdown", "shutdown_errors", "last_event",
-    "last_wall_ns", "last_line_unreadable", "detail",
+    "schema",
+    "event",
+    "wall_ns",
+    "wall_utc",
+    "pid",
+    "contract_id",
+    "contract_hash",
+    "source_revision",
+    "reason",
+    "error",
+    "shutdown",
+    "shutdown_errors",
+    "last_event",
+    "last_wall_ns",
+    "last_line_unreadable",
+    "detail",
 }
 
 
@@ -784,8 +824,14 @@ def test_the_lifecycle_log_is_operational_evidence_and_never_market_evidence(tmp
     # Nothing but its writer names it: no normalizer, sink, feed, runner, report
     # or tool can reach the file except by these identifiers.
     repository = Path(__file__).resolve().parents[1]
-    names = ("lifecycle.ndjson", "LIFECYCLE_FILE", "lifecycle_path", "LifecycleLog", "recorder.up",
-             "recorder.down")
+    names = (
+        "lifecycle.ndjson",
+        "LIFECYCLE_FILE",
+        "lifecycle_path",
+        "LifecycleLog",
+        "recorder.up",
+        "recorder.down",
+    )
     readers = sorted(
         path.relative_to(repository).as_posix()
         for folder in ("chimera", "nn", "tools")
