@@ -251,6 +251,22 @@ def test_repeated_same_minute_same_kind_records_keep_their_order():
     assert compare_logs(live, [dict(r) for r in live]).ok, "the control"
 
 
+def test_a_record_moved_across_another_kind_in_its_minute_fails():
+    """A settlement booked after the minute's decision instead of before it
+    aligns on the same keys, so only the order can catch it."""
+    live = [
+        _record(M0, "FUNDING", 1, ledger_effect={"funding": "1"}),
+        _record(M0, "DECISION", 2, ledger_effect={"equity": "10"}),
+        _record(M1, "DECISION", 3, ledger_effect={"equity": "11"}),
+    ]
+    moved = [dict(live[1], seq=1), dict(live[0], seq=2), dict(live[2])]
+
+    report = compare_logs(live, moved)
+
+    assert not report.ok
+    assert {d.field_name for d in report.divergences} == {"parity_seq"}
+
+
 def test_a_raw_seq_that_does_not_rise_is_reported_on_its_side():
     live = [_record(M0, "DECISION", 1), _record(M1, "DECISION", 2)]
     broken = [_record(M0, "DECISION", 2), _record(M1, "DECISION", 2)]
