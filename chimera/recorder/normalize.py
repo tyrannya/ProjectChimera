@@ -57,6 +57,7 @@ This module opens no socket, makes no request and reads no clock.
 from __future__ import annotations
 
 import hashlib
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -934,9 +935,17 @@ class MinuteNormalizer:
         frame = minute_frame(records, market=market)
 
         parquet = self.parquet_path(market, day)
-        parquet.parent.mkdir(parents=True, exist_ok=True)
-        frame.to_parquet(parquet, index=False, compression="zstd", compression_level=19)
-        parquet_sha = hashlib.sha256(parquet.read_bytes()).hexdigest()
+        # R1-h: published, not written in place. The open day is replaced every
+        # few seconds while the runner's feed reads it, and `to_parquet` onto
+        # the destination truncates it first. Serialised here and published
+        # through the same temp-file, fsync and rename as every other file, so
+        # a reader holds the whole previous day or the whole new one, and the
+        # digest is of exactly the bytes published.
+        buffer = io.BytesIO()
+        frame.to_parquet(buffer, index=False, compression="zstd", compression_level=19)
+        body = buffer.getvalue()
+        write_bytes_atomic(parquet, body)
+        parquet_sha = hashlib.sha256(body).hexdigest()
 
         document = meta(
             frame,
