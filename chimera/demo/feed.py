@@ -96,12 +96,12 @@ class FeedNotReady(FeedError):
     """The feed cannot answer YET: ask again after the recorder has written more.
 
     R1-g. Raised for a normalized day that failed to read while it was changing
-    on disk. The recorder rewrites a day's parquet in place, not by atomic
-    replacement (that is R1-h's), so a read that lands inside a rewrite sees a
-    truncated file; with minutes published within seconds and a backlog taken
-    whole, a long catch-up is almost certain to land in one. The runner waits on
-    this -- it decides nothing from a file it could not read -- and a file that
-    fails again unchanged is a :class:`FeedError` and a halt, as it always was.
+    on disk. Until R1-h the recorder rewrote a day's parquet in place, so a read
+    that landed inside a rewrite saw a truncated file; R1-h publishes it by
+    atomic replacement, which removes that window, and the wait is kept for a
+    file caught changing for any other reason. The runner waits on this -- it
+    decides nothing from a file it could not read -- and a file that fails again
+    unchanged is a :class:`FeedError` and a halt, as it always was.
     """
 
 

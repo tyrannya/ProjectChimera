@@ -62,6 +62,8 @@ import gzip
 import hashlib
 import json
 import os
+import secrets
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -102,6 +104,14 @@ TAIL_BYTES = 1 << 20
 MAX_TRUNCATED_RECORDS = 64
 
 _COPY_CHUNK = 1 << 20
+
+#: R1-h. The waits before retrying a replace that Windows refused because a
+#: reader held the destination open, about 0.9 s in all. See `_replace`.
+_SHARING_RETRY_DELAYS_S = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5)
+
+#: Whether a refused replace is a reader's open handle rather than a permission
+#: fact. True only on Windows; a module constant so a test can exercise both.
+_RETRY_SHARING_VIOLATIONS = os.name == "nt"
 
 
 class RecorderSinkError(RuntimeError):
@@ -276,17 +286,61 @@ def write_bytes_atomic(path: Path, body: bytes) -> None:
     :meth:`chimera.futures.store.FuturesStore.save` uses, and for the same
     reason. Binary throughout, so no newline is translated and the file is the
     same bytes on Windows and on Linux.
+
+    **What it guarantees (R1-h).** A reader opening ``path`` gets the whole
+    previous file or the whole new one, never a mixture: the new bytes are
+    fsynced before the rename makes them visible. It does not fsync the
+    directory, so after a power loss the rename itself may not have survived
+    and the previous file is what a restart finds -- every file written here is
+    either rebuilt from the raw on the next render or rewritten by the next
+    freeze, so that is a stale file, never a torn one.
+
+    **The temporary is this call's own**: ``<name>.<random>.tmp`` beside the
+    destination, created exclusively. A fixed ``<name>.tmp`` is shared by every
+    writer of the same destination, and nothing stops two processes writing one
+    root, so one writer could publish the other's half-written body. The suffix
+    keeps it out of every ``*.parquet`` / ``*.meta.json`` / ``*.json`` glob a
+    reader uses. A failure of any kind removes it and leaves ``path`` as it was;
+    only a process killed between the create and the rename leaves one behind.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(6)}.tmp")
     try:
-        with open(temporary, "wb") as handle:
+        with open(temporary, "xb") as handle:
             handle.write(body)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except OSError as exc:
-        raise RecorderSinkError(f"could not write {path}: {exc}") from exc
+        _replace(temporary, path)
+    except BaseException as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - the original failure is the one to report
+            pass
+        if isinstance(exc, OSError):
+            raise RecorderSinkError(f"could not write {path}: {exc}") from exc
+        raise
+
+
+def _replace(source: Path, target: Path) -> None:
+    """``os.replace``, waiting out a reader that holds ``target`` open on Windows.
+
+    Windows refuses to replace a file any process has open (``WinError 5``), and
+    the readers here -- the runner's feed opening the day it decides from, a
+    supervisor reading the heartbeat -- open the destination for milliseconds.
+    Failing the publication would stop the recorder over a read; replacing in
+    place is what R1-h removes. So the replace is retried for about a second and
+    then allowed to fail. Elsewhere a ``PermissionError`` is a permission and is
+    raised at once.
+    """
+    for delay in _SHARING_RETRY_DELAYS_S:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if not _RETRY_SHARING_VIOLATIONS:
+                raise
+            time.sleep(delay)
+    os.replace(source, target)
 
 
 def write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:

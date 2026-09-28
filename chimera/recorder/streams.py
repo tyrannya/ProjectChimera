@@ -128,6 +128,39 @@ DEFAULT_BACKOFF_MAX_S = 60.0
 DEFAULT_BACKOFF_FACTOR = 2.0
 PROACTIVE_RECONNECT_S = 23 * 3600 + 50 * 60
 
+#: R1-h: the subscriptions the venue documents as PUSHED ON A PERIOD, and so the
+#: only ones whose silence proves something. Quoted from Binance's own sources
+#: (checked 2026-09-28):
+#:
+#: * ``um.markPrice`` (``<symbol>@markPrice@1s``): "pushed every 3 seconds or
+#:   every second", "Update Speed: 3000ms or 1000ms" -- the ``@1s`` form is the
+#:   one subscribed (binance/binance-futures-connector-python, the stream
+#:   docstrings, 90fed07; the live futures page could not be rendered from this
+#:   host).
+#: * ``spot.kline_1m``: "push updates to the current klines/candlestick every
+#:   second", "Update Speed: ... 2000ms for the other intervals"
+#:   (binance/binance-spot-api-docs, web-socket-streams.md, e556feb).
+#:
+#: Deliberately absent, because the venue promises no cadence for them:
+#: ``um.kline_1m`` ("every 250 milliseconds (if existing)"), and both
+#: ``bookTicker`` streams ("Pushes any update to the best bid or ask's price or
+#: quantity in real-time"). However busy they are in practice, a quiet one is a
+#: quiet market as far as the protocol says, so a watchdog on them would be a
+#: liveness guarantee this build invented. ``um.funding`` has no socket.
+#:
+#: Consequence: the ``um-public`` socket carries only ``um.bookTicker`` and has
+#: no watchdog. Its transport is still checked by the websocket ping, and a
+#: silent stream still surfaces in ``last_event_age_seconds`` and the
+#: ``RecorderStreamStale`` alert -- it is not reconnected for it.
+PERIODIC_STREAMS: frozenset[str] = frozenset({UM_MARK_PRICE, SPOT_KLINE_1M})
+
+#: R1-h: how long a periodic subscription may deliver nothing while its socket
+#: is connected before the session is ended and the ordinary backoff reconnects
+#: it. The slowest periodic stream above pushes every 2 s, so this is at least
+#: 45 missed pushes -- not jitter -- and it is half of the 180 s
+#: ``RecorderStreamStale`` alert, so a reconnect is tried before anyone is paged.
+SILENCE_TIMEOUT_S = 90.0
+
 #: How many skew samples the rolling median is taken over. Bounded so that a
 #: process running for months does not accumulate one sample per frame.
 SKEW_WINDOW = 512
@@ -323,6 +356,10 @@ class StreamCounters:
     decode_errors: int = 0
     out_of_order: int = 0
     ignored_frames: int = 0
+    #: R1-h. Sessions the silence watchdog ended. Every one is also counted in
+    #: ``reconnects``, which counts every session end: a socket that drops is a
+    #: network fact, and one that stays up while its data stops is another.
+    silent_reconnects: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -332,6 +369,7 @@ class StreamCounters:
             "decode_errors": self.decode_errors,
             "out_of_order": self.out_of_order,
             "ignored_frames": self.ignored_frames,
+            "silent_reconnects": self.silent_reconnects,
         }
 
 
@@ -389,6 +427,7 @@ class StreamClient:
         open_timeout: float = 15.0,
         ping_interval: float = 20.0,
         ping_timeout: float = 20.0,
+        silence_timeout_s: float = SILENCE_TIMEOUT_S,
     ) -> None:
         if not url:
             raise RecorderStreamError("a stream client needs a url")
@@ -423,6 +462,20 @@ class StreamClient:
         self._open_timeout = open_timeout
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
+        if not silence_timeout_s > 0:
+            raise RecorderStreamError(
+                f"silence_timeout_s must be positive, got {silence_timeout_s}. Zero would "
+                "not switch the watchdog off, it would end every session at once"
+            )
+        self._silence_ns = int(float(silence_timeout_s) * 1e9)
+        #: The subscriptions the watchdog watches: the periodic ones. Empty means
+        #: no watchdog. See `PERIODIC_STREAMS`.
+        self.watched: tuple[str, ...] = tuple(
+            s.stream_id for s in self.subscriptions if s.stream_id in PERIODIC_STREAMS
+        )
+        #: Monotonic receipt of the last delivered event, per watched stream,
+        #: for the current session. Reset when a session starts.
+        self._delivered_mono: dict[str, int] = {}
         self.counters = StreamCounters()
         self.skew = SkewMeter()
         self._last_update_id: dict[str, int] = {}
@@ -514,12 +567,34 @@ class StreamClient:
     async def _read(self, socket: Any, stop: asyncio.Event, deadline: int) -> None:
         """Read frames until the session deadline, ``stop``, or the peer."""
         stop_task = asyncio.ensure_future(stop.wait())
+        started = self._mono_ns()
+        self._delivered_mono = {stream: started for stream in self.watched}
         try:
             while not stop.is_set():
-                remaining = (deadline - self._mono_ns()) / 1e9
+                now = self._mono_ns()
+                remaining = (deadline - now) / 1e9
                 if remaining <= 0:
                     logger.info("%s closing before the exchange's 24h limit", self.name)
                     return
+                # R1-h: the silence watchdog. The quietest watched stream sets
+                # the budget; a clock moves only when that stream delivers an
+                # event (see `_handle`), never because a frame of another kind,
+                # an ack, a malformed frame or a wait went by.
+                silence_left = None
+                if self._delivered_mono:
+                    quiet, since = min(self._delivered_mono.items(), key=lambda item: item[1])
+                    silence_left = (since + self._silence_ns - now) / 1e9
+                    if silence_left <= 0:
+                        self.counters.silent_reconnects += 1
+                        logger.warning(
+                            "%s: %s delivered nothing for %.0fs while connected; reconnecting",
+                            self.name,
+                            quiet,
+                            (now - since) / 1e9,
+                        )
+                        return
+                if silence_left is not None:
+                    remaining = min(remaining, silence_left)
                 receive = asyncio.ensure_future(_recv(socket))
                 done, _ = await asyncio.wait(
                     {receive, stop_task},
@@ -528,8 +603,9 @@ class StreamClient:
                 )
                 if receive not in done:
                     receive.cancel()
-                    # Either ``stop`` fired or the session deadline expired; the
-                    # loop head decides which, and both end the session.
+                    # ``stop`` fired, the session deadline expired or a watched
+                    # stream's silence budget ran out; the loop head decides
+                    # which, and each of them ends the session.
                     if stop.is_set():
                         return
                     continue
@@ -584,6 +660,8 @@ class StreamClient:
             return
         self.counters.events += 1
         self._last_event_ns[subscription.stream_id] = event.canonical_ns
+        if subscription.stream_id in self._delivered_mono:
+            self._delivered_mono[subscription.stream_id] = receipt_mono_ns
         self._on_event(event)
 
     def _subscription_for(

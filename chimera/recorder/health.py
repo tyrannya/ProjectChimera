@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -55,6 +56,32 @@ HEARTBEAT_SCHEMA = "chimera.recorder-heartbeat/1"
 HEALTH_DIRECTORY = "health"
 HEARTBEAT_FILE = "heartbeat.json"
 
+#: R1-h: the recorder's own append-only record of starting and stopping.
+#:
+#: The heartbeat is replaced in place and says what the recorder is doing now,
+#: so it cannot say that the recorder ever stopped: a process that dies leaves
+#: its last heartbeat behind, indistinguishable from one a moment old that
+#: nobody refreshed. This file is appended and never rewritten, so a stop leaves
+#: a record even when this process did not choose it.
+#:
+#: Engineering evidence about the RECORDER, never about the market: no price,
+#: no economic quantity, and nothing the normalizer, a digest, the coverage or
+#: the runner reads. Deleting it loses operational history and changes no
+#: recorded value.
+LIFECYCLE_FILE = "lifecycle.ndjson"
+LIFECYCLE_SCHEMA = "chimera.recorder-lifecycle/1"
+
+#: Written before recovery starts.
+LIFECYCLE_UP = "recorder.up"
+#: Written by this process when it stops, after its shutdown has finished --
+#: or failed, which it then says -- with the reason it knew.
+LIFECYCLE_DOWN = "recorder.down"
+#: Written by a start, before its own ``up``, when the log does not end with a
+#: ``recorder.down``. It asserts that fact about the FILE and nothing else: the
+#: previous run was killed, lost its host or could not write its ``down``, and
+#: this process was not there to know which.
+LIFECYCLE_DOWN_MISSING = "recorder.down_missing"
+
 #: The adopted cadence, section 4.3's storage layout: "rewritten every 30 s".
 HEARTBEAT_INTERVAL_S = 30.0
 
@@ -72,6 +99,9 @@ class StreamHealth:
     duplicates: int = 0
     late: int = 0
     reconnects: int = 0
+    #: R1-h: of those, the sessions the silence watchdog ended. See
+    #: :data:`chimera.recorder.streams.PERIODIC_STREAMS`.
+    silent_reconnects: int = 0
     gapfill_rows: int = 0
     write_errors: int = 0
     out_of_order: int = 0
@@ -140,6 +170,7 @@ class StreamHealth:
             "duplicates": self.duplicates,
             "late": self.late,
             "reconnects": self.reconnects,
+            "silent_reconnects": self.silent_reconnects,
             "gapfill_rows": self.gapfill_rows,
             "write_errors": self.write_errors,
             "out_of_order": self.out_of_order,
@@ -335,6 +366,11 @@ def heartbeat_path(root: str | Path) -> Path:
     return Path(root) / HEALTH_DIRECTORY / HEARTBEAT_FILE
 
 
+def lifecycle_path(root: str | Path) -> Path:
+    """``<root>/health/lifecycle.ndjson``."""
+    return Path(root) / HEALTH_DIRECTORY / LIFECYCLE_FILE
+
+
 def disk_free_bytes(root: str | Path) -> int | None:
     """Free bytes on the filesystem holding ``root``, or ``None`` if unknowable."""
     try:
@@ -428,3 +464,103 @@ class HeartbeatWriter:
         write_json_atomic(self.path, document)
         self.writes += 1
         return document
+
+
+class LifecycleLog:
+    """The recorder's own append-only record of going up and coming down (R1-h).
+
+    :meth:`up` when a run starts, :meth:`down` when it stops, and on a start
+    that finds the log not ending in a ``down``, a ``recorder.down_missing``
+    first. No policy lives here: every failure is raised as a
+    :class:`RecorderHealthError`, and what a failure means is the service's
+    decision. Nothing reads this file back but the next :meth:`up`.
+
+    **Each record is on disk when the call returns.** Appended, flushed and
+    ``fsync``-ed, because the record worth having is exactly the one whose
+    writer did not live to follow it up. Like the raw files, the directory is
+    not synced: after a power loss the file's first line can be the one lost.
+
+    **A torn last line never swallows the next record.** A write cut short
+    leaves a fragment with no newline, and appending onto it would fuse the next
+    record into one unreadable line. So an append after a fragment starts with a
+    newline: the fragment stays on disk, unaltered, as its own line, and every
+    record after it parses.
+    """
+
+    def __init__(self, root: str | Path, *, wall_ns: Any = time.time_ns) -> None:
+        self.path = lifecycle_path(root)
+        self._wall_ns = wall_ns
+
+    def up(self, **fields: Any) -> dict[str, Any]:
+        """Record this process starting, after any ``down_missing`` it establishes.
+
+        Two records rather than one, in the order the facts were established:
+        the previous run's stop was not recorded, and then this run began.
+        """
+        last = self._last_line()
+        if last is not None:
+            previous = _parse(last)
+            if previous is None or previous.get("event") != LIFECYCLE_DOWN:
+                self._append(
+                    LIFECYCLE_DOWN_MISSING,
+                    last_event=None if previous is None else previous.get("event"),
+                    last_wall_ns=None if previous is None else previous.get("wall_ns"),
+                    last_line_unreadable=previous is None,
+                    detail=(
+                        "the log's last line is not a recorder.down, so the previous run's "
+                        "stop was not recorded by it; this record says nothing about why"
+                    ),
+                )
+        return self._append(LIFECYCLE_UP, **fields)
+
+    def down(self, reason: str, **fields: Any) -> dict[str, Any]:
+        """Record this process stopping, with the reason it had."""
+        return self._append(LIFECYCLE_DOWN, reason=str(reason), **fields)
+
+    def _last_line(self) -> bytes | None:
+        """The log's last non-blank line, or ``None`` for an absent or empty log."""
+        try:
+            data = self.path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise RecorderHealthError(f"could not read {self.path}: {exc}") from exc
+        lines = [line for line in data.split(b"\n") if line.strip()]
+        return lines[-1] if lines else None
+
+    def _append(self, event: str, **fields: Any) -> dict[str, Any]:
+        stamp = int(self._wall_ns())
+        document: dict[str, Any] = {
+            "schema": LIFECYCLE_SCHEMA,
+            "event": event,
+            "wall_ns": stamp,
+            "wall_utc": iso_utc(stamp),
+            "pid": os.getpid(),
+        }
+        document.update({key: value for key, value in fields.items() if value is not None})
+        line = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "a+b") as handle:
+                handle.seek(0, os.SEEK_END)
+                torn = False
+                if handle.tell() > 0:
+                    handle.seek(-1, os.SEEK_END)
+                    torn = handle.read(1) != b"\n"
+                handle.write((b"\n" if torn else b"") + line.encode("utf-8") + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise RecorderHealthError(
+                f"could not record {event} in {self.path}: {exc}"
+            ) from exc
+        return document
+
+
+def _parse(line: bytes) -> dict[str, Any] | None:
+    """One lifecycle record, or ``None`` for a line that is not one."""
+    try:
+        document = json.loads(line)
+    except ValueError:
+        return None
+    return document if isinstance(document, dict) else None
