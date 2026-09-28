@@ -44,7 +44,7 @@ from chimera.demo import emergency
 from chimera.demo.runner import DemoRunner, RunnerState
 from chimera.persistence import PersistenceFailure
 
-from demo_harness import build
+from demo_harness import DAY, build
 from r1i_crash import (
     PRIMITIVES,
     Faults,
@@ -244,6 +244,10 @@ SCENARIOS = [
     Scenario("touch", _prepare_touch, _tick_to(3), 3, ends_halted="liquidation_touch"),
 ]
 
+#: A funding settlement the carry position PAYS, in its own world.
+PAID_RATE = "-0.0003"
+FUNDING_PAID = Scenario("funding_paid", _prepare_minutes(479), _tick_to(479), 483)
+
 #: Worlds whose spot leg refuses every fill: a PARTIAL that corrects, and one
 #: that times out and is flattened (section 6.3).
 REFUSING = {"max_reference_deviation_bps": "0"}
@@ -260,9 +264,14 @@ CORRECTION_SCENARIOS = [
 def worlds(tmp_path_factory):
     """One recorder root per world, written once; state is copied per run."""
     made = {}
-    for name, spot in (("plain", None), ("refusing", REFUSING)):
+    for name, spot in (("plain", None), ("refusing", REFUSING), ("paying", None)):
         base = tmp_path_factory.mktemp(f"world_{name}")
         harness = build(base, start=False)
+        if name == "paying":
+            # The 08:00 settlement is PAID by the short perpetual: the one
+            # direction that moves Aegis's funding streak (a rebate on a
+            # streak already at zero moves nothing).
+            harness.feed.write_settlements([DAY], rates={(DAY, 8): PAID_RATE})
         world = World(root=harness.root)
         world.spot_model = spot  # type: ignore[attr-defined]
         (base / "_empty").mkdir()
@@ -374,6 +383,33 @@ def _run_crash(world, scenario, base, tmp, index, when):
     return state_dir, (result, final), operated
 
 
+def _differences(reference: dict, result: dict, operated) -> list[str]:
+    """Where a recovered run's economics differ from the uninterrupted one's.
+
+    Aegis's funding streak is compared as the recovery LEFT it: an operator
+    ``resume`` clears it by design (``RiskEngine.resume``), so when the resume
+    came after every settlement was booked the streak compared is the one just
+    before it -- which is what shows a torn settlement counted twice, or not at
+    all. A resume before a settlement is booked resets nothing the reference
+    holds, and the final streak is compared as it is.
+    """
+    reference, result = dict(reference), dict(result)
+    problems = []
+    before = operated.streak_before_resume
+    if before is not None and before[2] == len(reference["settled"]):
+        expected = reference.pop("funding_streak")
+        result.pop("funding_streak")
+        if before[:2] != expected:
+            problems.append(
+                f"Aegis's funding streak before the resume is {before[:2]}"
+                f" where the reference holds {expected}"
+            )
+    diff = {k: (reference[k], result[k]) for k in reference if reference[k] != result[k]}
+    if diff:
+        problems.append(f"economics differ from the reference: {diff}")
+    return problems
+
+
 def _sweep(world: World, scenario: Scenario, tmp: Path):
     base = _base(world, scenario, tmp)
     steps, reference, final = _reference(world, scenario, base, tmp)
@@ -398,11 +434,8 @@ def _sweep(world: World, scenario: Scenario, tmp: Path):
             # sizes from the mark before it. Consistent (checked in `_finish`)
             # and recorded; not required to equal the uninterrupted run.
             EXCLUDED.append(label)
-        elif result != reference:
-            diff = {
-                k: (reference[k], result[k]) for k in reference if reference[k] != result[k]
-            }
-            failures.append(f"{label}: economics differ from the reference: {diff}")
+        else:
+            failures.extend(f"{label}: {p}" for p in _differences(reference, result, operated))
         if crash_final is not final:
             failures.append(f"{label}: ends {crash_final} where the reference ends {final}")
         failures.extend(f"{label}: {problem}" for problem in problems)
@@ -480,6 +513,15 @@ def test_every_kill_point_of_a_correction_recovers(worlds, tmp_path, scenario):
     assert not failures, "\n".join(failures)
 
 
+def test_every_kill_point_of_a_paid_settlement_recovers(worlds, tmp_path):
+    """The funding window with a PAID settlement: a kill after Aegis counted it
+    and before the ledger booked it is proved by R1-c's ``funding`` window, and
+    ``resolve --ledger funding_booking_torn`` books it without counting it
+    again (the reference comparison includes Aegis's funding streak)."""
+    steps, failures = _sweep(worlds["paying"], FUNDING_PAID, tmp_path)
+    assert not failures, "\n".join(failures)
+
+
 # ---------------------------------------------------------------------------
 # disk full at every persistence step
 # ---------------------------------------------------------------------------
@@ -488,9 +530,9 @@ DISK_SCENARIOS = [
 ]
 
 
-@pytest.mark.parametrize("scenario", DISK_SCENARIOS, ids=lambda s: s.name)
+@pytest.mark.parametrize("scenario", DISK_SCENARIOS + [FUNDING_PAID], ids=lambda s: s.name)
 def test_disk_full_at_every_step_is_a_process_failure_with_a_trace(worlds, tmp_path, scenario):
-    world = worlds["plain"]
+    world = worlds["paying" if scenario is FUNDING_PAID else "plain"]
     base = _base(world, scenario, tmp_path)
     steps, reference, final = _reference(world, scenario, base, tmp_path)
     failures = []
@@ -544,11 +586,7 @@ def test_disk_full_at_every_step_is_a_process_failure_with_a_trace(worlds, tmp_p
         if not operated.actions or operated.actions[0] != "resolve --emergency":
             failures.append(f"{label}: the trace was not the first thing cleared: {operated}")
         result, crash_final = _finish(world, state_dir, scenario)
-        if result != reference:
-            diff = {
-                k: (reference[k], result[k]) for k in reference if reference[k] != result[k]
-            }
-            failures.append(f"{label}: economics differ from the reference: {diff}")
+        failures.extend(f"{label}: {p}" for p in _differences(reference, result, operated))
         failures.extend(f"{label}: {p}" for p in check_log(state_dir))
     assert not failures, "\n".join(failures)
 

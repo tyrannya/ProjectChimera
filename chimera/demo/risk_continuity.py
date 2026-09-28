@@ -162,7 +162,15 @@ def risk_state_hash(snapshot: Mapping[str, Any]) -> str:
 #: reports; the record's ``halt_transition_explains_mismatch`` is true exactly
 #: for the halting ones.
 CRASH_TRANSITIONS: frozenset[str] = frozenset(
-    {"halt", "kill_switch_halt", "kill_switch_mirror", "equity", "equity_halt", "exposure"}
+    {
+        "halt",
+        "kill_switch_halt",
+        "kill_switch_mirror",
+        "equity",
+        "equity_halt",
+        "exposure",
+        "funding",
+    }
 )
 _HALTING_TRANSITIONS: frozenset[str] = frozenset({"halt", "kill_switch_halt", "equity_halt"})
 
@@ -249,12 +257,15 @@ def _crash_transition(
     ``update_equity`` must carry it to the file -- so widening the candidates
     widens nothing a wrong candidate could prove.
 
-    **What this still does not prove, and why each stays disputed.** The
-    windows closed by a ``STATE_HASH`` record rather than a ``HALT`` or
-    ``DECISION`` (``note_funding_settlement``'s streak before its ``FUNDING``
-    record), those that move the feed mark (``note_feed``), and any
-    combination of two windows. Deliberately: an
-    unproved window is sealed, never waved through.
+    **R1-i: the funding streak.** ``funding``: :meth:`RiskEngine.note_funding_settlement`
+    persisted before the settlement's ``FUNDING`` record -- found by R1-i's
+    crash harness on an adverse settlement (a rebate on a streak already at
+    zero moves nothing). :func:`funding_note_prior` builds the one prior each
+    direction allows and accepts it only on the log's full hash.
+
+    **What this still does not prove, and why each stays disputed.** Windows
+    that move the feed mark (``note_feed``), and any combination of two
+    windows. Deliberately: an unproved window is sealed, never waved through.
     """
     if history.statement is not LogRiskStatement.STATE_HASH:
         return ""
@@ -272,6 +283,8 @@ def _crash_transition(
             return name
     if exposure_prior(found, history, exposures) is not None:
         return "exposure"
+    if funding_note_prior(found, history.state_hash) is not None:
+        return "funding"
     return _equity_transition(
         found, history, limits=limits, ledger_equity=ledger_equity, capital=capital
     )
@@ -414,6 +427,54 @@ def exposure_prior(
             prior = {**found, "open_positions": prior_positions, **halt}
             if risk_state_hash(prior) == history.state_hash:
                 return {"symbol": symbol, "exposure": implied}
+    return None
+
+
+#: How far back a rebate's reset is searched for the streak it cleared. A
+#: search bound, not a policy: a longer streak than this is not proved, and a
+#: file the proof does not reach stays disputed.
+_FUNDING_STREAK_SEARCH = 256
+
+
+def funding_note_prior(
+    found: Mapping[str, Any], state_hash: str, *, cost_sign: int | None = None
+) -> dict[str, Any] | None:
+    """R1-i: the ``funding`` window, proved -- or ``None``.
+
+    :meth:`chimera.risk.RiskEngine.note_funding_settlement` moves exactly two
+    hashed fields, ``funding_adverse_streak`` and ``funding_halt``, and
+    persists before the ledger is saved and the ``FUNDING`` record restates the
+    hash. The priors it can have come from:
+
+    * a PAID settlement (``cost_sign`` +1): the streak one lower, and the halt
+      as found or -- when this settlement raised it -- ``False``;
+    * a RECEIVED settlement (``cost_sign`` -1): a found streak of zero with no
+      halt, from any streak and either halt.
+
+    ``cost_sign`` restricts the proof to one direction when the caller knows
+    the settlement (``resolve --ledger funding_booking_torn``); ``None`` tries
+    both. A candidate is accepted only when its FULL hash is ``state_hash``.
+    """
+    streak = found.get("funding_adverse_streak")
+    if not isinstance(streak, int) or isinstance(streak, bool) or not state_hash:
+        return None
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    if cost_sign in (None, 1) and streak >= 1:
+        for halt in _unique([bool(found.get("funding_halt")), False]):
+            candidates.append(
+                ("paid", {"funding_adverse_streak": streak - 1, "funding_halt": halt})
+            )
+    if cost_sign in (None, -1) and streak == 0 and not found.get("funding_halt"):
+        for prior in range(_FUNDING_STREAK_SEARCH + 1):
+            for halt in (False, True):
+                if prior == 0 and not halt:
+                    continue  # moves nothing: not a window
+                candidates.append(
+                    ("received", {"funding_adverse_streak": prior, "funding_halt": halt})
+                )
+    for cost, fields in candidates:
+        if risk_state_hash({**found, **fields}) == state_hash:
+            return {"cost": cost, **fields}
     return None
 
 
@@ -1140,6 +1201,7 @@ __all__ = [
     "RiskContinuity",
     "RiskContinuityFault",
     "assess_risk_continuity",
+    "funding_note_prior",
     "read_log_risk_history",
     "risk_state_hash",
 ]

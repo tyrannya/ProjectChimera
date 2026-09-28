@@ -73,6 +73,7 @@ from chimera.demo.risk_continuity import (
     RiskContinuity,
     RiskContinuityFault,
     assess_risk_continuity,
+    funding_note_prior,
     risk_state_hash,
 )
 from chimera.demo.risk_wiring import (
@@ -3573,13 +3574,6 @@ class DemoRunner:
                 raise RunnerError(
                     f"cannot re-book the torn settlement: {exc}. Nothing has been changed."
                 )
-            if not self._aegis_missed_the_settlement():
-                raise RunnerError(
-                    "cannot re-book the torn settlement: whether Aegis already counted it in "
-                    "its funding streak is not provable from the log (the risk state is not "
-                    "the log's last restated state with only a halt added). Nothing has been "
-                    "changed."
-                )
             instant = int(torn["instant_ns"])
             row = self._settlement_row(instant)
             if row is None:
@@ -3599,7 +3593,23 @@ class DemoRunner:
                     "Nothing has been changed."
                 ) from exc
             _opened, exposure = position.funding_exposure(instant)
-            return {"torn": torn, "rate": str(settlement.rate), "side": exposure.side.value}
+            # Whether Aegis already counted it: proved one way or the other
+            # from the log, or refused. Counting it twice would move the streak
+            # that vetoes increases on a settlement that happened once.
+            counted = self._aegis_counted_the_settlement(exposure.side, settlement.rate)
+            if counted is None:
+                raise RunnerError(
+                    "cannot re-book the torn settlement: whether Aegis already counted it in "
+                    "its funding streak is not provable from the log (the risk state is "
+                    "neither the log's last restated state nor that state carried through "
+                    "this one settlement). Nothing has been changed."
+                )
+            return {
+                "torn": torn,
+                "rate": str(settlement.rate),
+                "side": exposure.side.value,
+                "aegis_counted": counted,
+            }
         if kind == "stale_leg":
             return {"marked_at_ns": position.remark_plan()}
         raise RunnerError(f"no re-book is defined for {kind!r}")  # pragma: no cover
@@ -3651,11 +3661,15 @@ class DemoRunner:
             torn = plan["torn"]
             flow = position.rebook_torn_funding()
             side = PositionSide(plan["side"])
-            if side in (PositionSide.LONG, PositionSide.SHORT):
+            if not plan["aegis_counted"] and side in (PositionSide.LONG, PositionSide.SHORT):
                 self.risk.note_funding_settlement(
                     position.config.perp_symbol, side, float(Decimal(plan["rate"]))
                 )
-            return {"instant_ns": int(torn["instant_ns"]), "cash_flow": str(flow)}
+            return {
+                "instant_ns": int(torn["instant_ns"]),
+                "cash_flow": str(flow),
+                "aegis_counted_before": bool(plan["aegis_counted"]),
+            }
         if kind == "stale_leg":
             position.remark_legs(int(plan["marked_at_ns"]))
             return {"marked_at_ns": int(plan["marked_at_ns"])}
@@ -3673,6 +3687,53 @@ class DemoRunner:
                     return row
             except (KeyError, TypeError, ValueError):
                 continue
+        return None
+
+    def _aegis_counted_the_settlement(self, side: Any, rate: Any) -> bool | None:
+        """Whether Aegis's funding streak already holds a torn settlement.
+
+        ``True`` when proved counted, ``False`` when proved missed, ``None``
+        when neither is proved -- and ``None`` refuses the re-book.
+
+        Counted: a kill after ``note_funding_settlement`` persisted and before
+        the ledger was saved leaves ``risk.json`` ahead of the log, which R1-c
+        proves as the ``funding`` window and records in a ``RECOVERY`` naming
+        both hashes. The proof here is that record, newer than the log's last
+        ``FUNDING``, whose found hash is the live state (with the dispute's own
+        halt reverted, or as it is), and whose log hash is that state with THIS
+        settlement's direction taken back (:func:`funding_note_prior`). Checked
+        first: once a later record restates the counted state, the "missed"
+        test below would also pass on it.
+        """
+        # `RiskEngine.note_funding_settlement`'s own sign: a long pays a
+        # positive rate, a short a negative one.
+        sign = {PositionSide.LONG: 1, PositionSide.SHORT: -1}.get(PositionSide(side))
+        cost = 0.0 if sign is None else sign * float(rate)
+        if cost == 0:
+            return False  # a settlement that moves no streak: noting it is a no-op
+        cost_sign = 1 if cost > 0 else -1
+        live = self.risk.snapshot()
+        states = [live, {**live, "halted": False, "halt_reason": ""}]
+        findings: list[Mapping[str, Any]] = []
+        for record in self._log_records():
+            if record.get("kind") == RecordKind.FUNDING.value:
+                findings = []
+                continue
+            recovery = record.get("recovery")
+            block = recovery.get("risk_continuity") if isinstance(recovery, Mapping) else None
+            if isinstance(block, Mapping) and block.get("found_state_hash"):
+                findings.append(block)
+        for block in findings:
+            for state in states:
+                if risk_state_hash(state) == block["found_state_hash"] and (
+                    funding_note_prior(
+                        state, str(block.get("log_state_hash", "")), cost_sign=cost_sign
+                    )
+                    is not None
+                ):
+                    return True
+        if self._aegis_missed_the_settlement():
+            return False
         return None
 
     def _aegis_missed_the_settlement(self) -> bool:

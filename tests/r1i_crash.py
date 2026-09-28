@@ -296,6 +296,11 @@ class Operated:
     state: RunnerState
     actions: list[str]
     refused: str = ""
+    #: Aegis's funding streak just before the operator's first ``resume``,
+    #: which clears it by design (``RiskEngine.resume``): what the recovery
+    #: left, before the operator's own documented reset -- with how many
+    #: settlements the ledger had booked by then.
+    streak_before_resume: tuple[int, bool, int] | None = None
 
 
 NOTE = "crash harness: the operator checked the files the runbook names"
@@ -327,6 +332,7 @@ def operate(
     A refusal stops here and is reported.
     """
     actions: list[str] = []
+    streak: tuple[int, bool, int] | None = None
     handled: set[int] = set()
     for _ in range(limit):
         runner = world.runner(state_dir)
@@ -353,7 +359,7 @@ def operate(
                 runner.shutdown("operator command done")
                 continue
             if state in (RunnerState.READY, RunnerState.FEED_STALLED):
-                return Operated(state, actions)
+                return Operated(state, actions, streak_before_resume=streak)
             disputes = runner.standing_disputes()
             if disputes:
                 selector = disputes[0][0]
@@ -372,14 +378,24 @@ def operate(
                     runner.resolve_risk_state(NOTE)
             elif keep_halt is not None and (runner.halt_reason or "").startswith(keep_halt):
                 runner.shutdown("halted, as intended")
-                return Operated(state, actions)
+                return Operated(state, actions, streak_before_resume=streak)
             else:
+                if streak is None:
+                    streak = (
+                        runner.risk.state.funding_adverse_streak,
+                        runner.risk.state.funding_halt,
+                        len(runner.position.ledger.state.settled),
+                    )
                 actions.append("resume")
                 runner.resume(NOTE)
         except RunnerError as exc:
-            return Operated(runner.state, actions, refused=str(exc))
+            return Operated(
+                runner.state, actions, refused=str(exc), streak_before_resume=streak
+            )
         runner.shutdown("operator command done")
-    return Operated(RunnerState.HALT, actions, refused="the operator gave up")
+    return Operated(
+        RunnerState.HALT, actions, refused="the operator gave up", streak_before_resume=streak
+    )
 
 
 def completed(state_dir: Path, command: str, since: int) -> bool:
@@ -470,6 +486,12 @@ def economics(runner: DemoRunner) -> dict[str, Any]:
         "equity": str(state.last_equity),
         "risk_equity": repr(runner.risk.state.equity),
         "open_positions": dict(sorted(runner.risk.state.open_positions.items())),
+        # Aegis's funding guard: a torn settlement re-booked must be counted
+        # exactly once.
+        "funding_streak": (
+            runner.risk.state.funding_adverse_streak,
+            runner.risk.state.funding_halt,
+        ),
     }
 
 
