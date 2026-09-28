@@ -390,7 +390,7 @@ def test_the_tool_refuses_a_malformed_file_before_replaying(tmp_path, capsys, fl
     from tools import replay_parity
 
     bad = tmp_path / "bad.json"
-    bad.write_text(REFUSALS["blank note"][0], encoding="ascii")
+    bad.write_bytes(REFUSALS["blank note"][0].encode("ascii"))
     argv = [
         "--config", str(tmp_path / "unused.json"), "--root", str(tmp_path),
         "--live-log", str(tmp_path), "--days", "2026-09-19",
@@ -661,7 +661,9 @@ def test_every_restated_hash_names_the_new_policy_and_matches_the_file(tmp_path)
     assert blocks and {b["hash_policy"] for b in blocks} == {RISK_HASH_POLICY}
     history = read_log_risk_history(harness.state_dir)
     assert history.hash_policy == RISK_HASH_POLICY
-    on_disk = RiskState.from_dict(json.loads((harness.state_dir / "risk.json").read_text()))
+    on_disk = RiskState.from_dict(
+        json.loads((harness.state_dir / "risk.json").read_text(encoding="utf-8"))
+    )
     assert risk_state_hash(on_disk.snapshot()) == history.state_hash
 
 
@@ -676,7 +678,7 @@ def test_the_re_included_fields_ignore_a_hostile_host_clock(tmp_path, monkeypatc
     first = live.first_minute_ms()
     live.run(6)
     live.runner.shutdown("done")
-    risk = json.loads((live_dir / "state" / "risk.json").read_text())
+    risk = json.loads((live_dir / "state" / "risk.json").read_text(encoding="utf-8"))
     assert risk["day"] == "2026-09-19"
     assert all(t < 1_900_000_000 for t in risk["order_times"])
     monkeypatch.undo()
@@ -704,7 +706,7 @@ def test_an_r1i_state_upgrades_without_a_false_dispute(tmp_path, monkeypatch):
     legacy = [r for r in old.records() if isinstance(r.get("risk"), dict)]
     assert legacy and all("hash_policy" not in r["risk"] for r in legacy)
     on_disk = RiskState.from_dict(
-        json.loads((tmp_path / "state" / "risk.json").read_text())
+        json.loads((tmp_path / "state" / "risk.json").read_text(encoding="utf-8"))
     ).snapshot()
     assert legacy[-1]["risk"]["state_hash"] == risk_state_hash(
         on_disk, RISK_HASH_POLICY_LEGACY
@@ -729,9 +731,9 @@ def test_a_real_mismatch_under_the_legacy_policy_still_fails_closed(tmp_path, mo
         old.run(8)
         old.runner.shutdown("the R1-i build stops")
     path = tmp_path / "state" / "risk.json"
-    document = json.loads(path.read_text())
+    document = json.loads(path.read_text(encoding="utf-8"))
     document["peak_equity"] = document["peak_equity"] * 2
-    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     restarted = build(tmp_path)
 
@@ -752,7 +754,7 @@ def test_a_legacy_hash_is_never_read_under_the_new_policy(tmp_path, monkeypatch)
     new.runner.shutdown("stop")
 
     def tamper(state_dir: Path) -> dict[str, Any]:
-        document = json.loads((state_dir / "risk.json").read_text())
+        document = json.loads((state_dir / "risk.json").read_text(encoding="utf-8"))
         document["order_times"] = []
         document["day"] = "2026-09-01"
         return RiskState.from_dict(document).snapshot()
@@ -775,7 +777,9 @@ def test_an_unknown_policy_in_the_log_is_a_dispute(tmp_path):
     from dataclasses import replace
 
     unknown = replace(history, hash_policy="chimera.risk-hash/9")
-    snapshot = RiskState.from_dict(json.loads((harness.state_dir / "risk.json").read_text()))
+    snapshot = RiskState.from_dict(
+        json.loads((harness.state_dir / "risk.json").read_text(encoding="utf-8"))
+    )
 
     verdict = assess_risk_continuity(
         load=RiskStateLoad.LOADED,
@@ -804,17 +808,19 @@ def _orders_minute(tmp_path: Path):
     first = harness.first_minute_ms()
     for i in range(12):
         harness.tick(first + i * 60_000)
-        risk = json.loads((harness.state_dir / "risk.json").read_text())
+        risk = json.loads((harness.state_dir / "risk.json").read_text(encoding="utf-8"))
         if risk["order_times"]:
             break
     else:  # pragma: no cover - the fixture always opens in its first minutes
         raise AssertionError("the fixture never traded")
     harness.runner.shutdown("stop")
-    return harness, json.loads((harness.state_dir / "risk.json").read_text())
+    return harness, json.loads((harness.state_dir / "risk.json").read_text(encoding="utf-8"))
 
 
 def _write_risk(state_dir: Path, document: dict[str, Any]) -> None:
-    (state_dir / "risk.json").write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    (state_dir / "risk.json").write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def _verdict(state_dir: Path, document: dict[str, Any], harness):

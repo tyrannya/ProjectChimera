@@ -285,14 +285,15 @@ def test_the_fixture_fails_without_its_operator_counterpart(
         del argv[position : position + 2]
     else:
         empty = tmp_path / "empty.json"
-        empty.write_text(
-            json.dumps(
-                {"actions": [], "schema": "chimera.operator-actions/1"},
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="ascii",
+        empty.write_bytes(
+            (
+                json.dumps(
+                    {"actions": [], "schema": "chimera.operator-actions/1"},
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("ascii")
         )
         argv[position + 1] = str(empty)
     code = replay_parity.main(argv, operational_clock=lambda: OPERATIONAL_2100)
