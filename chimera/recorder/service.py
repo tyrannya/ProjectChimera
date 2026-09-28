@@ -46,9 +46,17 @@ changes the row (independent review of PR #108, finding F3). Such an event is
 republished at the publisher's next check. A runner that decided the earlier
 row then disagrees with a replay of the finished file; reconciling a day that
 changed is R1-h's, not this module's. Every render and freeze is serialised by
-one lock; see `RecorderService._render`. The parquet is still rewritten in place
-(atomic replacement is R1-h's), and the runner treats a day it catches
-mid-rewrite as not ready yet.
+one lock; see `RecorderService._render`. Every published file is replaced
+atomically (R1-h, `chimera.recorder.sink.write_bytes_atomic`), so a reader holds
+a whole day; the runner still treats a day it cannot read as not ready yet.
+
+**The recorder leaves a record of its own runs (R1-h).** ``health/lifecycle.ndjson``
+is appended, never rewritten: ``recorder.up`` before recovery, ``recorder.down``
+after the shutdown with its reason and how the shutdown ended, and
+``recorder.down_missing`` from a start that finds no ``down`` after the last run.
+A failure to append it is noted, not raised. A websocket whose periodic stream
+goes silent is reconnected by the client itself; see
+`chimera.recorder.streams.PERIODIC_STREAMS`.
 
 **Shutdown is complete or it is a bug.** Every task this service creates is
 owned by it, cancelled by it and awaited by it. A task that fails does not leave
@@ -86,8 +94,12 @@ from chimera.recorder.events import (
 )
 from chimera.recorder.health import (
     HEARTBEAT_INTERVAL_S,
+    LIFECYCLE_DOWN,
+    LIFECYCLE_UP,
     HeartbeatWriter,
+    LifecycleLog,
     RecorderHealth,
+    RecorderHealthError,
     initial_health,
 )
 from chimera.recorder.incremental import IncrementalNormalizer
@@ -299,6 +311,9 @@ class RecorderService:
         )
         self.health: RecorderHealth = initial_health(contract, source_revision=source_revision)
         self.heartbeat = HeartbeatWriter(self.root, wall_ns=wall_ns)
+        #: R1-h. Appended, never replaced: when this root's runs started and
+        #: stopped. See `run` and `_shutdown_recorded`.
+        self.lifecycle = LifecycleLog(self.root, wall_ns=wall_ns)
         self.clients: tuple[StreamClient, ...] = (
             tuple(clients)
             if clients is not None
@@ -709,18 +724,33 @@ class RecorderService:
         self._stop = stop
         started_ns = self._wall_ns()
         self.health.started_ns = started_ns
-        self.recover()
-        if self.gapfill:
-            for market in self.contract.market_keys():
-                await self.fill_kline_gap(market)
-            await self.poll_funding()
-            # Current state, once, before the periodic loops start. They sleep
-            # before they act, which is right for a steady state and wrong for a
-            # start: without this the mark and index have no observation at all
-            # until a minute has passed, and on a start that follows an outage
-            # that is a minute nothing holds any reading for.
-            await self.poll_premium_index()
-        self.heartbeat.write(self.health)
+        # R1-h: `up` BEFORE recovery. Recovery rewrites this root's own files and
+        # can fail or be killed; the line saying a run began must already be on
+        # disk when it does, or that run leaves no trace at all.
+        self._lifecycle(
+            LIFECYCLE_UP,
+            contract_id=self.contract.contract_id,
+            contract_hash=self.contract.contract_hash,
+            source_revision=self.health.source_revision,
+        )
+        try:
+            self.recover()
+            if self.gapfill:
+                for market in self.contract.market_keys():
+                    await self.fill_kline_gap(market)
+                await self.poll_funding()
+                # Current state, once, before the periodic loops start. They sleep
+                # before they act, which is right for a steady state and wrong for a
+                # start: without this the mark and index have no observation at all
+                # until a minute has passed, and on a start that follows an outage
+                # that is a minute nothing holds any reading for.
+                await self.poll_premium_index()
+            self.heartbeat.write(self.health)
+        except BaseException as exc:
+            self._lifecycle(
+                LIFECYCLE_DOWN, reason="startup_failed", error=repr(exc), shutdown="not_run"
+            )
+            raise
 
         tasks: list[asyncio.Task[Any]] = []
         for client in self.clients:
@@ -737,6 +767,7 @@ class RecorderService:
         tasks.append(self._funding_task(stop))
 
         failure: BaseException | None = None
+        interrupted: BaseException | None = None
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
@@ -745,12 +776,20 @@ class RecorderService:
                     failure = exc
                     self._note(f"task {task.get_name()} failed: {exc!r}")
                     break
+        except BaseException as exc:
+            interrupted = exc  # cancelled, or a KeyboardInterrupt unwinding asyncio.run
+            raise
         finally:
             stop.set()
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            self._shutdown()
+            if failure is not None:
+                self._shutdown_recorded("task_failed", repr(failure))
+            elif interrupted is not None:
+                self._shutdown_recorded("interrupted", repr(interrupted))
+            else:
+                self._shutdown_recorded("stopped", None)
 
         result = self._result(started_ns)
         if failure is not None:
@@ -879,6 +918,7 @@ class RecorderService:
                 stream = self.health.stream(stream_id)
                 stream.connected = client.connected and not stream.halted
                 stream.reconnects = client.counters.reconnects
+                stream.silent_reconnects = client.counters.silent_reconnects
                 stream.out_of_order = client.counters.out_of_order
                 stream.decode_errors = client.counters.decode_errors
             median = client.skew.median_ms()
@@ -1044,6 +1084,55 @@ class RecorderService:
         }
 
     # --- shutdown ---------------------------------------------------------
+    def _shutdown_recorded(self, reason: str, error: str | None) -> None:
+        """`_shutdown`, then the ``recorder.down`` that says how it went (R1-h).
+
+        The record is written AFTER the shutdown, sinks closed, because what it
+        asserts is how the shutdown ended: ``complete``, ``errors`` (it finished
+        and noted failures, listed), or ``failed`` (it raised, and the exception
+        is re-raised after the record). Written before the sinks were closed, a
+        ``down`` would outlive a close that then failed and read as a clean stop.
+        """
+        noted = len(self._errors)
+        try:
+            self._shutdown()
+        except BaseException as exc:
+            self._lifecycle(
+                LIFECYCLE_DOWN,
+                reason=reason,
+                error=error,
+                shutdown="failed",
+                shutdown_errors=[*self._errors[noted:], repr(exc)],
+            )
+            raise
+        errors = self._errors[noted:]
+        self._lifecycle(
+            LIFECYCLE_DOWN,
+            reason=reason,
+            error=error,
+            shutdown="errors" if errors else "complete",
+            shutdown_errors=errors or None,
+        )
+
+    def _lifecycle(self, event: str, **fields: Any) -> None:
+        """Append one lifecycle record; a failure is noted and never raised (R1-h).
+
+        The log is evidence about the recorder, not part of the recording.
+        Refusing to start because it cannot be appended would turn a missing
+        record of a gap into a gap, and raising out of a shutdown would lose the
+        shutdown. So the failure goes where every operator-visible fault goes --
+        the log, the heartbeat's ``errors`` and the run's result -- and the run
+        continues. A start whose ``up`` was lost is then unwitnessed, and says so
+        there.
+        """
+        try:
+            if event == LIFECYCLE_UP:
+                self.lifecycle.up(**fields)
+            else:
+                self.lifecycle.down(**fields)
+        except RecorderHealthError as exc:
+            self._note(f"lifecycle log: {event} not recorded: {exc}")
+
     def _shutdown(self) -> None:
         """Sync, normalize what is open, write a last heartbeat, close the files."""
         self._sync()
