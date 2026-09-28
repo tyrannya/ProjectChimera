@@ -391,11 +391,13 @@ def test_aegis_is_told_the_result_and_only_when_there_is_one():
     # exposes `risk` as a read-only property, so the alternative would be a
     # whole runner, and this test is about the writer and nothing else.
     runner = _Stand()
-    DemoRunner._tell_aegis(runner, _Mark(Decimal("10"), Decimal("-3")))
-    DemoRunner._tell_aegis(runner, _Mark(Decimal("11"), None))
+    DemoRunner._tell_aegis(runner, _Mark(Decimal("10"), Decimal("-3")), report_cycle=True)
+    DemoRunner._tell_aegis(runner, _Mark(Decimal("11"), None), report_cycle=True)
+    # The intervention paths: a result present, and deliberately not reported.
+    DemoRunner._tell_aegis(runner, _Mark(Decimal("12"), Decimal("-9")))
 
-    assert runner.risk.equities == [10.0, 11.0]
-    assert runner.risk.results == [-3.0], "a mark with no result said something"
+    assert runner.risk.equities == [10.0, 11.0, 12.0]
+    assert runner.risk.results == [-3.0], "a mark with no result, or no leave to report, spoke"
 
 
 def test_the_report_follows_the_ledger_save_at_every_call_site():
@@ -540,39 +542,101 @@ def test_the_three_limits_r1k_wired_have_a_reachable_caller():
     assert "self.risk.record_trade_result(" in runner, "no caller drives the loss streak"
 
 
-def test_three_flattens_open_the_cooldown_on_the_committed_limit(tmp_path):
-    """End to end, on section 7.4's own ``loss_streak_limit`` of 3.
+def test_only_the_ordinary_tick_reports_a_cycle(tmp_path):
+    """The load-bearing half: which path may tell Aegis a trade finished.
 
-    **This is the behavioural consequence of R1-k and it is deliberately
-    asserted rather than left to be discovered.** Before R1-k nothing called
-    ``record_trade_result``, so the cooldown could never open and the campaign
-    ran on regardless. Now it can, and it does: a round trip closed after a few
-    minutes pays both legs' fees and slippage against a basis that has barely
-    moved, so a short cycle is a small LOSS almost by construction. Three of
-    them running -- here three operator flattens -- meet the configured streak
-    and open the hour-long cooldown, which vetoes every entry until it expires.
+    ``consecutive_losses`` is a HASHED risk field. If a result were reported by
+    whichever path happened to mark the position, a campaign that crashed and was
+    repaired would reach a different ``risk.state_hash`` from the uninterrupted
+    one at the same equity -- and the convergence of those two is precisely what
+    R1-i's torn-settlement resolution establishes. Reporting only from the tick,
+    the path a replay also runs, is what keeps the counter replayable.
 
-    Whether counting an OPERATOR's flatten toward a strategy's loss streak is
-    what section 7.4 intends is a governance question and not this change's to
-    settle. What this change owes is that the answer be visible: the limit now
-    binds, the campaign now stops entering after three losing cycles, and that
-    is here in a test rather than in a surprise on a soak run.
+    Asserted from the source because the alternative is to run every one of the
+    six mark sites, and what the rule is about is which of them carries the flag.
     """
+    source = (REPO / "chimera" / "demo" / "runner.py").read_text(encoding="utf-8")
+
+    reporting = source.count("_tell_aegis(mark, report_cycle=True)")
+    assert reporting == 1, f"exactly one path may report a cycle, found {reporting}"
+
+    plain = source.count("self._tell_aegis(")
+    assert plain - reporting >= 4, "the intervention paths no longer go through the writer"
+
+    assert (
+        "if report_cycle and mark.cycle_result is not None:" in source
+    ), "the gate is gone; every marking path would report again"
+
+
+def test_an_intervention_clears_the_baseline_without_reporting(tmp_path):
+    """Both halves of what an operator flatten does, and does not, do.
+
+    It must CLEAR the cycle baseline -- otherwise the next round trip is measured
+    from a position that is long gone, which is the leak that made a profit
+    report as a loss -- and it must tell Aegis nothing, because an operator's
+    intervention is not the strategy losing money.
+    """
+    from chimera.futures.executor import FlattenCause
+
     from tests.demo_harness import build
 
     harness = build(tmp_path)
     first = harness.first_minute_ms()
-    risk = harness.runner.risk
+    minute = first
+    for index in range(6):
+        minute = first + index * MINUTE_MS
+        harness.tick(minute)
+        if harness.runner.position.state is HedgeState.HEDGED:
+            break
+    assert harness.runner.position.state is HedgeState.HEDGED
+    assert harness.runner.position.ledger.state.equity_at_open is not None
+    before = harness.runner.risk.state.consecutive_losses
 
-    assert risk.limits.loss_streak_limit == 3, "the committed campaign limit moved"
-    assert risk.state.consecutive_losses == 0
+    state = harness.runner.cursor.state_for(minute, now_ns=harness.runner.clock.now_ns)
+    harness.runner.position.install_quote(state)
+    harness.runner.position.emergency_reduce(FlattenCause.RISK_HALT, state)
+    mark = harness.runner.position.mark_to_market(state)
 
-    for index in range(33):
-        harness.tick(first + index * MINUTE_MS)
-        if index in (10, 20, 30):
-            harness.runner.flatten(f"operator flatten at minute {index}")
+    assert harness.runner.position.state is HedgeState.FLAT
+    assert mark.cycle_result is not None, "the close was not seen at all"
+    assert (
+        harness.runner.position.ledger.state.equity_at_open is None
+    ), "baseline left standing"
+    assert (
+        harness.runner.risk.state.consecutive_losses == before
+    ), "an intervention moved the strategy's loss streak"
 
-    assert risk.state.consecutive_losses >= 3, "the round trips reported nothing"
-    assert risk.state.cooldown_until > 0, "three losses did not open the cooldown"
-    assert _entry(risk).allowed is False
-    assert "cooldown" in _entry(risk).reason
+
+def test_a_reported_loss_still_opens_the_cooldown_at_the_committed_limit():
+    """And the gate still closes, on section 7.4's own ``loss_streak_limit``.
+
+    Narrowing WHICH path reports does not narrow what a report does: three
+    losses from the tick meet the committed limit and the next entry is refused.
+    """
+    clock = {"now": 1_000.0}
+    engine = RiskEngine(
+        RiskLimits(loss_streak_limit=3, cooldown_seconds=3_600.0),
+        clock=lambda: clock["now"],
+    )
+    engine.update_equity(1_000_000.0)
+
+    class _Stand:
+        def __init__(self, risk) -> None:
+            self.risk = risk
+
+    class _Mark:
+        def __init__(self, equity, result):
+            self.equity = equity
+            self.cycle_result = result
+
+    from chimera.demo.runner import DemoRunner
+
+    runner = _Stand(engine)
+    for _ in range(3):
+        DemoRunner._tell_aegis(
+            runner, _Mark(Decimal("999000"), Decimal("-40")), report_cycle=True
+        )
+
+    assert engine.state.consecutive_losses == 3
+    assert _entry(engine).allowed is False
+    assert "cooldown" in _entry(engine).reason

@@ -67,10 +67,15 @@ class RiskWiringError(ValueError):
 #:     ``evaluate_entry`` vetoes every increase while it is up.
 #: ``loss_streak_limit`` -> ``record_trade_result`` opens a cooldown at the Nth
 #:     consecutive loss. Reachable since R1-k: ``DemoRunner._tell_aegis`` reports
-#:     the result of every round trip the hedged position closes, taken as the
+#:     the result of every round trip the ORDINARY TICK closes, taken as the
 #:     change in EQUITY across the cycle (``CarryLedger.note_cycle``) so that the
 #:     funding, fees and slippage of both legs are all inside it. A cycle whose
-#:     opening equity was never recorded reports nothing rather than zero.
+#:     opening equity was never recorded reports nothing rather than zero, and a
+#:     cycle closed by an operator flatten, a liquidation flatten or a ledger
+#:     repair reports nothing either: those are interventions rather than the
+#:     strategy losing, and a counter that moved on them would be path-dependent
+#:     in a field the risk state HASHES, so a repaired campaign would stop
+#:     converging on the uninterrupted one (R1-i).
 #: ``max_open_positions`` -> ``evaluate_entry`` vetoes a new pair once this many
 #:     are open. Two, because the hedge is two legs.
 #: ``max_orders_per_minute`` -> ``record_order`` HALTS above this many approvals

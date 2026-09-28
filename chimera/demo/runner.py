@@ -1130,7 +1130,7 @@ class DemoRunner:
             return f"UNREADABLE -- it could not be read: {ledger.disputed}"
         return self._ledger_regression or "it may not speak for this campaign"
 
-    def _tell_aegis(self, mark: Any) -> None:
+    def _tell_aegis(self, mark: Any, *, report_cycle: bool = False) -> None:
         """Everything a finished MARK tells Aegis, through one writer (R1-k).
 
         The equity, as before, and -- new in R1-k -- the RESULT of a round trip
@@ -1145,20 +1145,41 @@ class DemoRunner:
         the risk engine that a trade finished is an ordering decision like every
         other one this loop makes.
 
+        **Only the ordinary tick reports a cycle** (``report_cycle``), and that
+        is the load-bearing half of this design rather than a caution. Every
+        other caller -- the operator flatten, the liquidation flatten, the
+        interrupted-touch completion, the dispute `resolve` -- marks the position
+        too, and a result reported from whichever path happened to mark would
+        make ``consecutive_losses`` PATH-DEPENDENT. It is a hashed risk field, so
+        a campaign that crashed and was repaired would then reach a different
+        `risk.state_hash` from the uninterrupted one at the same equity, and the
+        convergence of those two is exactly what R1-i's torn-settlement
+        resolution establishes. Reporting only from the tick -- the path a replay
+        also runs -- is what keeps the counter replayable, for the same reason
+        R1-g refused to write `catch_up` on a record: a field that records WHICH
+        PATH looked is not a fact about the campaign.
+
+        It is also the better attribution. An operator's flatten, a liquidation
+        touch and a ledger repair are interventions, not the strategy losing
+        money, and `loss_streak_limit` is a gate on a strategy that keeps losing.
+        The cost is stated plainly: a round trip closed by one of those paths is
+        never reported, so its result reaches no streak. The baseline is still
+        CLEARED on those paths -- `note_cycle` runs inside every mark -- so the
+        next cycle is measured from its own open and nothing leaks across.
+
         **After the ledger is persisted**, at every call site, because the mark
-        that produced the result also CLEARED the ledger's baseline for it. A
-        crash in the window between the two loses at most one cycle's report; the
-        other order would repeat one, and a cooldown opened on a trade that
-        happened once is a halt built on a fiction -- the same reason
-        ``note_cycle`` reports an unmeasured cycle as nothing rather than as
-        zero.
+        that produced the result also cleared that baseline. A crash in the
+        window between the two loses at most one cycle's report; the other order
+        would repeat one, and a cooldown opened on a trade that happened once is
+        a halt built on a fiction -- the same reason ``note_cycle`` reports an
+        unmeasured cycle as nothing rather than as zero.
 
         ``update_equity`` first, so a drawdown or daily-loss halt is raised on
         the equity that has just been saved, before anything else is said about
         the trade that produced it.
         """
         self.risk.update_equity(float(mark.equity))
-        if mark.cycle_result is not None:
+        if report_cycle and mark.cycle_result is not None:
             self.risk.record_trade_result(float(mark.cycle_result))
 
     def _ledger_may_speak(self) -> bool:
@@ -2324,7 +2345,7 @@ class DemoRunner:
         # Through the same helper as the halt paths above, so the runner has one
         # ledger-persist call and not two spellings of it three lines apart.
         self._save_ledger()
-        self._tell_aegis(mark)
+        self._tell_aegis(mark, report_cycle=True)
         self.cursor.mark_processed(minute_ms)
 
         record_hash = self._append(
