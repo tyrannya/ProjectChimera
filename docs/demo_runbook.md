@@ -410,9 +410,10 @@ recorder polls 60 s after each instant, then hourly), then `resume`. A runner
 resumed before the row lands halts again at once. If the venue never settles
 the announced instant, the runner cannot proceed past it in this build: that
 case is outside R1-g. The runner
-also defers, rather than halts, on a normalized day it catches mid-rewrite (the
-recorder rewrites a day in place until R1-h); the same file failing again
-unchanged still halts `feed_unreadable`.
+also defers, rather than halts, on a normalized day it cannot read while the
+day is changing (since R1-h the recorder replaces a day atomically, so a read
+no longer lands inside a rewrite); the same file failing again unchanged still
+halts `feed_unreadable`.
 
 The per-settlement detail -- settlement id, rate, mark price, quantity, notional,
 signed cash flow and direction -- is in the **`FUNDING` records of the decision
@@ -1306,7 +1307,12 @@ Two different signals:
 * `RecorderStreamStale` fires when one of the recorder's streams has delivered
   nothing for 3 minutes. Look at `chimera_recorder_up{stream=...}` and
   `chimera_recorder_reconnects_total` to tell a reconnecting stream from a dead
-  one.
+  one. A stream the venue pushes on a period (`um.markPrice`, `spot.kline_1m`)
+  that stays silent for 90 s on a connected socket makes the recorder end that
+  session and reconnect it (R1-h); those reconnects are counted apart as
+  `silent_reconnects` in each stream's entry in `health/heartbeat.json`. The
+  `bookTicker` streams and `um.kline_1m` are pushed only on change, so they
+  have no such watchdog: a silent one shows here, and is not reconnected for.
 * `chimera_demo_state{state="FEED_STALLED"} == 1` means the runner's READY gate
   has found that the recorder's heartbeat does not vouch for the perpetual kline
   stream within `max_data_delay_s` of the operational clock (section 0.4): the
@@ -1337,7 +1343,14 @@ confused:
   it waits for the next minute close — always from the main loop, never from a
   thread of its own, so a loop that wedges stops beating. The recorder also
   writes `health/heartbeat.json` under its storage root every 30 seconds, which
-  survives the process and is what to read after a crash.
+  survives the process and is what to read after a crash. Beside it,
+  `health/lifecycle.ndjson` (R1-h) is appended and never rewritten: a
+  `recorder.up` per start, a `recorder.down` per stop with its `reason` and
+  whether the `shutdown` was `complete`, had `errors` or `failed`, and a
+  `recorder.down_missing` written by the next start when a run left no `down`.
+  That record says only that the stop was not recorded, never why. It is
+  operational evidence about the recorder, read by nothing that computes a
+  minute, a digest or a decision.
 * `chimera_demo_last_minute_age_seconds` answers "how far behind the data is the
   runner", which is what rises during a catch-up and is not a liveness problem.
 * `chimera_demo_feed_age_seconds{market=...}` answers "how old is the newest
