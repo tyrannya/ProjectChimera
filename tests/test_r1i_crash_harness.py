@@ -34,6 +34,7 @@ import errno
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable
@@ -56,6 +57,7 @@ from r1i_crash import (
     economics,
     excluded_minutes,
     instrumented,
+    kill_at_the_note,
     operate,
     records,
     state_bytes,
@@ -83,6 +85,21 @@ class Scenario:
     #: The operator command the transition is, which an operator whose command
     #: died runs again.
     command: str | None = None
+    #: The world (recorder root) the scenario runs in.
+    world: str = "plain"
+    #: Exact recovery required (the R1-i blocker remediation's resolve sweeps):
+    #: no kill point may pass by excluding a minute, Aegis's funding streak is
+    #: compared with the reference's as each left it before its operator
+    #: `resume`, every OPERATOR request must be completed or reported, and no
+    #: settlement may be booked twice in the log.
+    exact: bool = False
+    #: The one exclusion an exact scenario may record, and only where it is
+    #: true: a torn-funding re-book killed after its ledger save and before its
+    #: completion record leaves the ledger's funding total ahead of every record
+    #: the log holds, which section 9.3's triage reports as LOG_BEHIND_STATE and
+    #: labels the resolve's pending minute (the index here). The economics must
+    #: still equal the reference's exactly.
+    rebook_log_behind_minute: int | None = None
 
 
 def _process(world: World, state_dir: Path, minutes: int) -> None:
@@ -248,6 +265,241 @@ SCENARIOS = [
 PAID_RATE = "-0.0003"
 FUNDING_PAID = Scenario("funding_paid", _prepare_minutes(479), _tick_to(479), 483)
 
+
+# ---------------------------------------------------------------------------
+# the R1-i blocker remediation: every operator resolve, killed at every step
+# ---------------------------------------------------------------------------
+#: The second settlement of the ``two_paid`` world (fixture settlements at
+#: hours 1 and 2, both paid): its minute's close is 02:00.
+SECOND_SETTLEMENT = 119
+#: Aegis's funding guard after the second settlement in an UNINTERRUPTED run,
+#: by scenario: the value every recovered run must hold before its resume.
+CLEAN_STREAK: dict[str, tuple[int, bool]] = {}
+
+
+def _resolve_selector(selector: str) -> Callable[[DemoRunner], None]:
+    def transition(runner: DemoRunner) -> None:
+        runner.start()
+        if selector.startswith("--ledger "):
+            runner.resolve_ledger(selector.split(" ", 1)[1], NOTE)
+        elif selector == "--symbol":
+            runner.resolve(runner.position.config.perp_symbol, NOTE)
+        else:
+            assert selector == "--equity"
+            runner.resolve_equity(NOTE)
+
+    return transition
+
+
+def _prepare_torn(origin: str, when: str) -> Callable[[World, Path], None]:
+    """The second settlement torn: killed ``before`` Aegis noted it (MISSED) or
+    ``after`` its note persisted (COUNTED), with the log's newest risk
+    statement a restated hash (``plain``) or an operator RESUME (``resumed``)."""
+
+    def prepare(world: World, state_dir: Path) -> None:
+        _process(world, state_dir, SECOND_SETTLEMENT)
+        if origin == "resumed":
+            (state_dir / "KILL_SWITCH").write_text("drill\n", encoding="utf-8")
+            halted = world.runner(state_dir)
+            assert halted.start() is RunnerState.HALT
+            halted.shutdown("halted")
+            (state_dir / "KILL_SWITCH").unlink()
+            operator = world.runner(state_dir)
+            operator.start()
+            operator.resume(NOTE)
+            operator.shutdown("resumed")
+        name = f"resolve_funding_{'counted' if when == 'after' else 'missed'}_{origin}"
+        clean = copy_state(state_dir, state_dir.parent / f"clean_{name}")
+        runner = world.runner(clean)
+        runner.start()
+        runner.tick(_BASE_MS[0] + SECOND_SETTLEMENT * 60_000)
+        assert runner.state is not RunnerState.HALT, runner.halt_reason
+        CLEAN_STREAK[name] = (
+            runner.risk.state.funding_adverse_streak,
+            runner.risk.state.funding_halt,
+        )
+        runner.shutdown("clean")
+        faults = Faults()
+        runner = world.runner(state_dir)
+        with instrumented(faults), kill_at_the_note(faults, when), pytest.raises(Killed):
+            runner.start()
+            runner.tick(_BASE_MS[0] + SECOND_SETTLEMENT * 60_000)
+        halted = world.runner(state_dir)
+        assert halted.start() is RunnerState.HALT
+        assert (halted.position.ledger.disputed or "").startswith("funding_booking_torn")
+        halted.shutdown("torn")
+
+    return prepare
+
+
+def _prepare_symbol_dispute(world: World, state_dir: Path) -> None:
+    """A REAL reconciliation mismatch: the dry-run venue reports a different
+    perpetual quantity at one hourly reconciliation (minute 60)."""
+    _process(world, state_dir, 60)
+    runner = world.runner(state_dir)
+    runner.start()
+    perp = runner.position.perp
+    symbol = runner.position.config.perp_symbol
+    real = perp.venue.reported_position
+
+    def once(sym):
+        held = real(sym)
+        if sym != symbol:
+            return held
+        perp.venue.reported_position = real
+        return type(held)(
+            symbol=held.symbol,
+            side=held.side,
+            quantity=held.quantity + D("0.001"),
+            entry_price=held.entry_price,
+            leverage=held.leverage,
+            margin_mode=held.margin_mode,
+        )
+
+    perp.venue.reported_position = once
+    runner.tick(_BASE_MS[0] + 60 * 60_000)
+    assert runner.state is RunnerState.HALT
+    runner.shutdown("halted on the dispute")
+    assert f"--symbol {symbol}" in [s for s, _ in _started(world, state_dir)]
+
+
+def _prepare_equity_dispute(world: World, state_dir: Path) -> None:
+    """R1-b's window: a tick killed between the ledger's save and Aegis's
+    ``update_equity``, so the two persisted equities disagree. On the first
+    settlement's minute (59), whose booking moves the equity (the fixture's
+    price path alone does not, this early)."""
+    _process(world, state_dir, 59)
+    runner = world.runner(state_dir)
+    runner.start()
+    faults = Faults()
+
+    def killed(*_args, **_kwargs):
+        faults.killed = True
+        raise Killed("killed before update_equity")
+
+    runner.risk.update_equity = killed  # type: ignore[method-assign]
+    with instrumented(faults), pytest.raises(Killed):
+        runner.tick(_BASE_MS[0] + 59 * 60_000)
+    assert "--equity" in [s for s, _ in _started(world, state_dir)]
+
+
+def _prepare_stale_leg(world: World, state_dir: Path) -> None:
+    """A stale leg: one leg last observed five minutes before the other."""
+    _process(world, state_dir, 10)
+    ledger = world.runner(state_dir)
+    ledger.start()
+    carry = ledger.position.ledger
+    marks = dict(carry.state.marked_at_ns)
+    carry.state.marked_at_ns["perp"] = marks["spot"] - 5 * 60_000_000_000
+    carry.save()
+    ledger.shutdown("stale")
+    assert "--ledger stale_leg" in [s for s, _ in _started(world, state_dir)]
+
+
+def _prepare_asymmetric_close(world: World, state_dir: Path) -> None:
+    """A close only the perpetual leg makes (the spot fill is refused), then the
+    runbook's `flatten`: the legs are level and ``asymmetric_close`` stands."""
+    from chimera.demo.rules import HedgeTarget, RuleDecision, RuleRegistry
+
+    class Closer:
+        rule_id = "R_closer"
+        version = "1.0.0"
+        actionable = True
+
+        def rule_hash(self):
+            return "sha256:" + "e" * 64
+
+        def params_hash(self):
+            return "sha256:" + "f" * 64
+
+        def evaluate(self, state, portfolio):
+            return RuleDecision(
+                rule_id=self.rule_id,
+                rule_hash=self.rule_hash(),
+                target=HedgeTarget(D("0")),
+                reason="synthetic close",
+                inputs_hash="sha256:" + "a" * 64,
+                params_hash=self.params_hash(),
+            )
+
+    _process(world, state_dir, 2)
+    runner = world.runner(state_dir)
+    runner.start()
+    runner.rules = RuleRegistry([Closer()])
+    runner.position.fill_models["spot"].max_reference_deviation_bps = D("0")
+    runner.tick(_BASE_MS[0] + 2 * 60_000)
+    assert runner.state is RunnerState.HALT
+    runner.shutdown("asymmetric")
+    flattening = world.runner(state_dir)
+    flattening.start()
+    assert flattening.position.imbalance()
+    flattening.flatten(NOTE)
+    flattening.shutdown("flattened")
+    again = world.runner(state_dir)
+    again.start()
+    assert not again.position.imbalance()
+    assert (again.position.ledger.disputed or "").startswith("asymmetric_close")
+    again.shutdown("level")
+
+
+def _started(world: World, state_dir: Path) -> list[tuple[str, str]]:
+    runner = world.runner(state_dir)
+    runner.start()
+    disputes = runner.standing_disputes()
+    runner.shutdown("looked")
+    return disputes
+
+
+RESOLVE_SCENARIOS = [
+    *(
+        Scenario(
+            f"resolve_funding_{'counted' if when == 'after' else 'missed'}_{origin}",
+            _prepare_torn(origin, when),
+            _resolve_selector("--ledger funding_booking_torn"),
+            SECOND_SETTLEMENT + 4,
+            command="resolve-ledger",
+            world="two_paid",
+            exact=True,
+            rebook_log_behind_minute=SECOND_SETTLEMENT,
+        )
+        for origin in ("resumed", "plain")
+        for when in ("after", "before")
+    ),
+    Scenario(
+        "resolve_symbol",
+        _prepare_symbol_dispute,
+        _resolve_selector("--symbol"),
+        64,
+        command="resolve",
+        exact=True,
+    ),
+    Scenario(
+        "resolve_equity",
+        _prepare_equity_dispute,
+        _resolve_selector("--equity"),
+        63,
+        command="resolve-equity",
+        world="two_paid",
+        exact=True,
+    ),
+    Scenario(
+        "resolve_stale_leg",
+        _prepare_stale_leg,
+        _resolve_selector("--ledger stale_leg"),
+        14,
+        command="resolve-ledger",
+        exact=True,
+    ),
+    Scenario(
+        "resolve_asymmetric_close",
+        _prepare_asymmetric_close,
+        _resolve_selector("--ledger asymmetric_close"),
+        6,
+        command="resolve-ledger",
+        exact=True,
+    ),
+]
+
 #: Worlds whose spot leg refuses every fill: a PARTIAL that corrects, and one
 #: that times out and is flattened (section 6.3).
 REFUSING = {"max_reference_deviation_bps": "0"}
@@ -264,7 +516,12 @@ CORRECTION_SCENARIOS = [
 def worlds(tmp_path_factory):
     """One recorder root per world, written once; state is copied per run."""
     made = {}
-    for name, spot in (("plain", None), ("refusing", REFUSING), ("paying", None)):
+    for name, spot in (
+        ("plain", None),
+        ("refusing", REFUSING),
+        ("paying", None),
+        ("two_paid", None),
+    ):
         base = tmp_path_factory.mktemp(f"world_{name}")
         harness = build(base, start=False)
         if name == "paying":
@@ -272,6 +529,13 @@ def worlds(tmp_path_factory):
             # direction that moves Aegis's funding streak (a rebate on a
             # streak already at zero moves nothing).
             harness.feed.write_settlements([DAY], rates={(DAY, 8): PAID_RATE})
+        if name == "two_paid":
+            # Two paid settlements, at hours 1 and 2 (fixture data): room for
+            # a halt and a RESUME between them, so the log's newest risk
+            # statement before the second is one that restates no hash.
+            harness.feed.write_settlements(
+                [DAY], hours=(1, 2), rates={(DAY, 1): PAID_RATE, (DAY, 2): PAID_RATE}
+            )
         world = World(root=harness.root)
         world.spot_model = spot  # type: ignore[attr-defined]
         (base / "_empty").mkdir()
@@ -350,11 +614,29 @@ def _reference(world: World, scenario: Scenario, base: Path, tmp: Path):
     with instrumented(faults):
         scenario.transition(world.runner(state_dir))
     assert not faults.uninventoried
+    operated = None
     if not scenario.ends_halted and scenario.command is not None:
         operated = operate(world, state_dir)
         assert not operated.refused, operated.refused
     result, final = _finish(world, state_dir, scenario)
+    if scenario.exact and operated is not None and operated.streak_before_resume is not None:
+        # The reference's own streak, as its resolve left it, before its resume
+        # (a resolve that leaves nothing halted -- `--equity` -- has none, and
+        # its final streak is compared as it is).
+        REFERENCE_STREAK[scenario.name] = operated.streak_before_resume[:2]
+    if scenario.exact and scenario.name in CLEAN_STREAK:
+        # A torn settlement's uninterrupted resolve must leave what an untorn
+        # settlement leaves: the reference is itself held to the clean run.
+        assert REFERENCE_STREAK.get(scenario.name) == CLEAN_STREAK[scenario.name], (
+            f"the uninterrupted resolve leaves {REFERENCE_STREAK.get(scenario.name)}; an "
+            f"untorn settlement leaves {CLEAN_STREAK[scenario.name]}"
+        )
     return faults.steps, result, final
+
+
+#: Aegis's funding guard as each exact scenario's reference left it before
+#: its operator resume.
+REFERENCE_STREAK: dict[str, tuple[int, bool]] = {}
 
 
 #: Fault points whose recovery excluded a minute (reported, not hidden).
@@ -383,7 +665,9 @@ def _run_crash(world, scenario, base, tmp, index, when):
     return state_dir, (result, final), operated
 
 
-def _differences(reference: dict, result: dict, operated) -> list[str]:
+def _differences(
+    reference: dict, result: dict, operated, reference_streak: tuple[int, bool] | None = None
+) -> list[str]:
     """Where a recovered run's economics differ from the uninterrupted one's.
 
     Aegis's funding streak is compared as the recovery LEFT it: an operator
@@ -396,7 +680,16 @@ def _differences(reference: dict, result: dict, operated) -> list[str]:
     reference, result = dict(reference), dict(result)
     problems = []
     before = operated.streak_before_resume
-    if before is not None and before[2] == len(reference["settled"]):
+    if reference_streak is not None:
+        # Both runs resumed after their resolve: each is compared as it stood
+        # just before its resume, which is what shows a settlement counted twice.
+        if before is None or before[:2] != reference_streak:
+            problems.append(
+                f"Aegis's funding streak before the resume is "
+                f"{None if before is None else before[:2]} where the reference holds "
+                f"{reference_streak}"
+            )
+    elif before is not None and before[2] == len(reference["settled"]):
         expected = reference.pop("funding_streak")
         result.pop("funding_streak")
         if before[:2] != expected:
@@ -428,7 +721,20 @@ def _sweep(world: World, scenario: Scenario, tmp: Path):
             failures.append(f"{label}: recovery refused: {operated.refused}")
             continue
         result, crash_final = outcome
-        if excluded_minutes(state_dir, since):
+        if scenario.exact:
+            failures.extend(
+                f"{label}: {p}"
+                for p in _exact(
+                    state_dir, since, _permitted_exclusion(scenario, steps, index, when)
+                )
+            )
+            failures.extend(
+                f"{label}: {p}"
+                for p in _differences(
+                    reference, result, operated, REFERENCE_STREAK.get(scenario.name)
+                )
+            )
+        elif excluded_minutes(state_dir, since):
             # Section 9.3's deliberate exclusion: a minute a crash left half
             # recorded is excluded and not decided again, so the next minute
             # sizes from the mark before it. Consistent (checked in `_finish`)
@@ -440,6 +746,77 @@ def _sweep(world: World, scenario: Scenario, tmp: Path):
             failures.append(f"{label}: ends {crash_final} where the reference ends {final}")
         failures.extend(f"{label}: {problem}" for problem in problems)
     return steps, failures
+
+
+def _permitted_exclusion(scenario: Scenario, steps, index: int, when: str) -> str | None:
+    """The one minute an exact scenario's kill point may see excluded, or None.
+
+    Only a torn-funding re-book's window: killed after the resolve's own ledger
+    save (the first ``carry_ledger.save`` after its ``requested`` record, which
+    is the first log append after ``start()``'s ``runner.save_state``) and
+    before its completion (the transition's last log append).
+    """
+    if scenario.rebook_log_behind_minute is None:
+        return None
+    kinds = [step.primitive for step in steps]
+    started = kinds.index("runner.save_state") + 1
+    requested = kinds.index("decision_log.append", started) + 1
+    saved = kinds.index("carry_ledger.save", requested) + 1
+    completion = len(kinds) - kinds[::-1].index("decision_log.append")
+    if (index == saved and when == "after") or saved < index < completion:
+        minute_ms = _BASE_MS[0] + scenario.rebook_log_behind_minute * 60_000
+        return datetime.fromtimestamp(minute_ms / 1000, tz=timezone.utc).isoformat()
+    return None
+
+
+def _exact(state_dir: Path, since: int, permitted: str | None = None) -> list[str]:
+    """What an exact scenario requires beyond the reference's economics."""
+    problems: list[str] = []
+    for record in records(state_dir)[since:]:
+        recovery = record.get("recovery")
+        if not isinstance(recovery, dict) or not recovery.get("evidence_excluded_minute"):
+            continue
+        minute = recovery["evidence_excluded_minute"]
+        if permitted is None or minute != permitted or recovery["cause"] != "LOG_BEHIND_STATE":
+            problems.append(
+                f"recovered only by excluding {minute} ({recovery['cause']}); exact "
+                f"recovery is required (permitted here: {permitted or 'none'})"
+            )
+    requested: set[int] = set()
+    closed: set[int] = set()
+    booked: dict[int, int] = {}
+    for record in records(state_dir):
+        operator = record.get("operator")
+        if isinstance(operator, dict):
+            if operator.get("phase") == "requested":
+                requested.add(int(record["seq"]))
+            elif isinstance(operator.get("request_seq"), int):
+                if operator["request_seq"] not in requested:
+                    problems.append(f"seq {record['seq']} completes an unknown request")
+                closed.add(int(operator["request_seq"]))
+            rebook = operator.get("rebook")
+            if (
+                operator.get("phase") == "completed"
+                and operator.get("kind") == "funding_booking_torn"
+                and isinstance(rebook, dict)
+            ):
+                instant = int(rebook["instant_ns"])
+                booked[instant] = booked.get(instant, 0) + 1
+        recovery = record.get("recovery")
+        if isinstance(recovery, dict) and recovery.get("cause") == "OPERATOR_INCOMPLETE":
+            closed.add(int(recovery["request_seq"]))
+        funding = record.get("funding")
+        if record.get("kind") == "FUNDING" and isinstance(funding, dict):
+            instant = int(funding["settlement_instant_ns"])
+            booked[instant] = booked.get(instant, 0) + 1
+    if requested - closed:
+        problems.append(
+            f"OPERATOR requests neither completed nor reported: {requested - closed}"
+        )
+    twice = {instant: n for instant, n in booked.items() if n > 1}
+    if twice:
+        problems.append(f"settlements booked more than once in the log: {twice}")
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +887,24 @@ def test_every_kill_point_recovers_to_the_reference(worlds, tmp_path, scenario):
 def test_every_kill_point_of_a_correction_recovers(worlds, tmp_path, scenario):
     world = _patch_world(worlds["refusing"])
     steps, failures = _sweep(world, scenario, tmp_path)
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.parametrize("scenario", RESOLVE_SCENARIOS, ids=lambda s: s.name)
+def test_every_kill_point_of_every_resolve_recovers_exactly(worlds, tmp_path, scenario):
+    """The R1-i blocker remediation's sweep: each successful operator resolve,
+    killed at every persistence step it makes (``start()``'s included), in both
+    variants, then restarted and driven through the documented operator paths
+    -- the interrupted resolve run again -- must reach its uninterrupted run
+    exactly: no excluded minute, the same economics, Aegis's funding streak as
+    the uninterrupted resolve (and, for a torn settlement, an untorn one) left
+    it, every OPERATOR request completed or reported, no settlement booked
+    twice, and a second restart that finds nothing new."""
+    steps, failures = _sweep(worlds[scenario.world], scenario, tmp_path)
+    primitives = {step.primitive for step in steps}
+    assert {"decision_log.append", "runner.save_state"} <= primitives, primitives
+    if scenario.command == "resolve-ledger" and scenario.name != "resolve_stale_leg":
+        assert "carry_ledger.save" in primitives, primitives
     assert not failures, "\n".join(failures)
 
 
