@@ -1016,8 +1016,11 @@ def test_the_continuity_hash_is_the_one_the_runner_writes(tmp_path):
     engine = harness.runner.risk
 
     assert _risk_hash(engine) == risk_state_hash(engine.snapshot())
-    assert risk_continuity.RISK_HASH_EXCLUDED == frozenset(
-        {"order_times", "cooldown_until", "day"}
+    # R1-j: the hash the runner writes leaves out nothing; the legacy policy's
+    # set is kept, by name, for the records written before it.
+    assert risk_continuity.RISK_HASH_EXCLUDED == frozenset()
+    assert risk_continuity.RISK_HASH_POLICIES[risk_continuity.RISK_HASH_POLICY_LEGACY] == (
+        frozenset({"order_times", "cooldown_until", "day"})
     )
 
 
@@ -1198,7 +1201,17 @@ def test_mutant_d_reading_the_statement_off_the_physically_last_record(tmp_path,
             return LogRiskStatement.STATE_HASH, found
         return real_statement(record)
 
+    real_policy = risk_continuity._policy_of
+
+    def mutant_policy(record):
+        # R1-j: the same shortcut reads the policy stated beside the hash it took.
+        block = record.get("recovery", {}).get("risk_continuity", {})
+        if block.get("found_state_hash"):
+            return block.get("hash_policy", risk_continuity.RISK_HASH_POLICY_LEGACY)
+        return real_policy(record)
+
     monkeypatch.setattr(risk_continuity, "_statement_of", mutant)
+    monkeypatch.setattr(risk_continuity, "_policy_of", mutant_policy)
 
     assert (
         restart(tmp_path, config).runner.state is RunnerState.HALT

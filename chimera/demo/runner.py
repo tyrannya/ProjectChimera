@@ -70,6 +70,7 @@ from chimera.demo.feed import (
 from chimera.demo.inspection import DemoInspection, store_exposure
 from chimera.demo.risk_continuity import (
     RISK_CONTINUITY_SEALED_FIELD,
+    RISK_HASH_POLICY,
     RiskContinuity,
     RiskContinuityFault,
     assess_risk_continuity,
@@ -1652,7 +1653,7 @@ class DemoRunner:
                 },
                 # Restated, so the next start compares the repaired file with a
                 # statement that describes it.
-                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "risk": {**_risk_statement(self.risk), "decisions": []},
                 "veto_or_rejection": {
                     "stage": "recovery",
                     "label": RecoveryCause.EXPOSURE_RESYNC.value.lower(),
@@ -2447,7 +2448,7 @@ class DemoRunner:
                         else ReconciliationOutcome.MISMATCH.value
                     ),
                 },
-                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "risk": {**_risk_statement(self.risk), "decisions": []},
                 "position_after": self._position_block(),
                 "veto_or_rejection": (
                     None
@@ -2670,7 +2671,7 @@ class DemoRunner:
                 "funding_paid_total": str(ledger.funding_paid),
                 "funding_received_total": str(ledger.funding_received),
             },
-            "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+            "risk": {**_risk_statement(self.risk), "decisions": []},
             "position_after": self._position_block(),
             "ledger_effect": self._ledger_effect(mark.equity),
             "veto_or_rejection": None,
@@ -2772,7 +2773,7 @@ class DemoRunner:
                     "spot_minute_digest": state.spot_digest,
                     "inputs_hash": _inputs_hash(state),
                 },
-                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "risk": {**_risk_statement(self.risk), "decisions": []},
                 "position_after": before,
                 # R1-i: the recorded minute whose book the flatten below fills
                 # against. Not always this record's own minute -- R1-g's
@@ -4496,7 +4497,7 @@ class DemoRunner:
                 for intent in intents
             ],
             "risk": {
-                "state_hash": _risk_hash(self.risk),
+                **_risk_statement(self.risk),
                 "decisions": [] if veto is None else [dict(veto)],
             },
             "execution": _execution_block(self.position, orders_before),
@@ -4575,6 +4576,13 @@ def _risk_hash(risk: RiskEngine) -> str:
     can fail silently.
     """
     return risk_state_hash(risk.snapshot())
+
+
+def _risk_statement(risk: RiskEngine) -> dict[str, str]:
+    """The hash half of a record's ``risk`` block, with the policy it was taken
+    under (R1-j). The next start's R1-c reads the policy back and hashes the file
+    under it, so which fields the hash covers is stated, not implied."""
+    return {"state_hash": _risk_hash(risk), "hash_policy": RISK_HASH_POLICY}
 
 
 def _config_hash(config: DemoConfig) -> str:
