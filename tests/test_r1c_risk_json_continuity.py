@@ -2182,10 +2182,10 @@ def crash_before_a_paid_settlement_is_recorded(tmp_path: Path):
     ``DemoRunner._settle_funding`` books the settlement into the ledger (which
     marks it) and reports it to Aegis (``note_funding_settlement``, which moves
     the hashed adverse streak) before it appends the record that restates the
-    hash. So the kill leaves all three at once: a ``RISK_STATE_MISMATCH`` no
-    Aegis-only proof explains (the funding-streak window is unproved), a
-    section 9.3 ``LOG_BEHIND_STATE`` triage that does explain it, and a ledger
-    equity Aegis never received -- the disagreement R1-b exists to catch.
+    hash. So the kill leaves all three at once: a ``RISK_STATE_MISMATCH`` that
+    R1-i's ``funding`` window now proves (R1-c left it unproved), a section 9.3
+    ``LOG_BEHIND_STATE`` triage that also explains it, and a ledger equity Aegis
+    never received -- the disagreement R1-b exists to catch.
     """
     harness = build(tmp_path, days=(DAY,))
     harness.feed.write_settlements([DAY], hours=(1,), rate="-0.0001")
@@ -2204,7 +2204,11 @@ def test_b4_a_real_crash_mismatch_is_reconciled_after_the_verdict(tmp_path, monk
     """B4-3. The crash explains the mismatch, so the file is released -- and R1-b
     runs THEN, exactly once, on the released engine, and still disputes the
     equity the crash left behind. The operator's clearing path works and the
-    campaign runs again."""
+    campaign runs again.
+
+    R1-i: the funding-streak window is now PROVED as well, so the finding is
+    named ``funding`` and gets its own (deferring, not sealing) ``RECOVERY``
+    beside the triage's -- the same as every other proved window."""
     harness = crash_before_a_paid_settlement_is_recorded(tmp_path)
     config = harness.runner.config
     state_dir = harness.state_dir
@@ -2217,11 +2221,12 @@ def test_b4_a_real_crash_mismatch_is_reconciled_after_the_verdict(tmp_path, monk
 
     verdict = resumed.runner.risk_continuity
     assert verdict.fault is RiskContinuityFault.RISK_STATE_MISMATCH
-    assert verdict.crash_transition == "", "not an Aegis-only window"
+    assert verdict.crash_transition == "funding", "R1-i proves the funding-streak window"
     assert RecoveryCause.LOG_BEHIND_STATE.value in [
         r["recovery"]["cause"] for r in records(state_dir) if r["kind"] == "RECOVERY"
-    ], "section 9.3's triage is what explains it"
-    assert not resumed.runner.risk.continuity_disputed and not continuity_recoveries(state_dir)
+    ], "section 9.3's triage explains it too"
+    assert not resumed.runner.risk.continuity_disputed
+    assert len(continuity_recoveries(state_dir)) == 1, "recorded, and deferred"
     assert calls == [("DemoRunner.start", False)], "R1-b ran once, after the release"
     assert resumed.runner.state is RunnerState.HALT
     assert resumed.runner.halt_reason.startswith(risk_wiring.EQUITY_DISPUTE_PREFIX)
