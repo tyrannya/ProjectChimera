@@ -124,6 +124,9 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "replay_determinism: R1-j's 48 h synthetic replay-parity witness; run by CI's dedicated replay-determinism job",
+]
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.*",
     "ignore:Using `httpx` with `starlette.testclient`:UserWarning",
