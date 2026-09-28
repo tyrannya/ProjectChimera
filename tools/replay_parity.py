@@ -646,50 +646,83 @@ def replay_with_actions(
     """Replay ``first_ms``..``last_ms`` and apply the committed operator actions.
 
     Section 10's replay (``DemoRunner.replay``), cut at each action's anchor:
-    the minutes up to and including ``after_minute`` are decided, the action is
-    performed through `DemoRunner.apply_operator_action` -- the CLI's own
-    `flatten` / `resume` -- and the replay continues from the runner's cursor.
-    With no actions this is exactly one ``runner.replay(first_ms, last_ms)``.
+    the minutes up to and including ``after_minute`` are decided, the actions
+    anchored there are performed in file order through
+    `DemoRunner.apply_operator_action` -- the CLI's own `flatten` / `resume` --
+    and the replay continues from the runner's cursor. With no actions this is
+    exactly one ``runner.replay(first_ms, last_ms)``.
+
+    **A halted anchor.** A runner that halts while deciding a minute does not
+    count that minute as processed, so an operator who resumed it did so with
+    the cursor on the minute BEFORE the halting one, and that is the anchor the
+    live records carry. When an anchor carries a ``resume``, the replay is
+    therefore required to be halted there: if it is not already, it attempts the
+    next minute, as the service did, and that attempt must halt without deciding
+    the minute. Anything else -- the replay decides the minute, or never halts --
+    means the halt the operator cleared did not happen in the replay, and the
+    action is refused rather than performed on a runner in another state.
 
     Returns the ids of the actions applied, in order. Raises
     :class:`OperatorActionRefused` when an action lies outside the replay's
-    range, when the replay never reached its anchor (it halted, or a minute was
-    deferred), or when the runner refused to perform it. A committed action is
-    never skipped.
+    range, when the replay never reached its anchor (it halted earlier, or a
+    minute was deferred), when a resume's halt did not happen, or when the
+    runner refused to perform the action. A committed action is never skipped.
     """
     from chimera.demo.runner import RunnerError, RunnerState
 
     applied: list[str] = []
     listed = list(actions.actions) if actions is not None else []
     for action in listed:
-        anchor = action.after_minute_ms
-        if not first_ms <= anchor <= last_ms:
+        if not first_ms <= action.after_minute_ms <= last_ms:
             raise OperatorActionRefused(
                 f"operator action {action.id!r} is anchored after {action.after_minute}, "
                 "outside the replayed range; an action for a minute this replay does not "
                 "decide cannot be applied, and it is not skipped"
             )
+    groups: list[tuple[int, list[Any]]] = []
+    for action in listed:
+        if groups and groups[-1][0] == action.after_minute_ms:
+            groups[-1][1].append(action)
+        else:
+            groups.append((action.after_minute_ms, [action]))
+    for anchor, group in groups:
         upcoming = runner.cursor.next_minute_ms()
         if upcoming is not None and upcoming <= anchor:
             runner.replay(upcoming, anchor)
+        halted_anchor = any(a.command == "resume" for a in group)
+        if (
+            halted_anchor
+            and runner.state is not RunnerState.HALT
+            and runner.cursor.last_minute_processed == anchor
+            and anchor + 60_000 <= last_ms
+        ):
+            runner.replay(anchor + 60_000, anchor + 60_000)
         reached = runner.cursor.last_minute_processed
-        if reached != anchor:
-            raise OperatorActionRefused(
-                f"operator action {action.id!r} ({action.command}) is anchored after "
-                f"{action.after_minute}, and the replay's last decided minute is "
-                f"{reached} (state {runner.state.value}): the replay never reached the "
-                "anchor, so the action cannot be applied where the file says it was"
-            )
-        try:
-            runner.apply_operator_action(
-                action.command, action.note, replay_action=actions.attribution(action)
-            )
-        except RunnerError as exc:
-            raise OperatorActionRefused(
-                f"operator action {action.id!r} ({action.command} after "
-                f"{action.after_minute}) cannot be performed by the replay: {exc}"
-            ) from exc
-        applied.append(action.id)
+        for action in group:
+            if reached != anchor:
+                raise OperatorActionRefused(
+                    f"operator action {action.id!r} ({action.command}) is anchored after "
+                    f"{action.after_minute}, and the replay's last decided minute is "
+                    f"{reached} (state {runner.state.value}): the replay never reached "
+                    "the anchor, so the action cannot be applied where the file says it was"
+                )
+            if halted_anchor and runner.state is not RunnerState.HALT:
+                raise OperatorActionRefused(
+                    f"operator action {action.id!r} ({action.command}) shares its anchor "
+                    f"{action.after_minute} with a resume, and the replay is not halted "
+                    f"there (state {runner.state.value}): the halt the operator cleared "
+                    "did not happen in the replay"
+                )
+            try:
+                runner.apply_operator_action(
+                    action.command, action.note, replay_action=actions.attribution(action)
+                )
+            except RunnerError as exc:
+                raise OperatorActionRefused(
+                    f"operator action {action.id!r} ({action.command} after "
+                    f"{action.after_minute}) cannot be performed by the replay: {exc}"
+                ) from exc
+            applied.append(action.id)
     upcoming = runner.cursor.next_minute_ms()
     if (
         upcoming is not None

@@ -413,7 +413,8 @@ def _order_window_reversions(
     survivors (a prefix) and entries appended since the statement (the rest).
     An appended entry must be at or after the statement's own clock and, when
     the file says when it was written, no later than that. Pruned entries are
-    put back in front of the survivors. Their values can only be decision-clock
+    put back in front of the survivors, and every survivor must still be inside
+    the window at that instant. Pruned values can only be decision-clock
     instants from the 60 seconds up to the statement, which are exactly the
     ``runner_now_ns`` values of the log's records in that span
     (:attr:`LogRiskHistory.window_clocks_ns`). A pruned entry must be at least
@@ -446,6 +447,10 @@ def _order_window_reversions(
         if any(t < statement_s for t in appended):
             continue
         if written_at_s is not None and any(t > written_at_s for t in appended):
+            continue
+        if written_at_s is not None and any(
+            written_at_s - t >= _ORDER_WINDOW_S for t in survivors
+        ):
             continue
         for pruned in _order_multisets(instants, max(0, cap - len(survivors))):
             if pruned:
