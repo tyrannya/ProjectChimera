@@ -35,6 +35,7 @@ import pytest
 
 from chimera.carry.hedge import PERP, SPOT, HedgeState, HedgedPosition
 from chimera.carry.ledger import CarryLedger
+from chimera.demo.feed import FeedCursor
 from chimera.risk import RiskEngine, RiskLimits
 
 REPO = Path(__file__).resolve().parents[1]
@@ -160,23 +161,41 @@ def test_a_minute_with_no_published_rate_skips_the_branch():
 
 
 def test_the_feed_reads_the_forward_rate_off_the_perpetual_row(tmp_path):
-    """Where ``funding_rate_next`` comes from, asserted against the real files.
+    """Where each rate comes from, asserted against files where they DIFFER.
 
     The recorder's COLUMN is called ``funding_rate_last`` and holds the mark
-    stream's ``r`` -- the last rate PUBLISHED, which is the next one to be
-    charged. ``MarketState`` names it for what it is about instead, and the two
-    fields must not be crossed: this asserts the state's forward rate against the
-    perpetual row and its realised rate against the settlement rows.
+    stream's ``r`` -- the last rate PUBLISHED, which is the next to be charged.
+    ``MarketState`` names it for what it is about instead, and the two fields
+    must not be crossed.
+
+    The fixture writes ``0.0001`` into BOTH the perpetual row's column and the
+    settlement rows, so on its own minutes a crossed wiring is invisible -- the
+    mutation campaign proved it, by surviving a mutant that read the settlement
+    rate into the forward field. The settlements are therefore rewritten at a
+    different rate here, which is the only arrangement in which the two sources
+    are distinguishable.
     """
-    from tests.demo_harness import build
+    from chimera.demo.fixtures import SyntheticFeed
+    from chimera.recorder.contract import load_recorder_contract
+
+    from tests.demo_harness import DAY, build
 
     harness = build(tmp_path)
+    SyntheticFeed(
+        tmp_path / "recorder", load_recorder_contract("btcusdt-prospective-gen3")
+    ).write_settlements([DAY], rate="-0.0031")
+
+    cursor = FeedCursor(tmp_path / "recorder", harness.runner.cursor.contract)
     minute = harness.first_minute_ms()
-    state = harness.runner.cursor.state_for(minute, now_ns=harness.runner.clock.now_ns)
-    row = harness.runner.cursor.record("um", minute)
+    state = cursor.state_for(minute, now_ns=harness.runner.clock.now_ns)
+    row = cursor.record("um", minute)
 
     assert row is not None
     assert state.funding_rate_next == row.decimal("funding_rate_last")
+    assert state.funding_rate_next == Decimal("0.0001"), "the forward rate moved"
+    assert (
+        state.funding_rate_next != state.funding_rate_last
+    ), "the two sources are indistinguishable; this test proves nothing"
 
 
 # ---------------------------------------------------------------------------
@@ -406,22 +425,41 @@ def test_the_report_follows_the_ledger_save_at_every_call_site():
     The mark that produces a result also CLEARS the ledger's baseline for it, so
     a crash between the two must lose the report rather than repeat it: a
     cooldown opened on a trade that happened once is a halt built on a fiction.
-    Every ``_tell_aegis`` call therefore sits below its branch's ``_save_ledger``.
+
+    Measured as "the nearest ``_save_ledger`` is ABOVE, not below". Looking only
+    for a save somewhere in the lines above was too weak -- this function has
+    several, so a report hoisted one line above its own save still found an
+    earlier branch's, and the mutation campaign walked straight through it.
     """
     source = (REPO / "chimera" / "demo" / "runner.py").read_text(encoding="utf-8")
     lines = source.splitlines()
 
-    calls = [i for i, line in enumerate(lines) if "self._tell_aegis(" in line]
-    definition = [i for i, line in enumerate(lines) if "def _tell_aegis(" in line]
-    assert definition, "the single writer is gone"
-    calls = [i for i in calls if i > definition[0] + 40]
+    definition = next(i for i, line in enumerate(lines) if "def _tell_aegis(" in line)
+    calls = [
+        i
+        for i, line in enumerate(lines)
+        if "self._tell_aegis(" in line and i > definition + 60
+    ]
     assert len(calls) >= 5, f"expected every mark site to report, found {len(calls)}"
 
     for index in calls:
-        window = "\n".join(lines[max(0, index - 25) : index])
-        assert (
-            "_save_ledger()" in window
-        ), f"the report at line {index + 1} does not follow a ledger save"
+        above = next(
+            (index - k for k in range(1, 30) if "_save_ledger()" in lines[index - k]),
+            None,
+        )
+        below = next(
+            (
+                k
+                for k in range(1, 30)
+                if index + k < len(lines) and "_save_ledger()" in lines[index + k]
+            ),
+            None,
+        )
+        assert above is not None, f"the report at line {index + 1} follows no ledger save"
+        if below is not None:
+            assert (
+                index - above
+            ) < below, f"the report at line {index + 1} is above its own ledger save"
 
 
 # ---------------------------------------------------------------------------
