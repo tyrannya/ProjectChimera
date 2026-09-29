@@ -263,7 +263,7 @@ deterministic rate-limit and cooldown state from parity.
 | `schema`, `equity`, `peak_equity`, `day_start_equity`, `daily_pnl`, `open_positions` | `update_equity`, fills | decision clock | yes | hashed | hashed |
 | `day` | `update_equity`'s day roll | decision clock (`datetime.fromtimestamp(clock())`) | yes | **excluded** | **hashed** |
 | `order_times` | `record_order`; pruned by every persist | decision clock | yes | **excluded** | **hashed** |
-| `cooldown_until` | `record_trade_result` (no caller on the demo path, so always `0.0`; wiring it is R1-k's) | decision clock | yes | **excluded** | **hashed** |
+| `cooldown_until` | `record_trade_result` (no caller on the demo path, so always `0.0`; R1-k retired the loss streak and the cooldown from the campaign schema rather than invent a caller) | decision clock | yes | **excluded** | **hashed** |
 | `consecutive_losses` | `record_trade_result` (no caller) | none | yes | hashed | hashed |
 | `halted`, `halt_reason`, `kill_switch` | `halt`, `resume`, `check_kill_switch` | none | yes, except a kill switch, which is an operator's file | hashed | hashed |
 | `stale_feed_since` | `note_feed`, which has no caller on the demo path since R1-f, so always `null` | would be the operational clock | yes (constant) | hashed | hashed |
