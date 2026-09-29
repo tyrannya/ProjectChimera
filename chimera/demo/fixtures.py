@@ -72,6 +72,8 @@ class SyntheticFeed:
         seed: int = 7,
         spot_base: float = 30000.0,
         basis: float = 30.0,
+        mark_funding_rate: float | None = 0.0001,
+        mark_funding_rates: Mapping[int, float | None] | None = None,
     ) -> None:
         self.root = Path(root)
         self.contract = contract
@@ -79,6 +81,13 @@ class SyntheticFeed:
         self.seed = int(seed)
         self.spot_base = float(spot_base)
         self.basis = float(basis)
+        #: The mark stream's funding rate ``r`` written on every minute that has
+        #: a mark (the perpetual row's ``funding_rate_last`` column), and
+        #: per-minute overrides keyed by the minute's OPEN in epoch ms. R1-k's
+        #: funding-cost veto judges this value; ``None`` writes a minute whose
+        #: mark arrived without a rate. Tests and drills only.
+        self.mark_funding_rate = mark_funding_rate
+        self.mark_funding_rates = dict(mark_funding_rates or {})
 
     # --- the invented price path ------------------------------------------
     def spot_close(self, minute_index: int) -> float:
@@ -128,7 +137,11 @@ class SyntheticFeed:
                     "index_low": mark,
                     "index_close": mark,
                     "mark_events": 1 if shape.mark else 0,
-                    "funding_rate_last": 0.0001 if shape.mark else None,
+                    "funding_rate_last": (
+                        self.mark_funding_rates.get(minute_open_ms, self.mark_funding_rate)
+                        if shape.mark
+                        else None
+                    ),
                     "next_funding_time_ms": self._next_funding_ms(minute_open_ms),
                 }
             )

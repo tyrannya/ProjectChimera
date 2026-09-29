@@ -160,6 +160,19 @@ def _decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _finite(value: Decimal | None) -> Decimal | None:
+    """``value``, or None when it is not a finite number (R1-k).
+
+    A NaN, a signalling NaN or an infinity read from a file is not a rate
+    anything could have published; Aegis compares with ``>``, where a NaN is
+    never above a limit and ``+inf`` is a rebate to a short, so either would
+    pass a veto it should have failed.
+    """
+    if value is None or not value.is_finite():
+        return None
+    return value
+
+
 def plain_json(value: Any) -> Any:
     """Coerce a value read out of a parquet frame into plain JSON types.
 
@@ -252,6 +265,20 @@ class MarketState:
 
     funding_rate_last: Decimal | None = None
     next_funding_time_ms: int | None = None
+    #: R1-k. The funding rate the venue had IN EFFECT at this minute's close:
+    #: the mark-price stream's ``r`` at the minute's last mark event, stored on
+    #: the perpetual's normalized row as ``funding_rate_last`` (a recorder
+    #: column name that means "the last ``r`` seen this minute"). The recorder
+    #: calls it "the rate currently in effect, not a realised payment"
+    #: (`chimera.recorder.rest`), and it is the rate the next settlement at
+    #: ``next_funding_time_ms`` will charge as far as anything knows at the
+    #: decision. It is what Aegis's funding-cost entry veto judges.
+    #:
+    #: NOT :attr:`funding_rate_last` above, which is the rate of the last
+    #: REALISED settlement at or before the minute's open, read from the
+    #: settlements file: a payment already made, possibly hours old, and absent
+    #: before a campaign's first settlement.
+    funding_rate_current: Decimal | None = None
 
     perp_digest: str = ""
     spot_digest: str = ""
@@ -287,6 +314,9 @@ class MarketState:
             "book_spot": render(dict(self.book_spot)),
             "book_perp": render(dict(self.book_perp)),
             "funding_rate_last": render(self.funding_rate_last),
+            # R1-k: the input the funding-cost entry veto judges, so a decision
+            # minute that omitted it would hash away one of its own inputs.
+            "funding_rate_current": render(self.funding_rate_current),
             "next_funding_time_ms": self.next_funding_time_ms,
             "um_minute_digest": self.perp_digest,
             "spot_minute_digest": self.spot_digest,
@@ -724,6 +754,18 @@ class FeedCursor:
             missing.append("spot_book")
         if perp is not None and not bool(perp.value("mark_present")):
             missing.append("um_mark")
+        funding_current = _finite(perp.decimal("funding_rate_last")) if perp else None
+        if perp is not None and bool(perp.value("mark_present")) and funding_current is None:
+            # R1-k. The funding-cost entry veto cannot judge an increase without
+            # the rate in effect, and a veto that skipped its own input would
+            # approve exactly when it knew least. So a minute whose mark arrived
+            # without a rate is incomplete, the section 2.2 contract: no rule
+            # evaluates. A NaN is stored as null and lands here too. An infinity
+            # never does: the recorder's normalizer refuses a non-finite `r` and
+            # stops the day (`chimera.recorder.normalize._number`), and a file
+            # written around it fails this module's per-row digest, which halts
+            # the runner (`feed_unreadable`). `_finite` is the last line only.
+            missing.append("um_funding_rate")
 
         def ohlcv(record: MinuteRecord | None) -> dict[str, Decimal | None]:
             if record is None:
@@ -775,6 +817,7 @@ class FeedCursor:
                 if perp is not None and perp.value("next_funding_time_ms") is not None
                 else None
             ),
+            funding_rate_current=funding_current,
             perp_digest=perp.row_digest if perp else "",
             spot_digest=spot.row_digest if spot else "",
             feed_age_ns=ages,

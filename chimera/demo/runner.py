@@ -4538,6 +4538,13 @@ class DemoRunner:
                     if state.funding_rate_last is not None
                     else None
                 ),
+                # R1-k: the rate in effect that Aegis's funding-cost entry veto
+                # judged this minute, beside the realised `funding_last` it is not.
+                "funding_current": (
+                    str(state.funding_rate_current)
+                    if state.funding_rate_current is not None
+                    else None
+                ),
                 "inputs_hash": _inputs_hash(state),
             },
             "requested_action": [
@@ -4690,6 +4697,9 @@ def _execution_block(
                     "filled_qty": str(getattr(record, "filled_quantity", "")),
                     "average_price": str(getattr(record, "average_price", "")),
                     "fees": str(getattr(record, "fees", "")),
+                    # R1-k: why an order ended where it did -- an Aegis veto's
+                    # reason above all, which otherwise lived only in the store.
+                    "reason": str(getattr(record, "reason", "") or ""),
                 }
             )
     return block

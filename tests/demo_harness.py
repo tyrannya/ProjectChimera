@@ -206,12 +206,19 @@ def build(
     with_shadow: bool = True,
     start: bool = True,
     telemetry: Any | None = None,
+    mark_funding_rate: float | None = 0.0001,
+    mark_funding_rates: Mapping[int, float | None] | None = None,
 ) -> Harness:
     root = tmp_path / "recorder"
     state_dir = tmp_path / "state"
     contract = load_recorder_contract("btcusdt-prospective-gen3")
 
-    feed = SyntheticFeed(root, contract)
+    feed = SyntheticFeed(
+        root,
+        contract,
+        mark_funding_rate=mark_funding_rate,
+        mark_funding_rates=mark_funding_rates,
+    )
     feed.write_days(list(days), shapes=shapes)
     feed.write_settlements(list(days))
     # A live recorder beside the files (R1-f's READY gate reads its heartbeat),

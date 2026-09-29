@@ -126,6 +126,7 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "replay_determinism: R1-j's 48 h synthetic replay-parity witness; run by CI's dedicated replay-determinism job",
+    "unsafe_default: R1-k's unsafe-default detector (a configured limit no code path enforces); also run by CI's dedicated unsafe-default-detector job",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.*",

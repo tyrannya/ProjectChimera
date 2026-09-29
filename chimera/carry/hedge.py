@@ -125,6 +125,14 @@ class CarryMarketState(Protocol):
     @property
     def mark_high(self) -> Decimal | None: ...
 
+    @property
+    def funding_rate_current(self) -> Decimal | None:
+        """The perpetual's funding rate in effect at the minute's close (R1-k).
+
+        What Aegis's funding-cost entry veto judges for the PERPETUAL leg.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class PerpSettlement:
@@ -546,6 +554,7 @@ class HedgedPosition:
                 TargetPosition(symbol=symbol, side=intent.side, quantity=intent.quantity),
                 reference,
                 equity=equity,
+                **self._funding_input(intent, state),
             )
             self.ledger.note_leg_mark(intent.leg, state.minute_ns)
             # Frictions are taken from whatever came back, filled or not. A
@@ -559,6 +568,35 @@ class HedgedPosition:
             else:
                 unfilled.append(intent.leg)
                 break
+
+    def _funding_input(self, intent: LegIntent, state: CarryMarketState) -> dict[str, float]:
+        """The ``funding_rate`` a leg's ``execute_target`` is handed (R1-k).
+
+        The PERPETUAL leg only. Funding is paid and received on the perpetual;
+        the spot leg holds no funding exposure, so it is never judged on a rate.
+        The executor asks Aegis only about an exposure-INCREASING intent, which
+        is what keeps reductions and every flatten ungated by it
+        (`FuturesExecutor._run_intent`); the side Aegis applies the rate to is
+        that intent's own ``position_side``, the A10 convention.
+
+        A perpetual increase with no rate is refused here, loudly, rather than
+        sent with ``None``: Aegis reads ``None`` as "nothing to judge" and would
+        approve it. A complete `MarketState` always carries the rate -- the
+        feed marks a minute without one incomplete (``um_funding_rate``) -- so
+        reaching this is a state that broke that contract.
+        """
+        if intent.leg != PERP:
+            return {}
+        rate = state.funding_rate_current
+        if rate is None:
+            if intent.quantity > self.leg(PERP).quantity:
+                raise HedgeError(
+                    f"the perpetual leg would increase to {intent.quantity} on a minute "
+                    "with no funding rate in effect, so Aegis's funding-cost veto has "
+                    "nothing to judge; a complete market state always carries one"
+                )
+            return {}
+        return {"funding_rate": float(rate)}
 
     @staticmethod
     def _frictions(records: list[Any], reference: Decimal) -> tuple[Decimal, Decimal]:
