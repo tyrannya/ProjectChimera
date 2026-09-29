@@ -40,8 +40,6 @@ This module opens no file for write, makes no decision and reads no clock.
 from __future__ import annotations
 
 import ast
-import importlib
-import inspect
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -324,12 +322,43 @@ INVENTORY: Mapping[str, LimitReach] = {
 }
 
 
-def _resolve(qualified: str) -> object:
+#: The repository root the chain's modules are read from.
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _source_of(qualified: str, root: Path = _ROOT) -> str:
+    """The source of ``module:Qualname``, read from the file, never imported.
+
+    Static on purpose: the check is about what the code SAYS, and importing by
+    a computed name is refused on the demo path
+    (`tests/test_retired_runtime_disconnected.py`) because no import-closure
+    guard can see where it leads.
+    """
     module_name, _, attribute_path = qualified.partition(":")
-    target: object = importlib.import_module(module_name)
+    path = root / Path(*module_name.split("."))
+    path = (
+        path.with_suffix(".py") if path.with_suffix(".py").is_file() else path / "__init__.py"
+    )
+    text = path.read_text(encoding="utf-8")
+    scope: list[ast.stmt] = ast.parse(text, filename=str(path)).body
+    node: ast.AST | None = None
     for part in attribute_path.split("."):
-        target = getattr(target, part)
-    return target
+        node = next(
+            (
+                n
+                for n in scope
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and n.name == part
+            ),
+            None,
+        )
+        if node is None:
+            raise LookupError(f"{qualified}: {part!r} is not defined in {path.name}")
+        scope = getattr(node, "body", [])
+    segment = ast.get_source_segment(text, node) if node is not None else None
+    if segment is None:
+        raise LookupError(f"{qualified}: no source")
+    return segment
 
 
 def check_inventory(
@@ -375,8 +404,8 @@ def check_inventory(
             raise LimitReachabilityError(f"{name} is REACHABLE with no chain to the runner")
         for qualified, token in row.chain:
             try:
-                source = inspect.getsource(_resolve(qualified))
-            except (ImportError, AttributeError, TypeError, OSError) as exc:
+                source = _source_of(qualified)
+            except (LookupError, OSError, SyntaxError) as exc:
                 raise LimitReachabilityError(
                     f"{name}: {qualified} cannot be read: {exc}"
                 ) from exc

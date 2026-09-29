@@ -137,6 +137,16 @@ def test_a_broken_link_in_a_chain_is_refused():
         check_inventory(broken)
 
 
+def test_a_chain_naming_a_function_that_does_not_exist_is_refused():
+    """The source is read statically; a renamed or deleted function is a
+    refusal, not an empty source that no token could be missing from."""
+    row = INVENTORY["max_leverage"]
+    chain = (("chimera.risk:RiskEngine.no_such_method", "lim.max_leverage"),) + row.chain[1:]
+    broken = {**INVENTORY, "max_leverage": dataclasses.replace(row, chain=chain)}
+    with pytest.raises(LimitReachabilityError, match="cannot be read"):
+        check_inventory(broken)
+
+
 def test_a_reachable_row_with_no_chain_is_refused():
     broken = {
         **INVENTORY,
