@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import stat
 import time
@@ -1598,6 +1599,14 @@ class RiskEngine:
             )
 
         if funding_rate is not None:
+            if not math.isfinite(funding_rate):
+                # R1-k. Both comparisons below are `>`, which a NaN never
+                # satisfies and a `+inf` rate satisfies only for a long: a short
+                # would read an infinite rate as an infinite rebate. A rate that
+                # is not a number is not something to be approved on.
+                return RiskDecision(
+                    False, f"funding rate {funding_rate!r} is not a finite number"
+                )
             sign = _position_sign(position_side)
             if sign is None:
                 if abs(funding_rate) > lim.max_funding_rate:
