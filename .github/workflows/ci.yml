@@ -71,7 +71,13 @@ jobs:
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # 90, not 60. The Windows leg already ran close to 60 when R1-j moved its
+    # 48 h witness out of this job, and the R1-i crash-harness and dispute-
+    # lifecycle files (fsync-heavy) alone take 23-28 minutes there on a slow
+    # runner: main's push run on 15e97a5 finished at 55 of 60, and two PR runs
+    # were cancelled mid-suite with no test failed. A cancelled leg proves
+    # nothing either way; the limit is headroom, not a weaker check.
+    timeout-minutes: 90
     strategy:
       # Both legs are binding. A Windows-only failure is a real failure, and
       # cancelling the other leg on the first red hides half the answer.
