@@ -1,0 +1,11 @@
+{
+  "actions": [
+    {
+      "after_minute": "2026-09-20T05:59:00+00:00",
+      "command": "flatten",
+      "id": "r1j-48h-flatten-after-restart",
+      "note": "R1-j synthetic 48 h fixture: reduce the hedge to flat after the planned restart, to prove the replay counterpart"
+    }
+  ],
+  "schema": "chimera.operator-actions/1"
+}

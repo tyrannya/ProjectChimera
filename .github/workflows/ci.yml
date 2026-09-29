@@ -144,13 +144,68 @@ jobs:
           print(f"{len(manifests)} frozen manifests verified")
 
       - name: Run the test suite
-        run: pytest -q --maxfail=1
+        # R1-j's 48 h synthetic parity witness (marker `replay_determinism`) is
+        # the `replay-determinism` job's, not this matrix's: it replays 2,880
+        # minutes three times over, and the Windows leg already runs close to
+        # this job's timeout.
+        run: pytest -q --maxfail=1 -m "not replay_determinism"
 
       - name: End-to-end smoke (synthetic data, CPU, no network)
         # This is the substitute for training on every commit: it walks
         # candles -> features -> tiny training -> artifact -> service ->
         # strategy -> risk in about a minute.
         run: python -m tools.smoke
+
+  replay-determinism:
+    # R1's replay-determinism CI job (master roadmap R1, TECHNICAL DESIGN), with
+    # R1-j's canonical witness: 48 hours of synthetic recorder files decided live
+    # by `tools.demo_run` across a restart and an operator flatten, then replayed
+    # by `tools.replay_parity` with the committed operator-action file, which
+    # must report PARITY with nothing diverged, live-only, replay-only or
+    # excluded. The last step reads the fixture's own marker line, so a run in
+    # which the witness was deselected or skipped cannot pass.
+    name: Replay determinism (R1-j 48 h parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the locked dependency set
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-lock.txt
+          pip install -e . --no-deps
+
+      - name: Run the canonical 48 h synthetic parity fixture
+        run: |
+          set -o pipefail
+          pytest -m replay_determinism -rA tests/test_r1j_parity_48h.py | tee replay-determinism.log
+
+      - name: Prove the fixture ran and reached PARITY
+        shell: python
+        run: |
+          import json
+          log = open("replay-determinism.log", encoding="utf-8").read().splitlines()
+          markers = [line for line in log if line.startswith("R1J-48H-PARITY ")]
+          if len(markers) != 1:
+              raise SystemExit(f"expected one R1J-48H-PARITY marker, found {len(markers)}")
+          report = json.loads(markers[0].split(" ", 1)[1])
+          print(json.dumps(report, indent=2, sort_keys=True))
+          expected = {"label": "PARITY", "parity": True, "divergences": 0, "live_only": 0,
+                      "replay_only": 0, "explained_exclusions": 0}
+          wrong = {k: report.get(k) for k, v in expected.items() if report.get(k) != v}
+          if wrong or report.get("records_compared", 0) < 2882:
+              raise SystemExit(f"the 48 h fixture did not reach PARITY: {wrong or report}")
+          name = "test_the_48_hour_fixture_reaches_parity_with_a_restart_and_an_operator_action"
+          if not any(line.startswith("PASSED") and name in line for line in log):
+              raise SystemExit(f"{name} did not PASS")
+          if any(line.startswith(("SKIPPED", "XFAIL", "FAILED", "ERROR")) for line in log):
+              raise SystemExit("a replay-determinism test was skipped, xfailed or failed")
+          print("R1-j 48 h fixture: PARITY")
 
   config:
     name: Config validation

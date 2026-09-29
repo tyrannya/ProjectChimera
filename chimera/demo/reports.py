@@ -67,7 +67,8 @@ kind, derived from the log's own sets, so it now asks for five.
 scores. ``tools/replay_parity.py``'s ``OPERATIONAL_KINDS`` is section 10's
 *alignment rule* — which records a parity comparison aligns by ``(minute, kind)``
 instead of comparing field by field — and it is a different set, holding ``HALT``
-and ``RESUME`` and not holding ``INCOMPLETE_STATE`` or ``SKIPPED_STALE``. Using
+and not holding ``INCOMPLETE_STATE`` or ``SKIPPED_STALE`` (since R1-j ``RESUME`` is
+compared with ``OPERATOR`` there, and is not in it). Using
 either where the other belongs would silently move the evidence boundary, so this
 module imports the first, never imports ``tools`` at all, and says here why.
 """

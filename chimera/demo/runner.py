@@ -70,6 +70,7 @@ from chimera.demo.feed import (
 from chimera.demo.inspection import DemoInspection, store_exposure
 from chimera.demo.risk_continuity import (
     RISK_CONTINUITY_SEALED_FIELD,
+    RISK_HASH_POLICY,
     RiskContinuity,
     RiskContinuityFault,
     assess_risk_continuity,
@@ -679,15 +680,15 @@ class DemoRunner:
         if now_ns is not None:
             self.clock.observe(int(now_ns))
         elif not self.clock.started:
-            first = self.cursor.next_minute_ms()
-            if first is None and tail_ns is None:
+            seed = self._fresh_start_instant_ns()
+            if seed is None and tail_ns is None:
                 raise RunnerError(
                     "there is no minute to start from: the recorder has written no "
                     "normalized day under this root. The runner does not invent a start "
                     "instant; a campaign begins where the evidence begins"
                 )
-            if first is not None:
-                self.clock.observe(first * _MS_TO_NS + MINUTE_NS)
+            if seed is not None:
+                self.clock.observe(seed)
         if tail_ns is not None:
             self.clock.observe(int(tail_ns))
 
@@ -838,6 +839,51 @@ class DemoRunner:
         self._enter(RunnerState.FEED_STALLED if self._feed_stall_open() else RunnerState.READY)
         self.save_state()
         return self.state
+
+    def _fresh_start_instant_ns(self) -> int | None:
+        """The instant a fresh process's `start()` seeds its decision clock at.
+
+        The close of the next minute to process. Recorded, never the wall clock,
+        and a function of the persisted cursor alone. R1-j names it because an
+        operator command always runs in such a process (the state directory's
+        lock keeps the service out), so its records carry this instant, and a
+        replay of that command has to observe the same one
+        (:meth:`apply_operator_action`).
+        """
+        first = self.cursor.next_minute_ms()
+        return None if first is None else first * _MS_TO_NS + MINUTE_NS
+
+    def apply_operator_action(
+        self, command: str, note: str, *, replay_action: Mapping[str, str]
+    ) -> TickOutcome:
+        """R1-j: replay one committed operator action, as the CLI ran it.
+
+        The CLI runs `flatten` and `resume` in a fresh process, whose `start()`
+        seeds the decision clock at :meth:`_fresh_start_instant_ns`; the records
+        the command writes carry that instant. A replay performs the command in
+        its own running process, so it first observes the same instant, then
+        calls the same method the CLI calls. The clock is a maximum, so this
+        moves nothing a later minute decides: the next tick observes that very
+        close anyway.
+
+        ``replay_action`` (the action's id and the file's hash) goes into the
+        command's ``operator`` blocks, so each replayed record says which
+        committed action produced it. Anything the method refuses -- a runner
+        that is not halted for `resume`, an unprocessed campaign for `flatten` --
+        propagates as the `RunnerError` it is: a committed action the replay
+        cannot perform is a refusal, never a skip.
+        """
+        if command not in ("flatten", "resume"):
+            raise RunnerError(
+                f"`{command}` has no deterministic replay counterpart; only flatten and "
+                "resume are replayed"
+            )
+        seed = self._fresh_start_instant_ns()
+        if seed is not None:
+            self.clock.observe(seed)
+        if command == "flatten":
+            return self.flatten(note, replay_action=replay_action)
+        return self.resume(note, replay_action=replay_action)
 
     def _book_owed_funding(self) -> str | None:
         """R1-g: book, on a halted start, a settlement owed across a flatten.
@@ -1704,7 +1750,7 @@ class DemoRunner:
                 },
                 # Restated, so the next start compares the repaired file with a
                 # statement that describes it.
-                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "risk": {**_risk_statement(self.risk), "decisions": []},
                 "veto_or_rejection": {
                     "stage": "recovery",
                     "label": RecoveryCause.EXPOSURE_RESYNC.value.lower(),
@@ -2499,7 +2545,7 @@ class DemoRunner:
                         else ReconciliationOutcome.MISMATCH.value
                     ),
                 },
-                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "risk": {**_risk_statement(self.risk), "decisions": []},
                 "position_after": self._position_block(),
                 "veto_or_rejection": (
                     None
@@ -2722,7 +2768,7 @@ class DemoRunner:
                 "funding_paid_total": str(ledger.funding_paid),
                 "funding_received_total": str(ledger.funding_received),
             },
-            "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+            "risk": {**_risk_statement(self.risk), "decisions": []},
             "position_after": self._position_block(),
             "ledger_effect": self._ledger_effect(mark.equity),
             "veto_or_rejection": None,
@@ -2824,7 +2870,7 @@ class DemoRunner:
                     "spot_minute_digest": state.spot_digest,
                     "inputs_hash": _inputs_hash(state),
                 },
-                "risk": {"state_hash": _risk_hash(self.risk), "decisions": []},
+                "risk": {**_risk_statement(self.risk), "decisions": []},
                 "position_after": before,
                 # R1-i: the recorded minute whose book the flatten below fills
                 # against. Not always this record's own minute -- R1-g's
@@ -3135,7 +3181,9 @@ class DemoRunner:
     # ------------------------------------------------------------------
     # operator commands
     # ------------------------------------------------------------------
-    def flatten(self, note: str) -> TickOutcome:
+    def flatten(
+        self, note: str, *, replay_action: Mapping[str, str] | None = None
+    ) -> TickOutcome:
         """Reduce to flat. Permitted while halted; that is what HALT is for.
 
         **R1-i.** Reached from the CLI through the ordinary `start()` -- the one
@@ -3168,8 +3216,9 @@ class DemoRunner:
         # been flattened, with nothing in the log to say a flatten happened.
         self._require_recordable("flatten")
         state = self.cursor.state_for(minute, now_ns=self.clock.now_ns)
+        attribution = _attribution(replay_action)
         seq = self._operator_requested(
-            "flatten", note, {"position_before": self._position_block()}
+            "flatten", note, {"position_before": self._position_block(), **attribution}
         )
         # The book, before the orders: a flatten from a fresh process otherwise
         # sent both reduce-only orders against a model holding no quote.
@@ -3195,6 +3244,7 @@ class DemoRunner:
                     "note": note,
                     "phase": "completed",
                     "request_seq": seq,
+                    **attribution,
                 },
                 "position_after": self._position_block(),
                 # Omitted, not zeroed, when the ledger may not speak: the
@@ -3215,7 +3265,9 @@ class DemoRunner:
             record_hash=record_hash,
         )
 
-    def resume(self, note: str) -> TickOutcome:
+    def resume(
+        self, note: str, *, replay_action: Mapping[str, str] | None = None
+    ) -> TickOutcome:
         """Leave HALT by an explicit operator action, and only by one.
 
         **R1-i: what `resume` refuses.** It clears a HALT whose cause is over. It
@@ -3293,7 +3345,8 @@ class DemoRunner:
             )
         self._require_recordable("resume")
         cleared = self.risk.state.halt_reason or self.halt_reason or ""
-        seq = self._operator_requested("resume", note, {"cleared": cleared})
+        attribution = _attribution(replay_action)
+        seq = self._operator_requested("resume", note, {"cleared": cleared, **attribution})
         self.risk.resume()
         record_hash = self._append(
             RecordKind.RESUME,
@@ -3305,6 +3358,7 @@ class DemoRunner:
                     "cleared": cleared,
                     "phase": "completed",
                     "request_seq": seq,
+                    **attribution,
                 }
             },
         )
@@ -4550,7 +4604,7 @@ class DemoRunner:
                 for intent in intents
             ],
             "risk": {
-                "state_hash": _risk_hash(self.risk),
+                **_risk_statement(self.risk),
                 "decisions": [] if veto is None else [dict(veto)],
             },
             "execution": _execution_block(self.position, orders_before),
@@ -4629,6 +4683,29 @@ def _risk_hash(risk: RiskEngine) -> str:
     can fail silently.
     """
     return risk_state_hash(risk.snapshot())
+
+
+def _risk_statement(risk: RiskEngine) -> dict[str, str]:
+    """The hash half of a record's ``risk`` block, with the policy it was taken
+    under (R1-j). The next start's R1-c reads the policy back and hashes the file
+    under it, so which fields the hash covers is stated, not implied."""
+    return {"state_hash": _risk_hash(risk), "hash_policy": RISK_HASH_POLICY}
+
+
+#: R1-j: the key a REPLAYED operator record carries, naming the committed action
+#: that produced it. The CLI never passes one, so a live record never has it.
+REPLAY_ACTION_KEY = "replay_action"
+
+
+def _attribution(replay_action: Mapping[str, str] | None) -> dict[str, Any]:
+    if replay_action is None:
+        return {}
+    return {
+        REPLAY_ACTION_KEY: {
+            "id": str(replay_action["id"]),
+            "file_hash": str(replay_action["file_hash"]),
+        }
+    }
 
 
 def _config_hash(config: DemoConfig) -> str:
