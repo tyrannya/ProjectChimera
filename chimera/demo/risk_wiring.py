@@ -65,19 +65,10 @@ class RiskWiringError(ValueError):
 #: ``funding_adverse_streak_limit`` -> ``RiskEngine.note_funding_settlement``
 #:     raises ``funding_halt`` at the Nth consecutive paid settlement, and
 #:     ``evaluate_entry`` vetoes every increase while it is up.
-#: ``loss_streak_limit`` -> ``record_trade_result`` opens a cooldown at the Nth
-#:     consecutive loss. (NOT REACHABLE on the demo path today: nothing in
-#:     ``chimera/`` or ``tools/`` calls ``record_trade_result``, so
-#:     ``consecutive_losses`` never leaves zero. Mapped anyway, so that the
-#:     campaign's value is already in force on the day something does.)
 #: ``max_open_positions`` -> ``evaluate_entry`` vetoes a new pair once this many
 #:     are open. Two, because the hedge is two legs.
 #: ``max_orders_per_minute`` -> ``record_order`` HALTS above this many approvals
 #:     in the rolling 60-second window.
-#: ``cooldown_seconds`` -> the length of the cooldown ``record_trade_result``
-#:     opens; ``evaluate_entry`` vetoes until it expires. (NOT REACHABLE on the
-#:     demo path today, for the same reason as ``loss_streak_limit``: the
-#:     cooldown is never opened, so the gate never closes.)
 #: ``max_daily_loss_pct`` -> ``update_equity`` halts on this loss from the day's
 #:     starting equity.
 #: ``max_data_delay_s`` -> since R1-f, the service's READY gate
@@ -94,12 +85,12 @@ class RiskWiringError(ValueError):
 #: ``max_exposure_per_asset_pct`` -> ``evaluate_entry`` vetoes when this pair's
 #:     CUMULATIVE exposure plus the new stake would pass the fraction of equity.
 #: ``max_funding_cost_rate`` -> ``evaluate_entry``'s side-aware funding veto,
-#:     ``sign(side) * rate`` (amendment A10). (NOT REACHABLE on the demo path
-#:     today: ``chimera/carry/hedge.py`` calls ``execute_target`` without a
-#:     ``funding_rate``, so ``evaluate_entry`` skips the whole funding branch.
-#:     What the demo DOES enforce against adverse funding is
-#:     ``funding_adverse_streak_limit``, whose settlements the runner really
-#:     does report.)
+#:     ``sign(side) * rate`` (amendment A10), on every exposure-increasing
+#:     order of the PERPETUAL leg. Reachable since R1-k:
+#:     ``HedgedPosition._funding_input`` hands ``execute_target`` the decision
+#:     minute's rate in effect (``MarketState.funding_rate_current``, the mark
+#:     stream's ``r``), and a minute without one is incomplete. The spot leg is
+#:     never judged on a rate, and reductions are never asked about.
 #: ``max_leverage`` -> ``evaluate_entry`` vetoes above it, and ``position_size``
 #:     caps the leverage it divides by.
 #: ``max_total_exposure_pct`` -> ``evaluate_entry`` vetoes when the sum of all
@@ -107,9 +98,7 @@ class RiskWiringError(ValueError):
 #: ``min_liquidation_distance_pct`` -> ``evaluate_entry`` vetoes when the
 #:     liquidation price is nearer than this fraction of the entry price.
 DIRECT_LIMITS: Mapping[str, str] = {
-    "cooldown_seconds": "cooldown_seconds",
     "funding_adverse_streak_limit": "funding_adverse_streak_limit",
-    "loss_streak_limit": "loss_streak_limit",
     "max_daily_loss_pct": "max_daily_loss_pct",
     "max_data_delay_s": "max_data_delay_s",
     "max_drawdown_pct": "max_drawdown_pct",
@@ -143,10 +132,10 @@ DIRECT_LIMITS: Mapping[str, str] = {
 #:     is a superset of ``sign(side) * rate > c`` only while the two ceilings are
 #:     equal or the sign-blind one is tighter, so it has to move with the
 #:     campaign's ``max_funding_cost_rate`` rather than sit on a default that a
-#:     tightened campaign would leave behind. Like the side-aware ceiling it
-#:     shadows, this is NOT REACHABLE on the demo path today -- no caller passes
-#:     a ``funding_rate`` at all, let alone one without a side -- so the
-#:     invariant is maintained here for the day one does, not for today.
+#:     tightened campaign would leave behind. The demo path never reaches it:
+#:     the one caller that passes a ``funding_rate`` (R1-k's perpetual leg)
+#:     always names the side, so the side-aware ceiling decides; the invariant
+#:     is maintained for a caller that does not.
 DERIVED_LIMITS: Mapping[str, str] = {
     "max_position_pct": "max_exposure_per_asset_pct",
     "max_funding_rate": "max_funding_cost_rate",
@@ -168,6 +157,18 @@ UNCONFIGURED_LIMITS: Mapping[str, str] = {
     ),
     "max_stop_distance_pct": (
         "the sizing band's upper edge; the other half of _implied_stop's midpoint."
+    ),
+    "loss_streak_limit": (
+        "retired from the campaign schema by R1-k (chimera.demo.config.RETIRED_LIMITS): "
+        "record_trade_result, the only thing that counts a loss streak, has no caller "
+        "on the demo path, so consecutive_losses never leaves zero and this default "
+        "cannot take effect. chimera.demo.limit_reachability asserts that no caller "
+        "exists, so a future one forces this back into the schema."
+    ),
+    "cooldown_seconds": (
+        "retired from the campaign schema by R1-k, with loss_streak_limit: the "
+        "cooldown is opened only by a loss streak, so cooldown_until stays 0.0 and "
+        "the default length never applies."
     ),
     "max_inference_staleness_s": (
         "section 7.2: 'stale inference | n/a in the demo (no model) | pass None'. "

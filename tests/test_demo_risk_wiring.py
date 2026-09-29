@@ -55,7 +55,9 @@ HARNESS = REPO / "tests" / "demo_harness.py"
 
 #: Section 7.4 of the adopted master plan, transcribed from the section and not
 #: from the file, so that a limit edited in `conf/demo/pvc1.json` without a plan
-#: amendment fails here.
+#: amendment fails here. Less `loss_streak_limit` and `cooldown_seconds`, which
+#: R1-k retired from the campaign schema (`RETIRED_LIMITS`): nothing on the demo
+#: path could enforce either.
 SECTION_7_4 = {
     "max_drawdown_pct": 0.05,
     "max_daily_loss_pct": 0.02,
@@ -64,8 +66,6 @@ SECTION_7_4 = {
     "max_exposure_per_asset_pct": 1.0,
     "max_leverage": 1.0,
     "max_orders_per_minute": 4,
-    "loss_streak_limit": 3,
-    "cooldown_seconds": 3600,
     "max_data_delay_s": 180,
     "max_funding_cost_rate": 0.0005,
     "funding_adverse_streak_limit": 3,
@@ -77,10 +77,8 @@ SECTION_7_4 = {
 #: integers; ratios stay inside a range the engine will accept.
 PROBE = {
     "funding_adverse_streak_limit": 7,
-    "loss_streak_limit": 6,
     "max_open_positions": 5,
     "max_orders_per_minute": 9,
-    "cooldown_seconds": 1234.0,
     "max_daily_loss_pct": 0.037,
     "max_data_delay_s": 222.0,
     "max_drawdown_pct": 0.083,
@@ -113,7 +111,7 @@ def engine(tmp_path: Path, limits: DemoLimits, *, equity: float = 1_000_000.0) -
 # 1. The table is total: nothing is dropped, nothing is invented
 # ---------------------------------------------------------------------------
 def test_every_demo_limit_reaches_a_risk_limit():
-    """The thirteen of section 7.4, each with a named destination."""
+    """Section 7.4's configured limits (eleven since R1-k), each with a named destination."""
     assert set(DIRECT_LIMITS) == {f.name for f in fields(DemoLimits)}
     assert set(DIRECT_LIMITS) == set(SECTION_7_4)
 
@@ -482,25 +480,18 @@ def test_min_liquidation_distance_pct_vetoes_a_near_liquidation(tmp_path):
     assert loose.evaluate_entry(*args, proposed_stake=10_000.0, liquidation_price=80.0).allowed
 
 
-def test_loss_streak_limit_and_cooldown_seconds_are_both_the_campaign_s(tmp_path):
-    tight = engine(tmp_path / "tight", committed())
-    loose = engine(tmp_path / "loose", demo_limits(loss_streak_limit=6, cooldown_seconds=60.0))
-    for _ in range(SECTION_7_4["loss_streak_limit"]):
-        for eng in (tight, loose):
-            eng.record_trade_result(-1.0)
-    assert (
-        tight.state.cooldown_until > 0.0
-    ), "three losses did not open the campaign's cooldown"
-    assert loose.state.cooldown_until == 0.0, "six were configured; three should not be enough"
-    verdict = tight.evaluate_entry("BTC/USDT", 1_000_000.0, 100.0, 95.0, proposed_stake=10.0)
-    assert not verdict.allowed and "cooldown" in verdict.reason
-    # The cooldown's LENGTH is the campaign's too, not just its existence.
-    for _ in range(3):
-        loose.record_trade_result(-1.0)
-    tight_len = tight.state.cooldown_until - tight._clock()
-    loose_len = loose.state.cooldown_until - loose._clock()
-    assert tight_len == pytest.approx(SECTION_7_4["cooldown_seconds"], abs=5.0)
-    assert loose_len == pytest.approx(60.0, abs=5.0)
+def test_the_retired_loss_streak_and_cooldown_keep_the_engine_default(tmp_path):
+    """R1-k retired both from the campaign schema. The engine keeps `RiskLimits`'
+    defaults for them -- named in UNCONFIGURED_LIMITS, never moved by a campaign
+    -- and nothing on the demo path can trigger either
+    (`limit_reachability.record_trade_result_callers()` is empty)."""
+    mapped = risk_limits(committed())
+    assert mapped.loss_streak_limit == RiskLimits().loss_streak_limit
+    assert mapped.cooldown_seconds == RiskLimits().cooldown_seconds
+    assert {"loss_streak_limit", "cooldown_seconds"} <= set(UNCONFIGURED_LIMITS)
+    assert not {"loss_streak_limit", "cooldown_seconds"} & set(DIRECT_LIMITS)
+    eng = engine(tmp_path, committed())
+    assert eng.state.consecutive_losses == 0 and eng.state.cooldown_until == 0.0
 
 
 def test_max_data_delay_s_marks_the_feed_stale_on_the_campaign_delay(tmp_path):
@@ -732,27 +723,26 @@ def test_non_demo_constructors_retain_real_time_defaults():
 def test_cooldown_uses_recorded_time_before_at_and_after_expiry(tmp_path):
     """The gate is active while ``now < cooldown_until`` and open at equality.
 
-    ``record_trade_result`` has no demo production caller today. This witnesses
-    the already-existing Aegis path once the demo clock is wired; it does not
-    claim that the runner can currently open a cooldown itself.
+    ``record_trade_result`` has no demo production caller, and R1-k retired the
+    loss streak and the cooldown from the campaign schema for that reason, so
+    the engine runs on `RiskLimits`' defaults for both (3 losses, 3600 s). This
+    witnesses Aegis's own cooldown on the runner's recorded clock, driven
+    directly; it does not claim the runner can open a cooldown itself.
     """
-    harness = build(
-        tmp_path,
-        config=campaign_config(
-            tmp_path / "state",
-            limits={"loss_streak_limit": 1, "cooldown_seconds": 300},
-        ),
-    )
+    harness = build(tmp_path)
     risk = harness.runner.risk
     start_ns = harness.runner.clock.now_ns
-    risk.record_trade_result(-1.0)
-    assert risk.state.cooldown_until == pytest.approx(start_ns / 1e9 + 300)
+    length = RiskLimits().cooldown_seconds
+    for _ in range(RiskLimits().loss_streak_limit):
+        risk.record_trade_result(-1.0)
+    assert risk.state.cooldown_until == pytest.approx(start_ns / 1e9 + length)
 
-    harness.runner.clock.observe(start_ns + 299_999_000_000)
+    end_ns = start_ns + int(length) * 1_000_000_000
+    harness.runner.clock.observe(end_ns - 1_000_000_000)
     before = risk.evaluate_entry("pair", 1000, 100, 90)
-    harness.runner.clock.observe(start_ns + 300_000_000_000)
+    harness.runner.clock.observe(end_ns)
     boundary = risk.evaluate_entry("pair", 1000, 100, 90)
-    harness.runner.clock.observe(start_ns + 300_001_000_000)
+    harness.runner.clock.observe(end_ns + 1_000_000_000)
     after = risk.evaluate_entry("pair", 1000, 100, 90)
 
     assert not before.allowed and "cooldown active" in before.reason

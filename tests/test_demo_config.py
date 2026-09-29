@@ -50,7 +50,8 @@ REPO = Path(__file__).resolve().parents[1]
 PVC1 = REPO / "conf" / "demo" / "pvc1.json"
 
 #: Section 7.4's proposed demo limits, written out here rather than read from the
-#: file the tests are checking.
+#: file the tests are checking -- less the two R1-k retired from the schema
+#: (`RETIRED_7_4_LIMITS`), because no code path on the demo could enforce them.
 SECTION_7_4_LIMITS: dict[str, Any] = {
     "max_drawdown_pct": 0.05,
     "max_daily_loss_pct": 0.02,
@@ -59,13 +60,14 @@ SECTION_7_4_LIMITS: dict[str, Any] = {
     "max_exposure_per_asset_pct": 1.0,
     "max_leverage": 1.0,
     "max_orders_per_minute": 4,
-    "loss_streak_limit": 3,
-    "cooldown_seconds": 3600,
     "max_data_delay_s": 180,
     "max_funding_cost_rate": 0.0005,
     "funding_adverse_streak_limit": 3,
     "min_liquidation_distance_pct": 0.5,
 }
+
+#: Section 7.4 values R1-k retired from the campaign schema.
+RETIRED_7_4_LIMITS: dict[str, Any] = {"loss_streak_limit": 3, "cooldown_seconds": 3600}
 
 A_HASH = "sha256:" + "a" * 64
 
@@ -629,15 +631,25 @@ def test_a_runner_cadence_is_part_of_the_hashed_identity():
     assert config_hash(build(60)) != config_hash(build(30))
 
 
-#: `conf/demo/pvc1.json`'s identity, computed on main at 6f45a6b (before R1-g)
-#: and after it. The committed config has no runner block, so retiring a runner
-#: setting cannot move it -- and this pins that it did not.
-PVC1_CONFIG_HASH = "sha256:cdd81123d9434faeba0d30989c4964c89b8e3b5df63ffb3a80bafb964a007a2f"
+#: `conf/demo/pvc1.json`'s identity before R1-k: computed on main at 6f45a6b
+#: (before R1-g) and after it. The committed config has no runner block, so
+#: retiring a runner setting could not move it, and it did not.
+PVC1_CONFIG_HASH_BEFORE_R1K = (
+    "sha256:cdd81123d9434faeba0d30989c4964c89b8e3b5df63ffb3a80bafb964a007a2f"
+)
+
+#: Its identity since R1-k, which retired `loss_streak_limit` and
+#: `cooldown_seconds` from the schema and the file. Removing two limits is a
+#: change of what the campaign is configured with, so the hash moves -- once,
+#: deliberately, and pinned here. No campaign has run under either value.
+PVC1_CONFIG_HASH = "sha256:3bbb1a1feba5e5f1b6f457558d524a76a129d4d3383ddaeba00971058c3e27b2"
 
 
 def test_retiring_the_catch_up_cap_leaves_the_committed_identity_where_it_was():
+    """R1-g's runner retirement moved nothing; R1-k's limit retirement moved it once."""
     config = parse_demo_config(_campaign_payload(), expected_profile=ConfigProfile.CAMPAIGN)
     assert config_hash(config) == PVC1_CONFIG_HASH
+    assert PVC1_CONFIG_HASH != PVC1_CONFIG_HASH_BEFORE_R1K
 
 
 @pytest.mark.parametrize("value", [3, 60, 0])

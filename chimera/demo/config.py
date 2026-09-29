@@ -156,7 +156,6 @@ _POSITIVE_SETTINGS: frozenset[str] = frozenset(
 #: floats, so ``2`` and ``2.0`` cannot become two identities for one campaign.
 COUNT_LIMITS: tuple[str, ...] = (
     "funding_adverse_streak_limit",
-    "loss_streak_limit",
     "max_open_positions",
     "max_orders_per_minute",
 )
@@ -164,7 +163,6 @@ COUNT_LIMITS: tuple[str, ...] = (
 #: The limits carried as real numbers. Normalised to ``float`` before hashing,
 #: so ``1`` and ``1.0`` are one value and one identity.
 RATIO_LIMITS: tuple[str, ...] = (
-    "cooldown_seconds",
     "max_daily_loss_pct",
     "max_data_delay_s",
     "max_drawdown_pct",
@@ -177,6 +175,26 @@ RATIO_LIMITS: tuple[str, ...] = (
 
 #: Every limit name, sorted. The two kinds above partition it.
 LIMIT_FIELDS: tuple[str, ...] = tuple(sorted(COUNT_LIMITS + RATIO_LIMITS))
+
+#: Limits this schema used to accept and now refuses by name, with what became
+#: of each (R1-k). Refused rather than accepted and ignored, for the reason
+#: :data:`RETIRED_RUNNER_SETTINGS` gives: a configured bound no code path
+#: enforces would still enter `config_hash`, and the campaign would be
+#: identified by -- and a reviewer would read off the file -- a limit that did
+#: nothing.
+RETIRED_LIMITS: Mapping[str, str] = {
+    "loss_streak_limit": (
+        "retired by R1-k: Aegis counts a loss streak only from "
+        "RiskEngine.record_trade_result, and nothing on the demo path calls it -- a "
+        "carry hedge has no defined per-trade result for it to be fed, and defining "
+        "one is an economic choice the S2 protocol owns, not the runner's to invent"
+    ),
+    "cooldown_seconds": (
+        "retired by R1-k: the cooldown is opened only by a loss streak, which "
+        "nothing on the demo path can raise (see loss_streak_limit), so no "
+        "configured length could ever take effect"
+    ),
+}
 
 #: Characters a campaign id may use. It names a directory of evidence and a row
 #: in a report, so the alphabet is the one that survives every filesystem this
@@ -241,10 +259,8 @@ class DemoLimits:
     """
 
     funding_adverse_streak_limit: int
-    loss_streak_limit: int
     max_open_positions: int
     max_orders_per_minute: int
-    cooldown_seconds: float
     max_daily_loss_pct: float
     max_data_delay_s: float
     max_drawdown_pct: float
@@ -492,6 +508,11 @@ def parse_demo_limits(payload: Any, *, where: str = "") -> DemoLimits:
     """Build :class:`DemoLimits`, refusing a missing or unrecognised limit."""
     if not isinstance(payload, Mapping):
         raise DemoConfigError(f"{where}limits must be a JSON object")
+    for name in sorted(set(payload) & set(RETIRED_LIMITS)):
+        raise DemoConfigError(
+            f"{where}limits.{name} is no longer a limit: {RETIRED_LIMITS[name]}. "
+            "Remove it from the configuration"
+        )
     missing = [name for name in LIMIT_FIELDS if name not in payload]
     if missing:
         raise DemoConfigError(f"{where}limits is missing {sorted(missing)}")
@@ -752,6 +773,7 @@ __all__ = [
     "LIMIT_FIELDS",
     "RATIO_LIMITS",
     "REQUIRED_FIELDS",
+    "RETIRED_LIMITS",
     "ConfigProfile",
     "DemoConfig",
     "DemoConfigError",
