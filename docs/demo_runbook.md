@@ -263,7 +263,9 @@ later record, as a restart does. A genuine outage is any of:
 * a heartbeat that happens to catch the stream in the middle of the venue's
   24-hour forced reconnect (`up` false for one beat).
 
-How `seq` is compared across those is R1-j's question. R1-g publishes each
+Since R1-j such a pair no longer shifts what parity compares: `seq` is compared
+as `parity_seq`, which operational records do not count
+(`docs/replay_parity.md`, R1-j). R1-g publishes each
 closed minute within seconds and deliberately keeps the heartbeat as the
 authority (section 0.5), so a `FEED_STALLED` still means "the recorder's heartbeat
 has not vouched for the perpetual kline stream within 180 s".
@@ -1398,6 +1400,33 @@ python -m tools.demo_report --config conf/demo/pvc1.json --day 2026-09-19 \
 Redirect the `--json` run to `state/demo/parity/2026-09-19.json` so the daily
 report can quote it. Exit 0 is parity, 1 is a divergence, 2 is a refusal to
 compare at all.
+
+**A day with an operator action (R1-j).** If `flatten` or `resume` was run that
+day, write it down in an operator-action file and commit it before the parity
+run. The file's schema is `chimera.operator-actions/1`, and its shape is in
+`docs/replay_parity.md`. For each command, record:
+
+* the command;
+* the exact `--note`;
+* `after_minute`, which is the `minute` of that command's `OPERATOR` records in
+  the log.
+
+Then pass the committed file:
+
+```
+python -m tools.replay_parity --config conf/demo/pvc1.json --root data \
+    --live-log state/demo/decision_log --days 2026-09-19 --json \
+    --operator-actions conf/demo/operator_actions/2026-09-19.json
+```
+
+What the tool does with the file:
+
+* The report names the file and its sha256, and every replayed `OPERATOR`
+  record carries that hash.
+* Without the file, the day's `OPERATOR` records are `live_only` and the verdict
+  is a divergence.
+* A `resolve` cannot be replayed (no replay holds the dispute it cleared), so a
+  day with one does not reach `PARITY`. The refusal says so.
 
 **A divergence stops the campaign until it is explained.** It is never repaired
 by running the comparison again: a replay that agrees on the second attempt has

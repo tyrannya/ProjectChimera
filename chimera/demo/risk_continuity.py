@@ -75,6 +75,7 @@ vouch for.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -91,6 +92,8 @@ from chimera.demo.decision_log import (
     verify_log,
 )
 from chimera.demo.rules import canonical_hash
+from chimera.recorder.events import NS_PER_SECOND
+from chimera.risk import _ORDER_WINDOW_S  # noqa: F401 - the one definition of the window
 from chimera.risk import (
     KILL_SWITCH_HALT_REASONS,
     RiskEngine,
@@ -99,24 +102,65 @@ from chimera.risk import (
     RiskStateLoad,
 )
 
-#: Risk-state fields that are WALL CLOCK or HOST DATE rather than decision
-#: semantics, and are therefore outside ``risk.state_hash``.
+#: R1-j: which fields ``risk.state_hash`` covers is a VERSIONED policy, named in
+#: every record that states a hash (``risk.hash_policy``).
 #:
-#: ``order_times`` is the rate limiter's record of when orders were placed and
-#: ``cooldown_until`` is a deadline computed from one; ``day`` is the date the
-#: host happened to be running on. All three move between a live run and a
-#: replay of the same files, and none of them is a fact about the decision -- so
-#: hashing them would make section 10's byte comparison fail for a reason that
-#: has nothing to do with whether the two runs decided alike.
+#: ``chimera.risk-hash/1`` is the legacy policy, and it is what a ``risk`` block
+#: with no ``hash_policy`` field means: every record written before R1-j. It
+#: leaves out ``order_times``, ``cooldown_until`` and ``day``, on the ground that
+#: they were wall clock and host date. That ground went away with R1-e: Aegis now
+#: reads only the runner's recorded decision clock (``RunnerClock.time``), so all
+#: three are functions of the recorded minutes, and a replay of the same files
+#: reproduces them exactly (the audit's TIME-4).
 #:
-#: Everything that governs permission and IS reproducible stays in: ``halted``,
-#: ``halt_reason``, ``kill_switch``, the equity series, the streaks, and the
-#: reconciliation disputes.
+#: ``chimera.risk-hash/2`` is what this build writes, and it leaves out nothing:
+#: every field of :meth:`chimera.risk.RiskState.snapshot`.
+#:
+#: A legacy hash is never recomputed under the new policy, and a new one is never
+#: read as legacy. The log names the policy each hash was taken under, and R1-c
+#: hashes the file under THAT policy. So the first start of an R1-j build on a
+#: certified R1-i state compares like with like and finds no false dispute. A
+#: policy this build does not know is refused (:class:`RiskHashPolicyError`),
+#: never guessed.
 #:
 #: It lives here rather than in the runner because R1-c hashes a snapshot that
 #: never became a live engine, and the two hashes have to be the same function
 #: or the comparison is between two different things.
-RISK_HASH_EXCLUDED: frozenset[str] = frozenset({"order_times", "cooldown_until", "day"})
+RISK_HASH_POLICY_LEGACY = "chimera.risk-hash/1"
+RISK_HASH_POLICY = "chimera.risk-hash/2"
+RISK_HASH_POLICIES: Mapping[str, frozenset[str]] = {
+    RISK_HASH_POLICY_LEGACY: frozenset({"order_times", "cooldown_until", "day"}),
+    RISK_HASH_POLICY: frozenset(),
+}
+
+#: The fields the hash this build WRITES leaves out: none (R1-j). The legacy
+#: policy's set is ``RISK_HASH_POLICIES[RISK_HASH_POLICY_LEGACY]``.
+RISK_HASH_EXCLUDED: frozenset[str] = RISK_HASH_POLICIES[RISK_HASH_POLICY]
+
+
+class RiskHashPolicyError(ValueError):
+    """A ``risk.hash_policy`` this build cannot compute. Refused, never guessed."""
+
+
+def hash_policy_of(risk_block: Mapping[str, Any]) -> str:
+    """The policy a record's ``risk`` block states its hash under.
+
+    Absent means legacy: that is how every record before R1-j was written, and
+    those hashes were all taken under ``chimera.risk-hash/1``. Present and
+    unknown is refused; an empty or non-string value is not a policy either.
+    """
+    if "hash_policy" not in risk_block:
+        return RISK_HASH_POLICY_LEGACY
+    policy = risk_block["hash_policy"]
+    if not isinstance(policy, str) or policy not in RISK_HASH_POLICIES:
+        raise RiskHashPolicyError(
+            f"risk.hash_policy {policy!r} is not one of {sorted(RISK_HASH_POLICIES)}. "
+            "A hash taken under a policy this build does not know cannot be compared "
+            "with anything, and reading it under another policy would compare two "
+            "different things"
+        )
+    return policy
+
 
 #: What a continuity dispute's halt reason begins with. A prefix, because the
 #: reason names the finding after it.
@@ -142,17 +186,27 @@ RISK_CONTINUITY_PREFIX = "risk_continuity:"
 RISK_CONTINUITY_SEALED_FIELD = "risk_continuity_sealed"
 
 
-def risk_state_hash(snapshot: Mapping[str, Any]) -> str:
+def risk_state_hash(snapshot: Mapping[str, Any], policy: str = RISK_HASH_POLICY) -> str:
     """Section 9.1's ``risk.state_hash`` for a :meth:`chimera.risk.RiskState.snapshot`.
 
     One function, used by the runner when it writes a record and by this module
     when it reads one back. ``chimera.demo.runner._risk_hash`` delegates here.
+
+    ``policy`` names the field set (R1-j). The default is the policy this build
+    writes; R1-c passes the policy the log's own statement names, so a legacy
+    hash is only ever compared with a legacy hash.
     """
+    try:
+        excluded = RISK_HASH_POLICIES[policy]
+    except (KeyError, TypeError):
+        raise RiskHashPolicyError(
+            f"risk hash policy {policy!r} is not one of {sorted(RISK_HASH_POLICIES)}"
+        ) from None
     return canonical_hash(
         {
             key: value
             for key, value in snapshot.items()
-            if isinstance(key, str) and key not in RISK_HASH_EXCLUDED
+            if isinstance(key, str) and key not in excluded
         }
     )
 
@@ -163,6 +217,7 @@ def risk_state_hash(snapshot: Mapping[str, Any]) -> str:
 #: for the halting ones.
 CRASH_TRANSITIONS: frozenset[str] = frozenset(
     {
+        "order",
         "halt",
         "kill_switch_halt",
         "kill_switch_mirror",
@@ -183,6 +238,7 @@ def _crash_transition(
     ledger_equity: Decimal | None = None,
     capital: Decimal | None = None,
     exposures: Mapping[str, float | None] | None = None,
+    written_at_s: float | None = None,
 ) -> str:
     """Which ONE production persist-then-append window provably produced this file.
 
@@ -269,7 +325,37 @@ def _crash_transition(
     """
     if history.statement is not LogRiskStatement.STATE_HASH:
         return ""
-    found = dict(snapshot)
+    if history.hash_policy not in RISK_HASH_POLICIES:
+        return ""
+    for found, order_moved in _order_window_reversions(
+        dict(snapshot), history, limits=limits, written_at_s=written_at_s
+    ):
+        name = _one_window(
+            found,
+            history,
+            limits=limits,
+            ledger_equity=ledger_equity,
+            capital=capital,
+            exposures=exposures,
+        )
+        if name:
+            return name
+        if order_moved and risk_state_hash(found, history.hash_policy) == history.state_hash:
+            return "order"
+    return ""
+
+
+def _one_window(
+    found: dict[str, Any],
+    history: "LogRiskHistory",
+    *,
+    limits: RiskLimits | None,
+    ledger_equity: Decimal | None,
+    capital: Decimal | None,
+    exposures: Mapping[str, float | None] | None,
+) -> str:
+    """The windows before R1-j, each tried on one candidate order window."""
+    policy = history.hash_policy
     running = {"halted": False, "halt_reason": ""}
     candidates: list[tuple[str, dict[str, Any]]] = []
     if found.get("halted"):
@@ -279,15 +365,119 @@ def _crash_transition(
                 candidates.append(("kill_switch_halt", {"kill_switch": False, **running}))
             candidates.append(("kill_switch_mirror", {"kill_switch": False}))
     for name, prior in candidates:
-        if risk_state_hash({**found, **prior}) == history.state_hash:
+        if risk_state_hash({**found, **prior}, policy) == history.state_hash:
             return name
     if exposure_prior(found, history, exposures) is not None:
         return "exposure"
-    if funding_note_prior(found, history.state_hash) is not None:
+    if funding_note_prior(found, history.state_hash, policy=policy) is not None:
         return "funding"
     return _equity_transition(
         found, history, limits=limits, ledger_equity=ledger_equity, capital=capital
     )
+
+
+#: How many distinct recent ``runner_now_ns`` values the history walk keeps. The
+#: order window is 60 seconds and the decision clock moves in whole minutes, so
+#: two are ever in reach; the rest is margin.
+_WINDOW_CLOCKS_KEPT = 16
+
+#: Aegis's rate window (``chimera.risk._ORDER_WINDOW_S``), in nanoseconds.
+_ORDER_WINDOW_NS = int(_ORDER_WINDOW_S * NS_PER_SECOND)
+
+
+def _order_window_reversions(
+    found: dict[str, Any],
+    history: "LogRiskHistory",
+    *,
+    limits: RiskLimits | None,
+    written_at_s: float | None,
+) -> Any:
+    """R1-j: the order windows the log's last statement can have hashed.
+
+    Yields ``(candidate, moved)`` pairs: the found state with its
+    ``order_times`` put back to one window the statement can have held, and
+    whether that differs from the found one. The found state itself comes
+    first, so every proof R1-c and R1-i made is tried exactly as before.
+
+    **Why this exists.** ``chimera.risk-hash/2`` hashes ``order_times``, and
+    Aegis moves that list as bookkeeping of the writes the windows already name:
+    ``record_order`` appends the decision-clock instant of an approved order,
+    and EVERY persist prunes entries 60 seconds old or more. A crash window
+    therefore moves ``order_times`` too. Under the legacy policy that move was
+    invisible to the hash. Under the new one, a kill between an order's persist
+    and the record that restates the hash would read as a foreign file, and the
+    campaign would be sealed for an ordinary crash (the R1-i crash harness's
+    correction scenarios found it).
+
+    **What is tried, and nothing else.** The found window is split into
+    survivors (a prefix) and entries appended since the statement (the rest).
+    An appended entry must be at or after the statement's own clock and, when
+    the file says when it was written, no later than that. Pruned entries are
+    put back in front of the survivors, and every survivor must still be inside
+    the window at that instant. Pruned values can only be decision-clock
+    instants from the 60 seconds up to the statement, which are exactly the
+    ``runner_now_ns`` values of the log's records in that span
+    (:attr:`LogRiskHistory.window_clocks_ns`). A pruned entry must be at least
+    60 seconds older than the file's own ``updated_at`` (the decision-clock
+    instant of its last persist). Without that instant no entry is put back:
+    an unproved prune stays disputed. At most ``max_orders_per_minute + 1``
+    entries in all, because ``record_order`` halts at the first over the limit.
+
+    Every candidate is then held to the same acceptance as before: the FULL
+    hash of the reverted prior must be the log's, and each window's own
+    conditions still apply. A wrong candidate costs a hash and proves nothing.
+
+    Under the legacy policy ``order_times`` is not hashed, so only the found
+    window is tried.
+    """
+    yield found, False
+    if "order_times" in RISK_HASH_POLICIES.get(history.hash_policy, frozenset()):
+        return
+    if history.statement_clock_ns is None:
+        return
+    window = found.get("order_times")
+    if not isinstance(window, list) or not all(isinstance(t, float) for t in window):
+        return
+    statement_s = history.statement_clock_ns / NS_PER_SECOND
+    instants = sorted({ns / NS_PER_SECOND for ns in history.window_clocks_ns})
+    cap = limits.max_orders_per_minute + 1 if limits is not None else len(window)
+    tried = {tuple(window)}
+    for split in range(len(window) + 1):
+        survivors, appended = window[:split], window[split:]
+        if any(t < statement_s for t in appended):
+            continue
+        if written_at_s is not None and any(t > written_at_s for t in appended):
+            continue
+        if written_at_s is not None and any(
+            written_at_s - t >= _ORDER_WINDOW_S for t in survivors
+        ):
+            continue
+        for pruned in _order_multisets(instants, max(0, cap - len(survivors))):
+            if pruned:
+                if written_at_s is None:
+                    continue
+                if any(written_at_s - t < _ORDER_WINDOW_S for t in pruned):
+                    continue
+                if survivors and pruned[-1] > survivors[0]:
+                    continue
+            prior = list(pruned) + list(survivors)
+            if tuple(prior) in tried:
+                continue
+            tried.add(tuple(prior))
+            yield {**found, "order_times": prior}, True
+
+
+def _order_multisets(instants: list[float], limit: int) -> Any:
+    """Every ascending list of at most ``limit`` entries drawn from ``instants``."""
+
+    def extend(start: int, room: int) -> Any:
+        yield []
+        for index in range(start, len(instants)):
+            for count in range(1, room + 1):
+                for rest in extend(index + 1, room - count):
+                    yield [instants[index]] * count + rest
+
+    yield from extend(0, limit)
 
 
 def _equity_transition(
@@ -345,7 +535,8 @@ def _equity_transition(
     if rolled:
         baselines = _unique([found["day_start_equity"]] + handed + seed)
     previous_day = (day.date() - timedelta(days=1)).isoformat()
-    target = risk_state_hash(found)
+    policy = history.hash_policy
+    target = risk_state_hash(found, policy)
     for given in givens:
         for peak in _unique(peaks):
             for baseline in baselines:
@@ -364,7 +555,7 @@ def _equity_transition(
                         ("equity_halt", {**before, "halted": False, "halt_reason": ""})
                     )
                 for name, prior in options:
-                    if risk_state_hash(prior) != history.state_hash:
+                    if risk_state_hash(prior, policy) != history.state_hash:
                         continue
                     # A detached engine -- no state file, no switch -- so the
                     # replay writes nothing anywhere. Its day comes from `now=`
@@ -378,7 +569,7 @@ def _equity_transition(
                     )
                     replay.state = RiskState.from_dict(prior)
                     replay.update_equity(float(found["equity"]), now=day)
-                    if risk_state_hash(replay.snapshot()) == target:
+                    if risk_state_hash(replay.snapshot(), policy) == target:
                         return name
     return ""
 
@@ -425,7 +616,7 @@ def exposure_prior(
             continue
         for halt in halts:
             prior = {**found, "open_positions": prior_positions, **halt}
-            if risk_state_hash(prior) == history.state_hash:
+            if risk_state_hash(prior, history.hash_policy) == history.state_hash:
                 return {"symbol": symbol, "exposure": implied}
     return None
 
@@ -437,7 +628,11 @@ _FUNDING_STREAK_SEARCH = 256
 
 
 def funding_note_prior(
-    found: Mapping[str, Any], state_hash: str, *, cost_sign: int | None = None
+    found: Mapping[str, Any],
+    state_hash: str,
+    *,
+    cost_sign: int | None = None,
+    policy: str = RISK_HASH_POLICY,
 ) -> dict[str, Any] | None:
     """R1-i: the ``funding`` window, proved -- or ``None``.
 
@@ -476,7 +671,7 @@ def funding_note_prior(
                     ("received", {"funding_adverse_streak": prior, "funding_halt": halt})
                 )
     for cost, fields in candidates:
-        if risk_state_hash({**found, **fields}) == state_hash:
+        if risk_state_hash({**found, **fields}, policy) == state_hash:
             return {"cost": cost, **fields}
     return None
 
@@ -648,6 +843,18 @@ class LogRiskHistory:
     #: The hash the statement carries. Empty unless ``statement`` is
     #: ``STATE_HASH``.
     state_hash: str = ""
+    #: R1-j: the policy that hash was taken under, as the record names it
+    #: (``risk.hash_policy``; absent is the legacy policy). Empty unless
+    #: ``statement`` is ``STATE_HASH``. Possibly a value this build does not
+    #: know, which :func:`assess_risk_continuity` refuses.
+    hash_policy: str = ""
+    #: R1-j: the statement record's ``runner_now_ns``, and every distinct
+    #: ``runner_now_ns`` the log holds from 60 seconds before it up to it. Aegis's
+    #: order window holds decision-clock instants no older than that, so these
+    #: are the only values an entry the statement hashed can have; see
+    #: :func:`_order_window_reversions`. ``None``/empty unless ``STATE_HASH``.
+    statement_clock_ns: int | None = None
+    window_clocks_ns: tuple[int, ...] = ()
     #: The ``seq`` of the newest record that RESTATED the hash, whatever the
     #: newest statement is. Used only for idempotence; see
     #: :attr:`RiskContinuity.already_recorded`.
@@ -808,6 +1015,8 @@ class RiskContinuity:
         }
         if self.history.state_hash:
             block["log_state_hash"] = self.history.state_hash
+            # R1-j: the policy both hashes were taken under, so each is readable.
+            block["hash_policy"] = self.history.hash_policy
         if self.found_state_hash:
             block["found_state_hash"] = self.found_state_hash
         return block
@@ -849,6 +1058,20 @@ def _statement_of(record: Mapping[str, Any]) -> tuple[LogRiskStatement, str]:
     if kind in _MOVING_KINDS:
         return LogRiskStatement.MOVED, ""
     return LogRiskStatement.NONE, ""
+
+
+def _policy_of(record: Mapping[str, Any]) -> str:
+    """R1-j: the hash policy a record's ``risk`` block names, exactly as written.
+
+    ``risk.hash_policy``, or the legacy policy when the field is absent (every
+    record written before R1-j). An unknown value is passed on as it is, so the
+    verdict can refuse it by name rather than this reader quietly substituting
+    another.
+    """
+    risk = record.get("risk")
+    if isinstance(risk, Mapping):
+        return str(risk.get("hash_policy", RISK_HASH_POLICY_LEGACY))
+    return RISK_HASH_POLICY_LEGACY
 
 
 def _statement_in_run(found: LogRiskStatement, *, sealed_run: bool) -> LogRiskStatement:
@@ -910,6 +1133,10 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
     statement_kind = ""
     statement_seq: int | None = None
     state_hash = ""
+    hash_policy = ""
+    statement_clock_ns: int | None = None
+    window_clocks_ns: tuple[int, ...] = ()
+    clocks: list[int] = []
     last_restated_seq: int | None = None
     recorded: tuple[int, tuple[str, str, str]] | None = None
 
@@ -962,6 +1189,11 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
             kind = str(record.get("kind", ""))
             if kind == RecordKind.STARTUP.value:
                 sealed_run = record.get(RISK_CONTINUITY_SEALED_FIELD) is True
+            clock = record.get("runner_now_ns")
+            clock = clock if isinstance(clock, int) and not isinstance(clock, bool) else None
+            if clock is not None and (not clocks or clocks[-1] != clock):
+                clocks.append(clock)
+                del clocks[:-_WINDOW_CLOCKS_KEPT]
             found, record_hash = _statement_of(record)
             found = _statement_in_run(found, sealed_run=sealed_run)
             if found is not LogRiskStatement.NONE:
@@ -969,6 +1201,13 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
                 statement_kind = kind
                 statement_seq = seq
                 state_hash = record_hash
+                hash_policy = _policy_of(record) if record_hash else ""
+                statement_clock_ns = clock if found is LogRiskStatement.STATE_HASH else None
+                window_clocks_ns = (
+                    tuple(c for c in clocks if clock - _ORDER_WINDOW_NS <= c <= clock)
+                    if found is LogRiskStatement.STATE_HASH and clock is not None
+                    else ()
+                )
                 if found is LogRiskStatement.STATE_HASH:
                     last_restated_seq = seq
             if kind in (RecordKind.DECISION.value, RecordKind.OPERATOR.value):
@@ -1002,11 +1241,33 @@ def read_log_risk_history(state_dir: str | Path) -> LogRiskHistory:
         statement_kind=statement_kind,
         statement_seq=statement_seq,
         state_hash=state_hash,
+        hash_policy=hash_policy,
+        statement_clock_ns=statement_clock_ns,
+        window_clocks_ns=window_clocks_ns,
         last_restated_seq=last_restated_seq,
         recorded_dispute=recorded,
         equity_given=equity_given,
         equities_given=tuple(equities_given),
     )
+
+
+def _written_at_s(state_dir: Path) -> float | None:
+    """The decision-clock instant ``risk.json`` says it was last written, or None.
+
+    ``RiskEngine._persist`` stamps ``updated_at`` from Aegis's own injected clock
+    (the runner's decision clock), in the same write that prunes the order
+    window. R1-j's order-window proof uses it only as the bound on what that
+    prune can have dropped; anything unreadable here leaves the bound unknown,
+    and then no pruned entry is put back.
+    """
+    try:
+        raw = json.loads((state_dir / "risk.json").read_text(encoding="utf-8"))
+        stamp = datetime.fromisoformat(str(raw["updated_at"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if stamp.tzinfo is None:
+        return None
+    return stamp.timestamp()
 
 
 def _no_dispute(load: RiskStateLoad, history: LogRiskHistory, found: str) -> RiskContinuity:
@@ -1075,7 +1336,15 @@ def assess_risk_continuity(
     root = Path(state_dir)
     history = read_log_risk_history(root) if history is None else history
     no_account_claim = load in (RiskStateLoad.MISSING, RiskStateLoad.UNREADABLE)
-    found = "" if no_account_claim else risk_state_hash(snapshot)
+    # R1-j: the file is hashed under the policy the log's own statement names,
+    # never under whatever this build writes, so a legacy hash is compared with
+    # a legacy hash. A policy nobody can compute is refused below.
+    policy = RISK_HASH_POLICY
+    unknown_policy = False
+    if history.statement is LogRiskStatement.STATE_HASH:
+        policy = history.hash_policy
+        unknown_policy = policy not in RISK_HASH_POLICIES
+    found = "" if no_account_claim or unknown_policy else risk_state_hash(snapshot, policy)
 
     if not history.has_history:
         return _no_dispute(load, history, found)
@@ -1120,7 +1389,17 @@ def assess_risk_continuity(
             "file to seed over nor a current state to believe"
         )
     elif history.trustworthy:
-        if history.statement is LogRiskStatement.STATE_HASH:
+        if unknown_policy:
+            fault = RiskContinuityFault.RISK_STATE_MISMATCH
+            detail = (
+                f"the log's last risk.state_hash, on the {history.statement_kind} record "
+                f"at seq {history.statement_seq}, was taken under hash policy "
+                f"{history.hash_policy!r}, which this build does not know "
+                f"({', '.join(sorted(RISK_HASH_POLICIES))}). The persisted {where} "
+                "cannot be compared with it under any other policy, so it is not "
+                "believed"
+            )
+        elif history.statement is LogRiskStatement.STATE_HASH:
             if found != history.state_hash:
                 fault = RiskContinuityFault.RISK_STATE_MISMATCH
                 detail = (
@@ -1137,6 +1416,7 @@ def assess_risk_continuity(
                     ledger_equity=ledger_equity,
                     capital=capital,
                     exposures=exposures,
+                    written_at_s=_written_at_s(root),
                 )
                 if transition:
                     detail += (
@@ -1196,6 +1476,11 @@ def _already_recorded(verdict: RiskContinuity) -> bool:
 
 __all__ = [
     "CRASH_TRANSITIONS",
+    "RISK_HASH_POLICIES",
+    "RISK_HASH_POLICY",
+    "RISK_HASH_POLICY_LEGACY",
+    "RiskHashPolicyError",
+    "hash_policy_of",
     "RISK_CONTINUITY_SEALED_FIELD",
     "RISK_CONTINUITY_PREFIX",
     "RISK_HASH_EXCLUDED",
