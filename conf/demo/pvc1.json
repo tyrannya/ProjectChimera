@@ -11,8 +11,6 @@
     "max_exposure_per_asset_pct": 1.0,
     "max_leverage": 1.0,
     "max_orders_per_minute": 4,
-    "loss_streak_limit": 3,
-    "cooldown_seconds": 3600,
     "max_data_delay_s": 180,
     "max_funding_cost_rate": 0.0005,
     "funding_adverse_streak_limit": 3,

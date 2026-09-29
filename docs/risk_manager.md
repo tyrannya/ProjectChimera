@@ -177,6 +177,50 @@ enforces, without anybody editing that config.
 These only apply when the caller supplies `funding_rate` / `liquidation_price`.
 The shipped configs are spot, so they are inert there.
 
+## The demo campaign: which configured limit is enforced where (R1-k)
+
+A demo campaign's limits (`conf/demo/pvc1.json`, parsed by
+`chimera/demo/config.py`) are hashed into every decision record, so each one
+has to correspond to something a production code path actually does.
+`chimera/demo/limit_reachability.py` is the inventory: one row per limit, with
+its enforcement function, the runtime input it needs, the production caller
+that supplies that input, what a breach mutates and refuses, whether reductions
+stay possible, whether replay meets it on the same path, and what a restart
+does to it. Every configured limit is `REACHABLE`; `UNREACHABLE` is refused in
+the schema. CI's `unsafe-default-detector` job proves it by behaviour: for every
+configured limit the real `DemoRunner` runs the same synthetic minutes on the
+committed value and on a breaching one, and the committed run must be allowed
+while the breach is refused or halted, naming the limit.
+
+Two changes made that true.
+
+- **`max_funding_cost_rate` is wired.** The carry hedge hands the PERPETUAL
+  leg's `execute_target` the decision minute's funding rate *in effect*
+  (`MarketState.funding_rate_current`: the mark-price stream's `r` at the
+  minute's close, the rate the next settlement charges as far as anything knows
+  then). It is not `funding_rate_last`, the last *realised* settlement. The
+  spot leg is never judged on a rate; reductions and every flatten are never
+  asked. A minute whose mark arrived without a rate is incomplete, so no rule
+  evaluates; a non-finite rate in a file halts the runner at the feed
+  (`feed_unreadable`), and Aegis refuses a non-finite `funding_rate` from any
+  caller. The comparison is `cost > max_funding_cost_rate`: a cost exactly at
+  the limit is allowed. Decision records carry `inputs.funding_current`, and
+  each execution entry its `reason`.
+- **`loss_streak_limit` and `cooldown_seconds` are retired from the campaign
+  schema.** Aegis counts a loss streak only from `record_trade_result`, and
+  nothing on the demo path calls it: a carry hedge has no defined per-trade
+  result, and defining one is an economic choice for the S2 protocol, not the
+  runner. The parser refuses both names with that reason. `RiskEngine` keeps
+  both rules and its defaults for its other callers; on the demo path they
+  cannot fire, and the inventory's scan fails the day something calls
+  `record_trade_result` in `chimera/` or `tools/`, which is when the two must
+  return to the schema as configured limits.
+
+`max_orders_per_minute` is enforced (every approval is recorded and the window
+halts above the limit) but is a backstop: a tick approves at most two increases
+and decided minutes are 60 s apart on the decision clock, so on today's cadence
+only a limit of 1 binds.
+
 **The funding sign.** The cost a position pays per settlement is
 `sign(side) × rate`: a long pays a positive rate, a short pays a negative one.
 That is the table `chimera/futures/accounting.py` states once for the whole

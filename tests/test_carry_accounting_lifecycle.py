@@ -55,6 +55,9 @@ class Minute:
     perp_close: D
     mark: D
     mark_high: D | None = None
+    #: R1-k: the perpetual's funding rate in effect, which Aegis's funding-cost
+    #: veto judges. The synthetic feed's default, a rate a SHORT perp RECEIVES.
+    funding_rate_current: D | None = D("0.0001")
 
 
 class Recorder:

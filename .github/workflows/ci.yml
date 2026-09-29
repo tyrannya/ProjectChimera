@@ -71,7 +71,15 @@ jobs:
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # CI runtime headroom for the Windows leg only (R1-k): 90 minutes there,
+    # 60 on Linux as before. The Windows regression suite is unchanged and runs
+    # in full -- nothing is deselected, skipped or split away, the R1-i
+    # crash/persistence files included. Those files fsync on every persist and
+    # take 23-28 minutes on a slow Windows runner: main's green push run on
+    # 15e97a5 finished at 55 of 60, and R1-k's first run was cancelled at 60
+    # inside them with no test failed. Linux finishes in about 26 minutes and
+    # keeps its limit. This changes when a run is cut off, never what passes.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 60 }}
     strategy:
       # Both legs are binding. A Windows-only failure is a real failure, and
       # cancelling the other leg on the first red hides half the answer.
@@ -206,6 +214,58 @@ jobs:
           if any(line.startswith(("SKIPPED", "XFAIL", "FAILED", "ERROR")) for line in log):
               raise SystemExit("a replay-determinism test was skipped, xfailed or failed")
           print("R1-j 48 h fixture: PARITY")
+
+  unsafe-default-detector:
+    # R1-k: a configured limit that no code path enforces fails CI. For every
+    # limit `conf/demo/pvc1.json` can carry, the real DemoRunner runs the same
+    # synthetic minutes on the committed value and on a breaching one; the
+    # committed run must be allowed and the breach refused or halted, naming
+    # the limit. `chimera.demo.limit_reachability`'s inventory is checked
+    # against the code, and the loss streak and cooldown R1-k retired stay
+    # retired while nothing calls `record_trade_result`. The last step reads
+    # the detector's own marker line against the schema's limit list, so a run
+    # that deselected, skipped or lost a probe cannot pass.
+    name: Unsafe-default detector (R1-k)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the locked dependency set
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-lock.txt
+          pip install -e . --no-deps
+
+      - name: Run the detector and the reachability inventory
+        run: |
+          set -o pipefail
+          pytest -m unsafe_default -rA tests/test_r1k_unsafe_default_detector.py tests/test_r1k_limit_reachability.py | tee unsafe-default.log
+
+      - name: Prove every configured limit was probed from both sides
+        shell: python
+        run: |
+          import json
+          from chimera.demo.config import LIMIT_FIELDS
+          log = open("unsafe-default.log", encoding="utf-8").read().splitlines()
+          markers = [line for line in log if line.startswith("R1K-UNSAFE-DEFAULT ")]
+          if len(markers) != 1:
+              raise SystemExit(f"expected one R1K-UNSAFE-DEFAULT marker, found {len(markers)}")
+          report = json.loads(markers[0].split(" ", 1)[1])
+          probed = report["limits"]
+          if set(probed) != set(LIMIT_FIELDS) or report["configured"] != sorted(LIMIT_FIELDS):
+              raise SystemExit(f"unprobed: {sorted(set(LIMIT_FIELDS) - set(probed))}")
+          for name, sides in sorted(probed.items()):
+              if sides.get("committed") != "allowed" or not sides.get("breach"):
+                  raise SystemExit(f"{name} was not witnessed from both sides: {sides}")
+              print(f"{name}: committed allowed; breach -> {sides['breach']}")
+          if any(line.startswith(("SKIPPED", "XFAIL", "FAILED", "ERROR")) for line in log):
+              raise SystemExit("an unsafe-default test was skipped, xfailed or failed")
+          print(f"R1-k unsafe-default detector: {len(probed)} configured limits enforced")
 
   config:
     name: Config validation

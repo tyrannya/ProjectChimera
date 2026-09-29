@@ -37,6 +37,9 @@ class Minute:
     spot_close: D
     perp_close: D
     mark: D
+    #: R1-k: the perpetual's funding rate in effect, which Aegis's funding-cost
+    #: veto judges. The synthetic feed's default, a rate a SHORT perp RECEIVES.
+    funding_rate_current: D | None = D("0.0001")
 
 
 def minute(index: int = 0, *, spot: str = "30000", perp: str = "30030", complete: bool = True):
