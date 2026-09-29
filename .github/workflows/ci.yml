@@ -71,13 +71,15 @@ jobs:
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # 90, not 60. The Windows leg already ran close to 60 when R1-j moved its
-    # 48 h witness out of this job, and the R1-i crash-harness and dispute-
-    # lifecycle files (fsync-heavy) alone take 23-28 minutes there on a slow
-    # runner: main's push run on 15e97a5 finished at 55 of 60, and two PR runs
-    # were cancelled mid-suite with no test failed. A cancelled leg proves
-    # nothing either way; the limit is headroom, not a weaker check.
-    timeout-minutes: 90
+    # CI runtime headroom for the Windows leg only (R1-k): 90 minutes there,
+    # 60 on Linux as before. The Windows regression suite is unchanged and runs
+    # in full -- nothing is deselected, skipped or split away, the R1-i
+    # crash/persistence files included. Those files fsync on every persist and
+    # take 23-28 minutes on a slow Windows runner: main's green push run on
+    # 15e97a5 finished at 55 of 60, and R1-k's first run was cancelled at 60
+    # inside them with no test failed. Linux finishes in about 26 minutes and
+    # keeps its limit. This changes when a run is cut off, never what passes.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 60 }}
     strategy:
       # Both legs are binding. A Windows-only failure is a real failure, and
       # cancelling the other leg on the first red hides half the answer.
