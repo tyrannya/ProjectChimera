@@ -87,6 +87,36 @@ class HedgeError(CarryError):
     """The hedge cannot be planned, applied or reconstructed."""
 
 
+class ValuationUnknown(HedgeError):
+    """A non-flat perpetual leg on a minute with no usable mark (R1-l).
+
+    Its unrealised term, and so the position's equity, cannot be stated. It is
+    raised before anything is marked, so a refusal leaves the ledger as it was.
+    """
+
+
+def valuation_mark(price: Any) -> Decimal | None:
+    """THE price a perpetual leg is valued at, or None when ``price`` is not one (R1-l).
+
+    One valuation price for equity, drawdown and liquidation, and for a
+    perpetual it is the MARK: section 6.7's threshold is priced on the mark (its
+    high), the executor's margin and liquidation distance are measured at the
+    mark, and a venue computes unrealised PnL there. Valuing the equity at the
+    kline close instead compared a number the venue does not compute with a
+    requirement it does, and a touch read as "not touched" by ``Q * (mark -
+    close)``.
+
+    Absent, NaN, infinite, zero or negative is not a price, and neither is a
+    binary float: a caller receives None and refuses, never falls back to the
+    close -- falling back would reinstate the mixed pricing silently, on the one
+    kind of minute nobody would look at. The feed uses the same predicate to
+    decide whether a minute carries a mark at all (`chimera.demo.feed`).
+    """
+    if not isinstance(price, Decimal) or not price.is_finite() or price <= ZERO:
+        return None
+    return price
+
+
 class HedgeState(str, Enum):
     """Section 6.1's states, and nothing else."""
 
@@ -291,11 +321,16 @@ class HedgeOutcome:
 
 @dataclass(frozen=True)
 class CarryMark:
-    """The position marked at one minute's closes."""
+    """The position marked at one minute: spot at its close, the perpetual at its MARK."""
 
     quantity: Decimal
     spot_close: Decimal
     perp_close: Decimal
+    #: The price ``perp_pnl`` was computed at (R1-l): the minute's mark, or None
+    #: when the perpetual leg is flat and no price was needed. ``perp_close``
+    #: stays beside it because ``basis`` and section 6.5's identity are defined
+    #: on the closes.
+    perp_mark: Decimal | None
     basis: Decimal
     spot_pnl: Decimal
     perp_pnl: Decimal
@@ -307,6 +342,7 @@ class CarryMark:
             "quantity": str(self.quantity),
             "spot_close": str(self.spot_close),
             "perp_close": str(self.perp_close),
+            "perp_mark": None if self.perp_mark is None else str(self.perp_mark),
             "basis": str(self.basis),
             "spot_pnl": str(self.spot_pnl),
             "perp_pnl": str(self.perp_pnl),
@@ -1155,7 +1191,18 @@ class HedgedPosition:
     # -- marking and the identity -----------------------------------------
 
     def mark_to_market(self, state: CarryMarketState) -> CarryMark:
-        """Mark both legs at the minute's closes and check the running identity.
+        """Mark both legs and check the running identity. The perpetual at its MARK.
+
+        **R1-l: one valuation price.** The perpetual's unrealised term is priced
+        at the minute's mark (:func:`valuation_mark`), the price section 6.7's
+        threshold and the executor's margin are measured at, and this equity is
+        the one the ledger marks, `RiskEngine.update_equity` judges for drawdown
+        and daily loss, and 6.7 compares. It used to be priced at
+        ``perp_close``. The spot leg stays at its close: spot has no mark, and
+        the close is what the inventory is worth. ``basis`` and section 6.5's
+        identity stay on the closes too -- spreads, not valuations. A non-flat
+        perpetual on a minute with no usable mark raises
+        :class:`ValuationUnknown` BEFORE anything is marked.
 
         Section 6.6's identity, per leg. ``perp_margin`` is the margin posted for
         the quantity the PERPETUAL leg holds, so the unrealised term that sits
@@ -1175,7 +1222,7 @@ class HedgedPosition:
             if spot_leg.quantity
             else ZERO
         )
-        perp_pnl = self._perp_pnl(state)
+        perp_pnl, perp_mark = self._perp_valuation(state)
         equity = self.equity_at(state)
         self.ledger.mark(
             spot_close=state.spot_close, perp_close=state.perp_close, equity=equity
@@ -1189,6 +1236,7 @@ class HedgedPosition:
             quantity=quantity,
             spot_close=state.spot_close,
             perp_close=state.perp_close,
+            perp_mark=perp_mark,
             basis=state.perp_close - state.spot_close,
             spot_pnl=spot_pnl,
             perp_pnl=perp_pnl,
@@ -1204,6 +1252,10 @@ class HedgedPosition:
         watches the newer minutes for a touch). The ledger's mark also moves its
         worst equity, so marking a later minute and then deciding an earlier one
         would carry the later minute's low into the earlier minute's records.
+
+        The perpetual term is :meth:`_perp_pnl`'s, the same one
+        :meth:`mark_to_market` uses, so the two cannot price a minute
+        differently (R1-l).
         """
         spot_leg = self.leg(SPOT)
         return (
@@ -1214,10 +1266,35 @@ class HedgedPosition:
         )
 
     def _perp_pnl(self, state: CarryMarketState) -> Decimal:
-        perp_leg = self.leg(PERP)
-        if not perp_leg.quantity:
-            return ZERO
-        return perp_leg.quantity * (perp_leg.entry_price - state.perp_close)
+        return self._perp_valuation(state)[0]
+
+    def _perp_valuation(self, state: CarryMarketState) -> tuple[Decimal, Decimal | None]:
+        """The perpetual's unrealised term and the price it was computed at (R1-l).
+
+        The single path every equity reading takes. The term is the futures
+        layer's own side-signed ``unrealised_pnl`` of the perpetual executor's
+        position (``FuturesExecutor.unrealised``) at :func:`valuation_mark` --
+        one function for a perpetual's valuation, which a single-leg runtime
+        inherits without a second copy. For this carry's SHORT leg it is
+        ``Q * (entry - mark)``.
+
+        A flat leg has no unrealised term and needs no price: ``(0, None)``. A
+        held leg on a minute with no usable mark raises
+        :class:`ValuationUnknown` -- the answer section 7.2's liquidation rule
+        gives any unknown on a non-flat position -- and is never valued at the
+        close instead.
+        """
+        if not self.leg(PERP).quantity:
+            return ZERO, None
+        mark = valuation_mark(getattr(state, "mark", None))
+        if mark is None:
+            raise ValuationUnknown(
+                f"the perpetual leg is held and the minute carries no usable mark "
+                f"({getattr(state, 'mark', None)!r}), so the position cannot be valued. "
+                "Section 6.7's threshold is priced at the mark; valuing the equity at the "
+                "close instead would compare two different prices"
+            )
+        return self.perp.unrealised(self.config.perp_symbol, mark), mark
 
     # -- liquidation -------------------------------------------------------
 
