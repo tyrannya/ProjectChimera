@@ -261,6 +261,82 @@ def test_the_carry_mark_documents_the_price_its_perp_term_used(position):  # noq
 
 
 # ---------------------------------------------------------------------------
+# B'. the valuation price is the mark CLOSE, never the high
+# ---------------------------------------------------------------------------
+def test_the_equity_is_valued_at_the_mark_close_and_not_at_the_mark_high(
+    position,  # noqa: F811
+):
+    """The high is section 6.7's THRESHOLD price only; the equity is the close's.
+
+    A minute whose mark high sits well above its mark close: the equity (both
+    callers) and the documented price are the close's, and the high reaches
+    only the touch threshold.
+    """
+    open_hedge(position)
+    state = priced(perp="30030", mark="30030", high="30530")
+    expected = by_hand(position, state, perp_price=D("30030"))
+
+    assert position.equity_at(state) == expected
+    marked = position.mark_to_market(state)
+    assert marked.equity == expected
+    assert marked.perp_mark == D("30030")
+    assert by_hand(position, state, perp_price=D("30530")) != expected, "non-vacuous"
+
+
+class DistinctMarkFeed(SyntheticFeed):
+    """Every mark column different, and the mark different every minute.
+
+    The fixture writes one value into ``mark_open/high/low/close``; here the
+    close is ``kline_close + 10 * (index % 5) + 3`` and the other three sit
+    around it, so a reader of the wrong column or the wrong minute is visible.
+    """
+
+    def _row(self, market, minute_open_ms, index, shape):
+        row = super()._row(market, minute_open_ms, index, shape)
+        if market == "um" and shape.mark:
+            close = expected_mark_close(row["kline_close"], index)
+            row.update(
+                {
+                    "mark_open": round(close - 7.0, 2),
+                    "mark_high": round(close + 5.0, 2),
+                    "mark_low": round(close - 9.0, 2),
+                    "mark_close": close,
+                }
+            )
+        return row
+
+
+def expected_mark_close(kline_close: float, index: int) -> float:
+    return round(kline_close + 10.0 * (index % 5) + 3.0, 2)
+
+
+def test_the_feed_reports_each_minutes_own_mark_close(tmp_path, monkeypatch):
+    """The valuation price is THIS minute's ``mark_close``: not its open, not
+    its high, not a neighbour's."""
+    monkeypatch.setattr(demo_harness, "SyntheticFeed", DistinctMarkFeed)
+    harness = build(tmp_path)
+    fixture = SyntheticFeed(tmp_path / "unused", harness.runner.contract)
+    for index in range(6):
+        state = harness.runner.cursor.state_for(T0 + index * MINUTE_MS)
+        close = expected_mark_close(fixture.perp_close(index), index)
+        assert state.mark == D(str(close)), index
+        assert state.mark_high == D(str(round(close + 5.0, 2))), index
+
+
+def test_the_runner_marks_at_the_minutes_own_mark_close(tmp_path, monkeypatch):
+    monkeypatch.setattr(demo_harness, "SyntheticFeed", DistinctMarkFeed)
+    harness = hedged_harness(tmp_path)
+    minute = T0 + 3 * MINUTE_MS
+    harness.tick(minute)
+    fixture = SyntheticFeed(tmp_path / "unused", harness.runner.contract)
+    close = D(str(expected_mark_close(fixture.perp_close(3), 3)))
+    state = harness.runner.cursor.state_for(minute)
+    carry = harness.runner.position
+    assert carry.ledger.state.last_equity == by_hand(carry, state, perp_price=close)
+    assert harness.risk.state.equity == float(carry.ledger.state.last_equity)
+
+
+# ---------------------------------------------------------------------------
 # C. the same mark-priced equity reaches Aegis
 # ---------------------------------------------------------------------------
 def test_a_mark_move_reaches_aegis_equity_and_a_close_move_does_not(tmp_path, monkeypatch):
