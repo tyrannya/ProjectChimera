@@ -289,7 +289,15 @@ def test_a_reader_never_sees_a_partial_day_while_both_render_paths_republish(tmp
     threads (R1-g serialises them with one lock); the runner reads it from a
     third. Every read is a whole day. Paced like a real reader, not a busy loop,
     because on Windows a reader holding the file continuously is exactly the
-    case the bounded retry is allowed to fail."""
+    case the bounded retry is allowed to fail.
+
+    On Windows an OPEN that lands while a rename is replacing the file can be
+    refused (``PermissionError``, errno 13). That is not a partial day -- nothing
+    was read -- and the runner's own reader already treats a failed read as
+    "not yet" (`FeedCursor._day` raises `FeedNotReady` and the minute waits).
+    So there, and only there, a refused open is retried, exactly as
+    `sink._replace` retries the writer's side of the same contention. Anything
+    else -- a torn parquet, a short count, a refusal off Windows -- still fails."""
     service = service_for(tmp_path)
     service.recover()
     for index in range(30):
@@ -314,6 +322,9 @@ def test_a_reader_never_sees_a_partial_day_while_both_render_paths_republish(tmp
         while not done.is_set():
             try:
                 counts.add(len(pd.read_parquet(parquet)))
+            except PermissionError as exc:
+                if not sink_module._RETRY_SHARING_VIOLATIONS:
+                    failures.append(exc)
             except BaseException as exc:  # pragma: no cover - a partial day
                 failures.append(exc)
             time.sleep(0.02)
