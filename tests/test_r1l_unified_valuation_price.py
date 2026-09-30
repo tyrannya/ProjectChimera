@@ -721,6 +721,7 @@ def test_a_mark_off_its_close_replays_to_parity_across_a_restart_and_a_flatten(
     assert kinds.count("OPERATOR") == 2, "the flatten's request and completion"
     assert kinds.count("STARTUP") >= 3, "three processes before the flatten's: a restart"
 
+    capsys.readouterr()  # the campaigns' own output, not the report
     code = replay_parity.main(
         offset["replay_argv"], operational_clock=lambda: OPERATIONAL_2100
     )
