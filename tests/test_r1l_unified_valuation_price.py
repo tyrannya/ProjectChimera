@@ -684,8 +684,12 @@ def _campaign(tmp_path: Path, feed_type: type[SyntheticFeed]) -> dict[str, Any]:
                         "note": NOTE,
                     }
                 ],
-            }
-        ),
+            },
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=True,
+        )
+        + "\n",  # the canonical form `replay_parity` requires of this file
         encoding="utf-8",
     )
     records = []
