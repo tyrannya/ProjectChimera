@@ -501,6 +501,43 @@ turnover and reached `risk.update_equity` — a campaign that traded enough woul
 have halted on a drawdown limit against cash it never spent. If you are
 reconciling a report to section 6.6 by hand, use the equity line above.
 
+A tenth, about which price the equity is valued at (R1-l). **The perpetual leg
+is valued at its MARK, and it is the only term that is.** `unrealised` above is
+the perpetual's `unrealised_pnl` at the minute's `mark_close` — for the carry's
+SHORT leg `Q * (entry - mark)`, computed by the futures layer's own function
+(`chimera.futures.accounting.unrealised_pnl`, the one a single-leg runtime
+inherits) — so the equity the carry ledger marks, the equity `update_equity`
+hands Aegis for its drawdown and daily-loss guards, and the equity section 6.7
+compares with `Q * mark_high * maintenance_margin_rate` are one number, priced
+the way its threshold is. Before R1-l the perpetual was valued at the kline
+close, so on a minute whose mark sat above the close a touch read as "not
+touched" by exactly `Q * (mark - close)`, and the reverse on a minute below it.
+
+* **Spot** is valued at its kline close. Spot has no mark price; the close is
+  what the inventory is worth, and there is no second number to disagree with.
+* **`basis` and section 6.5's running identity stay on the two closes.** They
+  are spreads the rule reads and the ledger reconciles, not valuations, so a
+  mark off its close moves neither. The executors' fill reference stays the
+  close, and a funding settlement is still charged at the settlement's own
+  recorded mark.
+* **Where the price is documented.** Every `DECISION` record already carries
+  `inputs.mark`, and `mark` is one of the canonical inputs `inputs_hash` is
+  taken over, so the valuation price is decision evidence without a new field.
+  No record, persisted field, schema or hash changed; only the equity values
+  that already reach `ledger_effect.equity`, `risk.json` and `carry_ledger.json`
+  are now mark-priced. `CarryMark.perp_mark`, in memory only, names the price
+  the perpetual term used (`None` when the perpetual is flat).
+* **No usable mark.** An absent, NaN, infinite, zero or negative mark is not a
+  price (`chimera.carry.hedge.valuation_mark`). A perpetual row that says its
+  mark arrived but carries no usable one makes the minute `INCOMPLETE`
+  (`um_mark`), exactly as a missing mark does: no rule evaluates. A non-flat
+  perpetual leg is never valued without one, and never at the close instead:
+  the safety pass halts `liquidation_unknown`, and an operator `flatten` on
+  such a minute still sends both reduce-only orders, saves the ledger and
+  writes its completion record, but values nothing — no `ledger_effect`,
+  Aegis's equity unchanged — unless the perpetual reached flat. A flat
+  perpetual needs no price at all.
+
 An eighth, about what a dispute does and does not cost. The carry ledger books
 each leg at its own level — the spot inventory at the spot leg's VWAP, the
 perpetual's 1x margin at the perpetual's — and moves `free_cash` by the change
