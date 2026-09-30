@@ -1083,3 +1083,93 @@ def test_no_demo_module_imports_by_computed_name():
             if not isinstance(node.args[0], ast.Constant):
                 offenders.append(f"{dotted}:{node.lineno}")
     assert not offenders, f"a demo-path module imports by computed name: {offenders}"
+
+
+def test_no_dependency_declaration_names_freqtrade():
+    """R1-m deleted the code. This stops the dependency walking back in.
+
+    Found by the R1-m mutation campaign: putting `trade = ["freqtrade>=2024.1"]`
+    back into `pyproject.toml` passed every other guard in this file. Deleting a
+    live-capable path while leaving its library one line from returning is half
+    a retirement -- the next person to add an import would find it installed and
+    nothing would object until the import graph guards noticed, if they did.
+
+    The whole file is scanned rather than the parsed optional-dependencies
+    table, so a `dependencies` entry, a new extra, a build requirement or a tool
+    section that pins it are all caught by the same rule.
+    """
+    body = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    offending = [
+        line.strip()
+        for line in body.splitlines()
+        if "freqtrade" in line and not line.lstrip().startswith("#")
+    ]
+
+    assert offending == [], f"pyproject.toml declares Freqtrade again: {offending}"
+
+
+def test_the_dependency_guard_catches_a_reinstated_extra(tmp_path):
+    """The negative control, on a synthetic file: a guard that cannot fail
+    proves nothing, and this one was written because its subject slipped past
+    every guard that already existed."""
+    planted = tmp_path / "pyproject.toml"
+    planted.write_text(
+        "[project.optional-dependencies]\n"
+        "# freqtrade used to live here -- a comment must NOT trip the guard\n"
+        'trade = ["freqtrade>=2024.1"]\n',
+        encoding="utf-8",
+    )
+
+    offending = [
+        line.strip()
+        for line in planted.read_text(encoding="utf-8").splitlines()
+        if "freqtrade" in line and not line.lstrip().startswith("#")
+    ]
+
+    assert offending == ['trade = ["freqtrade>=2024.1"]'], offending
+
+
+def test_no_python_file_imports_freqtrade():
+    """The other half: the library is not declared, and nothing reaches for it.
+
+    Stronger than the reachability guards above and much cheaper. Those ask
+    whether the DEMO can reach Freqtrade through the import graph, which was the
+    only question worth asking while the strategies existed. Since R1-m nothing
+    in the tree may import it at all, which is a claim a plain AST walk settles.
+    """
+    offending = []
+    for path in sorted(REPO.glob("**/*.py")):
+        if any(part in {".git", ".venv", "build", "__pycache__"} for part in path.parts):
+            continue
+        if path.name == "test_retired_runtime_disconnected.py":
+            continue  # this module names it in prose and in RETIRED
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            if any(name == "freqtrade" or name.startswith("freqtrade.") for name in names):
+                offending.append(str(path.relative_to(REPO)))
+
+    assert offending == [], f"these still import Freqtrade: {sorted(set(offending))}"
+
+
+def test_the_import_guard_catches_a_reinstated_import(tmp_path):
+    """The negative control for the walk above, on a parsed synthetic module."""
+    tree = ast.parse("from freqtrade.enums import RunMode\nimport freqtrade.data\n")
+
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            continue
+        if any(name == "freqtrade" or name.startswith("freqtrade.") for name in names):
+            found.append(names)
+
+    assert len(found) == 2, found
