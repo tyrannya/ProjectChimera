@@ -291,3 +291,142 @@ def test_limits_roundtrip_through_a_dict():
 def test_limits_ignore_unknown_config_keys():
     limits = RiskLimits.from_dict({"max_open_positions": 5, "not_a_limit": 1})
     assert limits.max_open_positions == 5
+
+
+# ---------------------------------------------------------------------------
+# Rescued from tests/test_risk_regressions.py before R1-m deleted it
+# ---------------------------------------------------------------------------
+# That module's subject was the Freqtrade path, and it goes with it. These nine
+# assertions are not about Freqtrade: each constructs a `RiskEngine` directly
+# and exercises `chimera/risk.py`, which the demo path uses and which R1-m does
+# not touch. Freqtrade appears in their original docstrings only as the story
+# that motivated each defect, and that story is kept here because it is what
+# makes the assertion legible -- not because the code under test needs it.
+#
+# Deleting them with their file would have dropped live Aegis coverage silently,
+# which is the one thing a retirement must not do.
+
+
+def test_the_gate_judges_the_order_it_was_HANDED_not_one_it_re_derived():
+    """Beyond the risk envelope, refused.
+
+    The defect: the entry gate ignored the `amount` it was given and re-derived
+    a stake of its own, so an order inflated after sizing had spoken -- by an
+    exchange minimum, say -- was judged as though it were still the size the
+    engine would have chosen.
+    """
+    engine = RiskEngine(RiskLimits(risk_per_trade_pct=0.01, max_position_pct=0.25))
+    # The risk-based stake for a 5% stop on 10k of equity is 2000.
+    assert engine.position_size(10_000.0, 100.0, 95.0) == pytest.approx(2000.0)
+
+    decision = engine.evaluate_entry(
+        pair="BTC/USDT",
+        equity=10_000.0,
+        entry_price=100.0,
+        stop_price=95.0,
+        proposed_stake=2600.0,
+    )
+
+    assert not decision.allowed
+    assert "exceeds" in decision.reason or "risk" in decision.reason
+
+
+def test_an_order_equal_to_the_risk_stake_is_allowed_and_reported():
+    """The other side: the gate is not simply hostile to a stake it was given."""
+    engine = RiskEngine(RiskLimits(risk_per_trade_pct=0.01, max_position_pct=0.25))
+
+    decision = engine.evaluate_entry(
+        pair="BTC/USDT",
+        equity=10_000.0,
+        entry_price=100.0,
+        stop_price=95.0,
+        proposed_stake=2000.0,
+    )
+
+    assert decision.allowed
+    assert decision.stake == pytest.approx(2000.0)
+
+
+def test_the_per_asset_cap_is_applied_to_the_order_actually_proposed():
+    engine = RiskEngine(RiskLimits(max_exposure_per_asset_pct=0.10, max_position_pct=1.0))
+
+    decision = engine.evaluate_entry(
+        pair="BTC/USDT",
+        equity=10_000.0,
+        entry_price=100.0,
+        stop_price=95.0,
+        proposed_stake=1500.0,  # 15% of equity, over the 10% per-asset cap
+    )
+
+    assert not decision.allowed
+    assert "BTC/USDT" in decision.reason
+
+
+def test_the_portfolio_cap_is_applied_to_the_order_actually_proposed():
+    engine = RiskEngine(RiskLimits(max_total_exposure_pct=0.30, max_position_pct=1.0))
+    engine.set_position_exposure("ETH/USDT", 2_900.0)
+
+    decision = engine.evaluate_entry(
+        pair="BTC/USDT",
+        equity=10_000.0,
+        entry_price=100.0,
+        stop_price=95.0,
+        proposed_stake=500.0,
+    )
+
+    assert not decision.allowed
+    assert "total exposure" in decision.reason
+
+
+def test_exposure_is_ASSIGNED_not_accumulated():
+    """The defect, and the reason the method is named `set_`.
+
+    Its caller reported a position's *total* stake on every fill callback, so
+    accumulating turned one 200 position into 400 after two callbacks. The
+    caller is gone with R1-m; the semantics it exposed are Aegis's own and are
+    relied on by everything that reports an exposure.
+    """
+    engine = RiskEngine(RiskLimits())
+
+    engine.set_position_exposure("BTC/USDT", 200.0)
+    engine.set_position_exposure("BTC/USDT", 200.0)
+
+    assert engine.total_exposure == pytest.approx(200.0)
+
+
+def test_a_raised_stake_moves_exposure_to_the_new_total():
+    engine = RiskEngine(RiskLimits())
+
+    engine.set_position_exposure("BTC/USDT", 200.0)
+    engine.set_position_exposure("BTC/USDT", 350.0)
+
+    assert engine.total_exposure == pytest.approx(350.0)
+
+
+def test_a_reduced_stake_lowers_exposure_rather_than_adding_to_it():
+    """The same rule in the other direction, which accumulation would fail."""
+    engine = RiskEngine(RiskLimits())
+
+    engine.set_position_exposure("BTC/USDT", 400.0)
+    engine.set_position_exposure("BTC/USDT", 150.0)
+
+    assert engine.total_exposure == pytest.approx(150.0)
+
+
+def test_closing_a_position_removes_it_rather_than_zeroing_it():
+    engine = RiskEngine(RiskLimits())
+    engine.set_position_exposure("BTC/USDT", 400.0)
+
+    engine.close_position("BTC/USDT")
+
+    assert engine.total_exposure == 0.0
+    assert engine.state.open_positions == {}
+
+
+def test_a_zero_stake_clears_rather_than_recording_an_empty_position():
+    """An empty position still counts against `max_open_positions` if recorded."""
+    engine = RiskEngine(RiskLimits(max_open_positions=1))
+
+    engine.set_position_exposure("BTC/USDT", 0.0)
+
+    assert engine.state.open_positions == {}

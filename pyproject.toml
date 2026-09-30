@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "projectchimera"
 version = "0.2.0"
-description = "Research and dry-run platform for ML-driven crypto trading on Freqtrade"
+description = "Research and dry-run platform for ML-driven crypto trading"
 requires-python = ">=3.11"
 
 # Core: everything importable by chimera/, which is loaded in every container.
@@ -19,16 +19,15 @@ dependencies = [
 ]
 
 # Optional groups. The split exists because the containers genuinely differ:
-# the Freqtrade image needs `trade`, the inference image needs `ml`, and only
-# a developer needs both. Installing `.[all]` is always correct if unsure.
+# the inference image needs `ml`, the recorder and the demo need theirs, and
+# only a developer needs all of them. Installing `.[all]` is always correct if
+# unsure.
+#
+# There is no `trade` group. It carried Freqtrade for the retired execution
+# engine, and R1-m deleted that path outright -- the strategies, the launcher,
+# the exchange configs, its image and the three test modules that imported it.
+# Nothing in this repository can place a real order any more.
 [project.optional-dependencies]
-# HISTORICAL - not on the demo path. The Freqtrade container: the retired
-# execution engine and the retired strategies. Disconnected at S3 by PR-13
-# (section 3.3 of docs/proposed_demo_implementation_master_plan.md), kept
-# because `tests/test_strategies.py`, `tests/test_config_and_cli.py` and
-# `tests/test_risk_regressions.py` import `freqtrade` at module scope and must
-# keep passing. Removed by PR-16 after S4, together with those tests.
-trade = ["freqtrade>=2024.1"]
 # Training and inference: the model, the service, and market data download.
 ml = [
     "torch>=2.2",
@@ -85,7 +84,7 @@ dev = [
     "mypy>=1.9",
     "pre-commit>=3.6",
 ]
-all = ["projectchimera[trade,ml,tracking,tune,benchmark,recorder,demo,dev]"]
+all = ["projectchimera[ml,tracking,tune,benchmark,recorder,demo,dev]"]
 
 [tool.setuptools.packages.find]
 # Discovered rather than listed. Each container image copies only the packages
@@ -94,7 +93,7 @@ all = ["projectchimera[trade,ml,tracking,tune,benchmark,recorder,demo,dev]"]
 # declared package is absent. Globbing tolerates a partial source tree, so the
 # same pyproject.toml installs cleanly in the Freqtrade image, the inference
 # image and a full checkout.
-include = ["chimera*", "nn*", "strategies*", "tools*"]
+include = ["chimera*", "nn*", "tools*"]
 
 [tool.setuptools.package-data]
 # The committed research contracts. They are data the research entrypoints
@@ -114,12 +113,6 @@ target-version = ["py311"]
 python_version = "3.11"
 ignore_missing_imports = true
 warn_unused_ignores = true
-
-[[tool.mypy.overrides]]
-# Freqtrade strategies subclass a dynamically-typed base and receive kwargs
-# whose types Freqtrade itself does not annotate.
-module = "strategies.*"
-disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

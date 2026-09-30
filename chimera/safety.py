@@ -1,24 +1,28 @@
 """Startup safety gate.
 
-ProjectChimera is dry-run only unless the operator takes two independent,
-deliberate actions:
+ProjectChimera is dry-run only. Since R1-m there is no live path at all: the
+Freqtrade engine, its strategies, its launcher and every exchange config were
+deleted, so nothing in this repository can place a real order however this
+module answers.
 
-1. set ``ENABLE_LIVE_TRADING`` to the exact token ``I_UNDERSTAND_THE_RISK``;
-2. ask the launcher for live mode (``tools/run_bot.py --mode live``).
+What survives here is the gate itself, and it survives on purpose. It is still
+imported by ``tools/futures_dry_run.py`` and named by
+``chimera/futures/executor.py``, it still refuses live trading unless
+``ENABLE_LIVE_TRADING`` is set to the exact token ``I_UNDERSTAND_THE_RISK``, and
+its redaction helpers (:func:`redact`, :func:`is_secret_name`) are used by the
+notifier and the telemetry. A gate that guards nothing today is the right thing
+to keep standing when the thing it guards is what R6 will eventually build:
+deleting it and rewriting it later is how a safety check comes back weaker.
 
-Either one alone is not enough, and the presence of exchange API keys is never
-sufficient on its own.
-
-**No committed config is independently live-capable.** Every file in ``conf/``
-keeps ``dry_run: true``, including the ``*.live.json`` profiles, which instead
-carry ``"chimera_live_intent": true``. :func:`enforce_dry_run` is the only place
-in the repository that ever sets ``dry_run`` to ``False``, and it writes that to
-a private generated config rather than back to the tree. So pointing Freqtrade
-straight at a checked-in config cannot place a real order, and the safety system
-does not depend on the operator entering through the launcher.
-
-The config-level check remains as defence in depth: a hand-edited config that
-does set ``dry_run: false`` still has to pass the same acknowledgement gate.
+**Historical, for reading the tests that still name it.** The gate used to take
+two independent actions -- the token above, and asking the launcher for live
+mode. No committed config was ever independently live-capable: every file in
+``conf/`` kept ``dry_run: true``, including the ``*.live.json`` profiles, which
+carried ``"chimera_live_intent": true`` instead, and :func:`enforce_dry_run` was
+the only place in the repository that ever set ``dry_run`` to ``False`` -- into
+a private generated config, never back into the tree. Those configs and that
+launcher are gone; :func:`enforce_dry_run` remains, and a caller that hands it a
+mapping asking for live trading is still refused without the acknowledgement.
 """
 
 from __future__ import annotations

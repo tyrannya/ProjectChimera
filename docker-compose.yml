@@ -8,8 +8,10 @@
 #
 # HISTORICAL, behind `profiles: ["legacy"]`, started only by
 # `docker compose --profile legacy up`:
-#   freqtrade   - the retired trading engine (section 3.3, PR-13)
 #   nn_infer    - the retired HTTP inference service
+#
+# The `freqtrade` service is gone: R1-m deleted the trading engine, its
+# strategies, its launcher, its exchange configs and its image outright.
 #
 # `legacy` marks what was retired, not what is optional. A service that is part
 # of the demo path -- the recorder and the demo runner PR-12 adds -- must carry
@@ -34,47 +36,11 @@ volumes:
   demo_state:
 
 services:
-  # --- FREQTRADE (HISTORICAL - not on the demo path; profile `legacy`) -----
-  freqtrade:
-    # HISTORICAL - not on the demo path (PR-13, section 3.3). Kept, not
-    # deleted; started only by `docker compose --profile legacy up`.
-    profiles: ["legacy"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: chimera/freqtrade:local
-    container_name: chimera_freqtrade
-    restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      # Explicitly blank: the container cannot trade live unless the operator
-      # sets this in their own environment.
-      ENABLE_LIVE_TRADING: ""
-    command: ["--exchange", "binance", "--mode", "test", "--strategy", "NNPredictorStrategy"]
-    depends_on:
-      nn_infer:
-        condition: service_healthy
-    networks:
-      - bot_net
-    volumes:
-      - ./conf:/chimera/conf:ro
-      - ./strategies:/chimera/strategies:ro
-      - ./user_data:/chimera/user_data
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep -f tools.run_bot > /dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-
   # --- NN INFERENCE (HISTORICAL - not on the demo path; profile `legacy`) --
   nn_infer:
     # HISTORICAL - not on the demo path (PR-13, section 3.3). Kept, not
-    # deleted; started only by `docker compose --profile legacy up`. The
-    # `freqtrade` service that depends on it carries the same profile, so the
-    # dependency is either wholly present or wholly absent.
+    # deleted; started only by `docker compose --profile legacy up`. Nothing
+    # depends on it any more: R1-m deleted the `freqtrade` service that did.
     profiles: ["legacy"]
     build:
       context: .
@@ -110,7 +76,7 @@ services:
   # never starts -- permanently-down jobs, which is the exact defect the header
   # of that file records and was written to prevent. They must not gain the
   # `legacy` profile either: the change that takes the retired runtime off the
-  # default stack puts `legacy` on `freqtrade` and `nn_infer`, and a service
+  # default stack puts `legacy` on `nn_infer`, and a service
   # listing a profile starts only under it, so `legacy` here would remove the
   # demo path from `docker compose up` altogether. Neither retired service is
   # deleted by this change; after it, every scrape job in conf/prometheus.yml

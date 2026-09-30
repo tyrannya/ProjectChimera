@@ -30,7 +30,7 @@ import pandas as pd
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-PACKAGES = ("chimera", "nn", "tools", "tests", "strategies")
+PACKAGES = ("chimera", "nn", "tools", "tests")
 
 #: Where ``encoding`` sits positionally in each call, so that a call which
 #: already passes it there counts as explicit rather than as bare.

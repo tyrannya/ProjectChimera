@@ -417,7 +417,8 @@ def check_inventory(
 
 
 #: Where the production code lives. A caller anywhere in these trees is one the
-#: demo can reach; `strategies/` (the retired Freqtrade path) cannot.
+#: demo can reach. The retired Freqtrade path could not, and since R1-m
+#: deleted it there is no second reachability question to ask.
 PRODUCTION_TREES: tuple[str, ...] = ("chimera", "tools")
 
 

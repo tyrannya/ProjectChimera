@@ -82,7 +82,27 @@ HISTORICAL_MARKER = "HISTORICAL - not on the demo path"
 #: which has no comment syntax, so it goes in the `$comment` value that was
 #: already there. Written out rather than globbed, because the point of the list
 #: is that it is section 3.3's list.
+#: Still present and still disconnected: every one of these must carry the
+#: section 3.3 marker in its own docstring.
 MARKED_PY: tuple[str, ...] = (
+    "nn/infer_service.py",
+    "nn/registry.py",
+    "chimera/inference_client.py",
+    "chimera/modes.py",
+    "chimera/consensus.py",
+)
+
+#: What R1-m DELETED. These were on ``MARKED_PY``/``MARKED_TEXT``/``MARKED_JSON``
+#: until this change, held there by guards whose own message said "PR-13
+#: disconnects the service; PR-16 deletes it". This is that deletion, so the
+#: guard flips: it no longer asks whether each file carries the marker, it asks
+#: whether the file is there at all.
+#:
+#: Absence is the stronger claim. A marked file is a promise about reachability
+#: that has to be re-proved every time the import graph moves; a file that does
+#: not exist cannot be reached by anything, and nothing has to keep proving it.
+DELETED_BY_R1M: tuple[str, ...] = (
+    "strategies",
     "strategies/__init__.py",
     "strategies/common/__init__.py",
     "strategies/arb_mm.py",
@@ -91,23 +111,25 @@ MARKED_PY: tuple[str, ...] = (
     "strategies/scalp_futures.py",
     "strategies/swing_spot.py",
     "tools/run_bot.py",
-    "nn/infer_service.py",
-    "nn/registry.py",
-    "chimera/inference_client.py",
-    "chimera/modes.py",
-    "chimera/consensus.py",
-)
-
-MARKED_TEXT: tuple[str, ...] = ("Dockerfile", "nn/Dockerfile.nn_infer")
-
-MARKED_JSON: tuple[str, ...] = (
+    "Dockerfile",
+    "conf/base.json",
     "conf/binance.live.json",
     "conf/binance.test.json",
     "conf/bybit.live.json",
     "conf/bybit.test.json",
     "conf/okx.live.json",
     "conf/okx.test.json",
+    "tests/test_strategies.py",
+    "tests/test_config_and_cli.py",
+    "tests/test_risk_regressions.py",
 )
+
+MARKED_TEXT: tuple[str, ...] = ("nn/Dockerfile.nn_infer",)
+
+#: Empty since R1-m: every marked JSON file was a Freqtrade exchange config and
+#: all of them are gone. Kept as an empty tuple rather than deleted with its
+#: guard, so the next retirement that needs it finds the mechanism intact.
+MARKED_JSON: tuple[str, ...] = ()
 
 #: The active entrypoints, as repository-relative paths. ``tools/demo_report.py``
 #: is PR-12's and does not exist on this branch; the parametrized guard skips a
@@ -156,7 +178,13 @@ ENDPOINT_TOKENS = (
 )
 
 LEGACY_PROFILE = "legacy"
-RETIRED_SERVICES = ("freqtrade", "nn_infer")
+#: Retired and still in the compose file, behind the ``legacy`` profile. The
+#: ``freqtrade`` service left this tuple when R1-m deleted it; see
+#: :data:`DELETED_SERVICES`.
+RETIRED_SERVICES = ("nn_infer",)
+
+#: Deleted outright by R1-m. Asserted absent, not merely off the default stack.
+DELETED_SERVICES = ("freqtrade",)
 
 #: The job-level condition PR-13 puts on the two historical jobs. GitHub
 #: Actions has no per-job ``on:``; triggers are declared once for the whole
@@ -678,13 +706,15 @@ def test_the_closure_walk_catches_a_deep_attribute_import(tmp_path):
 def test_the_default_compose_stack_excludes_the_retired_services():
     """Disconnected from ``docker compose up``, and still present in the file.
 
-    Both halves are asserted. PR-13 moves the two retired services behind the
-    ``legacy`` profile; it does not delete them, and a later change that
-    deleted them here would be PR-16's work, not this guard's silence.
+    Both halves are asserted. PR-13 moved the retired services behind the
+    ``legacy`` profile; R1-m then deleted ``freqtrade`` outright, so that one is
+    checked for ABSENCE here and the rest for the profile.
     """
     spec = compose_spec()
+    for name in DELETED_SERVICES:
+        assert name not in spec["services"], f"R1-m deleted {name}; it is back"
     for name in RETIRED_SERVICES:
-        assert name in spec["services"], "PR-13 disconnects the service; PR-16 deletes it"
+        assert name in spec["services"], "disconnected, not deleted"
         assert spec["services"][name].get("profiles") == [LEGACY_PROFILE]
 
     default = default_profile_services(spec)
@@ -694,9 +724,16 @@ def test_the_default_compose_stack_excludes_the_retired_services():
 
 
 def test_the_compose_guard_catches_a_retired_service_left_in_the_default_profile():
+    """The negative control, on the service that still exists to be caught.
+
+    It named ``freqtrade`` until R1-m deleted that service. A control that
+    plants a construct into a service the file no longer has would raise a
+    ``KeyError`` and pass for the wrong reason, which is the failure mode this
+    module's own header warns about.
+    """
     spec = copy.deepcopy(compose_spec())
-    del spec["services"]["freqtrade"]["profiles"]
-    assert default_profile_services(spec) & set(RETIRED_SERVICES) == {"freqtrade"}
+    del spec["services"]["nn_infer"]["profiles"]
+    assert default_profile_services(spec) & set(RETIRED_SERVICES) == {"nn_infer"}
 
 
 def test_the_compose_guard_catches_a_default_service_depending_on_a_legacy_one():
@@ -786,22 +823,31 @@ def test_no_automatic_ci_job_has_a_freqtrade_specific_step_though_the_library_is
     """
     spec = workflow_spec()
     # The invariant is about the RETIRED jobs, not about the exact job list: the
-    # comment this PR leaves in ci.yml tells the observability change to add an
-    # active-image job of its own, and pinning the set would fail on it from a
-    # test about Freqtrade.
+    # comment ci.yml carries tells a later change to add an active-image job of
+    # its own, and pinning the set would fail on it from a test about Freqtrade.
     automatic = set(automatic_jobs(spec))
     assert {"lint", "test"} <= automatic, automatic
-    assert not automatic & {"config", "docker"}, automatic
+    assert "docker" not in automatic, automatic
     assert retired_ci_steps(spec) == [], (
-        "the Freqtrade schema job and the retired image builds are manual "
-        f"(if: {MANUAL_ONLY}) after PR-13; found {retired_ci_steps(spec)}"
+        "the retired image build is manual "
+        f"(if: {MANUAL_ONLY}); found {retired_ci_steps(spec)}"
     )
 
-    # And the manual jobs are still there, with every step they had.
-    for job_name in ("config", "docker"):
-        job = spec["jobs"][job_name]
-        assert is_manual_only(job["if"])
-        assert job["steps"], f"{job_name} lost its steps; PR-13 deletes nothing"
+    # R1-m deleted the `config` job outright. Its subject was validating the
+    # retired `conf/<exchange>.<mode>.json` profiles against Freqtrade's own
+    # schema, and both that subject and the fallback coverage this guard used to
+    # cite (tests/test_config_and_cli.py) are gone. A manual job that can never
+    # succeed again is capability in appearance only.
+    assert "config" not in spec["jobs"], "the config job is back and cannot run"
+
+    # `docker` stays, manual, with the inference image -- and without the
+    # Freqtrade one, which had no Dockerfile to build after R1-m.
+    docker = spec["jobs"]["docker"]
+    assert is_manual_only(docker["if"])
+    assert docker["steps"], "docker lost its steps"
+    rendered = json.dumps(docker["steps"], sort_keys=True)
+    assert "nn/Dockerfile.nn_infer" in rendered, "the inference image build is gone too"
+    assert "freqtrade" not in rendered.lower(), rendered
 
     # The workflow's own triggers are untouched, so the historical validation
     # stays runnable on demand and lint/test still run on every push and PR.
@@ -828,18 +874,26 @@ def test_compose_validation_still_runs_on_every_push_and_pull_request():
 
 
 def test_the_ci_guard_catches_a_freqtrade_step_in_an_automatic_job():
-    """The exact regression: a retired step moved back onto an automatic trigger."""
+    """The exact regression: a retired step moved back onto an automatic trigger.
+
+    It took its planted step out of the `config` job until R1-m deleted that
+    job. A control that reaches into a job the workflow no longer has raises
+    `KeyError` and passes for the wrong reason, so the step is synthesised here
+    instead -- which also stops the control depending on the workflow keeping
+    any particular Freqtrade step of its own.
+    """
     spec = copy.deepcopy(workflow_spec())
-    step = next(s for s in spec["jobs"]["config"]["steps"] if "[trade]" in json.dumps(s))
-    spec["jobs"]["lint"]["steps"].append(step)
+    spec["jobs"]["lint"]["steps"].append({"run": 'pip install -e ".[trade]"'})
     assert retired_ci_steps(spec) == ["lint: [trade]"]
 
 
 def test_the_ci_guard_catches_a_job_whose_if_was_removed():
+    """The gate itself, on the manual job that still exists to be ungated."""
     spec = copy.deepcopy(workflow_spec())
-    del spec["jobs"]["config"]["if"]
-    assert "config" in automatic_jobs(spec)
-    assert retired_ci_steps(spec), "an ungated config job must report its Freqtrade steps"
+    spec["jobs"]["docker"]["steps"].append({"run": "pip install freqtrade"})
+    del spec["jobs"]["docker"]["if"]
+    assert "docker" in automatic_jobs(spec)
+    assert retired_ci_steps(spec), "an ungated docker job must report its retired steps"
 
 
 # ---------------------------------------------------------------------------
@@ -924,7 +978,7 @@ def test_every_retired_python_module_opens_with_the_historical_marker():
     missing = []
     for relative in MARKED_PY:
         path = REPO / relative
-        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        assert path.is_file(), f"{relative} is missing; this list is what SURVIVES"
         docstring = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8")))
         first = (docstring or "").splitlines()[0] if docstring else ""
         if not first.startswith(HISTORICAL_MARKER):
@@ -941,31 +995,72 @@ def test_every_retired_dockerfile_and_config_carries_the_marker():
     """
     for relative in MARKED_TEXT:
         path = REPO / relative
-        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        assert path.is_file(), f"{relative} is missing; this list is what SURVIVES"
         head = path.read_text(encoding="utf-8").splitlines()[:12]
         assert any(HISTORICAL_MARKER in line for line in head), relative
 
     for relative in MARKED_JSON:
         path = REPO / relative
-        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        assert path.is_file(), f"{relative} is missing; this list is what SURVIVES"
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["$comment"].startswith(HISTORICAL_MARKER), relative
 
 
 def test_the_marker_list_is_section_3_3s_disconnect_column():
-    """The list cannot quietly shrink to the files that happen to comply."""
-    assert len(MARKED_PY) == 13
-    assert len(MARKED_TEXT) == 2
-    assert len(MARKED_JSON) == 6
-    # Every retired importable module in RETIRED has at least one marked file.
+    """The list cannot quietly shrink to the files that happen to comply.
+
+    It caught this very change, which is the point of it: R1-m took eight
+    entries off ``MARKED_PY``, one off ``MARKED_TEXT`` and all six of
+    ``MARKED_JSON``, and the pinned counts failed until this test was made to
+    say so. So the sum is pinned rather than the survivors alone -- a file may
+    move from marked to deleted, and nowhere else. Dropping one silently still
+    fails here.
+    """
+    assert len(MARKED_PY) == 5
+    assert len(MARKED_TEXT) == 1
+    assert len(MARKED_JSON) == 0
+    assert len(DELETED_BY_R1M) == 20
+
     for dotted in RETIRED:
         if dotted == "freqtrade":
             continue  # third-party; nothing of ours to mark
         prefix = dotted.replace(".", "/")
+        if prefix in DELETED_BY_R1M or f"{prefix}.py" in DELETED_BY_R1M:
+            # Deleted rather than marked. Unreachable because it is not there,
+            # which is what the marker was a weaker statement of.
+            assert not (REPO / prefix).exists(), f"{dotted} is back on disk"
+            assert not (REPO / f"{prefix}.py").exists(), f"{dotted}.py is back on disk"
+            continue
         assert any(
             relative == f"{prefix}.py" or relative.startswith(f"{prefix}/")
             for relative in MARKED_PY
         ), f"{dotted} is in RETIRED but no marked file corresponds to it"
+
+
+def test_everything_r1m_deleted_is_absent_from_the_tree():
+    """The retirement, asserted as absence rather than as a promise.
+
+    A marked file is a claim about reachability that has to be re-proved every
+    time the import graph moves. A file that is not there cannot be reached by
+    anything, and no guard has to keep proving it.
+    """
+    present = [name for name in DELETED_BY_R1M if (REPO / name).exists()]
+    assert present == [], f"R1-m deleted these and they are back: {present}"
+
+
+def test_the_absence_guard_would_catch_a_file_that_came_back(tmp_path):
+    """The negative control. A guard that cannot fail proves nothing.
+
+    Run against a synthetic root so the real tree is not touched: the one path
+    is planted, and the same predicate the guard uses finds it.
+    """
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "strategies" / "__init__.py").write_text("", encoding="utf-8")
+
+    present = [name for name in DELETED_BY_R1M if (tmp_path / name).exists()]
+
+    assert "strategies" in present
+    assert "strategies/__init__.py" in present
 
 
 def test_the_marker_guard_catches_a_removed_marker(tmp_path):
@@ -1005,3 +1100,112 @@ def test_no_demo_module_imports_by_computed_name():
             if not isinstance(node.args[0], ast.Constant):
                 offenders.append(f"{dotted}:{node.lineno}")
     assert not offenders, f"a demo-path module imports by computed name: {offenders}"
+
+
+#: Every file that can put Freqtrade back on a machine. `pyproject.toml` alone
+#: was not enough: `requirements-lock.txt` pinned `freqtrade==2026.8` directly,
+#: which is what CI's Linux leg installs from, and `requirements.txt` was the
+#: deleted image's own `-e .[trade]`. A guard that watched only the first would
+#: have declared the retirement complete with the library still installed on
+#: every CI run.
+DEPENDENCY_FILES: tuple[str, ...] = (
+    "pyproject.toml",
+    "requirements.txt",
+    "requirements-lock.txt",
+    "requirements-dev.txt",
+    "requirements-ml.txt",
+)
+
+
+def test_no_dependency_declaration_names_freqtrade():
+    """R1-m deleted the code. This stops the dependency walking back in.
+
+    Found by the R1-m mutation campaign: putting `trade = ["freqtrade>=2024.1"]`
+    back into `pyproject.toml` passed every other guard in this file. Deleting a
+    live-capable path while leaving its library one line from returning is half
+    a retirement -- the next person to add an import would find it installed and
+    nothing would object until the import graph guards noticed, if they did.
+
+    The whole file is scanned rather than the parsed optional-dependencies
+    table, so a `dependencies` entry, a new extra, a build requirement or a tool
+    section that pins it are all caught by the same rule.
+    """
+    offending = []
+    for name in DEPENDENCY_FILES:
+        path = REPO / name
+        if not path.is_file():
+            continue  # requirements.txt was the deleted image's own install file
+        offending += [
+            f"{name}: {line.strip()}"
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if "freqtrade" in line.lower() and not line.lstrip().startswith("#")
+        ]
+
+    assert offending == [], f"Freqtrade is declared again: {offending}"
+
+
+def test_the_dependency_guard_catches_a_reinstated_extra(tmp_path):
+    """The negative control, on a synthetic file: a guard that cannot fail
+    proves nothing, and this one was written because its subject slipped past
+    every guard that already existed."""
+    planted = tmp_path / "pyproject.toml"
+    planted.write_text(
+        "[project.optional-dependencies]\n"
+        "# freqtrade used to live here -- a comment must NOT trip the guard\n"
+        'trade = ["freqtrade>=2024.1"]\n',
+        encoding="utf-8",
+    )
+
+    offending = [
+        line.strip()
+        for line in planted.read_text(encoding="utf-8").splitlines()
+        if "freqtrade" in line and not line.lstrip().startswith("#")
+    ]
+
+    assert offending == ['trade = ["freqtrade>=2024.1"]'], offending
+
+
+def test_no_python_file_imports_freqtrade():
+    """The other half: the library is not declared, and nothing reaches for it.
+
+    Stronger than the reachability guards above and much cheaper. Those ask
+    whether the DEMO can reach Freqtrade through the import graph, which was the
+    only question worth asking while the strategies existed. Since R1-m nothing
+    in the tree may import it at all, which is a claim a plain AST walk settles.
+    """
+    offending = []
+    for path in sorted(REPO.glob("**/*.py")):
+        if any(part in {".git", ".venv", "build", "__pycache__"} for part in path.parts):
+            continue
+        if path.name == "test_retired_runtime_disconnected.py":
+            continue  # this module names it in prose and in RETIRED
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            if any(name == "freqtrade" or name.startswith("freqtrade.") for name in names):
+                offending.append(str(path.relative_to(REPO)))
+
+    assert offending == [], f"these still import Freqtrade: {sorted(set(offending))}"
+
+
+def test_the_import_guard_catches_a_reinstated_import(tmp_path):
+    """The negative control for the walk above, on a parsed synthetic module."""
+    tree = ast.parse("from freqtrade.enums import RunMode\nimport freqtrade.data\n")
+
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            continue
+        if any(name == "freqtrade" or name.startswith("freqtrade.") for name in names):
+            found.append(names)
+
+    assert len(found) == 2, found

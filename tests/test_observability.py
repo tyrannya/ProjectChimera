@@ -417,7 +417,7 @@ DEMO_SCRAPE_TARGETS: dict[str, str] = {"recorder": "recorder:9102", "demo": "dem
 #: Every compose service, so the set fails both when one is deleted and when a
 #: new one -- a live-trading one, say -- is added without anybody noticing.
 COMPOSE_SERVICES: frozenset[str] = frozenset(
-    {"freqtrade", "nn_infer", "prometheus", "grafana", "alertmanager", "recorder", "demo"}
+    {"nn_infer", "prometheus", "grafana", "alertmanager", "recorder", "demo"}
 )
 
 
@@ -818,10 +818,14 @@ def test_every_demo_image_runs_as_a_named_non_root_user():
 
 
 def test_no_demo_image_copies_the_retired_live_capable_launcher():
-    """`tools/run_bot.py` is the only live-capable entrypoint in the tree.
+    """There is no live-capable entrypoint left, and the images may not grow one.
 
-    `COPY tools/ ./tools/` put it inside both dry-run images. An image that
-    cannot import it cannot be argued into running it.
+    `tools/run_bot.py` was the only one, and `COPY tools/ ./tools/` put it inside
+    both dry-run images; R1-m deleted the launcher and the strategies outright.
+    The guard is kept rather than retired with them, and it is now the weaker
+    half of a pair: `tests/test_retired_runtime_disconnected.py` asserts the
+    files are absent from the tree, and this asserts that no image reaches for
+    them by name if they ever come back.
     """
     for relative in ("deploy/docker/Dockerfile.demo", "deploy/docker/Dockerfile.recorder"):
         copied = re.findall(

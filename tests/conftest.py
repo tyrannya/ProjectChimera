@@ -4,11 +4,12 @@ Two things are deliberately global here:
 
 * the repository root goes on ``sys.path`` so ``chimera``/``nn``/``strategies``
   import the same way they do at runtime;
-* nothing stubs out a third-party module. The previous suite replaced
+* nothing stubs out a third-party module. An earlier suite replaced
   ``freqtrade`` with a hand-written ``types.ModuleType`` that defined a
   ``TemporaryStopException`` the real library does not have, so the tests
   asserted against a fictional dependency and stayed green while the code was
-  unimportable. Tests that need Freqtrade import the real Freqtrade.
+  unimportable. That rule outlives its example: R1-m deleted the Freqtrade
+  path, and no test here imports it.
 """
 
 from __future__ import annotations
