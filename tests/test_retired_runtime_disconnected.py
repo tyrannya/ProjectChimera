@@ -823,22 +823,31 @@ def test_no_automatic_ci_job_has_a_freqtrade_specific_step_though_the_library_is
     """
     spec = workflow_spec()
     # The invariant is about the RETIRED jobs, not about the exact job list: the
-    # comment this PR leaves in ci.yml tells the observability change to add an
-    # active-image job of its own, and pinning the set would fail on it from a
-    # test about Freqtrade.
+    # comment ci.yml carries tells a later change to add an active-image job of
+    # its own, and pinning the set would fail on it from a test about Freqtrade.
     automatic = set(automatic_jobs(spec))
     assert {"lint", "test"} <= automatic, automatic
-    assert not automatic & {"config", "docker"}, automatic
+    assert "docker" not in automatic, automatic
     assert retired_ci_steps(spec) == [], (
-        "the Freqtrade schema job and the retired image builds are manual "
-        f"(if: {MANUAL_ONLY}) after PR-13; found {retired_ci_steps(spec)}"
+        "the retired image build is manual "
+        f"(if: {MANUAL_ONLY}); found {retired_ci_steps(spec)}"
     )
 
-    # And the manual jobs are still there, with every step they had.
-    for job_name in ("config", "docker"):
-        job = spec["jobs"][job_name]
-        assert is_manual_only(job["if"])
-        assert job["steps"], f"{job_name} lost its steps; PR-13 deletes nothing"
+    # R1-m deleted the `config` job outright. Its subject was validating the
+    # retired `conf/<exchange>.<mode>.json` profiles against Freqtrade's own
+    # schema, and both that subject and the fallback coverage this guard used to
+    # cite (tests/test_config_and_cli.py) are gone. A manual job that can never
+    # succeed again is capability in appearance only.
+    assert "config" not in spec["jobs"], "the config job is back and cannot run"
+
+    # `docker` stays, manual, with the inference image -- and without the
+    # Freqtrade one, which had no Dockerfile to build after R1-m.
+    docker = spec["jobs"]["docker"]
+    assert is_manual_only(docker["if"])
+    assert docker["steps"], "docker lost its steps"
+    rendered = json.dumps(docker["steps"], sort_keys=True)
+    assert "nn/Dockerfile.nn_infer" in rendered, "the inference image build is gone too"
+    assert "freqtrade" not in rendered.lower(), rendered
 
     # The workflow's own triggers are untouched, so the historical validation
     # stays runnable on demand and lint/test still run on every push and PR.
@@ -865,18 +874,26 @@ def test_compose_validation_still_runs_on_every_push_and_pull_request():
 
 
 def test_the_ci_guard_catches_a_freqtrade_step_in_an_automatic_job():
-    """The exact regression: a retired step moved back onto an automatic trigger."""
+    """The exact regression: a retired step moved back onto an automatic trigger.
+
+    It took its planted step out of the `config` job until R1-m deleted that
+    job. A control that reaches into a job the workflow no longer has raises
+    `KeyError` and passes for the wrong reason, so the step is synthesised here
+    instead -- which also stops the control depending on the workflow keeping
+    any particular Freqtrade step of its own.
+    """
     spec = copy.deepcopy(workflow_spec())
-    step = next(s for s in spec["jobs"]["config"]["steps"] if "[trade]" in json.dumps(s))
-    spec["jobs"]["lint"]["steps"].append(step)
+    spec["jobs"]["lint"]["steps"].append({"run": 'pip install -e ".[trade]"'})
     assert retired_ci_steps(spec) == ["lint: [trade]"]
 
 
 def test_the_ci_guard_catches_a_job_whose_if_was_removed():
+    """The gate itself, on the manual job that still exists to be ungated."""
     spec = copy.deepcopy(workflow_spec())
-    del spec["jobs"]["config"]["if"]
-    assert "config" in automatic_jobs(spec)
-    assert retired_ci_steps(spec), "an ungated config job must report its Freqtrade steps"
+    spec["jobs"]["docker"]["steps"].append({"run": "pip install freqtrade"})
+    del spec["jobs"]["docker"]["if"]
+    assert "docker" in automatic_jobs(spec)
+    assert retired_ci_steps(spec), "an ungated docker job must report its retired steps"
 
 
 # ---------------------------------------------------------------------------
@@ -1085,6 +1102,21 @@ def test_no_demo_module_imports_by_computed_name():
     assert not offenders, f"a demo-path module imports by computed name: {offenders}"
 
 
+#: Every file that can put Freqtrade back on a machine. `pyproject.toml` alone
+#: was not enough: `requirements-lock.txt` pinned `freqtrade==2026.8` directly,
+#: which is what CI's Linux leg installs from, and `requirements.txt` was the
+#: deleted image's own `-e .[trade]`. A guard that watched only the first would
+#: have declared the retirement complete with the library still installed on
+#: every CI run.
+DEPENDENCY_FILES: tuple[str, ...] = (
+    "pyproject.toml",
+    "requirements.txt",
+    "requirements-lock.txt",
+    "requirements-dev.txt",
+    "requirements-ml.txt",
+)
+
+
 def test_no_dependency_declaration_names_freqtrade():
     """R1-m deleted the code. This stops the dependency walking back in.
 
@@ -1098,14 +1130,18 @@ def test_no_dependency_declaration_names_freqtrade():
     table, so a `dependencies` entry, a new extra, a build requirement or a tool
     section that pins it are all caught by the same rule.
     """
-    body = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-    offending = [
-        line.strip()
-        for line in body.splitlines()
-        if "freqtrade" in line and not line.lstrip().startswith("#")
-    ]
+    offending = []
+    for name in DEPENDENCY_FILES:
+        path = REPO / name
+        if not path.is_file():
+            continue  # requirements.txt was the deleted image's own install file
+        offending += [
+            f"{name}: {line.strip()}"
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if "freqtrade" in line.lower() and not line.lstrip().startswith("#")
+        ]
 
-    assert offending == [], f"pyproject.toml declares Freqtrade again: {offending}"
+    assert offending == [], f"Freqtrade is declared again: {offending}"
 
 
 def test_the_dependency_guard_catches_a_reinstated_extra(tmp_path):

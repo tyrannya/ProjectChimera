@@ -1,4 +1,0 @@
-# Freqtrade container: execution engine, strategies, risk layer.
-# pyproject.toml is the single source of truth; this file exists so Docker can
-# install dependencies in a cacheable layer.
--e .[trade]
