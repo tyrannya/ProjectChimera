@@ -1010,8 +1010,10 @@ class FuturesExecutor:
         writing them. `evaluate_entry` still bounded each *individual* order, so a
         position built by repeated INCREASE legs was never measured as a whole.
 
-        Assignment, not accumulation, matching the method's own contract and the
-        spot path in `strategies.common.risk_manager`. Reported as margin — the
+        Assignment, not accumulation, matching the method's own contract.
+        (The spot path in `strategies.common.risk_manager` held the same rule
+        until R1-m deleted it; `tests/test_risk_manager.py` now carries the
+        witness.) Reported as margin — the
         notional divided by leverage — because that is the unit `_ask_aegis`
         passes as ``proposed_stake`` and the unit the limits are fractions of.
         """
@@ -1058,9 +1060,9 @@ class FuturesExecutor:
 def _veto_label(reason: str) -> str:
     """Collapse an Aegis reason to a bounded metric label.
 
-    Deliberately parallel to ``strategies.common.risk_manager._metric_reason``,
-    which does the same job for the spot path, so the two dashboards agree about
-    what a veto is called. Two prefixes differ from that function and both are
+    Written to be parallel to ``strategies.common.risk_manager._metric_reason``,
+    which did the same job for the spot path until R1-m deleted it, so the two
+    dashboards agreed about what a veto is called. Two prefixes differ and both are
     corrections rather than divergence: ``RiskEngine`` emits ``"market data
     late: ..."`` and the spot collapse matches ``"market data stale"``, so that
     rejection is currently labelled ``other`` there; and ``"order stake ..."``

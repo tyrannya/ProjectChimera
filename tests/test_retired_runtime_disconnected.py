@@ -82,7 +82,27 @@ HISTORICAL_MARKER = "HISTORICAL - not on the demo path"
 #: which has no comment syntax, so it goes in the `$comment` value that was
 #: already there. Written out rather than globbed, because the point of the list
 #: is that it is section 3.3's list.
+#: Still present and still disconnected: every one of these must carry the
+#: section 3.3 marker in its own docstring.
 MARKED_PY: tuple[str, ...] = (
+    "nn/infer_service.py",
+    "nn/registry.py",
+    "chimera/inference_client.py",
+    "chimera/modes.py",
+    "chimera/consensus.py",
+)
+
+#: What R1-m DELETED. These were on ``MARKED_PY``/``MARKED_TEXT``/``MARKED_JSON``
+#: until this change, held there by guards whose own message said "PR-13
+#: disconnects the service; PR-16 deletes it". This is that deletion, so the
+#: guard flips: it no longer asks whether each file carries the marker, it asks
+#: whether the file is there at all.
+#:
+#: Absence is the stronger claim. A marked file is a promise about reachability
+#: that has to be re-proved every time the import graph moves; a file that does
+#: not exist cannot be reached by anything, and nothing has to keep proving it.
+DELETED_BY_R1M: tuple[str, ...] = (
+    "strategies",
     "strategies/__init__.py",
     "strategies/common/__init__.py",
     "strategies/arb_mm.py",
@@ -91,23 +111,25 @@ MARKED_PY: tuple[str, ...] = (
     "strategies/scalp_futures.py",
     "strategies/swing_spot.py",
     "tools/run_bot.py",
-    "nn/infer_service.py",
-    "nn/registry.py",
-    "chimera/inference_client.py",
-    "chimera/modes.py",
-    "chimera/consensus.py",
-)
-
-MARKED_TEXT: tuple[str, ...] = ("Dockerfile", "nn/Dockerfile.nn_infer")
-
-MARKED_JSON: tuple[str, ...] = (
+    "Dockerfile",
+    "conf/base.json",
     "conf/binance.live.json",
     "conf/binance.test.json",
     "conf/bybit.live.json",
     "conf/bybit.test.json",
     "conf/okx.live.json",
     "conf/okx.test.json",
+    "tests/test_strategies.py",
+    "tests/test_config_and_cli.py",
+    "tests/test_risk_regressions.py",
 )
+
+MARKED_TEXT: tuple[str, ...] = ("nn/Dockerfile.nn_infer",)
+
+#: Empty since R1-m: every marked JSON file was a Freqtrade exchange config and
+#: all of them are gone. Kept as an empty tuple rather than deleted with its
+#: guard, so the next retirement that needs it finds the mechanism intact.
+MARKED_JSON: tuple[str, ...] = ()
 
 #: The active entrypoints, as repository-relative paths. ``tools/demo_report.py``
 #: is PR-12's and does not exist on this branch; the parametrized guard skips a
@@ -156,7 +178,13 @@ ENDPOINT_TOKENS = (
 )
 
 LEGACY_PROFILE = "legacy"
-RETIRED_SERVICES = ("freqtrade", "nn_infer")
+#: Retired and still in the compose file, behind the ``legacy`` profile. The
+#: ``freqtrade`` service left this tuple when R1-m deleted it; see
+#: :data:`DELETED_SERVICES`.
+RETIRED_SERVICES = ("nn_infer",)
+
+#: Deleted outright by R1-m. Asserted absent, not merely off the default stack.
+DELETED_SERVICES = ("freqtrade",)
 
 #: The job-level condition PR-13 puts on the two historical jobs. GitHub
 #: Actions has no per-job ``on:``; triggers are declared once for the whole
@@ -678,13 +706,15 @@ def test_the_closure_walk_catches_a_deep_attribute_import(tmp_path):
 def test_the_default_compose_stack_excludes_the_retired_services():
     """Disconnected from ``docker compose up``, and still present in the file.
 
-    Both halves are asserted. PR-13 moves the two retired services behind the
-    ``legacy`` profile; it does not delete them, and a later change that
-    deleted them here would be PR-16's work, not this guard's silence.
+    Both halves are asserted. PR-13 moved the retired services behind the
+    ``legacy`` profile; R1-m then deleted ``freqtrade`` outright, so that one is
+    checked for ABSENCE here and the rest for the profile.
     """
     spec = compose_spec()
+    for name in DELETED_SERVICES:
+        assert name not in spec["services"], f"R1-m deleted {name}; it is back"
     for name in RETIRED_SERVICES:
-        assert name in spec["services"], "PR-13 disconnects the service; PR-16 deletes it"
+        assert name in spec["services"], "disconnected, not deleted"
         assert spec["services"][name].get("profiles") == [LEGACY_PROFILE]
 
     default = default_profile_services(spec)
@@ -694,9 +724,16 @@ def test_the_default_compose_stack_excludes_the_retired_services():
 
 
 def test_the_compose_guard_catches_a_retired_service_left_in_the_default_profile():
+    """The negative control, on the service that still exists to be caught.
+
+    It named ``freqtrade`` until R1-m deleted that service. A control that
+    plants a construct into a service the file no longer has would raise a
+    ``KeyError`` and pass for the wrong reason, which is the failure mode this
+    module's own header warns about.
+    """
     spec = copy.deepcopy(compose_spec())
-    del spec["services"]["freqtrade"]["profiles"]
-    assert default_profile_services(spec) & set(RETIRED_SERVICES) == {"freqtrade"}
+    del spec["services"]["nn_infer"]["profiles"]
+    assert default_profile_services(spec) & set(RETIRED_SERVICES) == {"nn_infer"}
 
 
 def test_the_compose_guard_catches_a_default_service_depending_on_a_legacy_one():
@@ -924,7 +961,7 @@ def test_every_retired_python_module_opens_with_the_historical_marker():
     missing = []
     for relative in MARKED_PY:
         path = REPO / relative
-        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        assert path.is_file(), f"{relative} is missing; this list is what SURVIVES"
         docstring = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8")))
         first = (docstring or "").splitlines()[0] if docstring else ""
         if not first.startswith(HISTORICAL_MARKER):
@@ -941,31 +978,72 @@ def test_every_retired_dockerfile_and_config_carries_the_marker():
     """
     for relative in MARKED_TEXT:
         path = REPO / relative
-        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        assert path.is_file(), f"{relative} is missing; this list is what SURVIVES"
         head = path.read_text(encoding="utf-8").splitlines()[:12]
         assert any(HISTORICAL_MARKER in line for line in head), relative
 
     for relative in MARKED_JSON:
         path = REPO / relative
-        assert path.is_file(), f"{relative} is missing; PR-13 deletes nothing"
+        assert path.is_file(), f"{relative} is missing; this list is what SURVIVES"
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["$comment"].startswith(HISTORICAL_MARKER), relative
 
 
 def test_the_marker_list_is_section_3_3s_disconnect_column():
-    """The list cannot quietly shrink to the files that happen to comply."""
-    assert len(MARKED_PY) == 13
-    assert len(MARKED_TEXT) == 2
-    assert len(MARKED_JSON) == 6
-    # Every retired importable module in RETIRED has at least one marked file.
+    """The list cannot quietly shrink to the files that happen to comply.
+
+    It caught this very change, which is the point of it: R1-m took eight
+    entries off ``MARKED_PY``, one off ``MARKED_TEXT`` and all six of
+    ``MARKED_JSON``, and the pinned counts failed until this test was made to
+    say so. So the sum is pinned rather than the survivors alone -- a file may
+    move from marked to deleted, and nowhere else. Dropping one silently still
+    fails here.
+    """
+    assert len(MARKED_PY) == 5
+    assert len(MARKED_TEXT) == 1
+    assert len(MARKED_JSON) == 0
+    assert len(DELETED_BY_R1M) == 20
+
     for dotted in RETIRED:
         if dotted == "freqtrade":
             continue  # third-party; nothing of ours to mark
         prefix = dotted.replace(".", "/")
+        if prefix in DELETED_BY_R1M or f"{prefix}.py" in DELETED_BY_R1M:
+            # Deleted rather than marked. Unreachable because it is not there,
+            # which is what the marker was a weaker statement of.
+            assert not (REPO / prefix).exists(), f"{dotted} is back on disk"
+            assert not (REPO / f"{prefix}.py").exists(), f"{dotted}.py is back on disk"
+            continue
         assert any(
             relative == f"{prefix}.py" or relative.startswith(f"{prefix}/")
             for relative in MARKED_PY
         ), f"{dotted} is in RETIRED but no marked file corresponds to it"
+
+
+def test_everything_r1m_deleted_is_absent_from_the_tree():
+    """The retirement, asserted as absence rather than as a promise.
+
+    A marked file is a claim about reachability that has to be re-proved every
+    time the import graph moves. A file that is not there cannot be reached by
+    anything, and no guard has to keep proving it.
+    """
+    present = [name for name in DELETED_BY_R1M if (REPO / name).exists()]
+    assert present == [], f"R1-m deleted these and they are back: {present}"
+
+
+def test_the_absence_guard_would_catch_a_file_that_came_back(tmp_path):
+    """The negative control. A guard that cannot fail proves nothing.
+
+    Run against a synthetic root so the real tree is not touched: the one path
+    is planted, and the same predicate the guard uses finds it.
+    """
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "strategies" / "__init__.py").write_text("", encoding="utf-8")
+
+    present = [name for name in DELETED_BY_R1M if (tmp_path / name).exists()]
+
+    assert "strategies" in present
+    assert "strategies/__init__.py" in present
 
 
 def test_the_marker_guard_catches_a_removed_marker(tmp_path):

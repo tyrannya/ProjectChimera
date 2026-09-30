@@ -27,7 +27,7 @@ DEMO_PARITY_DIR ?= $(DEMO_STATE_DIR)/parity
 	demo-run demo-status demo-replay-parity demo-report demo-soak-drill \
 	derivatives-plan derivatives-probe derivatives-snapshot \
 	verify-derivatives-snapshot p4-status p4-cell p4-btc p4-compare \
-        infer dry-run docker-build docker-up docker-down docker-logs check clean
+        infer docker-build docker-up docker-down docker-logs check clean
 
 PYTHON  ?= python
 EXCHANGE ?= binance
@@ -56,7 +56,6 @@ EPOCHS   ?= 30
 # Run seed for the P2a benchmark; the checkpoint runs 42, 142, 242, 342, 442.
 SEED     ?= 42
 SEQ_LEN  ?= 64
-STRATEGY ?= NNPredictorStrategy
 MODE     ?= test
 
 help:  ## Show this help
@@ -80,7 +79,7 @@ lint:  ## Run all pre-commit hooks over the repository
 	$(PYTHON) -m pre_commit run --all-files
 
 format:  ## Auto-format with black
-	black chimera nn strategies tools tests
+	black chimera nn tools tests
 
 test:  ## Run the test suite
 	$(PYTHON) -m pytest
@@ -459,9 +458,6 @@ freeze-evidence:  ## Verify a frozen checksum manifest. Args: MANIFEST=artifacts
 
 infer:  ## Serve the promoted model on port 3000
 	CHIMERA_MODELS_DIR=$(MODELS) uvicorn nn.infer_service:app --host 127.0.0.1 --port 3000
-
-dry-run:  ## Start Freqtrade in dry-run. Args: EXCHANGE STRATEGY
-	$(PYTHON) -m tools.run_bot --exchange $(EXCHANGE) --mode $(MODE) --strategy $(STRATEGY)
 
 docker-build:  ## Build all images
 	docker compose build

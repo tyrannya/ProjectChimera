@@ -43,7 +43,7 @@ from typing import Any, Iterable
 #: ``pyproject.toml`` installs. ``tests/`` is deliberately absent: it is not
 #: importable by a research run, and including it would split a batch of cells
 #: across a commit that only added a test.
-SOURCE_ROOTS: tuple[str, ...] = ("chimera", "nn", "strategies", "tools")
+SOURCE_ROOTS: tuple[str, ...] = ("chimera", "nn", "tools")
 
 #: Directory names that are an installed dependency tree rather than source.
 #:
