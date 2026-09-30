@@ -43,7 +43,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from chimera.carry.hedge import PERP, SPOT, HedgedPosition, HedgeState
+from chimera.carry.hedge import (
+    PERP,
+    SPOT,
+    HedgedPosition,
+    HedgeState,
+    ValuationUnknown,
+    valuation_mark,
+)
 from chimera.carry.ledger import CarryLedger, LoadOutcome
 from chimera.demo.clock import RunnerClock, no_authoritative_time
 from chimera.demo.config import DemoConfig
@@ -2762,10 +2769,12 @@ class DemoRunner:
         # checked whatever the hedge state calls the pair.
         if self._position_is_flat():
             return None
-        if state.mark is None:
+        if valuation_mark(state.mark) is None:
             # A minute with no mark cannot answer 6.7 on a non-flat position, and
             # `complete` already required one, so this is unreachable through
-            # `tick`. Refused rather than read as "not touched".
+            # `tick`. Refused rather than read as "not touched". R1-l: the
+            # valuation's own predicate, so a mark it could not price (NaN, an
+            # infinity) is refused here rather than raised from the mark below.
             return self._touch_halt(minute_ms, "liquidation_unknown: the minute has no mark")
 
         # Marked HERE, so the two sides of section 6.7's
@@ -3174,15 +3183,31 @@ class DemoRunner:
         outcome = self.position.emergency_reduce(FlattenCause.RISK_HALT, state)
         # Marked BEFORE the ledger is persisted, so the equity that reaches the
         # record is the flattened position's and is the one on disk.
-        mark = self.position.mark_to_market(state)
+        #
+        # R1-l: unless it cannot be valued. The minute a flatten runs on is the
+        # last PROCESSED one, which may be incomplete; a perpetual leg that did
+        # not reach flat on a minute with no usable mark has no equity to state,
+        # and it is never valued at the close instead. The reduction has
+        # already been sent and is not undone by that: the ledger is still
+        # saved and the completion record still written, but nothing is marked
+        # -- the ledger keeps its last real equity, Aegis is told nothing new
+        # (so the two persisted equities still agree), and the record carries no
+        # `ledger_effect`. The next minute that can value the position marks it.
+        try:
+            mark = self.position.mark_to_market(state)
+        except ValuationUnknown as exc:
+            logger.warning(
+                "flatten on %s valued nothing: %s", iso_minute(int(minute) * _MS_TO_NS), exc
+            )
+            mark = None
         self._save_ledger()
         # Aegis is told what the flatten left the account worth, through the
         # same single writer the tick uses, and only when the ledger the number
         # came from is entitled to speak -- otherwise the two persisted equities
         # disagree and R1-b's restart reconciliation halts the campaign.
-        if self._ledger_may_speak():
+        if mark is not None and self._ledger_may_speak():
             self.risk.update_equity(float(mark.equity))
-        effect = self._ledger_effect_if_readable(mark.equity)
+        effect = None if mark is None else self._ledger_effect_if_readable(mark.equity)
         record_hash = self._append(
             RecordKind.OPERATOR,
             int(minute) * _MS_TO_NS,

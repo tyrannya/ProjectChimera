@@ -40,7 +40,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 import pandas as pd
 
-from chimera.carry.hedge import PerpSettlement
+from chimera.carry.hedge import PerpSettlement, valuation_mark
 from chimera.recorder.contract import RecorderContract
 from chimera.recorder.events import UM_KLINE_1M
 from chimera.recorder.normalize import (
@@ -752,7 +752,15 @@ class FeedCursor:
             missing.append("um_book")
         if spot is not None and not spot.has_book:
             missing.append("spot_book")
-        if perp is not None and not bool(perp.value("mark_present")):
+        mark = perp.decimal("mark_close") if perp else None
+        if perp is not None and (
+            not bool(perp.value("mark_present")) or valuation_mark(mark) is None
+        ):
+            # R1-l: a held perpetual is valued at this price, so a row that says
+            # its mark arrived without one that is a price (null, zero,
+            # negative) is a minute without a mark, not a minute to value some
+            # other way. Section 2.2: incomplete, and no rule evaluates -- a rule
+            # that opened here would open a position its own mark cannot value.
             missing.append("um_mark")
         funding_current = _finite(perp.decimal("funding_rate_last")) if perp else None
         if perp is not None and bool(perp.value("mark_present")) and funding_current is None:
@@ -802,7 +810,7 @@ class FeedCursor:
             missing=tuple(missing),
             spot_close=spot.decimal("kline_close") if spot else None,
             perp_close=perp.decimal("kline_close") if perp else None,
-            mark=perp.decimal("mark_close") if perp else None,
+            mark=mark,
             mark_high=perp.decimal("mark_high") if perp else None,
             index=perp.decimal("index_close") if perp else None,
             spot_ohlcv=ohlcv(spot),
