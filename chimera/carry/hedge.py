@@ -291,11 +291,19 @@ class HedgeOutcome:
 
 @dataclass(frozen=True)
 class CarryMark:
-    """The position marked at one minute's closes."""
+    """The position marked at one minute: spot at its close, the perpetual at its mark."""
 
     quantity: Decimal
     spot_close: Decimal
     perp_close: Decimal
+    #: The price the PERPETUAL leg was valued at (R1-l). Reported BESIDE
+    #: ``perp_close`` rather than instead of it, because the two are different
+    #: facts about the minute and the close is still what ``basis`` and section
+    #: 6.5's identity are defined on. With it a reader of a mark can tell which
+    #: number the equity beside it was computed from; before it, they could not.
+    #: ``None`` exactly when no price was needed -- a FLAT perpetual leg has no
+    #: unrealised term -- so the field never names a valuation that did not run.
+    perp_mark: Decimal | None
     basis: Decimal
     spot_pnl: Decimal
     perp_pnl: Decimal
@@ -307,6 +315,7 @@ class CarryMark:
             "quantity": str(self.quantity),
             "spot_close": str(self.spot_close),
             "perp_close": str(self.perp_close),
+            "perp_mark": None if self.perp_mark is None else str(self.perp_mark),
             "basis": str(self.basis),
             "spot_pnl": str(self.spot_pnl),
             "perp_pnl": str(self.perp_pnl),
@@ -1155,7 +1164,38 @@ class HedgedPosition:
     # -- marking and the identity -----------------------------------------
 
     def mark_to_market(self, state: CarryMarketState) -> CarryMark:
-        """Mark both legs at the minute's closes and check the running identity.
+        """Mark both legs and check the running identity. The perpetual at its MARK.
+
+        **R1-l: one valuation price, and for a perpetual it is the mark.** The
+        unrealised term used to be measured at ``perp_close`` -- the price one
+        trade printed at -- while section 6.7's test standing beside it measured
+        its threshold on ``mark_high`` and asked the executor for a liquidation
+        price at ``state.mark``. That test is
+        ``equity < Q * mark_high * maintenance_margin_rate``, and with the two
+        sides priced differently it compared an equity the venue does not
+        compute against a requirement the venue does. This position is SHORT the
+        perpetual, so a mark above the close is an unrealised loss the equity
+        line did not admit to: the left side ran too high by exactly
+        ``Q * (mark - close)``, and a touch could read as *not touched* by the
+        amount the two prices differed. The call site of that test already took
+        care that both sides describe the same MINUTE; this is the other half,
+        that they describe the same PRICE. The same number reaches
+        ``RiskEngine.update_equity``, so the drawdown and daily-loss halts move
+        onto the mark with it, and R1-g's `equity_at` -- which asks 6.7's
+        question on minutes it may not mark -- gets it through the same
+        `_perp_pnl`.
+
+        **The spot leg stays at its close, and that is not the same mismatch.**
+        Spot has no mark price: there is no second number to be inconsistent
+        with, and the close is what the inventory is worth. Stated here so the
+        one remaining price difference in this method reads as a documented fact
+        about two instruments rather than as a leftover.
+
+        **Basis and the section 6.5 identity do not move.** Both are spreads
+        rather than valuations -- ``basis`` is what the rule reads and what
+        ``check_identity`` reconciles the two legs against -- and both are
+        defined on the closes. Repricing them would change a frozen accounting
+        definition, which R1-l does not ask for.
 
         Section 6.6's identity, per leg. ``perp_margin`` is the margin posted for
         the quantity the PERPETUAL leg holds, so the unrealised term that sits
@@ -1176,6 +1216,10 @@ class HedgedPosition:
             else ZERO
         )
         perp_pnl = self._perp_pnl(state)
+        # The price that term was computed from, or None when no price was
+        # needed: a flat leg has no unrealised term, and reporting the minute's
+        # mark there would claim a valuation that did not happen.
+        perp_mark = self._valuation_mark(state) if perp_leg.quantity else None
         equity = self.equity_at(state)
         self.ledger.mark(
             spot_close=state.spot_close, perp_close=state.perp_close, equity=equity
@@ -1189,6 +1233,7 @@ class HedgedPosition:
             quantity=quantity,
             spot_close=state.spot_close,
             perp_close=state.perp_close,
+            perp_mark=perp_mark,
             basis=state.perp_close - state.spot_close,
             spot_pnl=spot_pnl,
             perp_pnl=perp_pnl,
@@ -1214,10 +1259,47 @@ class HedgedPosition:
         )
 
     def _perp_pnl(self, state: CarryMarketState) -> Decimal:
+        """The perpetual leg's unrealised term, priced at the MARK (R1-l).
+
+        One function, because one number: :meth:`mark_to_market` reports it and
+        :meth:`equity_at` answers section 6.7 with it, and the two must not be
+        able to disagree about what the position is worth.
+        """
         perp_leg = self.leg(PERP)
         if not perp_leg.quantity:
             return ZERO
-        return perp_leg.quantity * (perp_leg.entry_price - state.perp_close)
+        return perp_leg.quantity * (perp_leg.entry_price - self._valuation_mark(state))
+
+    @staticmethod
+    def _valuation_mark(state: CarryMarketState) -> Decimal:
+        """The price a NON-FLAT perpetual leg is valued at, or a refusal (R1-l).
+
+        A minute with no mark is refused rather than valued at the close.
+        Falling back would reinstate exactly the inconsistency this change
+        removes, and silently: the equity would be priced at one number while
+        the threshold beside it was priced at another, on the one kind of minute
+        where nobody would think to look. It is the same answer section 7.2's
+        liquidation rule already gives -- unknown information on a non-flat
+        position is refused, never read as "far away" -- and both callers turn
+        the refusal into that refusal: the runner's tick into a recorded HALT,
+        and `_touch_while_deferred` into the touch it takes when it cannot
+        answer.
+
+        Only reached with a non-flat leg: a flat one has no unrealised term, so
+        :meth:`_perp_pnl` returns zero without asking for a price. Nor does this
+        fire on the decision path, where ``um_mark`` is one of the fields whose
+        absence makes a minute INCOMPLETE and an incomplete minute is never
+        marked. The guard is for every other caller.
+        """
+        mark = getattr(state, "mark", None)
+        if mark is None:
+            raise CarryError(
+                "the minute carries no mark price and the perpetual leg is not flat, so "
+                "this position cannot be valued. Section 6.7 tests equity against a "
+                "threshold priced at the mark; pricing the equity at the close instead "
+                "would compare two different numbers and call it a margin check"
+            )
+        return mark
 
     # -- liquidation -------------------------------------------------------
 
