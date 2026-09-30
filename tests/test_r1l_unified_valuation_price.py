@@ -43,6 +43,7 @@ from chimera.carry.hedge import (
 )
 from chimera.demo.decision_log import RecordKind
 from chimera.demo.fixtures import MinuteShape, SyntheticFeed
+from chimera.demo.operator_actions import canonical_text
 from chimera.demo.runner import RunnerState
 from chimera.futures.accounting import unrealised_pnl
 from chimera.futures.executor import FlattenCause
@@ -748,8 +749,10 @@ def _campaign(tmp_path: Path, feed_type: type[SyntheticFeed]) -> dict[str, Any]:
 
     actions = tmp_path / "operator_actions.json"
     after = pd.Timestamp(T0 + (FLATTEN_AT - 1) * MINUTE_MS, unit="ms", tz="UTC").isoformat()
-    actions.write_text(
-        json.dumps(
+    # Bytes, not text: the file's hash identifies it, so its canonical form is
+    # exact bytes, and text mode would write CRLF on Windows.
+    actions.write_bytes(
+        canonical_text(
             {
                 "schema": "chimera.operator-actions/1",
                 "actions": [
@@ -760,13 +763,8 @@ def _campaign(tmp_path: Path, feed_type: type[SyntheticFeed]) -> dict[str, Any]:
                         "note": NOTE,
                     }
                 ],
-            },
-            indent=2,
-            sort_keys=True,
-            ensure_ascii=True,
-        )
-        + "\n",  # the canonical form `replay_parity` requires of this file
-        encoding="utf-8",
+            }
+        ).encode("ascii")
     )
     records = []
     for log in sorted((state_dir / "decision_log").glob("*.ndjson")):
@@ -805,8 +803,9 @@ def test_a_mark_off_its_close_replays_to_parity_across_a_restart_and_a_flatten(
     code = replay_parity.main(
         offset["replay_argv"], operational_clock=lambda: OPERATIONAL_2100
     )
-    report = json.loads(capsys.readouterr().out)
-    assert code == replay_parity.EXIT_PARITY, report
+    captured = capsys.readouterr()
+    assert code == replay_parity.EXIT_PARITY, (code, captured.out, captured.err)
+    report = json.loads(captured.out)
     assert report["label"] == "PARITY" and report["divergences"] == 0
     assert report["live_only"] == [] and report["replay_only"] == []
     assert report["explained_exclusions"] == []
