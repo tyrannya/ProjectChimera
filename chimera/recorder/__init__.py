@@ -8,11 +8,22 @@ captured a closed kline for.
 
 **It is offline, and offline is a property rather than an intention.** Nothing
 here opens a socket, makes a request, holds a credential or reads a clock. The
-websocket clients, the REST pollers, the service and the command line that will
-drive it are a separate, later change; the archive reconciliation and the
-coverage gate are a separate, later change again. What is here can be exercised
-end to end with network access denied, and ``tests/test_recorder_no_network.py``
-denies it and does exactly that.
+websocket clients, the REST pollers, the service and the command line that drive
+it are imported explicitly by whoever wants them, and so is the archive
+reconciliation, which acquires. What is here can be exercised end to end with
+network access denied, and ``tests/test_recorder_no_network.py`` denies it and
+does exactly that.
+
+**The coverage gate is here; the acquisition that feeds it is not.** The
+``coverage`` module reads the reconciliation records off the disk and computes
+the 30-day gate from them. It is pure — two counts, two frozen thresholds,
+integer arithmetic, no clock and no endpoint — so it belongs with the offline
+core and is held to the offline core's rules, which is what lets the arithmetic
+the whole S1 claim rests on be audited without trusting anything about a
+network. The module that *fetches* those archives reaches an allow-listed
+first-party host over HTTPS, so importing the recorder's data model must never
+mean importing it: whoever wants it imports it by name, and the barrier test
+asserts that this file does not.
 
 **It computes nothing.** No return, no signal, no funding profit, no basis, no
 PnL, no accuracy, no statistic. Every number that comes out was published by an
@@ -39,6 +50,28 @@ contract, and until it is written no minute recorded under it is scientific
 evidence.
 """
 
+from chimera.recorder.coverage import (
+    COVERAGE_GATE_SCHEMA,
+    DEFAULT_WINDOW,
+    FUNDING_SCHEDULE_UNAVAILABLE,
+    RECONCILIATION_DIRECTORY,
+    RECONCILIATION_SCHEMA,
+    RECORDER_OUTAGE,
+    DayCoverage,
+    GateDay,
+    GateVerdict,
+    RecorderCoverageError,
+    StreamCoverage,
+    available_reconciliation_days,
+    coverage_for_day,
+    gate,
+    gate_path,
+    published_coverage_passes,
+    read_reconciliation,
+    reconciliation_path,
+    wallclock_flags_outage,
+    write_gate,
+)
 from chimera.recorder.contract import (
     CONTRACT_SCHEMA,
     CONTRACTS_DIR,
@@ -123,14 +156,20 @@ __all__ = [
     "CLOCK",
     "CONTRACTS_DIR",
     "CONTRACT_SCHEMA",
+    "COVERAGE_GATE_SCHEMA",
     "ColumnSpec",
     "DAY_MANIFEST_SCHEMA",
     "DEFAULT_DEDUP_WINDOW",
+    "DEFAULT_WINDOW",
     "DayCounters",
+    "DayCoverage",
     "DayReport",
     "EventSource",
+    "FUNDING_SCHEDULE_UNAVAILABLE",
     "FundingSettlement",
     "GEN3_CONTRACT_ID",
+    "GateDay",
+    "GateVerdict",
     "KlineEvent",
     "KlineMinute",
     "MARKET_COLUMNS",
@@ -144,10 +183,14 @@ __all__ = [
     "NORMALIZED_SCHEMA",
     "ProspectiveBoundaryError",
     "RAW_EVENT_SCHEMA",
+    "RECONCILIATION_DIRECTORY",
+    "RECONCILIATION_SCHEMA",
+    "RECORDER_OUTAGE",
     "RawEvent",
     "RawSink",
     "RecorderContract",
     "RecorderContractError",
+    "RecorderCoverageError",
     "RecorderEventError",
     "RecorderNormalizeError",
     "RecorderSinkError",
@@ -155,6 +198,7 @@ __all__ = [
     "SPOT_KLINE_1M",
     "STORAGE_LAYOUT_VERSION",
     "SettlementsReport",
+    "StreamCoverage",
     "TailRecovery",
     "TimeBasis",
     "UM_BOOK_TICKER",
@@ -162,25 +206,34 @@ __all__ = [
     "UM_KLINE_1M",
     "UM_MARK_PRICE",
     "available_days",
+    "available_reconciliation_days",
     "available_recorder_contract_ids",
     "build_minutes",
     "canonical_json",
     "canonical_material",
     "columns_for",
     "contract_hash",
+    "coverage_for_day",
     "day_start_ns",
     "digest",
     "gaps_of",
+    "gate",
+    "gate_path",
     "iso_utc",
     "load_recorder_contract",
     "meta",
     "minute_frame",
     "minute_open_ms",
     "parse_recorder_contract",
+    "published_coverage_passes",
     "read_raw_events",
+    "read_reconciliation",
     "read_recorder_contract_file",
+    "reconciliation_path",
     "require_day",
     "require_stream_id",
     "sort_events",
     "utc_day",
+    "wallclock_flags_outage",
+    "write_gate",
 ]
