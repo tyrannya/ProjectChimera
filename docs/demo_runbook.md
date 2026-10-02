@@ -1368,6 +1368,70 @@ waiting looks like `chimera_demo_state{state="READY"} == 1` with a heartbeat
 under 30 seconds old; whether the runner is halted is `RunnerHalted`, and how far
 behind the data it is, is `chimera_demo_last_minute_age_seconds`.
 
+### Off-host dead-man (R1-n)
+
+`RecorderDown` and `RunnerDown` are good alerts and they share a host with the
+processes they watch. Prometheus and Alertmanager are services in the same
+`docker-compose.yml`, so the arrangement reports a dead process and **cannot
+report a dead host**: when the machine goes, the recorder, the runner and the
+thing that was supposed to complain all go together, and the silence that
+follows is indistinguishable from a quiet night.
+
+So one more check runs **somewhere else**, on a timer, and it fails closed:
+
+```
+python -m tools.deadman_check --recorder http://recorder-host:9102/metrics --runner http://runner-host:9103/metrics
+```
+
+Exit 0 means both processes beat within 120 seconds — the same threshold the two
+Prometheus alerts use, asserted equal by the test suite so the two cannot drift
+apart. Exit 1 means at least one target is not *demonstrably* alive, and the
+reason is on stderr, one line per target:
+
+| verdict | what it means |
+|---|---|
+| `STALE` | the endpoint answered, the heartbeat is older than the threshold: wedged |
+| `UNREACHABLE` | nothing answered: the process, the port, or the whole host |
+| `NO_SUCH_SERIES` | something answered but publishes no heartbeat: not the endpoint we think it is, or a process that stopped publishing |
+| `CLOCK_DISAGREEMENT` | the heartbeat is stamped in the checker's future: age cannot be computed at all |
+
+Every one of those is reported as dead. A dead-man switch that stayed quiet
+because it could not reach the host would be a switch that works only when
+nothing is wrong. Run it from a machine that is not the campaign host — a cheap
+VPS, a workstation, anything with a timer — and send the non-zero exit somewhere
+a person sees it. This tool deliberately has no notifier of its own: one would
+need a credential, and nothing in this runbook asks the campaign host to hold a
+credential it does not already need.
+
+It touches no state directory, no ledger and no decision log, and it cannot
+resume, flatten or resolve anything. It reads two HTTP endpoints and exits.
+
+### The clocks, and why `chimera_recorder_clock_skew_ms` is not enough
+
+**chrony (or another NTP client) is required on the campaign host and on
+whatever host runs the dead-man check.** Not recommended — required, and here is
+the difference between the two clock facts:
+
+* `chimera_recorder_clock_skew_ms` compares the recorder's clock with the
+  **exchange's** event times, and `RecorderClockSkew` fires above 5 seconds.
+  That is what makes minute keys trustworthy.
+* The dead-man's `CLOCK_DISAGREEMENT` compares the campaign host's clock with
+  the **observer's**. Freshness is a subtraction between two hosts, so if they
+  disagree, nothing can be said about whether a heartbeat is recent — and the
+  check says exactly that instead of guessing.
+
+Verify both before a campaign and after any host restart:
+
+```
+timedatectl show --property=NTPSynchronized --value
+chronyc tracking
+```
+
+A host whose clock is corrected by more than a second during a campaign gets an
+entry in the incident log (section 15): a correction moves wall time under the
+staleness, heartbeat and stall machinery, and an operator reading an age series
+across that moment needs to know it happened.
+
 ## 12. Daily reporting
 
 ```
@@ -1459,6 +1523,49 @@ with the superseded one kept; it is never a regenerated one.
 Nothing in this section has happened. No prospective artifact exists in this
 repository, no research-question row has been added for one, and this document
 does not authorise a campaign, a promotion, or the use of real money.
+
+### Backup and restore drill (R1-n)
+
+An untested backup is a belief. The failure this guards against is not "nobody
+made a copy" — it is the ordinary one where a copy exists, is made nightly, is
+monitored, and turns out at the worst possible moment to be missing the
+directory that mattered. So the drill archives, restores and **compares**, in
+one invocation, and exits non-zero if the restored tree is not byte-identical:
+
+```
+python -m tools.backup_drill --recorder-root /var/lib/chimera/data --state-dir /var/lib/chimera-demo --archive /backup/chimera-drill.tar.gz --restore-to /var/tmp/chimera-restore-drill
+```
+
+Exit 0 is a restore that was actually performed and checked, minutes ago, on
+this host. Exit 1 names what disagreed — a missing file, an extra one, or a
+differing SHA-256 — and says not to rely on the archive.
+
+Two roots, because after R1-n they belong to two different Unix accounts and
+they are the only durable state the demo has: the recorder's storage root (raw,
+normalized, day manifests, `health/`) and the runner's state directory (carry
+ledger, risk snapshot, decision log, runner state).
+
+What it does not do, so that nobody discovers it mid-incident:
+
+* **it is not a snapshot.** It walks a live tree, so a file being rewritten as
+  it passes could in principle be caught mid-write. R1-h is what makes that
+  acceptable: every parquet and manifest write is temp-file + fsync + rename, so
+  any reader sees the old file or the new one and never half of either. The
+  append-only logs can end at a partial last line, which is the honest state of
+  an append-only log;
+* **it does not stop or signal either service.** A backup that halts a campaign
+  is a backup nobody runs;
+* **it does not copy anything off the host**, rotate, or encrypt. Where the
+  archive goes afterwards is an operator decision; a tool that shipped it
+  somewhere would need a credential;
+* **it refuses to restore into production.** A `--restore-to` that is, contains,
+  or sits inside either source root is rejected with exit 2 before anything is
+  written. That is the one mistake in this procedure that destroys the thing it
+  was meant to protect.
+
+Run it on the engineering recorder root before the 72 h SOAK, and then on a
+timer — weekly is enough for a campaign measured in months, and every run that
+exits 1 is an incident-log entry whether or not anything was lost.
 
 ## 15. Incident recording
 
