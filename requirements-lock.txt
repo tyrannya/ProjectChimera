@@ -29,6 +29,31 @@
 #
 # `projectchimera` itself is absent on purpose: it is installed from the
 # checkout with `-e .`, not from an index.
+#
+# NOT HASH-VERIFIED YET, and R1-n does not pretend otherwise. R1-n asks for
+# `--hash` on this lock, which would make pip verify every archive against a
+# recorded sha256 instead of trusting whatever the index serves for a pinned
+# version. It is not in force here, for one structural reason:
+#
+#   pip's hash-checking mode is ALL OR NOTHING. `--require-hashes` refuses the
+#   whole install if a single requirement lacks a hash, so a partly hashed lock
+#   does not weakly protect 166 of 167 packages -- it breaks every install and
+#   every CI run from this file.
+#
+# 166 of the 167 pins are on PyPI and their hashes are published metadata. The
+# 167th, `torch==2.14.0+cpu`, exists only on download.pytorch.org: a local
+# version identifier (`+cpu`) names a file PyPI does not carry, and PyPI's own
+# `torch==2.14.0` is a DIFFERENT archive that bundles the CUDA libraries this
+# lock exists to avoid. Substituting it to make hashing possible would change
+# what CI installs, which is not a supply-chain change.
+#
+# TO CLOSE IT: read the three `torch-2.14.0+cpu-cp311-*` sha256 values from
+# https://download.pytorch.org/whl/cpu/torch/ (the index embeds them as
+# `#sha256=` fragments), add a `--hash=sha256:...` line per distribution to
+# every requirement here, and switch the Linux install step in
+# .github/workflows/ci.yml to `--require-hashes`. The other two R1-n pins --
+# Actions by commit SHA and base images by digest -- are already in force and
+# are guarded by tests/test_supply_chain_pins.py.
 
 aiofiles==25.1.0
 aiohappyeyeballs==2.7.1
