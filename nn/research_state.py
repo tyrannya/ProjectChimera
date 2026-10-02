@@ -42,6 +42,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from nn.evidence_class import citation_problems
+
 #: A checkpoint has evidence, or a preregistration and no evidence, or neither.
 ANSWERED = "answered"
 PREREGISTERED = "preregistered"
@@ -361,11 +363,21 @@ def terminal_contradictions(root: Path) -> list[str]:
 
 
 def verify(root: Path) -> list[str]:
-    """Every disagreement between the documents and the evidence tree."""
+    """Every disagreement between the documents and the evidence tree.
+
+    Three of the disagreements are about EVIDENCE CLASS rather than about
+    whether a checkpoint ran, and they live in :mod:`nn.evidence_class` because
+    they read the artifact tree's own declarations rather than this module's
+    checkpoint table. §37.1 (R1-o) asks for them by name: a front-door document
+    may not cite a non-PROSPECTIVE artifact as prospective evidence, nor a
+    non-CONFIRMATORY one as confirmatory evidence, nor a block the verifier
+    marked INVALID as a result.
+    """
     root = Path(root)
     states = checkpoint_states(root)
     expected = render_block(states)
     problems: list[str] = terminal_contradictions(root)
+    problems.extend(citation_problems(root, FRONT_DOOR_DOCUMENTS))
     for name in FRONT_DOOR_DOCUMENTS:
         path = root / name
         if not path.is_file():

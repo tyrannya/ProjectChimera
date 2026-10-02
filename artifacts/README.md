@@ -573,3 +573,41 @@ research-visible data it read, and the diagnostics recompute it from whatever
 generation re-auditable without the Parquet files: the artifacts carry the
 identity of their input, so any file claiming to be that input can be checked
 against them rather than taken on trust.
+
+## Evidence class (R1-o)
+
+Every directory added here from R1-o onward declares what its contents **are**,
+under `evidence_class` in the JSON the run writes, using one of §37.1's nine
+governance classes: `ENGINEERING`, `DIAGNOSTIC`, `EXPLORATORY`, `PREREGISTERED`,
+`PROSPECTIVE`, `CONFIRMATORY`, `ADAPTIVE`, `BURNED`, `SEALED-DIAGNOSTIC`. The
+vocabulary and the rationale live in [`nn/evidence_class.py`](../nn/evidence_class.py);
+`tests/test_r1o_evidence_class.py` refuses a new directory that declares none.
+
+Three things worth knowing before writing one.
+
+**The 113 directories that already exist declare nothing, and that is on
+purpose.** They predate the field, R1's PR rules forbid an engineering PR from
+touching a scientific artifact, and choosing between `BURNED`, `ADAPTIVE` and
+`EXPLORATORY` for a finished run is a scientific judgement about what that
+evidence may be reused for — not a label anyone should apply in passing. They are
+grandfathered by name, the list may only shrink, and classifying one is a
+deliberate act with its own review.
+
+**The key already carries two other vocabularies, and they are not this one.**
+`tools/freeze_evidence.py` writes `primary` / `derived` under the same name to
+say whether a file is covered by an immutable manifest; the recorder writes
+`prospective` / `engineering` to say what a minute recorded right now would be.
+Neither is a governance class, and `nn.evidence_class.normalise` reads both as
+*undeclared* rather than guessing.
+
+**`PROSPECTIVE` and `CONFIRMATORY` are recognised only in uppercase.** They are
+the two classes a promotion decision may rest on, so the most consequential
+labels in the programme are not reachable by a lowercase string that already
+exists in the tree for an unrelated purpose.
+
+What the checks then refuse, in `tools.verify_research_state`: a front-door
+document that cites an artifact as prospective evidence when the artifact itself
+declares otherwise, the same for confirmatory, and a block cited as a result when
+the verifier marked it `INVALID`. No artifact here declares a deciding class
+today — the only recorder contract that could carry a boundary has
+`prospective_from: null`, so nothing has been recorded at or after one.
