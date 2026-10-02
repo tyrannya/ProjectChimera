@@ -5,7 +5,13 @@
 # the `nn_infer` service that uses it is behind the `legacy` profile.
 # Inference service. Build from the repository root:
 #   docker build -f nn/Dockerfile.nn_infer -t chimera-nn-infer .
-FROM python:3.11-slim
+# R1-n: digest-pinned. `python:3.11-slim` is a movable tag -- it is rebuilt on
+# every upstream patch release, so two builds of this file a week apart are two
+# different images with the same Dockerfile. The digest below is the manifest
+# list for the 3.11-slim tag as pinned, so it resolves on every architecture.
+# To bump: read the new digest and change the tag comment in the same commit,
+#   docker buildx imagetools inspect python:3.11-slim | head -2
+FROM python:3.11-slim@sha256:bab1b7ef4b450c81002278d035eff85ebe394ae94df904f7a3ba14f7e16e487b
 
 # curl is needed by the compose healthcheck.
 RUN apt-get update \

@@ -4,7 +4,14 @@
 # automatically-triggered CI job and is not part of the default compose stack;
 # the `freqtrade` service that uses it is behind the `legacy` profile.
 # Freqtrade container: execution engine, strategies and the risk layer.
-FROM freqtradeorg/freqtrade:stable
+# R1-n: digest-pinned like every other base image here. `stable` is the most
+# movable tag of the three in this repository -- it is re-pointed at each
+# Freqtrade release -- so leaving it would have left the one retired image as
+# the only unpinned thing in the tree. R1-m DELETES this file; pinning it costs
+# one line and keeps R1-n's guard satisfiable on its own branch, which is what
+# separate PRs per roadmap item requires. Whichever of the two merges second
+# resolves this hunk by taking R1-m's deletion.
+FROM freqtradeorg/freqtrade:stable@sha256:9d67afb8eb5f4e1210f4fb067efcbd5e005bd4f1c27f6f3888b8b9fc7f9b5199
 
 USER root
 WORKDIR /chimera
