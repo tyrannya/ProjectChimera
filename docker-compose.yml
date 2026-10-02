@@ -198,7 +198,9 @@ services:
 
   # --- PROMETHEUS ----------------------------------------------------------
   prometheus:
-    image: prom/prometheus:v2.53.0
+    # R1-n: digest-pinned. The tag stays for the human reading it; the digest
+    # is what docker resolves, so this stack cannot change underneath a soak.
+    image: prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc
     container_name: chimera_prometheus
     restart: unless-stopped
     user: "65534:65534"
@@ -222,7 +224,9 @@ services:
 
   # --- GRAFANA -------------------------------------------------------------
   grafana:
-    image: grafana/grafana:11.1.0
+    # R1-n: digest-pinned. The tag stays for the human reading it; the digest
+    # is what docker resolves, so this stack cannot change underneath a soak.
+    image: grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5
     container_name: chimera_grafana
     restart: unless-stopped
     user: "472:472"
@@ -250,7 +254,9 @@ services:
 
   # --- ALERTMANAGER --------------------------------------------------------
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    # R1-n: digest-pinned. The tag stays for the human reading it; the digest
+    # is what docker resolves, so this stack cannot change underneath a soak.
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     container_name: chimera_alertmanager
     restart: unless-stopped
     user: "65534:65534"
