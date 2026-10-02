@@ -46,6 +46,8 @@ PARSER_FACTORIES: dict[str, str] = {
     "tools.demo_report": "build_parser",
     "tools.replay_parity": "build_parser",
     "tools.freeze_evidence": "build_argparser",
+    "tools.deadman_check": "build_parser",
+    "tools.backup_drill": "build_parser",
 }
 
 #: `python -m` targets that are not repository tools. `json.tool` is the
@@ -58,7 +60,12 @@ STDLIB_MODULES: frozenset[str] = frozenset({"json.tool"})
 #: repository's, so there is no parser here to check them against. A command
 #: starting with anything else is either a tool invocation, which is checked, or
 #: a mistake.
-SHELL_VERBS: frozenset[str] = frozenset({"sudo", "docker", "touch", "rm", "mkdir", "df"})
+#: R1-n adds two: the runbook's chrony requirement is verified with the clock
+#: commands the operating system provides, and there is no parser here to check
+#: them against for the same reason `df` has none.
+SHELL_VERBS: frozenset[str] = frozenset(
+    {"sudo", "docker", "touch", "rm", "mkdir", "df", "timedatectl", "chronyc"}
+)
 
 #: The only thing `sudo` is allowed to run. A runbook that told an operator to
 #: `sudo rm` something would be a runbook that had stopped being reviewed.
@@ -79,6 +86,8 @@ EXPECTED_TOOLS: frozenset[str] = frozenset(
         "tools.demo_report",
         "tools.replay_parity",
         "tools.freeze_evidence",
+        "tools.deadman_check",
+        "tools.backup_drill",
         "json.tool",
     }
 )
