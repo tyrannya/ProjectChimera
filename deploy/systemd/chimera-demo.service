@@ -12,9 +12,27 @@
 #   sudo systemctl enable --now chimera-demo
 #
 # Adjust User, WorkingDirectory and the paths in ExecStart to the host. The
-# defaults assume a checkout at /opt/chimera owned by a `chimera` service user
-# with a virtualenv at /opt/chimera/.venv, and a recorder writing to
-# /var/lib/chimera/data as deploy/systemd/chimera-recorder.service does.
+# defaults assume a checkout at /opt/chimera readable by the service users and
+# writable by neither, with a virtualenv at /opt/chimera/.venv, and a recorder
+# writing to /var/lib/chimera/data as deploy/systemd/chimera-recorder.service
+# does.
+#
+# R1-n SEPARATE IDENTITY. This unit runs as `chimera-runner`, not as the
+# `chimera` user the recorder used to share with it. The runner writes its own
+# state root and nothing else: it reads the recorder's data through the
+# supplementary group `chimera-data` and cannot write a byte of it, which is
+# the correct posture for a process whose input is evidence. The recorder,
+# symmetrically, is not in the runner's group and cannot touch the ledger or
+# the decision log. See the header of chimera-recorder.service for the four
+# host commands that create the two accounts.
+#
+# The state root must be OUTSIDE the checkout, because the checkout is not
+# writable by either service user any more. StateDirectory below creates
+# /var/lib/chimera-demo owned by this unit's user; point the campaign
+# configuration's `state_dir` at it on the host (it defaults to the relative
+# `state/demo`, which resolves under WorkingDirectory and would need a writable
+# checkout). A path the runner cannot write fails on the first persist, which
+# is a worse place to find out than here.
 #
 # A LONG-RUNNING SERVICE (R1-d). `tools.demo_run run` starts the runner once and
 # then stays up: it catches up every closed minute, waits for the next minute
@@ -55,9 +73,13 @@ Wants=network-online.target chimera-recorder.service
 
 [Service]
 Type=simple
-User=chimera
-Group=chimera
+User=chimera-runner
+Group=chimera-runner
+# Read access to the recorder's output, and only read: the data directory is
+# group chimera-data, and ProtectSystem=strict keeps it read-only here anyway.
+SupplementaryGroups=chimera-data
 WorkingDirectory=/opt/chimera
+UMask=0027
 
 # --root is the recorder's storage root, read only. The runner's own state
 # directory comes from the campaign configuration, whose default "state/demo" is
@@ -113,18 +135,20 @@ RestrictSUIDSGID=true
 RestrictNamespaces=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-# Prefixed with `-`: a path that does not exist yet is skipped rather than
-# failing the mount namespace. Without it the unit dies 226/NAMESPACE on a
-# fresh checkout, because the state directory is created by the first run
-# and ProtectSystem=strict forbids the runner from creating it.
-ReadWritePaths=-/opt/chimera/state
-# StateDirectory is what actually CREATES it. `ReadWritePaths=-` tolerates the
-# directory being absent, which stops the unit dying 226/NAMESPACE on a fresh
-# host, but tolerating an absent directory is not the same as having one: the
-# runner would then fail on its first write instead, which is a worse place to
-# discover it. systemd creates /var/lib/chimera-demo before the process starts,
-# owned by User=, and the ExecStart paths above may point at it or at the
-# operator's own /opt/chimera/state once they have created that themselves.
+# ONE writable path, and it is not in the checkout (R1-n). StateDirectory is
+# what creates it: systemd makes /var/lib/chimera-demo before the process
+# starts, owned by User= and mode 0700, and adds it to the writable set --
+# so there is no `ReadWritePaths=-/opt/chimera/state` any more and no
+# 226/NAMESPACE on a fresh host. The in-checkout state root is gone on
+# purpose: with the recorder and the runner on separate accounts the checkout
+# is writable by neither, so a `ReadWritePaths` entry pointing into it would
+# have named a path this user cannot write -- misleading in the one file an
+# operator reads to find out what the service can touch.
+#
+# Two roots, two owners, no overlap, which is the property R1-n asks for:
+#   /var/lib/chimera/data   chimera-recorder writes, this unit only reads
+#   /var/lib/chimera-demo   this unit writes, the recorder cannot reach
+# Point the campaign configuration's `state_dir` at the second one.
 StateDirectory=chimera-demo
 
 StandardOutput=journal

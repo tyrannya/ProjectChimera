@@ -11,8 +11,32 @@
 #   sudo systemctl enable --now chimera-recorder
 #
 # Adjust User, WorkingDirectory and the two paths in ExecStart to the host. The
-# defaults assume a checkout at /opt/chimera owned by a `chimera` service user
-# with a virtualenv at /opt/chimera/.venv.
+# defaults assume a checkout at /opt/chimera readable by the service users and
+# writable by neither, with a virtualenv at /opt/chimera/.venv.
+#
+# R1-n SEPARATE IDENTITY. The recorder and the runner used to share one
+# `chimera` user, which meant the runner could rewrite the recorder's parquet
+# files and the recorder could rewrite the runner's ledger -- a pair of
+# capabilities neither needs and that no amount of care in the code can take
+# away. They are now two users with two writable roots:
+#
+#   chimera-recorder  writes /var/lib/chimera/data        (market data)
+#   chimera-runner    writes /var/lib/chimera-demo        (decisions, state)
+#
+# The runner must still READ the recorder's output, so the data lands with
+# group `chimera-data` and the runner holds that group as a supplementary one.
+# Read, not write: group membership gives it no more, and ProtectSystem=strict
+# in the runner's unit leaves the path read-only on top of that.
+#
+# Host setup, once:
+#   sudo groupadd --system chimera-data
+#   sudo useradd --system --gid chimera-data --no-create-home \
+#       --shell /usr/sbin/nologin chimera-recorder
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin chimera-runner
+#   sudo usermod --append --groups chimera-data chimera-runner
+#   sudo install -d -o chimera-recorder -g chimera-data -m 2750 /var/lib/chimera/data
+# The setgid bit (2750) is what keeps every later directory in the tree in
+# `chimera-data` without the recorder having to set a group itself.
 
 [Unit]
 Description=Chimera prospective market-data recorder (public data, no credentials)
@@ -22,9 +46,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=chimera
-Group=chimera
+User=chimera-recorder
+Group=chimera-data
 WorkingDirectory=/opt/chimera
+# 0027: files 0640, directories 0750. The runner reads through the group; no
+# other account on the host sees market data it has no business reading.
+UMask=0027
 
 # --base-dir is the directory the contract's storage root is resolved under, so
 # the data lands in <base-dir>/prospective/gen3/. Keep it on a filesystem with
