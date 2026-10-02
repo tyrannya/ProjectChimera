@@ -20,9 +20,19 @@ WHAT IT BACKS UP. Two roots, which after R1-n belong to two different Unix
 accounts and are the only durable state the demo has:
 
 * the recorder's storage root -- raw NDJSON.gz, normalized parquet, the day
-  manifests, ``health/heartbeat.json`` and ``health/lifecycle.ndjson``;
+  manifests and everything under ``health/``;
 * the runner's state directory -- the carry ledger, the risk snapshot, the
   decision log, the runner state.
+
+The recorder's own files are named here by directory rather than one by one, and
+that is deliberate rather than vague. R1-h asserts that nothing outside
+``chimera/recorder/`` so much as NAMES the recorder's lifecycle log -- the check
+is a text search over ``chimera``, ``nn`` and ``tools`` against an exact
+allow-list of two modules, and it does not care that the mention is in a
+docstring. This tool archives whole directories and never opens that file by
+name, so it has no need to say it, and earning a place on another item's
+allow-list for the sake of a doc phrase is how such a list stops meaning
+anything. CI caught this; the first draft of this docstring named the file.
 
 WHAT IT DOES NOT DO, stated here rather than discovered during an incident:
 
