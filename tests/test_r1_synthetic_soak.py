@@ -54,6 +54,7 @@ Three honest limits of the compression, stated rather than glossed:
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import json
 import shutil
@@ -66,6 +67,7 @@ import pytest
 
 from chimera.demo.decision_log import RecordKind, verify_log
 from chimera.demo.fixtures import MinuteShape, SyntheticFeed
+from chimera.demo.runner import DemoRunner
 from chimera.demo.telemetry import NullTelemetry
 from chimera.recorder.contract import load_recorder_contract
 from chimera.recorder.health import HEARTBEAT_INTERVAL_S
@@ -272,6 +274,47 @@ def config_file(where: Path, state_dir: Path) -> Path:
 ALLOW_DIRTY = "--allow-dirty"
 
 
+#: Passes at one simulated instant before the loop counts as spinning, as
+#: `tests/test_r1f_real_staleness.py` counts them. A few are legitimate: a pass
+#: that finds its own deadline already past re-checks at once.
+MAX_PASSES_AT_ONE_INSTANT = 5
+
+
+@contextlib.contextmanager
+def refuse_to_spin(fake: FakeTime):
+    """Fail a service that passes again without waiting, rather than hang.
+
+    Simulated time moves only inside ``sleep``, and every hook this module has
+    -- the recorder, the snapshots, the deadline that delivers SIGTERM -- runs
+    there. So a loop that stops sleeping stops the clock: the deadline never
+    arrives, the SIGTERM is never delivered, and the witness hangs until CI's
+    job timeout kills it with nothing to say. Counting passes per instant turns
+    that into a named failure in seconds.
+
+    ``check_feed`` is patched on the class because the runner is built inside
+    ``demo_run.main`` and the test never holds it. R1-f patches the instance for
+    the same count.
+    """
+    original = DemoRunner.check_feed
+    seen = {"t": None, "n": 0}
+
+    @functools.wraps(original)
+    def guarded(self: DemoRunner, now_ns: int) -> Any:
+        seen["n"] = seen["n"] + 1 if seen["t"] == fake.t else 1
+        seen["t"] = fake.t
+        assert seen["n"] <= MAX_PASSES_AT_ONE_INSTANT, (
+            f"the service passed {seen['n']} times at one simulated instant "
+            f"({fake.t}) without waiting"
+        )
+        return original(self, now_ns)
+
+    DemoRunner.check_feed = guarded  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        DemoRunner.check_feed = original  # type: ignore[method-assign]
+
+
 def serve(
     argv: list[str],
     fake: FakeTime,
@@ -292,15 +335,23 @@ def serve(
         fake.hooks.append(hook)
 
     def deadline(f: FakeTime) -> None:
-        # A loop that never waits must fail, not hang.
-        assert len(f.sleeps) < 400_000, "the service slept more times than the soak can need"
+        # Hang protection, deliberately generous and measured rather than
+        # guessed: R1-d's loop waits in short slices so a SIGTERM is never more
+        # than about a second away, so this soak really does sleep about once
+        # per simulated second -- 259,200 times over the 72 hours, and
+        # `fake.sleeps` counts every process's. Five times that is not a
+        # schedule any more. `refuse_to_spin` catches the tight case precisely;
+        # this one is here so that a loop which stops waiting altogether fails
+        # with a sentence instead of running out CI's job timeout in silence.
+        assert len(f.sleeps) < 5 * 60 * SOAK_MINUTES, "the service slept past any schedule"
         if f.t >= until:
             installed_sigterm()
 
     fake.hooks.append(deadline)
-    return demo_run.main(
-        argv + ["run", ALLOW_DIRTY], operational_clock=fake.clock, sleep=fake.sleep
-    )
+    with refuse_to_spin(fake):
+        return demo_run.main(
+            argv + ["run", ALLOW_DIRTY], operational_clock=fake.clock, sleep=fake.sleep
+        )
 
 
 def records(log_dir: Path) -> list[dict[str, Any]]:
