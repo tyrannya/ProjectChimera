@@ -1433,6 +1433,55 @@ by running the comparison again: a replay that agrees on the second attempt has
 told you the comparison is not deterministic, which is a worse finding than the
 divergence.
 
+### The 72 h acceptance soak, and the CI mirror of it
+
+R1's acceptance is a **72 h SOAK-profile run, unattended, on an engineering
+recorder root, with one planned restart and one `SIGKILL`, PARITY on every day,
+zero `SKIPPED_STALE` minutes while the recorder was healthy and zero manual
+state edits**. That run is an operations task and nothing in CI can stand in for
+it. What the operator does:
+
+1. Write a `SOAK` configuration -- the profile is in the file, and
+   `parse_demo_config` demands the caller ask for the same one -- whose
+   `state_dir` is a fresh directory, and point `--root` at an engineering
+   recorder root. Never a CAMPAIGN state directory, and never the acceptance
+   recorder root.
+2. Start the service and leave it alone. "Unattended" is part of the
+   acceptance: no `flatten`, no `resume`, no `resolve`, and no edit of any file
+   under the state directory. If the run needs one of those, the run has found
+   something, and that finding is the result.
+3. Restart it once, cleanly (`sudo systemctl restart chimera-demo`: SIGTERM and
+   a fresh process, section 4). Note the minute.
+4. Kill it once, uncleanly (`kill -9` on the service's main pid). Note the
+   minute. systemd restarts it, and the recovery shows up as a `RECOVERY`
+   record whose cause names what was torn (section 5).
+5. Run the parity comparison **every day** as section 13 describes, keeping one
+   `<day>.json` verdict per day.
+6. At the end, read off the four facts the acceptance asks for, from the
+   evidence rather than from memory:
+   * every daily verdict carries `"parity": true` and the tool exited 0;
+   * `SKIPPED_STALE` appears in no `state/demo/decision_log/*.ndjson` line;
+   * each day's `python -m tools.demo_report` run verifies that day's hash
+     chain, which is what "no manual edit" means on disk;
+   * the record kinds in the log contain the restart's and the kill's
+     `STARTUP`s and exactly one `RECOVERY`, at the minutes noted in steps 3
+     and 4.
+
+A `SKIPPED_STALE` minute while the recorder was healthy, a day that does not
+reach PARITY, or a state file changed by hand all fail the acceptance; so does
+needing an operator command to keep the run alive.
+
+**What CI does instead.** The `Synthetic soak (R1 72 h acceptance mirror)` job
+runs the `synthetic_soak` witness, which performs the same five clauses over 72
+hours of *synthetic* minutes in seconds: the service loop on a simulated clock
+(R1-d takes its clock and its sleep as parameters), one graceful restart, one
+process killed mid-persistence at the step that leaves the log ahead of the
+state, a frozen required stream in the middle of day two, and a parity
+comparison at each of the three day boundaries. It exists so that a change
+which would only fail on hour 50 of the real run fails on the pull request
+instead. It is not the acceptance: no real scheduler, no real disk, no real
+kernel `SIGKILL`, and nothing but invented prices.
+
 ## 14. Monthly freeze — what will happen, and what happens today
 
 ```

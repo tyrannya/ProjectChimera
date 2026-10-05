@@ -152,11 +152,15 @@ jobs:
           print(f"{len(manifests)} frozen manifests verified")
 
       - name: Run the test suite
-        # R1-j's 48 h synthetic parity witness (marker `replay_determinism`) is
-        # the `replay-determinism` job's, not this matrix's: it replays 2,880
-        # minutes three times over, and the Windows leg already runs close to
-        # this job's timeout.
-        run: pytest -q --maxfail=1 -m "not replay_determinism"
+        # Two witnesses are their own jobs rather than this matrix's, for the
+        # same reason: each decides thousands of synthetic minutes several times
+        # over, and the Windows leg already runs close to this job's timeout.
+        # R1-j's 48 h parity witness (marker `replay_determinism`) replays 2,880
+        # minutes three times; R1's synthetic soak (marker `synthetic_soak`)
+        # serves 4,320 and replays 8,640. Both are binding, in
+        # `replay-determinism` and `synthetic-soak`, and a change that breaks
+        # either still fails the pull request.
+        run: pytest -q --maxfail=1 -m "not replay_determinism and not synthetic_soak"
 
       - name: End-to-end smoke (synthetic data, CPU, no network)
         # This is the substitute for training on every commit: it walks
@@ -266,6 +270,91 @@ jobs:
           if any(line.startswith(("SKIPPED", "XFAIL", "FAILED", "ERROR")) for line in log):
               raise SystemExit("an unsafe-default test was skipped, xfailed or failed")
           print(f"R1-k unsafe-default detector: {len(probed)} configured limits enforced")
+
+  synthetic-soak:
+    # R1's synthetic-soak CI job (master roadmap R1, TECHNICAL DESIGN: the four
+    # harnesses "plus a synthetic-soak CI job"). It witnesses R1's ACCEPTANCE in
+    # compressed synthetic time: 72 hours of minutes under the SOAK profile,
+    # unattended, with one planned restart, one process killed mid-persistence,
+    # a frozen required stream, PARITY at every day boundary, zero
+    # `SKIPPED_STALE` and a state directory no hand ever touched. It does NOT
+    # replace the acceptance run itself, which is 72 hours of wall clock on a
+    # host; it makes a regression that would only surface on hour 50 of that run
+    # fail here first. The last step reads the witness's own marker line, so a
+    # run in which it was deselected or skipped cannot pass.
+    #
+    # The action refs are pinned to the same commit SHAs R1-n pins the rest of
+    # this file to, so this job is already compliant whichever of the two lands
+    # first.
+    name: Synthetic soak (R1 72 h acceptance mirror)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the locked dependency set
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-lock.txt
+          pip install -e . --no-deps
+
+      - name: Run the 72 h synthetic soak
+        run: |
+          set -o pipefail
+          pytest -m synthetic_soak -rA tests/test_r1_synthetic_soak.py | tee synthetic-soak.log
+
+      - name: Prove the soak ran all five clauses of R1's acceptance
+        shell: python
+        run: |
+          import json
+          log = open("synthetic-soak.log", encoding="utf-8").read().splitlines()
+          markers = [line for line in log if line.startswith("R1-SOAK ")]
+          if len(markers) != 1:
+              raise SystemExit(f"expected one R1-SOAK marker, found {len(markers)}")
+          report = json.loads(markers[0].split(" ", 1)[1])
+          print(json.dumps(report, indent=2, sort_keys=True))
+          expected = {
+              "hours": 72,
+              "minutes": 4320,
+              "profile": "SOAK",
+              "decisions": 4320,
+              "skipped_stale": 0,
+              "operator_commands": 0,
+              "starts": 4,
+              "recoveries": 1,
+              "feed_stalls": 1,
+          }
+          wrong = {k: report.get(k) for k, v in expected.items() if report.get(k) != v}
+          if wrong:
+              raise SystemExit(f"the soak did not run as R1 specifies: {wrong}")
+          days = report["days_at_parity"]
+          if len(days) != 3:
+              raise SystemExit(f"PARITY was not reached on every day: {days}")
+          for day in days:
+              compared = report["records_compared"][day]
+              if compared < 1440:
+                  raise SystemExit(f"{day} compared only {compared} records")
+              print(f"{day}: PARITY over {compared} records")
+          required = (
+              "test_the_soak_decided_every_minute_of_the_seventy_two_hours_exactly_once",
+              "test_no_minute_was_skipped_as_stale_while_the_recorder_was_healthy",
+              "test_the_stall_held_the_position_and_lost_no_minute",
+              "test_the_planned_restart_and_the_uncontrolled_death_both_really_happened",
+              "test_every_day_of_the_soak_replays_to_parity",
+              "test_nothing_but_a_runner_process_wrote_the_state_directory",
+              "test_the_horizon_and_the_clauses_are_the_ones_r1s_acceptance_names",
+          )
+          for name in required:
+              if not any(line.startswith("PASSED") and name in line for line in log):
+                  raise SystemExit(f"{name} did not PASS")
+          if any(line.startswith(("SKIPPED", "XFAIL", "FAILED", "ERROR")) for line in log):
+              raise SystemExit("a synthetic-soak test was skipped, xfailed or failed")
+          print(f"R1 synthetic soak: 72 h, PARITY on {len(days)} days, killed minute "
+                f"{report['killed_minute']}")
 
   config:
     name: Config validation
