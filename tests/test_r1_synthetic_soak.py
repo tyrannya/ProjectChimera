@@ -19,7 +19,7 @@ mechanically over 72 hours of synthetic minutes under the SOAK profile:
 ===========================  ==========================================================
 unattended, 72 h, SOAK       4320 minutes across three UTC days, no operator command
 one planned restart          a graceful SIGTERM and a fresh process (day 1, 10:00)
-one ``SIGKILL``              a process killed mid-persistence (day 2, 06:00)
+one ``SIGKILL``              a process killed mid-persistence (day 2, 06:17)
 PARITY on every day          three replays, one per day boundary, each PARITY
 zero ``SKIPPED_STALE``       while the recorder is healthy, and it is frozen once
 zero manual state edits      nothing but a runner process writes the state directory
@@ -397,9 +397,9 @@ def soak(tmp_path_factory):
 
         process 1   day 1 00:10 .. 10:00   the service starts and runs
         (SIGTERM)   day 1 10:00            the planned restart, graceful
-        process 2   day 1 10:00 .. day 2 05:59   unattended across the UTC day roll
-        process 3   day 2 06:00            one minute, then death mid-persistence
-        process 4   day 2 06:00 .. day 3 23:59   recovery, the stall, and the rest
+        process 2   day 1 10:00 .. day 2 06:16   unattended across the UTC day roll
+        process 3   day 2 06:17            one minute, then death mid-persistence
+        process 4   day 2 06:17 .. day 3 23:59   recovery, the stall, and the rest
 
     At each day's end the live log is snapshotted, so the per-day parity runs
     compare what existed at that boundary rather than what the run later became.
