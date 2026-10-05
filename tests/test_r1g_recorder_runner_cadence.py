@@ -305,7 +305,12 @@ def test_the_running_service_publishes_without_waiting_for_maintenance(tmp_path)
     the delivered minutes visible while the service is still running.
 
     The recorder's clock runs twenty times faster than the test's, starting just
-    after minute 1 closed, so the cap settles minute 1 within half a second."""
+    after minute 1 closed, so the cap settles minute 1 after a few passes of the
+    publish loop. The waiting below is for THAT to happen, not for a fixed slice
+    of wall clock: a flat 0.5 s budget failed twice on loaded Windows runners
+    (PR #118 at f46095c and PR #120 at 653a288), where it measured the runner
+    instead of the recorder. Nothing about what is asserted changes -- only two
+    minutes are ever scripted, so waiting longer cannot publish a third."""
     began = time.monotonic()
     start_ns = (minute_ms(2) + 5_000) * NS_PER_MILLISECOND
 
@@ -337,8 +342,14 @@ def test_the_running_service_publishes_without_waiting_for_maintenance(tmp_path)
         stop = asyncio.Event()
 
         async def look():
-            await asyncio.sleep(0.5)
-            seen["during"] = published(service, "um")
+            deadline = time.monotonic() + 30.0
+            while True:
+                seen["during"] = published(service, "um")
+                if seen["during"] == [minute_ms(0), minute_ms(1)]:
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(0.02)
             stop.set()
 
         await asyncio.gather(service.run(stop), look())
