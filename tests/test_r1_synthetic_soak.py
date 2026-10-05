@@ -57,6 +57,7 @@ import contextlib
 import functools
 import io
 import json
+import re
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -515,7 +516,15 @@ def soak(tmp_path_factory):
     following = [*DAYS[1:], TRAILING_DAY]
     parity: dict[str, dict[str, Any]] = {}
     for index, day in enumerate(DAYS):
-        assert day in taken, f"no snapshot was taken at the end of {day}"
+        assert day in taken, (
+            # Whatever went wrong, the symptom is a boundary the clock never
+            # reached, and the useful facts are where it stopped and what the
+            # processes returned. Without them this reads as a snapshot bug.
+            f"no snapshot at the end of {day}: the soak's clock stopped at "
+            f"{pd.Timestamp(fake.t, unit='s', tz='UTC').isoformat()}, the recorder "
+            f"published {recorder.published} of {SOAK_MINUTES} minutes, and the "
+            f"processes returned {exits}. The run never reached that boundary"
+        )
         scratch = tmp_path / "scratch" / day
         # The days replayed are every decided day so far plus the one after it,
         # whose settlement file the last minute of the last one needs.
@@ -690,3 +699,41 @@ def test_nothing_but_a_runner_process_wrote_the_state_directory(soak):
     unexpected = written - expected - logs - {"metrics.prom", "runner.lock"}
     assert unexpected == set(), f"files no runner process writes: {sorted(unexpected)}"
     assert expected <= written, f"missing: {sorted(expected - written)}"
+
+
+def test_the_horizon_and_the_clauses_are_the_ones_r1s_acceptance_names():
+    """The census cannot check its own horizon, so the roadmap checks it.
+
+    `test_the_soak_decided_every_minute...` compares the decided minutes with a
+    list built from :data:`SOAK_MINUTES`, which is built from :data:`DAYS`. That
+    makes it blind to the horizon itself shrinking: a mutant that cut `DAYS` to
+    two days kept it passing, because the expectation shrank with the run. The
+    number is not this module's to choose -- R1's ACCEPTANCE names it -- so it is
+    read from the roadmap and the derived constants are held to it.
+    """
+    roadmap = (REPO / "docs" / "master_roadmap_r0_r18.md").read_text(encoding="utf-8")
+    acceptance = [
+        line
+        for line in roadmap.splitlines()
+        if line.startswith("**ACCEPTANCE:**") and "SOAK-profile run" in line
+    ]
+    assert len(acceptance) == 1, "R1's ACCEPTANCE line is not where this test looks"
+    sentence = acceptance[0]
+
+    hours = re.search(r"a (\d+) h SOAK-profile run", sentence)
+    assert hours is not None, sentence
+    assert int(hours.group(1)) == 72
+    assert SOAK_MINUTES == int(hours.group(1)) * 60
+    assert len(DAYS) == int(hours.group(1)) // 24
+
+    # The other four clauses, by the words they are written in, so a soak that
+    # quietly stopped covering one of them fails here too.
+    for clause in (
+        "unattended",
+        "one planned restart",
+        "one `SIGKILL`",
+        "PARITY on every day",
+        "zero `SKIPPED_STALE` minutes while the recorder was healthy",
+        "zero manual state edits",
+    ):
+        assert clause in sentence, clause

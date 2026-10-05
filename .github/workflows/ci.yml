@@ -346,6 +346,7 @@ jobs:
               "test_the_planned_restart_and_the_uncontrolled_death_both_really_happened",
               "test_every_day_of_the_soak_replays_to_parity",
               "test_nothing_but_a_runner_process_wrote_the_state_directory",
+              "test_the_horizon_and_the_clauses_are_the_ones_r1s_acceptance_names",
           )
           for name in required:
               if not any(line.startswith("PASSED") and name in line for line in log):
