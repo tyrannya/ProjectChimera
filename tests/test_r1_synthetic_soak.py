@@ -260,6 +260,18 @@ def config_file(where: Path, state_dir: Path) -> Path:
     return path
 
 
+#: ``--allow-dirty`` is passed to every process here, and it is not a shortcut.
+#: ``DemoRunner.self_check`` refuses a working tree it cannot reconstruct unless
+#: the caller says this is a soak -- and refuses the flag itself on a CAMPAIGN
+#: profile, which `tests/test_demo_cli.py` and R1-a's tests hold it to. A soak IS
+#: the run the flag exists for ("soak runs, whose records are operational rather
+#: than evidence"), and without it this witness would only run from a checkout
+#: that happens to be clean: a developer with one edited file, or a copy of the
+#: tree without its `.git`, would watch all six assertions fail at startup for a
+#: reason that has nothing to do with what they changed.
+ALLOW_DIRTY = "--allow-dirty"
+
+
 def serve(
     argv: list[str],
     fake: FakeTime,
@@ -286,7 +298,9 @@ def serve(
             installed_sigterm()
 
     fake.hooks.append(deadline)
-    return demo_run.main(argv + ["run"], operational_clock=fake.clock, sleep=fake.sleep)
+    return demo_run.main(
+        argv + ["run", ALLOW_DIRTY], operational_clock=fake.clock, sleep=fake.sleep
+    )
 
 
 def records(log_dir: Path) -> list[dict[str, Any]]:
@@ -319,7 +333,7 @@ def kill_one_minute(
     reconcile rather than ignore -- and it is reached through the CLI's own
     loader, so what dies is a process built from disk.
     """
-    probe_args = demo_run.build_parser().parse_args(argv + ["run", "--once"])
+    probe_args = demo_run.build_parser().parse_args(argv + ["run", "--once", ALLOW_DIRTY])
     probe_state = where / "kill_probe_state"
     if probe_state.exists():
         shutil.rmtree(probe_state)
@@ -330,13 +344,13 @@ def kill_one_minute(
         "--config", str(probe_config),
         "--root", str(root),
         "--profile", "SOAK",
-        "run", "--once",
+        "run", "--once", ALLOW_DIRTY,
     ]  # fmt: skip
     probe = demo_run._load(
         demo_run.build_parser().parse_args(probe_argv), operational_clock=fake.clock
     )
     probe.telemetry = NullTelemetry()
-    probe.start()
+    probe.start(allow_dirty=True)
     target_ms = probe.cursor.last_minute_processed + 60_000
     # The minute must be closed and published: a service never decides a minute
     # the recorder has not written, so a kill on one would witness nothing.
@@ -359,7 +373,7 @@ def kill_one_minute(
     # The process that really dies, built from disk like any other.
     doomed = demo_run._load(probe_args, operational_clock=fake.clock)
     doomed.telemetry = NullTelemetry()
-    doomed.start()
+    doomed.start(allow_dirty=True)
     faults = Faults(kill_at=kill_at, when="after")
     with instrumented(faults), pytest.raises(Killed):
         doomed.tick(target_ms)
